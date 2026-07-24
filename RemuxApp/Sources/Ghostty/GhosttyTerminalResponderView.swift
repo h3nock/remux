@@ -105,6 +105,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         UITextInputStringTokenizer(textInput: self)
     weak var inputDelegate: UITextInputDelegate?
 
+    var storedMarkedText: String?
+    var storedMarkedSelectedRange: NSRange = NSRange(location: NSNotFound, length: 0)
+
     init(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver) {
         self.trackpadDriver = trackpadDriver
         super.init(frame: .zero)
@@ -186,6 +189,12 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     func insertText(_ text: String) {
+        if storedMarkedText != nil {
+            inputDelegate?.textWillChange(self)
+            storedMarkedText = nil
+            storedMarkedSelectedRange = NSRange(location: NSNotFound, length: 0)
+            inputDelegate?.textDidChange(self)
+        }
         submitTextInput(text, source: "insertText")
     }
 
@@ -335,6 +344,13 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     func deleteBackward() {
         guard isInputEnabled else { return }
+        if storedMarkedText != nil {
+            inputDelegate?.textWillChange(self)
+            storedMarkedText = nil
+            storedMarkedSelectedRange = NSRange(location: NSNotFound, length: 0)
+            inputDelegate?.textDidChange(self)
+            return
+        }
         GhosttyRuntimeTrace.diagnostics(
             "responder.deleteBackward firstResponder=\(isFirstResponder) token=\(activationToken)"
         )

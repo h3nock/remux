@@ -924,4 +924,211 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         driver.repeatTick(at: .greatestFiniteMagnitude)
         XCTAssertEqual(receivedEvents.count, eventCountAfterDisable)
     }
+
+    // MARK: - Marked text (IME composing)
+
+    @MainActor
+    func testSetMarkedTextStoresComposingRegionAndExposesMarkedTextRange() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        view.setMarkedText("pin", selectedRange: NSRange(location: 3, length: 0))
+
+        XCTAssertNotNil(view.markedTextRange)
+        XCTAssertEqual(view.text(in: view.markedTextRange!), "pin")
+    }
+
+    @MainActor
+    func testSetMarkedTextWithNilClearsComposingRegion() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        view.setMarkedText("zh", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertNotNil(view.markedTextRange)
+
+        view.setMarkedText(nil, selectedRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testUnmarkTextCommitsStoredMarkedTextToTerminal() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedText: [String] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: {
+                receivedText.append($0)
+                return true
+            },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        // Simulate CJK IME: setMarkedText with the selected character, then unmarkText.
+        view.setMarkedText("\u{4e2d}", selectedRange: NSRange(location: 1, length: 0))
+        view.unmarkText()
+
+        XCTAssertEqual(receivedText, ["\u{4e2d}"])
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testUnmarkTextWithNoMarkedTextDoesNotSendToTerminal() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedText: [String] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: {
+                receivedText.append($0)
+                return true
+            },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        view.unmarkText()
+
+        XCTAssertTrue(receivedText.isEmpty)
+    }
+
+    @MainActor
+    func testInsertTextClearsActiveMarkedTextAndSendsCommittedCharacter() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedText: [String] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: {
+                receivedText.append($0)
+                return true
+            },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        // Simulate IME path where insertText arrives while composing.
+        view.setMarkedText("pin", selectedRange: NSRange(location: 3, length: 0))
+        view.insertText("\u{62fc}")
+
+        XCTAssertEqual(receivedText, ["\u{62fc}"])
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testDeleteBackwardDuringComposingClearsMarkedTextWithoutSendingBackspace() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedText: [String] = []
+        var receivedEvent: GhosttySurfaceKeyEvent?
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: {
+                receivedText.append($0)
+                return true
+            },
+            sendPaste: { _ in true },
+            sendKeyEvent: {
+                receivedEvent = $0
+                return true
+            },
+            onTrackpadStateChange: { _ in }
+        )
+
+        view.setMarkedText("zh", selectedRange: NSRange(location: 2, length: 0))
+        view.deleteBackward()
+
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertTrue(receivedText.isEmpty)
+        XCTAssertNil(receivedEvent)
+    }
+
+    @MainActor
+    func testReplaceTextDuringComposingClearsMarkedTextAndSendsReplacement() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedText: [String] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: {
+                receivedText.append($0)
+                return true
+            },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        view.setMarkedText("wen", selectedRange: NSRange(location: 3, length: 0))
+        view.replace(view.markedTextRange!, withText: "\u{6587}")
+
+        XCTAssertEqual(receivedText, ["\u{6587}"])
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testMarkedTextRangeIsNilWithNoComposingText() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testEndOfDocumentReflectsMarkedTextLength() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in }
+        )
+
+        let endBefore = view.endOfDocument as! GhosttyVirtualTextPosition
+        XCTAssertEqual(endBefore.offset, 0)
+
+        view.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0))
+
+        let endDuring = view.endOfDocument as! GhosttyVirtualTextPosition
+        XCTAssertEqual(endDuring.offset, 5)
+
+        view.unmarkText()
+
+        let endAfter = view.endOfDocument as! GhosttyVirtualTextPosition
+        XCTAssertEqual(endAfter.offset, 0)
+    }
 }
