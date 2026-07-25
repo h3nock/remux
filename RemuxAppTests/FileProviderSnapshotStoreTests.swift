@@ -102,11 +102,13 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         let folder = try item(path: "old", type: .directory)
         let child = try item(path: "old/child.txt")
         let rootRecord = try await store.record(directory: .root, items: [folder])
-        _ = try await store.record(
+        let childRecord = try await store.record(
             directory: FileProviderRemotePath(relative: "old"),
             items: [child]
         )
         let identity = rootRecord.items[0].identity
+        let childIdentity = childRecord.items[0].identity
+        let pendingSignal = try await store.pendingWorkingSetSignalGeneration()
 
         let moved = try await store.commit(
             localMutation: FileProviderSnapshotLocalMutation(
@@ -137,8 +139,14 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
             moved.items.first(where: { $0.identity == identity })?.remoteItem.path,
             try FileProviderRemotePath(relative: "new")
         )
-        let pendingSignal = try await store.pendingWorkingSetSignalGeneration()
-        XCTAssertNil(pendingSignal)
+        let movedChild = moved.items.first { $0.identity == childIdentity }
+        XCTAssertEqual(
+            movedChild?.remoteItem.path,
+            try FileProviderRemotePath(relative: "new/child.txt")
+        )
+        XCTAssertEqual(movedChild?.parentIdentity, identity)
+        let pendingSignalAfterMutation = try await store.pendingWorkingSetSignalGeneration()
+        XCTAssertEqual(pendingSignalAfterMutation, pendingSignal)
     }
 
     func testMutationReceiptPersistsAndExpiresWithRetainedGenerations() async throws {
@@ -196,6 +204,112 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
             directory: FileProviderRemotePath(relative: "nested")
         )
         XCTAssertTrue(nestedItems.isEmpty)
+    }
+
+    func testLocalMutationQueuesWorkingSetSignalOnlyWhenRequested() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        _ = try await store.record(
+            directory: .root,
+            items: [try item(path: "initial.txt")]
+        )
+        let remote = try await store.record(
+            directory: .root,
+            items: [try item(path: "remote.txt")]
+        )
+        let remoteSignal = try await store.pendingWorkingSetSignalGeneration()
+        XCTAssertEqual(remoteSignal, generation(of: remote.anchor))
+
+        let normal = try await store.commit(
+            localMutation: .init(
+                refreshedDirectories: [.init(
+                    directory: .root,
+                    items: [try item(path: "local.txt")]
+                )]
+            )
+        )
+        let normalSignal = try await store.pendingWorkingSetSignalGeneration()
+        XCTAssertEqual(normalSignal, remoteSignal)
+
+        let partial = try await store.commit(
+            localMutation: .init(
+                refreshedDirectories: [.init(
+                    directory: .root,
+                    items: [try item(path: "partial.txt")]
+                )],
+                queuesWorkingSetSignal: true
+            )
+        )
+        XCTAssertEqual(generation(of: normal.anchor) + 1, generation(of: partial.anchor))
+        let partialSignal = try await store.pendingWorkingSetSignalGeneration()
+        XCTAssertEqual(partialSignal, generation(of: partial.anchor))
+        let stateURL = root.appendingPathComponent("snapshot-generations-v2.json")
+        let state = try JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as! [String: Any]
+        let signals = state["pendingSignals"] as! [[String: Any]]
+        XCTAssertEqual(
+            Set(signals.map { ($0["generation"] as! NSNumber).uint64Value }),
+            Set([generation(of: remote.anchor), generation(of: partial.anchor)])
+        )
+    }
+
+    func testInvalidIdentityReservationDoesNotPersistMutation() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let existing = try item(path: "existing.txt")
+        let baseline = try await store.record(directory: .root, items: [existing])
+        let identity = baseline.items[0].identity
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.commit(
+                localMutation: .init(
+                    refreshedDirectories: [.init(
+                        directory: .root,
+                        items: [existing, try item(path: "new.txt")]
+                    )],
+                    identityReservations: [.init(
+                        identity: identity,
+                        path: try FileProviderRemotePath(relative: "new.txt")
+                    )]
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? FileProviderSnapshotStoreError, .duplicatePath)
+        }
+
+        let anchor = try await store.currentAnchor()
+        XCTAssertEqual(anchor, baseline.anchor)
+        let items = try await store.items(directory: .root)
+        XCTAssertEqual(
+            items.map(\.remoteItem),
+            [existing]
+        )
+    }
+
+    func testCollidingRelocationDoesNotPersistMutation() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let old = try item(path: "old", type: .directory)
+        let new = try item(path: "new", type: .directory)
+        let baseline = try await store.record(directory: .root, items: [old, new])
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.commit(
+                localMutation: .init(
+                    refreshedDirectories: [],
+                    relocations: [.init(
+                        identity: baseline.items.first(where: {
+                            $0.remoteItem.path == old.path
+                        })!.identity,
+                        from: old.path,
+                        to: new.path
+                    )]
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? FileProviderSnapshotStoreError, .duplicatePath)
+        }
+
+        let anchor = try await store.currentAnchor()
+        XCTAssertEqual(anchor, baseline.anchor)
+        let items = try await store.items(directory: .root)
+        XCTAssertEqual(items, baseline.items)
     }
 
     func testRemoteRenameUsesDeleteAndNewIdentity() async throws {

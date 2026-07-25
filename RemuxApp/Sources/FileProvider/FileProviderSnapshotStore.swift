@@ -151,9 +151,14 @@ actor FileProviderSnapshotStore {
             localMutation.relocations,
             to: &directories
         )
+        _ = try workingSetItems(in: directories)
         pruneDeletedIdentities(
             localMutation.deletedIdentities,
             from: &directories
+        )
+        try validateIdentityReservations(
+            localMutation.identityReservations,
+            in: directories
         )
 
         var identitiesByPath = Dictionary(
@@ -205,6 +210,8 @@ actor FileProviderSnapshotStore {
         }
 
         directories.sort { $0.path.relative < $1.path.relative }
+        let items = try workingSetItems(in: directories)
+        let delta = makeDelta(from: previousItems, to: items)
         let nextGeneration = try generation(after: state.generations.last?.generation)
         let latest = PersistedGeneration(
             generation: nextGeneration,
@@ -213,7 +220,6 @@ actor FileProviderSnapshotStore {
         )
         state.generations.append(latest)
         state.generations = Array(state.generations.suffix(retainedGenerationCount))
-        state.pendingSignals.removeAll()
         if localMutation.queuesWorkingSetSignal {
             state.pendingSignals.append(
                 PersistedPendingSignal(
@@ -221,15 +227,17 @@ actor FileProviderSnapshotStore {
                     generation: nextGeneration
                 )
             )
+            state.pendingSignals.sort {
+                $0.directory.relative < $1.directory.relative
+            }
         }
         try Task.checkCancellation()
         try save(state)
 
-        let items = try latest.workingSetItems()
         return (
             anchor: makeAnchor(namespace: state.namespace, generation: nextGeneration),
             items: items,
-            delta: makeDelta(from: previousItems, to: items)
+            delta: delta
         )
     }
 
@@ -513,6 +521,47 @@ actor FileProviderSnapshotStore {
                 )
             }
         }
+    }
+
+    private func validateIdentityReservations(
+        _ reservations: [FileProviderSnapshotLocalMutation.IdentityReservation],
+        in directories: [PersistedDirectory]
+    ) throws {
+        let items = try workingSetItems(in: directories)
+        guard Set(reservations.map(\.identity)).count == reservations.count,
+              Set(reservations.map(\.path)).count == reservations.count
+        else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+        let identitiesByPath = Dictionary(
+            uniqueKeysWithValues: items.map { ($0.remoteItem.path, $0.identity) }
+        )
+        let pathsByIdentity = Dictionary(
+            uniqueKeysWithValues: items.map { ($0.identity, $0.remoteItem.path) }
+        )
+        for reservation in reservations {
+            guard identitiesByPath[reservation.path] == nil
+                    || identitiesByPath[reservation.path] == reservation.identity,
+                  pathsByIdentity[reservation.identity] == nil
+                    || pathsByIdentity[reservation.identity] == reservation.path
+            else {
+                throw FileProviderSnapshotStoreError.duplicatePath
+            }
+        }
+    }
+
+    private func workingSetItems(
+        in directories: [PersistedDirectory]
+    ) throws -> [FileProviderIdentifiedItem] {
+        let items = directories
+            .flatMap(\.items)
+            .sorted { $0.remoteItem.path.relative < $1.remoteItem.path.relative }
+        guard Set(items.map(\.remoteItem.path)).count == items.count,
+              Set(items.map(\.identity)).count == items.count
+        else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+        return items
     }
 
     private func pruneDeletedIdentities(
