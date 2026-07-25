@@ -180,6 +180,54 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         XCTAssertTrue(mutations.isEmpty)
     }
 
+    func testMutationAccessDoesNotCreateDirectoryAfterCancellationDuringParentResolution() async throws {
+        let gate = FileProviderMutationAccessTestGate()
+        let client = FileProviderGatedMutationSFTPClient(
+            gate: gate,
+            gatePoint: .parentResolution
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+        let task = Task {
+            try await fixture.service.withMutationAccess { access in
+                try await access.createDirectory(
+                    at: FileProviderRemotePath(relative: "projects/new")
+                )
+            }
+        }
+
+        await gate.waitUntilStarted()
+        task.cancel()
+        await gate.release()
+
+        await XCTAssertThrowsErrorAsync { try await task.value }
+        let mutations = await client.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testMutationAccessDoesNotRemoveFileAfterCancellationDuringMetadataLookup() async throws {
+        let gate = FileProviderMutationAccessTestGate()
+        let client = FileProviderGatedMutationSFTPClient(
+            gate: gate,
+            gatePoint: .metadataLookup
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+        let task = Task {
+            try await fixture.service.withMutationAccess { access in
+                try await access.removeFile(
+                    at: FileProviderRemotePath(relative: "projects/report.txt")
+                )
+            }
+        }
+
+        await gate.waitUntilStarted()
+        task.cancel()
+        await gate.release()
+
+        await XCTAssertThrowsErrorAsync { try await task.value }
+        let mutations = await client.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
     func testExtensionInvalidationClosesDomainRootOnceWithoutOpeningClientOrChangingTrust() async throws {
         let fixture = try await FileProviderRemoteServiceFixture.make()
         let trustedHosts = TrustedHostStore(rootURL: fixture.rootURL)
@@ -918,6 +966,94 @@ private actor FileProviderMutationAccessTestGate {
         let releaseWaiters = releaseWaiters
         self.releaseWaiters.removeAll()
         releaseWaiters.forEach { $0.resume() }
+    }
+}
+
+private actor FileProviderGatedMutationSFTPClient: RemuxSFTPFileProviderClient {
+    enum GatePoint {
+        case parentResolution
+        case metadataLookup
+    }
+
+    private let home = "/home/reader"
+    private let gate: FileProviderMutationAccessTestGate
+    private let gatePoint: GatePoint
+    private var recordedMutations: [FileProviderTestSFTPMutation] = []
+
+    init(gate: FileProviderMutationAccessTestGate, gatePoint: GatePoint) {
+        self.gate = gate
+        self.gatePoint = gatePoint
+    }
+
+    func realPath(atPath path: String) async throws -> String {
+        switch path {
+        case ".":
+            return home
+        case "\(home)/projects":
+            if gatePoint == .parentResolution {
+                await gate.beginAndWait()
+            }
+            return path
+        default:
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+    }
+
+    func listDirectory(atPath path: String) async throws -> [RemuxSFTPDirectoryEntry] {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func metadata(atPath path: String) async throws -> RemuxSFTPFileMetadata {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func linkMetadata(atPath path: String) async throws -> RemuxSFTPFileMetadata {
+        guard path == "\(home)/projects/report.txt" else {
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+        if gatePoint == .metadataLookup {
+            await gate.beginAndWait()
+        }
+        return RemuxSFTPFileMetadata(
+            size: 4,
+            permissions: 0o100644,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+    }
+
+    func withFile<ReturnValue: Sendable>(
+        atPath path: String,
+        _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
+    ) async throws -> ReturnValue {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func createDirectory(atPath path: String) async throws {
+        recordedMutations.append(.createDirectory(path))
+    }
+
+    func uploadFile(
+        from localURL: URL,
+        to remotePath: String,
+        progress: @escaping RemuxSFTPFileUploadProgressHandler
+    ) async throws {
+        recordedMutations.append(.uploadFile(remotePath))
+    }
+
+    func renameItem(from sourcePath: String, to destinationPath: String) async throws {
+        recordedMutations.append(.renameItem(sourcePath, destinationPath))
+    }
+
+    func removeFile(atPath path: String) async throws {
+        recordedMutations.append(.removeFile(path))
+    }
+
+    func removeEmptyDirectory(atPath path: String) async throws {
+        recordedMutations.append(.removeEmptyDirectory(path))
+    }
+
+    func mutations() -> [FileProviderTestSFTPMutation] {
+        recordedMutations
     }
 }
 

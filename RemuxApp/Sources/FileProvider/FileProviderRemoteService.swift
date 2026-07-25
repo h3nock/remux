@@ -421,7 +421,9 @@ private struct FileProviderRemoteMutationSession: FileProviderRemoteMutationAcce
 
     func createDirectory(at path: FileProviderRemotePath) async throws {
         try Task.checkCancellation()
-        try await client.createDirectory(atPath: destinationPath(for: path))
+        let destination = try await destinationPath(for: path)
+        try Task.checkCancellation()
+        try await client.createDirectory(atPath: destination)
     }
 
     func uploadFile(
@@ -430,9 +432,11 @@ private struct FileProviderRemoteMutationSession: FileProviderRemoteMutationAcce
         progress: @escaping @Sendable (Int64) async -> Void
     ) async throws {
         try Task.checkCancellation()
+        let destination = try await destinationPath(for: path)
+        try Task.checkCancellation()
         try await client.uploadFile(
             from: localURL,
-            to: destinationPath(for: path),
+            to: destination,
             progress: progress
         )
     }
@@ -442,20 +446,27 @@ private struct FileProviderRemoteMutationSession: FileProviderRemoteMutationAcce
         to destination: FileProviderRemotePath
     ) async throws {
         try Task.checkCancellation()
+        let sourcePath = try await mutationSourcePath(for: source)
+        let destinationPath = try await destinationPath(for: destination)
+        try Task.checkCancellation()
         try await client.renameItem(
-            from: try await mutationSourcePath(for: source),
-            to: try await destinationPath(for: destination)
+            from: sourcePath,
+            to: destinationPath
         )
     }
 
     func removeFile(at path: FileProviderRemotePath) async throws {
         try Task.checkCancellation()
-        try await client.removeFile(atPath: mutationSourcePath(for: path))
+        let sourcePath = try await mutationSourcePath(for: path)
+        try Task.checkCancellation()
+        try await client.removeFile(atPath: sourcePath)
     }
 
     func removeEmptyDirectory(at path: FileProviderRemotePath) async throws {
         try Task.checkCancellation()
-        try await client.removeEmptyDirectory(atPath: mutationSourcePath(for: path))
+        let sourcePath = try await mutationSourcePath(for: path)
+        try Task.checkCancellation()
+        try await client.removeEmptyDirectory(atPath: sourcePath)
     }
 
     private func destinationPath(for path: FileProviderRemotePath) async throws -> String {
