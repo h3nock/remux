@@ -96,25 +96,23 @@ actor FileProviderSnapshotStore {
         )
     }
 
-    func pendingSignalGeneration(
-        for directory: FileProviderRemotePath
-    ) throws -> UInt64? {
+    func pendingWorkingSetSignalGeneration() throws -> UInt64? {
         try loadState().pendingSignals
-            .first(where: { $0.directory == directory })?
-            .generation
+            .map(\.generation)
+            .max()
     }
 
-    func acknowledgeSignals(
-        for directory: FileProviderRemotePath,
+    func acknowledgeWorkingSetSignal(
         generation: UInt64
     ) throws {
         var state = try loadState()
-        guard let index = state.pendingSignals.firstIndex(where: {
-            $0.directory == directory && $0.generation == generation
-        }) else {
+        let remainingSignals = state.pendingSignals.filter {
+            $0.generation > generation
+        }
+        guard remainingSignals.count != state.pendingSignals.count else {
             return
         }
-        state.pendingSignals.remove(at: index)
+        state.pendingSignals = remainingSignals
         try save(state)
     }
 
@@ -128,6 +126,25 @@ actor FileProviderSnapshotStore {
             return nil
         }
         return makeAnchor(namespace: state.namespace, generation: latest.generation)
+    }
+
+    func workingSetSnapshot() throws -> (
+        anchor: NSFileProviderSyncAnchor,
+        items: [FileProviderRemoteItem]
+    ) {
+        let state = try loadState()
+        if let latest = state.generations.last {
+            return (
+                anchor: makeAnchor(
+                    namespace: state.namespace,
+                    generation: latest.generation
+                ),
+                items: try latest.workingSetItems()
+            )
+        }
+
+        let initial = try record(directory: .root, items: [])
+        return (anchor: initial.anchor, items: [])
     }
 
     func delta(
@@ -148,6 +165,32 @@ actor FileProviderSnapshotStore {
             delta: makeDelta(
                 from: requested.items(for: directory),
                 to: latest.items(for: directory)
+            )
+        )
+    }
+
+    func workingSetDelta(
+        from anchor: NSFileProviderSyncAnchor
+    ) throws -> (anchor: NSFileProviderSyncAnchor, delta: FileProviderSnapshotDelta) {
+        let state = try loadState()
+        let requestedAnchor = try parse(anchor)
+        guard requestedAnchor.namespace == state.namespace,
+              let requested = state.generations.first(where: {
+                  $0.generation == requestedAnchor.generation
+              }),
+              let latest = state.generations.last
+        else {
+            throw FileProviderSnapshotStoreError.syncAnchorExpired
+        }
+
+        return (
+            anchor: makeAnchor(
+                namespace: state.namespace,
+                generation: latest.generation
+            ),
+            delta: makeDelta(
+                from: try requested.workingSetItems(),
+                to: try latest.workingSetItems()
             )
         )
     }
@@ -265,6 +308,16 @@ private struct PersistedGeneration: Codable {
 
     func items(for directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
         directories.first(where: { $0.path == directory })?.items ?? []
+    }
+
+    func workingSetItems() throws -> [FileProviderRemoteItem] {
+        let items = directories
+            .flatMap(\.items)
+            .sorted { $0.path.relative < $1.path.relative }
+        guard Set(items.map(\.path)).count == items.count else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+        return items
     }
 }
 

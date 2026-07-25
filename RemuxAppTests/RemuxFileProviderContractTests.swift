@@ -625,7 +625,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let snapshots = FileProviderSnapshotStore(rootURL: snapshotRoot)
         let core = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: service,
             snapshots: snapshots,
             coordinator: FileProviderPollingCoordinator(),
@@ -662,7 +662,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let updated = try fileProviderTestItem(relative: "changed.txt", size: 3)
         let latest = try await snapshots.record(directory: .root, items: [updated])
         let core = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: service,
             snapshots: snapshots,
             coordinator: FileProviderPollingCoordinator(),
@@ -692,7 +692,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         )
         let coordinator = FileProviderPollingCoordinator()
         let primaryCore = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: service,
             snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
             coordinator: coordinator,
@@ -703,7 +703,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             gate: blockingGate
         )
         let delayedCore = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: service,
             snapshots: FileProviderSnapshotStore(
                 rootURL: snapshotRoot,
@@ -738,7 +738,73 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(persisted, [newItem])
     }
 
-    func testPollingRefreshSignalsDirectoryAndWorkingSetWhenSnapshotChanges() async throws {
+    func testWorkingSetAggregatesNestedCreateUpdateDeleteAndSignalsOnlyWorkingSet() async throws {
+        let directory = try FileProviderRemotePath(relative: "nested")
+        let rootItem = try fileProviderTestItem(
+            relative: "nested",
+            size: 0,
+            type: .directory
+        )
+        let original = try fileProviderTestItem(
+            relative: "nested/updated.txt",
+            size: 1
+        )
+        let removed = try fileProviderTestItem(
+            relative: "nested/deleted.txt",
+            size: 2
+        )
+        let changed = try fileProviderTestItem(
+            relative: "nested/updated.txt",
+            size: 3
+        )
+        let created = try fileProviderTestItem(
+            relative: "nested/created.txt",
+            size: 4
+        )
+        let snapshotRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshots = FileProviderSnapshotStore(rootURL: snapshotRoot)
+        _ = try await snapshots.record(directory: .root, items: [rootItem])
+        let baseline = try await snapshots.record(
+            directory: directory,
+            items: [original, removed]
+        )
+        let signaler = FileProviderTestSignaler()
+        let nestedCore = FileProviderEnumeratorCore(
+            scope: .directory(directory),
+            service: FileProviderTestSequencedRemoteService(
+                listings: [[changed, created]]
+            ),
+            snapshots: snapshots,
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: signaler
+        )
+        let workingSetCore = FileProviderEnumeratorCore(
+            scope: .workingSet,
+            service: FileProviderTestSequencedRemoteService(listings: [[]]),
+            snapshots: snapshots,
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: signaler
+        )
+
+        try await nestedCore.refreshAndSignalChanges()
+        let page = try await workingSetCore.enumerateItems()
+        let changes = try await workingSetCore.enumerateChanges(
+            from: baseline.anchor
+        )
+
+        XCTAssertEqual(page.items, [rootItem, created, changed])
+        XCTAssertEqual(changes.updated, [created, changed])
+        XCTAssertEqual(changes.updated.map(\.parent), [directory, directory])
+        XCTAssertEqual(
+            changes.deleted,
+            [FileProviderItemIdentifierCodec().identifier(for: removed.path)]
+        )
+        let signals = await signaler.signaledIdentifiers()
+        XCTAssertEqual(signals, [.workingSet])
+    }
+
+    func testChangedDirectoryPollSignalsOnlyWorkingSet() async throws {
         let home = "/home/reader"
         let original = RemuxSFTPFileMetadata(
             size: 1,
@@ -764,7 +830,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         )
         let signaler = FileProviderTestSignaler()
         let core = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: service,
             snapshots: snapshots,
             coordinator: FileProviderPollingCoordinator(),
@@ -775,39 +841,51 @@ final class RemuxFileProviderContractTests: XCTestCase {
         try await core.refreshAndSignalChanges()
 
         let signals = await signaler.signaledIdentifiers()
-        XCTAssertEqual(signals, [.rootContainer, .workingSet])
+        XCTAssertEqual(signals, [.workingSet])
     }
 
-    func testPollingRefreshDoesNotSignalWhenSnapshotIsUnchanged() async throws {
-        let home = "/home/reader"
-        let metadata = RemuxSFTPFileMetadata(
-            size: 1,
-            permissions: 0o100644,
-            modificationDate: Date(timeIntervalSince1970: 700)
+    func testUnchangedNestedPollDoesNotAdvanceGenerationOrSignalAgain() async throws {
+        let directory = try FileProviderRemotePath(relative: "nested")
+        let rootItem = try fileProviderTestItem(
+            relative: "nested",
+            size: 0,
+            type: .directory
         )
-        let listing = [RemuxSFTPDirectoryEntry(name: "same.txt", metadata: metadata)]
-        let client = FileProviderSequencedSFTPClient(
-            home: home,
-            listings: [listing, listing]
+        let item = try fileProviderTestItem(
+            relative: "nested/same.txt",
+            size: 1
         )
-        let service = try await FileProviderRemoteServiceFixture.make(client: client).service
+        let snapshots = FileProviderSnapshotStore(
+            rootURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+        _ = try await snapshots.record(directory: .root, items: [rootItem])
         let signaler = FileProviderTestSignaler()
         let core = FileProviderEnumeratorCore(
-            directory: .root,
-            service: service,
-            snapshots: FileProviderSnapshotStore(
-                rootURL: FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            scope: .directory(directory),
+            service: FileProviderTestSequencedRemoteService(
+                listings: [[item], [item], [item]]
             ),
+            snapshots: snapshots,
             coordinator: FileProviderPollingCoordinator(),
             signaler: signaler
         )
         _ = try await core.enumerateItems()
+        try await core.refreshAndSignalChanges()
+        let currentAnchorBeforeUnchangedPoll = try await core.currentSyncAnchor()
+        let anchorBeforeUnchangedPoll = try XCTUnwrap(
+            currentAnchorBeforeUnchangedPoll
+        )
 
         try await core.refreshAndSignalChanges()
 
+        let currentAnchorAfterUnchangedPoll = try await core.currentSyncAnchor()
+        let anchorAfterUnchangedPoll = try XCTUnwrap(
+            currentAnchorAfterUnchangedPoll
+        )
         let signals = await signaler.signaledIdentifiers()
-        XCTAssertTrue(signals.isEmpty)
+        XCTAssertEqual(anchorAfterUnchangedPoll, anchorBeforeUnchangedPoll)
+        XCTAssertEqual(signals, [.workingSet])
     }
 
     func testCancelledSnapshotRecordDoesNotPersistAfterStorageBoundary() async throws {
@@ -834,21 +912,33 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
     }
 
-    func testInterruptedSignalDeliveryRetriesDurablyUntilComplete() async throws {
-        let original = try fileProviderTestItem(relative: "item.txt", size: 1)
-        let changed = try fileProviderTestItem(relative: "item.txt", size: 2)
+    func testCancelledNestedSignalIsDrainedByReopenedWorkingSet() async throws {
+        let directory = try FileProviderRemotePath(relative: "nested")
+        let rootItem = try fileProviderTestItem(
+            relative: "nested",
+            size: 0,
+            type: .directory
+        )
+        let original = try fileProviderTestItem(
+            relative: "nested/item.txt",
+            size: 1
+        )
+        let changed = try fileProviderTestItem(
+            relative: "nested/item.txt",
+            size: 2
+        )
         let service = FileProviderTestSequencedRemoteService(
             listings: [[original], [changed]]
         )
         let signaler = FileProviderBlockingSignaler()
         let snapshotRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshots = FileProviderSnapshotStore(rootURL: snapshotRoot)
+        _ = try await snapshots.record(directory: .root, items: [rootItem])
         let core = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(directory),
             service: service,
-            snapshots: FileProviderSnapshotStore(
-                rootURL: snapshotRoot
-            ),
+            snapshots: snapshots,
             coordinator: FileProviderPollingCoordinator(),
             signaler: signaler
         )
@@ -863,11 +953,11 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         await XCTAssertFileProviderThrowsAsync { try await refresh.value }
         let identifiers = await signaler.signaledIdentifiers()
-        XCTAssertEqual(identifiers, [.rootContainer])
+        XCTAssertEqual(identifiers, [.workingSet])
 
         let retrySignaler = FileProviderTestSignaler()
         let reopenedCore = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .workingSet,
             service: FileProviderTestSequencedRemoteService(
                 listings: [[changed]]
             ),
@@ -880,10 +970,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         try await reopenedCore.refreshAndSignalChanges()
 
         let retryIdentifiers = await retrySignaler.signaledIdentifiers()
-        XCTAssertEqual(
-            retryIdentifiers,
-            [.rootContainer, .workingSet]
-        )
+        XCTAssertEqual(retryIdentifiers, [.workingSet])
     }
 
     func testFailedSignalDeliveryRemainsPendingUntilRetrySucceeds() async throws {
@@ -891,7 +978,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let changed = try fileProviderTestItem(relative: "item.txt", size: 2)
         let signaler = FileProviderFailingOnceSignaler()
         let core = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: FileProviderTestSequencedRemoteService(
                 listings: [[original], [changed]]
             ),
@@ -911,7 +998,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         try await core.refreshAndSignalChanges()
 
         let identifiers = await signaler.signaledIdentifiers()
-        XCTAssertEqual(identifiers, [.rootContainer, .workingSet])
+        XCTAssertEqual(identifiers, [.workingSet])
     }
 
     func testOlderSignalDeliveryDoesNotAcknowledgeNewerSnapshot() async throws {
@@ -928,7 +1015,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let blockingSignaler = FileProviderBlockingSignaler()
         let core = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .directory(.root),
             service: FileProviderTestSequencedRemoteService(
                 listings: [[original], [firstChange], [secondChange]]
             ),
@@ -949,7 +1036,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         let retrySignaler = FileProviderTestSignaler()
         let reopenedCore = FileProviderEnumeratorCore(
-            directory: .root,
+            scope: .workingSet,
             service: FileProviderTestSequencedRemoteService(
                 listings: [[secondChange]]
             ),
@@ -962,7 +1049,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         try await reopenedCore.refreshAndSignalChanges()
 
         let retryIdentifiers = await retrySignaler.signaledIdentifiers()
-        XCTAssertEqual(retryIdentifiers, [.rootContainer, .workingSet])
+        XCTAssertEqual(retryIdentifiers, [.workingSet])
     }
 
     func testPollingLoopRefreshesImmediatelyWhenEnumeratorOpens() async {
@@ -1534,14 +1621,16 @@ private func XCTAssertFileProviderThrowsAsync<T>(
 
 private func fileProviderTestItem(
     relative: String,
-    size: UInt64
+    size: UInt64,
+    type: RemuxSFTPFileType = .regular
 ) throws -> FileProviderRemoteItem {
     try FileProviderRemoteItem(
         path: FileProviderRemotePath(relative: relative),
         metadata: RemuxSFTPFileMetadata(
             size: size,
             permissions: 0o100644,
-            modificationDate: Date(timeIntervalSince1970: TimeInterval(size))
+            modificationDate: Date(timeIntervalSince1970: TimeInterval(size)),
+            type: type
         )
     )
 }

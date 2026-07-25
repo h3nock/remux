@@ -108,6 +108,60 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         }
     }
 
+    func testWorkingSetUsesRetainedDomainAnchorsAndRejectsExpiredOrForeignAnchors() async throws {
+        let otherRoot = root.appendingPathComponent("other-domain", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let store = FileProviderSnapshotStore(
+            rootURL: root,
+            retainedGenerationCount: 2
+        )
+        let otherStore = FileProviderSnapshotStore(rootURL: otherRoot)
+        let directory = try FileProviderRemotePath(relative: "nested")
+        let rootItem = try item(path: "nested")
+        let original = try item(path: "nested/item.txt", size: 1)
+        let changed = try item(path: "nested/item.txt", size: 2)
+
+        let expired = try await store.record(
+            directory: .root,
+            items: [rootItem]
+        ).anchor
+        let retained = try await store.record(
+            directory: directory,
+            items: [original]
+        ).anchor
+        let latest = try await store.record(
+            directory: directory,
+            items: [changed]
+        ).anchor
+        _ = try await otherStore.record(directory: .root, items: [rootItem])
+        let foreign = try await otherStore.record(
+            directory: directory,
+            items: [original]
+        ).anchor
+
+        let delta = try await store.workingSetDelta(from: retained)
+        XCTAssertEqual(delta.anchor, latest)
+        XCTAssertEqual(delta.delta.updated, [changed])
+        XCTAssertTrue(delta.delta.deleted.isEmpty)
+        XCTAssertEqual(generation(of: foreign), generation(of: retained))
+        XCTAssertNotEqual(foreign.rawValue, retained.rawValue)
+
+        for invalidAnchor in [
+            expired,
+            foreign,
+            NSFileProviderSyncAnchor(rawValue: Data([0xFF])),
+        ] {
+            await XCTAssertThrowsErrorAsync(
+                try await store.workingSetDelta(from: invalidAnchor)
+            ) { error in
+                XCTAssertEqual(
+                    error as? FileProviderSnapshotStoreError,
+                    .syncAnchorExpired
+                )
+            }
+        }
+    }
+
     func testDuplicatePathsInPersistedStateThrowTypedError() async throws {
         let store = FileProviderSnapshotStore(rootURL: root)
         let document = try item(path: "document.txt")

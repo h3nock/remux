@@ -20,21 +20,26 @@ protocol FileProviderEnumeratorSignaling: Sendable {
     ) async throws
 }
 
+enum FileProviderEnumeratorScope: Equatable, Sendable {
+    case directory(FileProviderRemotePath)
+    case workingSet
+}
+
 actor FileProviderEnumeratorCore {
-    private let directory: FileProviderRemotePath
+    private let scope: FileProviderEnumeratorScope
     private let service: any FileProviderRemoteServicing
     private let snapshots: FileProviderSnapshotStore
     private let coordinator: FileProviderPollingCoordinator
     private let signaler: any FileProviderEnumeratorSignaling
 
     init(
-        directory: FileProviderRemotePath,
+        scope: FileProviderEnumeratorScope,
         service: any FileProviderRemoteServicing,
         snapshots: FileProviderSnapshotStore,
         coordinator: FileProviderPollingCoordinator,
         signaler: any FileProviderEnumeratorSignaling
     ) {
-        self.directory = directory
+        self.scope = scope
         self.service = service
         self.snapshots = snapshots
         self.coordinator = coordinator
@@ -42,23 +47,51 @@ actor FileProviderEnumeratorCore {
     }
 
     func enumerateItems() async throws -> FileProviderEnumerationPage {
-        let refresh = try await refresh()
-        try Task.checkCancellation()
-        return FileProviderEnumerationPage(
-            items: refresh.items,
-            nextPage: nil,
-            anchor: refresh.anchor
-        )
+        switch scope {
+        case .directory(let directory):
+            let refresh = try await refresh(directory: directory)
+            try Task.checkCancellation()
+            return FileProviderEnumerationPage(
+                items: refresh.items,
+                nextPage: nil,
+                anchor: refresh.anchor
+            )
+        case .workingSet:
+            let snapshot = try await snapshots.workingSetSnapshot()
+            try Task.checkCancellation()
+            return FileProviderEnumerationPage(
+                items: snapshot.items,
+                nextPage: nil,
+                anchor: snapshot.anchor
+            )
+        }
     }
 
     func currentSyncAnchor() async throws -> NSFileProviderSyncAnchor? {
-        try await snapshots.currentAnchor()
+        switch scope {
+        case .directory:
+            try await snapshots.currentAnchor()
+        case .workingSet:
+            try await snapshots.workingSetSnapshot().anchor
+        }
     }
 
     func enumerateChanges(
         from anchor: NSFileProviderSyncAnchor
     ) async throws -> FileProviderEnumerationChanges {
-        let changes = try await snapshots.delta(directory: directory, from: anchor)
+        let changes: (
+            anchor: NSFileProviderSyncAnchor,
+            delta: FileProviderSnapshotDelta
+        )
+        switch scope {
+        case .directory(let directory):
+            changes = try await snapshots.delta(
+                directory: directory,
+                from: anchor
+            )
+        case .workingSet:
+            changes = try await snapshots.workingSetDelta(from: anchor)
+        }
         return FileProviderEnumerationChanges(
             updated: changes.delta.updated,
             deleted: changes.delta.deleted,
@@ -68,31 +101,31 @@ actor FileProviderEnumeratorCore {
     }
 
     func refreshAndSignalChanges() async throws {
-        _ = try await refresh()
+        if case .directory(let directory) = scope {
+            _ = try await refresh(directory: directory)
+        }
         try Task.checkCancellation()
         guard let pendingGeneration = try await snapshots
-            .pendingSignalGeneration(for: directory)
+            .pendingWorkingSetSignalGeneration()
         else {
             return
         }
 
-        let directoryIdentifier = FileProviderItemIdentifierCodec()
-            .identifier(for: directory)
-        try await signaler.signalEnumerator(for: directoryIdentifier)
-        try Task.checkCancellation()
         try await signaler.signalEnumerator(for: .workingSet)
-        try await snapshots.acknowledgeSignals(
-            for: directory,
+        try Task.checkCancellation()
+        try await snapshots.acknowledgeWorkingSetSignal(
             generation: pendingGeneration
         )
     }
 
-    private func refresh() async throws -> FileProviderPollingRefresh {
+    private func refresh(
+        directory: FileProviderRemotePath
+    ) async throws -> FileProviderPollingRefresh {
         try await coordinator.refresh(directory: directory) {
-            let items = try await self.service.list(directory: self.directory)
+            let items = try await self.service.list(directory: directory)
             try Task.checkCancellation()
             let record = try await self.snapshots.record(
-                directory: self.directory,
+                directory: directory,
                 items: items
             )
             try Task.checkCancellation()

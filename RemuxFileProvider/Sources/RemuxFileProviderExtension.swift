@@ -128,13 +128,15 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             )
         }
 
-        let path: FileProviderRemotePath
+        let scope: FileProviderEnumeratorScope
         if containerItemIdentifier == .workingSet {
-            path = .root
+            scope = .workingSet
         } else {
             do {
-                path = try FileProviderItemIdentifierCodec()
-                    .path(for: containerItemIdentifier)
+                scope = .directory(
+                    try FileProviderItemIdentifierCodec()
+                        .path(for: containerItemIdentifier)
+                )
             } catch {
                 throw FileProviderErrorMapper.map(
                     error,
@@ -145,7 +147,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
 
         let enumerator = RemuxFileProviderEnumerator(
             core: FileProviderEnumeratorCore(
-                directory: path,
+                scope: scope,
                 service: setup.service,
                 snapshots: setup.snapshots,
                 coordinator: setup.pollingCoordinator,
