@@ -103,29 +103,58 @@ struct RemuxAppDependencies: Sendable {
 #if DEBUG || REMUX_LIVE_UI_TESTING
         let environment = ProcessInfo.processInfo.environment
         let usesEphemeralDebugStorage = environment[DebugLiveEnvironmentKey.ephemeralStorage] == "1"
-        let root: URL
-        let credentialStore: any SSHCredentialStore
         if usesEphemeralDebugStorage {
-            root = try ApplicationStorage.remuxRoot(
+            let root = try ApplicationStorage.remuxRoot(
                 overridePath: FileManager.default.temporaryDirectory
                     .appendingPathComponent("RemuxLiveDebug-\(UUID().uuidString)", isDirectory: true)
                     .path
             )
-            credentialStore = InMemorySSHCredentialStore()
-        } else {
-            root = try ApplicationStorage.remuxRoot()
-            credentialStore = KeychainSSHCredentialStore()
+            return RemuxAppDependencies(
+                profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
+                settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
+                shortcutRepository: FileBackedShortcutRepository(rootURL: root),
+                credentialStore: InMemorySSHCredentialStore(),
+                trustedHostStore: TrustedHostStore(rootURL: root)
+            )
         }
-#else
-        let root = try ApplicationStorage.remuxRoot()
-        let credentialStore: any SSHCredentialStore = KeychainSSHCredentialStore()
 #endif
+
+        let legacyRoot = try ApplicationStorage.remuxRoot()
+        let sharedRoot = try ApplicationStorage.sharedRemuxRoot()
+        let legacyProfiles = FileBackedConnectionProfileRepository(rootURL: legacyRoot)
+        let legacyCredentials = KeychainSSHCredentialStore()
+        let legacyTrustedHosts = TrustedHostStore(rootURL: legacyRoot)
+        let sharedProfiles = FileBackedConnectionProfileRepository(rootURL: sharedRoot)
+        let sharedCredentials = KeychainSSHCredentialStore(
+            accessGroup: try FileProviderSharedConfiguration.keychainAccessGroup()
+        )
+        let sharedTrustedHosts = TrustedHostStore(rootURL: sharedRoot)
+        let migrator = FileProviderSharedStorageMigrator(
+            legacyProfiles: legacyProfiles,
+            legacyCredentials: legacyCredentials,
+            legacyTrust: legacyTrustedHosts,
+            sharedProfiles: sharedProfiles,
+            sharedCredentials: sharedCredentials,
+            sharedTrust: sharedTrustedHosts,
+            markerURL: sharedRoot.appendingPathComponent(
+                "file-provider-shared-storage-migration-v1"
+            )
+        )
+        let reconciler = FileProviderDomainReconciler(
+            profiles: sharedProfiles,
+            credentials: sharedCredentials,
+            trust: sharedTrustedHosts,
+            registry: NSFileProviderDomainRegistry()
+        )
+
         return RemuxAppDependencies(
-            profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
-            settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
-            shortcutRepository: FileBackedShortcutRepository(rootURL: root),
-            credentialStore: credentialStore,
-            trustedHostStore: TrustedHostStore(rootURL: root)
+            profileRepository: sharedProfiles,
+            settingsRepository: FileBackedTerminalSettingsRepository(rootURL: legacyRoot),
+            shortcutRepository: FileBackedShortcutRepository(rootURL: legacyRoot),
+            credentialStore: sharedCredentials,
+            trustedHostStore: sharedTrustedHosts,
+            fileProviderStorageMigrator: migrator,
+            fileProviderDomainReconciler: reconciler
         )
     }
 
