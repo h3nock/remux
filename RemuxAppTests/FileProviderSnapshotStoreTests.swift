@@ -162,6 +162,98 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         }
     }
 
+    func testRemovingDirectoryPrunesTrackedSubtreeAndRecreationStartsEmpty() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let nestedPath = try FileProviderRemotePath(relative: "nested")
+        let childPath = try FileProviderRemotePath(relative: "nested/child")
+        let nested = try item(path: "nested", type: .directory)
+        let child = try item(path: "nested/child", type: .directory)
+        let leaf = try item(path: "nested/child/leaf.txt")
+
+        _ = try await store.record(directory: .root, items: [nested])
+        _ = try await store.record(directory: nestedPath, items: [child])
+        let baseline = try await store.record(directory: childPath, items: [leaf])
+
+        let removed = try await store.record(directory: .root, items: [])
+
+        XCTAssertEqual(generation(of: removed.anchor), generation(of: baseline.anchor) + 1)
+        let removedDelta = try await store.workingSetDelta(from: baseline.anchor)
+        XCTAssertEqual(removedDelta.anchor, removed.anchor)
+        XCTAssertTrue(removedDelta.delta.updated.isEmpty)
+        XCTAssertEqual(
+            removedDelta.delta.deleted,
+            [nested, child, leaf]
+                .map(identifier(for:))
+                .sorted { $0.rawValue < $1.rawValue }
+        )
+
+        let recreated = try await store.record(directory: .root, items: [nested])
+        let recreatedSnapshot = try await store.workingSetSnapshot()
+        XCTAssertEqual(recreatedSnapshot.anchor, recreated.anchor)
+        XCTAssertEqual(recreatedSnapshot.items, [nested])
+        let recreatedDelta = try await store.workingSetDelta(from: removed.anchor)
+        XCTAssertEqual(recreatedDelta.delta.updated, [nested])
+        XCTAssertTrue(recreatedDelta.delta.deleted.isEmpty)
+    }
+
+    func testRenamingDirectoryPrunesTrackedOldSubtreeInOneGeneration() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let oldPath = try FileProviderRemotePath(relative: "old")
+        let oldChildPath = try FileProviderRemotePath(relative: "old/child")
+        let old = try item(path: "old", type: .directory)
+        let oldChild = try item(path: "old/child", type: .directory)
+        let oldLeaf = try item(path: "old/child/leaf.txt")
+        let renamed = try item(path: "renamed", type: .directory)
+
+        _ = try await store.record(directory: .root, items: [old])
+        _ = try await store.record(directory: oldPath, items: [oldChild])
+        let baseline = try await store.record(directory: oldChildPath, items: [oldLeaf])
+
+        let changed = try await store.record(directory: .root, items: [renamed])
+
+        XCTAssertEqual(generation(of: changed.anchor), generation(of: baseline.anchor) + 1)
+        let delta = try await store.workingSetDelta(from: baseline.anchor)
+        XCTAssertEqual(delta.anchor, changed.anchor)
+        XCTAssertEqual(delta.delta.updated, [renamed])
+        XCTAssertEqual(
+            delta.delta.deleted,
+            [old, oldChild, oldLeaf]
+                .map(identifier(for:))
+                .sorted { $0.rawValue < $1.rawValue }
+        )
+        let snapshot = try await store.workingSetSnapshot()
+        XCTAssertEqual(snapshot.items, [renamed])
+    }
+
+    func testReplacingDirectoryWithFilePrunesTrackedDescendantsInOneGeneration() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let nestedPath = try FileProviderRemotePath(relative: "nested")
+        let childPath = try FileProviderRemotePath(relative: "nested/child")
+        let nestedDirectory = try item(path: "nested", type: .directory)
+        let child = try item(path: "nested/child", type: .directory)
+        let leaf = try item(path: "nested/child/leaf.txt")
+        let nestedFile = try item(path: "nested", size: 7)
+
+        _ = try await store.record(directory: .root, items: [nestedDirectory])
+        _ = try await store.record(directory: nestedPath, items: [child])
+        let baseline = try await store.record(directory: childPath, items: [leaf])
+
+        let changed = try await store.record(directory: .root, items: [nestedFile])
+
+        XCTAssertEqual(generation(of: changed.anchor), generation(of: baseline.anchor) + 1)
+        let delta = try await store.workingSetDelta(from: baseline.anchor)
+        XCTAssertEqual(delta.anchor, changed.anchor)
+        XCTAssertEqual(delta.delta.updated, [nestedFile])
+        XCTAssertEqual(
+            delta.delta.deleted,
+            [child, leaf]
+                .map(identifier(for:))
+                .sorted { $0.rawValue < $1.rawValue }
+        )
+        let snapshot = try await store.workingSetSnapshot()
+        XCTAssertEqual(snapshot.items, [nestedFile])
+    }
+
     func testDuplicatePathsInPersistedStateThrowTypedError() async throws {
         let store = FileProviderSnapshotStore(rootURL: root)
         let document = try item(path: "document.txt")
@@ -193,14 +285,29 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         }
     }
 
-    private func item(path: String, size: UInt64 = 1) throws -> FileProviderRemoteItem {
-        try FileProviderRemoteItem(
+    private func item(
+        path: String,
+        size: UInt64 = 1,
+        type: RemuxSFTPFileType = .regular
+    ) throws -> FileProviderRemoteItem {
+        let permissions: UInt32
+        switch type {
+        case .regular:
+            permissions = 0o100644
+        case .directory:
+            permissions = 0o040755
+        case .symbolicLink:
+            permissions = 0o120777
+        case .other:
+            permissions = 0
+        }
+        return try FileProviderRemoteItem(
             path: FileProviderRemotePath(relative: path),
             metadata: RemuxSFTPFileMetadata(
                 size: size,
-                permissions: 0o100644,
+                permissions: permissions,
                 modificationDate: Date(timeIntervalSince1970: 1),
-                type: .regular
+                type: type
             )
         )
     }

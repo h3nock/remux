@@ -65,6 +65,11 @@ actor FileProviderSnapshotStore {
         } else {
             directories.append(PersistedDirectory(path: directory, items: items))
         }
+        pruneTrackedSubtrees(
+            from: &directories,
+            previousItems: previousItems,
+            currentItems: items
+        )
         directories.sort { $0.path.relative < $1.path.relative }
 
         let latest = PersistedGeneration(generation: nextGeneration, directories: directories)
@@ -271,6 +276,30 @@ actor FileProviderSnapshotStore {
     private func validateUniquePaths(in items: [FileProviderRemoteItem]) throws {
         guard Set(items.map(\.path)).count == items.count else {
             throw FileProviderSnapshotStoreError.duplicatePath
+        }
+    }
+
+    private func pruneTrackedSubtrees(
+        from directories: inout [PersistedDirectory],
+        previousItems: [FileProviderRemoteItem],
+        currentItems: [FileProviderRemoteItem]
+    ) {
+        let currentDirectoryPaths = Set(
+            currentItems
+                .filter { $0.type == .directory }
+                .map(\.path)
+        )
+        let removedDirectoryPaths = previousItems.compactMap { item in
+            item.type == .directory && !currentDirectoryPaths.contains(item.path)
+                ? item.path
+                : nil
+        }
+
+        directories.removeAll { directory in
+            removedDirectoryPaths.contains { removedPath in
+                directory.path == removedPath
+                    || directory.path.relative.hasPrefix(removedPath.relative + "/")
+            }
         }
     }
 
