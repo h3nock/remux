@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>RemuxApplicationKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)dev.remux.app</string>
 	<key>RemuxSharedKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)dev.remux.shared</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

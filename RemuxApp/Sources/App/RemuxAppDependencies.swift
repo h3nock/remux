@@ -122,12 +122,11 @@ struct RemuxAppDependencies: Sendable {
         let legacyRoot = try ApplicationStorage.remuxRoot()
         let sharedRoot = try ApplicationStorage.sharedRemuxRoot()
         let legacyProfiles = FileBackedConnectionProfileRepository(rootURL: legacyRoot)
-        let legacyCredentials = KeychainSSHCredentialStore()
+        let credentialStores = try fileProviderCredentialStores()
+        let legacyCredentials = credentialStores.application
         let legacyTrustedHosts = TrustedHostStore(rootURL: legacyRoot)
         let sharedProfiles = FileBackedConnectionProfileRepository(rootURL: sharedRoot)
-        let sharedCredentials = KeychainSSHCredentialStore(
-            accessGroup: try FileProviderSharedConfiguration.keychainAccessGroup()
-        )
+        let sharedCredentials = credentialStores.shared
         let sharedTrustedHosts = TrustedHostStore(rootURL: sharedRoot)
         let migrator = FileProviderSharedStorageMigrator(
             legacyProfiles: legacyProfiles,
@@ -155,6 +154,29 @@ struct RemuxAppDependencies: Sendable {
             trustedHostStore: sharedTrustedHosts,
             fileProviderStorageMigrator: migrator,
             fileProviderDomainReconciler: reconciler
+        )
+    }
+
+    static func fileProviderCredentialStores(
+        infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:],
+        service: String = KeychainSSHCredentialStore.defaultService
+    ) throws -> (
+        application: KeychainSSHCredentialStore,
+        shared: KeychainSSHCredentialStore
+    ) {
+        (
+            application: KeychainSSHCredentialStore(
+                service: service,
+                accessGroup: try FileProviderSharedConfiguration.applicationKeychainAccessGroup(
+                    infoDictionary: infoDictionary
+                )
+            ),
+            shared: KeychainSSHCredentialStore(
+                service: service,
+                accessGroup: try FileProviderSharedConfiguration.keychainAccessGroup(
+                    infoDictionary: infoDictionary
+                )
+            )
         )
     }
 

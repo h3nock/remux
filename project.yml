@@ -59,6 +59,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        RemuxApplicationKeychainAccessGroup: $(AppIdentifierPrefix)dev.remux.app
         RemuxSharedKeychainAccessGroup: $(AppIdentifierPrefix)dev.remux.shared
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
