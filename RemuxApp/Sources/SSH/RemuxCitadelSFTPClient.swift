@@ -483,8 +483,17 @@ struct RemuxCitadelSFTPClient: RemuxSFTPFileProviderClient, RemuxSFTPReadOnlyCli
     }
 
     private func normalizedWriteError(_ error: Error) -> Error {
-        guard case .errorStatus(let status) = error as? SFTPError,
-              let normalizedError = Self.normalizedWriteError(for: status.errorCode)
+        let statusCode: SFTPStatusCode?
+        if let status = error as? SFTPMessage.Status {
+            statusCode = status.errorCode
+        } else if case .errorStatus(let status) = error as? SFTPError {
+            statusCode = status.errorCode
+        } else {
+            statusCode = nil
+        }
+
+        guard let statusCode,
+              let normalizedError = Self.normalizedWriteError(for: statusCode)
         else {
             return error
         }

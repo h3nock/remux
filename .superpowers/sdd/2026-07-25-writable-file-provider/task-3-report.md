@@ -118,3 +118,43 @@ GREEN/final verification (same command): `Executed 21 tests, with 0 failures`;
 `** TEST SUCCEEDED **`.
 
 `git diff --check` also completed successfully.
+
+---
+
+## Fix round 2: direct Citadel status normalization
+
+### Root cause and correction
+
+The pinned Citadel inbound handler can fail request promises directly with
+`SFTPMessage.Status`; it does not always wrap non-OK statuses in
+`SFTPError.errorStatus`. The write normalizer now accepts both forms and feeds
+their status codes through the existing `permissionDenied` /
+`unsupportedMutation` mapping. Read normalization remains unchanged.
+
+### Commands and output
+
+```sh
+xcodebuild test -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  -only-testing:RemuxTests/RemuxSFTPReadOnlyClientTests \
+  -only-testing:RemuxTests/FileProviderErrorMapperTests
+```
+
+Result: pending final run for this round. Citadel's status initializer remains
+internal, so no unsafe direct-status fixture was added; the public status-code
+helper test and the source-level dual-boundary implementation are the safe
+available seam.
+
+Final run:
+
+```sh
+xcodebuild test -quiet -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  -only-testing:RemuxTests/RemuxSFTPReadOnlyClientTests \
+  -only-testing:RemuxTests/FileProviderErrorMapperTests
+xcrun xcresulttool get test-results summary --path \
+  ~/Library/Developer/Xcode/DerivedData/Remux-baapfdiwnnvmtnfolpbdblblyvtw/Logs/Test/Test-Remux-2026.07.25_15-36-49--0700.xcresult
+```
+
+Output summary: `result: Passed`, `passedTests: 21`, `failedTests: 0`,
+`totalTestCount: 21`. `git diff --check` also passes.
