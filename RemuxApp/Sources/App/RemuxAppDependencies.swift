@@ -8,12 +8,22 @@ private enum RemuxConnectionTimeouts {
     static let sftpOperation: TimeAmount = .seconds(15)
 }
 
+struct NoOpFileProviderSharedStorageMigrator: FileProviderSharedStorageMigrating {
+    func migrateIfNeeded() async throws {}
+}
+
+struct NoOpFileProviderDomainReconciler: FileProviderDomainReconciling {
+    func reconcile() async throws {}
+}
+
 struct RemuxAppDependencies: Sendable {
     let profileRepository: any ConnectionProfileRepository
     let settingsRepository: any TerminalSettingsRepository
     let shortcutRepository: any ShortcutRepository
     let credentialStore: any SSHCredentialStore
     let trustedHostStore: TrustedHostStore
+    let fileProviderStorageMigrator: any FileProviderSharedStorageMigrating
+    let fileProviderDomainReconciler: any FileProviderDomainReconciling
     private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
         _ target: TmuxConnectionTarget,
@@ -41,6 +51,8 @@ struct RemuxAppDependencies: Sendable {
         shortcutRepository: any ShortcutRepository,
         credentialStore: any SSHCredentialStore,
         trustedHostStore: TrustedHostStore,
+        fileProviderStorageMigrator: any FileProviderSharedStorageMigrating = NoOpFileProviderSharedStorageMigrator(),
+        fileProviderDomainReconciler: any FileProviderDomainReconciling = NoOpFileProviderDomainReconciler(),
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
@@ -67,6 +79,8 @@ struct RemuxAppDependencies: Sendable {
         self.shortcutRepository = shortcutRepository
         self.credentialStore = credentialStore
         self.trustedHostStore = trustedHostStore
+        self.fileProviderStorageMigrator = fileProviderStorageMigrator
+        self.fileProviderDomainReconciler = fileProviderDomainReconciler
         self.sshRootService = sshRootService
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
