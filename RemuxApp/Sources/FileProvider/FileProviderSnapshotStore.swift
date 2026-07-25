@@ -79,6 +79,14 @@ actor FileProviderSnapshotStore {
         try loadState().generations.last?.items(for: directory) ?? []
     }
 
+    func currentAnchor() throws -> NSFileProviderSyncAnchor? {
+        let state = try loadState()
+        guard let latest = state.generations.last else {
+            return nil
+        }
+        return makeAnchor(namespace: state.namespace, generation: latest.generation)
+    }
+
     func delta(
         directory: FileProviderRemotePath,
         from anchor: NSFileProviderSyncAnchor
