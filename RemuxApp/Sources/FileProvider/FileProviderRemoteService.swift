@@ -72,7 +72,8 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
                     guard let canonicalTarget = try? await client.realPath(atPath: canonicalEntry),
                           let relativeTarget = try? safeLinkResolver.resolve(
                               canonicalTarget,
-                              home: canonicalHome
+                              home: canonicalHome,
+                              for: path
                           )
                     else {
                         continue
@@ -121,7 +122,8 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
                     let canonicalTarget = try await client.realPath(atPath: entry)
                     let relativeTarget = try safeLinkResolver.resolve(
                         canonicalTarget,
-                        home: canonicalHome
+                        home: canonicalHome,
+                        for: path
                     )
                     return try FileProviderRemoteItem(
                         path: path,
@@ -155,7 +157,7 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
                 throw RemuxSFTPClientError.noSuchFile(path.relative)
             }
             let canonicalEntry = try await client.realPath(atPath: entry)
-            _ = try safeLinkResolver.resolve(
+            try safeLinkResolver.ensureContained(
                 canonicalEntry,
                 home: canonicalHome
             )
@@ -209,7 +211,7 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
         let canonicalDirectory = try await client.realPath(
             atPath: requestedDirectory
         )
-        _ = try safeLinkResolver.resolve(
+        try safeLinkResolver.ensureContained(
             canonicalDirectory,
             home: canonicalHome
         )

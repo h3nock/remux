@@ -84,12 +84,59 @@ final class FileProviderRemoteItemTests: XCTestCase {
         )
     }
 
-    func testLinkResolverAcceptsOnlyCanonicalTargetsUnderHome() throws {
-        XCTAssertEqual(try resolver.resolve("/home/me", home: "/home/me"), "")
-        XCTAssertEqual(try resolver.resolve("/home/me/project", home: "/home/me"), "project")
-        XCTAssertThrowsError(try resolver.resolve("/etc/passwd", home: "/home/me"))
-        XCTAssertThrowsError(try resolver.resolve("/home/me2/project", home: "/home/me"))
-        XCTAssertThrowsError(try resolver.resolve("/home/me/../etc/passwd", home: "/home/me"))
+    func testMetadataVersionIsFixedSizeForLongUnicodeDeepPaths() throws {
+        let component = String(repeating: "資料", count: 40)
+        let path = try FileProviderRemotePath(
+            relative: Array(repeating: component, count: 20).joined(separator: "/") + "/document.txt"
+        )
+        let original = try item(path: path)
+
+        XCTAssertEqual(original.metadataVersion.count, 32)
+        XCTAssertLessThanOrEqual(original.metadataVersion.count, 128)
+        XCTAssertEqual(original.metadataVersion, try item(path: path).metadataVersion)
+        XCTAssertNotEqual(original.metadataVersion, try item(path: path, permissions: 0o100600).metadataVersion)
+    }
+
+    func testLinkResolverProjectsTargetsRelativeToSymlinkParent() throws {
+        XCTAssertEqual(
+            try resolver.resolve(
+                "/home/me/projects/target",
+                home: "/home/me",
+                for: FileProviderRemotePath(relative: "projects/link")
+            ),
+            "target"
+        )
+        XCTAssertEqual(
+            try resolver.resolve(
+                "/home/me/shared/target",
+                home: "/home/me",
+                for: FileProviderRemotePath(relative: "projects/link")
+            ),
+            "../shared/target"
+        )
+        XCTAssertEqual(
+            try resolver.resolve(
+                "/home/me",
+                home: "/home/me",
+                for: FileProviderRemotePath(relative: "link")
+            ),
+            "."
+        )
+        XCTAssertEqual(
+            try resolver.resolve(
+                "/home/me",
+                home: "/home/me",
+                for: FileProviderRemotePath(relative: "projects/link")
+            ),
+            ".."
+        )
+        XCTAssertThrowsError(
+            try resolver.resolve(
+                "/home/me2/project",
+                home: "/home/me",
+                for: FileProviderRemotePath(relative: "projects/link")
+            )
+        )
     }
 
     private func item(

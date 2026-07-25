@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct FileProviderRemoteItem: Equatable, Codable, Sendable {
@@ -23,7 +24,7 @@ struct FileProviderRemoteItem: Equatable, Codable, Sendable {
         data.appendString(path.relative)
         data.appendString(name)
         data.appendOptional(permissions)
-        return data
+        return Data(SHA256.hash(data: data))
     }
 
     init(
@@ -38,9 +39,7 @@ struct FileProviderRemoteItem: Equatable, Codable, Sendable {
         self.size = metadata.size
         self.permissions = metadata.permissions
         self.modificationDate = metadata.modificationDate
-        self.symlinkTargetRelativePath = try symlinkTargetRelativePath.map {
-            try FileProviderRemotePath(relative: $0).relative
-        }
+        self.symlinkTargetRelativePath = symlinkTargetRelativePath
     }
 
     init(from decoder: any Decoder) throws {
@@ -68,19 +67,54 @@ struct FileProviderRemoteItem: Equatable, Codable, Sendable {
 }
 
 struct FileProviderSafeLinkResolver: Sendable {
-    func resolve(_ canonicalTarget: String, home canonicalHome: String) throws -> String {
+    func resolve(
+        _ canonicalTarget: String,
+        home canonicalHome: String,
+        for symlinkPath: FileProviderRemotePath
+    ) throws -> String {
+        let targetComponents = try containedTargetComponents(
+            canonicalTarget,
+            home: canonicalHome
+        )
+        var parentComponents = symlinkPath.relative.split(separator: "/").map(String.init)
+        if !parentComponents.isEmpty {
+            parentComponents.removeLast()
+        }
+
+        let sharedComponentCount = zip(parentComponents, targetComponents)
+            .prefix { pair in pair.0 == pair.1 }
+            .count
+        let upwardComponents = Array(
+            repeating: "..",
+            count: parentComponents.count - sharedComponentCount
+        )
+        let downwardComponents = Array(targetComponents.dropFirst(sharedComponentCount))
+        let projectedComponents = upwardComponents + downwardComponents
+        return projectedComponents.isEmpty ? "." : projectedComponents.joined(separator: "/")
+    }
+
+    func ensureContained(_ canonicalTarget: String, home canonicalHome: String) throws {
+        _ = try containedTargetComponents(canonicalTarget, home: canonicalHome)
+    }
+
+    private func containedTargetComponents(
+        _ canonicalTarget: String,
+        home canonicalHome: String
+    ) throws -> [String] {
         try FileProviderPathValidation.validateCanonicalAbsolute(canonicalTarget)
         try FileProviderPathValidation.validateCanonicalAbsolute(canonicalHome)
 
         if canonicalHome == "/" {
-            return String(canonicalTarget.dropFirst())
+            return canonicalTarget.split(separator: "/").map(String.init)
         }
 
         guard canonicalTarget == canonicalHome || canonicalTarget.hasPrefix(canonicalHome + "/") else {
             throw FileProviderRemotePathError.unsafeLinkTarget
         }
-        guard canonicalTarget != canonicalHome else { return "" }
-        return String(canonicalTarget.dropFirst(canonicalHome.count + 1))
+        guard canonicalTarget != canonicalHome else { return [] }
+        return canonicalTarget.dropFirst(canonicalHome.count + 1)
+            .split(separator: "/")
+            .map(String.init)
     }
 }
 
