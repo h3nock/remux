@@ -67,3 +67,54 @@ None for the scoped automated work. No live SFTP host session was requested or
 run. Citadel keeps `SFTPMessage.Status` construction internal, so the focused
 unit test verifies the extracted public `SFTPStatusCode` mapping while the
 production boundary matches Citadel's `SFTPError.errorStatus` wrapper.
+
+---
+
+## Fix round 1: collision and mapper coverage
+
+### Root cause and correction
+
+The shared Citadel write seam hard-coded `.write`, `.create`, and `.truncate`,
+which silently truncated an existing remote path before the File Provider could
+report a collision. The seam now accepts explicit `SFTPOpenFileFlags`, and the
+single shared upload implementation requests `.write`, `.create`, and
+`.forceCreate` (without `.truncate`). A remote destination collision therefore
+fails before any upload write.
+
+The terminal attachment transfer remains on the same upload protocol and
+implementation. Its temporary remote path includes the job's workspace UUID
+and transfer UUID, so normal terminal uploads retain unique temporary paths.
+
+### Added coverage
+
+- A strict-upload collision test configures an existing remote path and proves
+  the exclusive-create request fails without writing bytes.
+- Existing exact-operation and cancellation tests now assert the explicit
+  exclusive-create flags.
+- Mapper tests prove `permissionDenied` becomes `NSFileWriteNoPermissionError`
+  and `unsupportedMutation` remains sanitized.
+
+Citadel's `SFTPMessage.Status` initializer is internal to the pinned package,
+so a fake connection cannot construct `SFTPError.errorStatus` without unsafe
+test machinery. The existing public `SFTPStatusCode` normalization test covers
+the status mapping; production still performs that mapping only after matching
+Citadel's `SFTPError.errorStatus` boundary.
+
+### Commands and output
+
+RED:
+
+```sh
+xcodebuild test -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  -only-testing:RemuxTests/RemuxSFTPReadOnlyClientTests \
+  -only-testing:RemuxTests/FileProviderErrorMapperTests
+```
+
+Result: expected compilation failure because the test seam required write flags
+that the production connection protocol did not yet expose.
+
+GREEN/final verification (same command): `Executed 21 tests, with 0 failures`;
+`** TEST SUCCEEDED **`.
+
+`git diff --check` also completed successfully.

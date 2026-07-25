@@ -52,7 +52,10 @@ protocol RemuxCitadelSFTPConnection: Sendable {
     ) async throws -> [RemuxCitadelSFTPDirectoryResponse]
     func remuxGetAttributes(atPath path: String) async throws -> RemuxCitadelSFTPAttributes
     func remuxOpenFileForReading(atPath path: String) async throws -> any RemuxCitadelSFTPFile
-    func remuxOpenFileForWriting(atPath path: String) async throws -> any RemuxCitadelSFTPFile
+    func remuxOpenFileForWriting(
+        atPath path: String,
+        flags: SFTPOpenFileFlags
+    ) async throws -> any RemuxCitadelSFTPFile
     func remuxCreateDirectory(atPath path: String) async throws
     func remuxRename(from sourcePath: String, to destinationPath: String) async throws
     func remuxRemove(atPath path: String) async throws
@@ -92,12 +95,13 @@ extension SFTPClient: RemuxCitadelSFTPConnection {
     }
 
     func remuxOpenFileForWriting(
-        atPath path: String
+        atPath path: String,
+        flags: SFTPOpenFileFlags
     ) async throws -> any RemuxCitadelSFTPFile {
         RemuxCitadelSFTPFileBox(
             file: try await openFile(
                 filePath: path,
-                flags: [.write, .create, .truncate]
+                flags: flags
             )
         )
     }
@@ -380,7 +384,8 @@ struct RemuxCitadelSFTPClient: RemuxSFTPFileProviderClient, RemuxSFTPReadOnlyCli
                     )
                 case .write:
                     return try await connection.remuxOpenFileForWriting(
-                        atPath: remotePath
+                        atPath: remotePath,
+                        flags: [.write, .create, .forceCreate]
                     )
                 }
             },

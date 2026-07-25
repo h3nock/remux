@@ -65,6 +65,21 @@ final class FileProviderErrorMapperTests: XCTestCase {
         XCTAssertEqual(FileProviderErrorMapper.writePermission.code, NSFileWriteNoPermissionError)
     }
 
+    func testErrorMapperMapsWritePermissionAndSanitizesUnsupportedMutation() {
+        let permissionDenied = FileProviderErrorMapper.map(
+            RemuxSFTPClientError.permissionDenied
+        )
+        XCTAssertEqual(permissionDenied.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(permissionDenied.code, NSFileWriteNoPermissionError)
+
+        let unsupportedMutation = FileProviderErrorMapper.map(
+            RemuxSFTPClientError.unsupportedMutation
+        )
+        XCTAssertEqual(unsupportedMutation.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(unsupportedMutation.code, NSXPCConnectionReplyInvalid)
+        XCTAssertTrue(unsupportedMutation.userInfo.isEmpty)
+    }
+
     func testErrorMapperMapsChannelSessionFailuresToServerUnreachable() {
         let errors: [ChannelError] = [
             .connectTimeout(.seconds(1)),
