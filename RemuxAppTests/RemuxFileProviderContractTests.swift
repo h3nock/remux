@@ -494,9 +494,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 return fileProviderTestRefresh(items: secondItems)
             }
         }
-        for _ in 0..<20 {
-            await Task.yield()
-        }
+        await coordinator.waitUntilRefreshIsCoalesced(directory: directory)
 
         await gate.release()
 
@@ -532,9 +530,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 return fileProviderTestRefresh(items: secondItems)
             }
         }
-        for _ in 0..<20 {
-            await Task.yield()
-        }
+        await coordinator.waitUntilRefreshIsQueued(directory: secondDirectory)
 
         await gate.release()
 
@@ -593,14 +589,8 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 return fileProviderTestRefresh(items: [])
             }
         }
-        for _ in 0..<20 {
-            await Task.yield()
-        }
-
+        await coordinator.waitUntilRefreshIsCoalesced(directory: directory)
         second.cancel()
-        for _ in 0..<20 {
-            await Task.yield()
-        }
         let networkWasCancelled = await gate.wasCancelled()
         await gate.release()
 
@@ -638,9 +628,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 throw error
             }
         }
-        for _ in 0..<20 {
-            await Task.yield()
-        }
+        await coordinator.waitUntilRefreshIsCoalesced(directory: directory)
 
         second.cancel()
 
@@ -686,9 +674,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 throw error
             }
         }
-        for _ in 0..<20 {
-            await Task.yield()
-        }
+        await coordinator.waitUntilRefreshIsQueued(directory: secondDirectory)
 
         second.cancel()
 

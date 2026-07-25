@@ -167,6 +167,42 @@ final class FileProviderDomainOperationCoordinatorTests: XCTestCase {
         operation.cancel()
         await XCTAssertThrowsCancellationAsync { try await operation.value }
     }
+
+    func testRefreshQueuedAfterCancelledActiveRefreshRunsIndependently() async throws {
+        let coordinator = FileProviderDomainOperationCoordinator()
+        let events = FileProviderTestEventRecorder()
+        let firstGate = FileProviderBlockingGate()
+        let secondGate = FileProviderBlockingGate()
+
+        let first = Task {
+            try await coordinator.performRefresh(directory: .root) {
+                await events.record("first-start")
+                await firstGate.wait()
+                try Task.checkCancellation()
+                return fileProviderTestRefresh()
+            }
+        }
+        await firstGate.waitUntilEntered()
+
+        first.cancel()
+        await XCTAssertThrowsCancellationAsync { try await first.value }
+
+        let second = Task {
+            try await coordinator.performRefresh(directory: .root) {
+                await events.record("second-start")
+                await secondGate.wait()
+                return fileProviderTestRefresh()
+            }
+        }
+        await coordinator.waitUntilRefreshIsQueued(directory: .root)
+
+        await firstGate.release()
+        await secondGate.waitUntilEntered()
+        await secondGate.release()
+        _ = try await second.value
+        let completedEvents = await events.values()
+        XCTAssertEqual(completedEvents, ["first-start", "second-start"])
+    }
 }
 
 private func fileProviderTestRefresh() -> FileProviderPollingRefresh {

@@ -17,6 +17,7 @@ actor FileProviderDomainOperationCoordinator {
         let id: UUID
         let kind: OperationKind
         let task: Task<Void, Never>
+        var isCancelling: Bool
         var refreshWaiters: [
             UUID: CheckedContinuation<FileProviderPollingRefresh, Error>
         ]
@@ -55,6 +56,14 @@ actor FileProviderDomainOperationCoordinator {
     private var active: ActiveOperation?
     private var pending: [PendingOperation] = []
     private var cancelledRequestIDs: Set<UUID> = []
+#if DEBUG
+    private var queuedRefreshWaiters: [
+        FileProviderRemotePath: [CheckedContinuation<Void, Never>]
+    ] = [:]
+    private var coalescedRefreshWaiters: [
+        FileProviderRemotePath: [CheckedContinuation<Void, Never>]
+    ] = [:]
+#endif
 
     func performRefresh(
         directory: FileProviderRemotePath,
@@ -65,7 +74,7 @@ actor FileProviderDomainOperationCoordinator {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 Task {
-                    await submitRefresh(
+                    submitRefresh(
                         id: id,
                         directory: directory,
                         operation: operation,
@@ -88,7 +97,7 @@ actor FileProviderDomainOperationCoordinator {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 Task {
-                    await submitMutation(
+                    submitMutation(
                         id: id,
                         operation: operation,
                         continuation: continuation
@@ -115,8 +124,13 @@ actor FileProviderDomainOperationCoordinator {
 
         if case .refresh(let activeDirectory)? = active?.kind,
            activeDirectory == directory,
+            active?.isCancelling == false,
+           active?.refreshWaiters.isEmpty == false,
            !pending.contains(where: { $0.kind == .mutation }) {
             active?.refreshWaiters[id] = continuation
+#if DEBUG
+            notifyCoalescedRefreshWaiters(for: directory)
+#endif
             return
         }
 
@@ -130,6 +144,9 @@ actor FileProviderDomainOperationCoordinator {
             start(request)
         } else {
             pending.append(request)
+#if DEBUG
+            notifyQueuedRefreshWaiters(for: directory)
+#endif
         }
     }
 
@@ -170,6 +187,8 @@ actor FileProviderDomainOperationCoordinator {
             self.active = active
             continuation.resume(throwing: CancellationError())
             if active.refreshWaiters.isEmpty {
+                active.isCancelling = true
+                self.active = active
                 active.task.cancel()
             }
             return
@@ -207,15 +226,16 @@ actor FileProviderDomainOperationCoordinator {
             let task = Task { [self] in
                 do {
                     let refresh = try await operation()
-                    await completeRefresh(id: id, result: .success(refresh))
+                    completeRefresh(id: id, result: .success(refresh))
                 } catch {
-                    await completeRefresh(id: id, result: .failure(error))
+                    completeRefresh(id: id, result: .failure(error))
                 }
             }
             active = ActiveOperation(
                 id: id,
                 kind: .refresh(directory),
                 task: task,
+                isCancelling: false,
                 refreshWaiters: [id: continuation]
             )
         case .mutation(let id, let operation, _):
@@ -226,6 +246,7 @@ actor FileProviderDomainOperationCoordinator {
                 id: id,
                 kind: .mutation,
                 task: task,
+                isCancelling: false,
                 refreshWaiters: [:]
             )
         }
@@ -251,4 +272,40 @@ actor FileProviderDomainOperationCoordinator {
         guard !pending.isEmpty else { return }
         start(pending.removeFirst())
     }
+
+#if DEBUG
+    func waitUntilRefreshIsQueued(directory: FileProviderRemotePath) async {
+        guard !pending.contains(where: {
+            if case .refresh(_, let pendingDirectory, _, _) = $0 {
+                return pendingDirectory == directory
+            }
+            return false
+        }) else {
+            return
+        }
+        await withCheckedContinuation {
+            queuedRefreshWaiters[directory, default: []].append($0)
+        }
+    }
+
+    func waitUntilRefreshIsCoalesced(directory: FileProviderRemotePath) async {
+        guard case .refresh(let activeDirectory)? = active?.kind,
+              activeDirectory == directory,
+              active?.refreshWaiters.count ?? 0 > 1
+        else {
+            await withCheckedContinuation {
+                coalescedRefreshWaiters[directory, default: []].append($0)
+            }
+            return
+        }
+    }
+
+    private func notifyQueuedRefreshWaiters(for directory: FileProviderRemotePath) {
+        queuedRefreshWaiters.removeValue(forKey: directory)?.forEach { $0.resume() }
+    }
+
+    private func notifyCoalescedRefreshWaiters(for directory: FileProviderRemotePath) {
+        coalescedRefreshWaiters.removeValue(forKey: directory)?.forEach { $0.resume() }
+    }
+#endif
 }
