@@ -1350,6 +1350,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
 private actor FileProviderEmptyFetchRemoteService: FileProviderRemoteServicing {
     private let returnedItem: FileProviderRemoteItem
+    private var mutationAccessCallCount = 0
 
     init(item: FileProviderRemoteItem) {
         self.returnedItem = item
@@ -1380,11 +1381,19 @@ private actor FileProviderEmptyFetchRemoteService: FileProviderRemoteServicing {
 
     func invalidate() {
     }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
 }
 
 private actor FileProviderProgressRemoteService: FileProviderRemoteServicing {
     private let returnedItem: FileProviderRemoteItem
     private let partialProgressGate = FileProviderTestRefreshGate()
+    private var mutationAccessCallCount = 0
 
     init(item: FileProviderRemoteItem) {
         self.returnedItem = item
@@ -1429,6 +1438,13 @@ private actor FileProviderProgressRemoteService: FileProviderRemoteServicing {
     }
 
     func invalidate() {
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
     }
 }
 
@@ -1532,6 +1548,7 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
     private let returnedItem: FileProviderRemoteItem
     private var recordedItemPaths: [FileProviderRemotePath] = []
     private var recordedFetchURLs: [URL] = []
+    private var mutationAccessCallCount = 0
     private var invalidationCount = 0
     private var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -1583,6 +1600,13 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
         invalidationWaiters.forEach { $0.resume() }
     }
 
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
+
     func invalidationCallCount() -> Int {
         invalidationCount
     }
@@ -1601,6 +1625,7 @@ private actor FileProviderDelayedFetchRemoteService: FileProviderRemoteServicing
     private var creationWaiters: [CheckedContinuation<Void, Never>] = []
     private var finishWaiters: [CheckedContinuation<Void, Never>] = []
     private var shouldFinish = false
+    private var mutationAccessCallCount = 0
 
     init(item: FileProviderRemoteItem) {
         self.returnedItem = item
@@ -1652,6 +1677,13 @@ private actor FileProviderDelayedFetchRemoteService: FileProviderRemoteServicing
 
     func invalidate() {
     }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
 }
 
 private final class FileProviderTestEnumeratorLifecycle:
@@ -1689,6 +1721,7 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     private let listings: [[FileProviderRemoteItem]]
     private let firstRefreshGate: FileProviderTestRefreshGate?
     private var nextListingIndex = 0
+    private var mutationAccessCallCount = 0
 
     init(
         listings: [[FileProviderRemoteItem]],
@@ -1720,6 +1753,13 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     }
 
     func invalidate() {
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
     }
 
     func listCallCount() -> Int {
@@ -1965,7 +2005,7 @@ private actor FileProviderFailingOnceSignaler:
     }
 }
 
-private actor FileProviderSequencedSFTPClient: RemuxSFTPReadOnlyClient {
+private actor FileProviderSequencedSFTPClient: RemuxSFTPFileProviderClient {
     private let home: String
     private let listings: [[RemuxSFTPDirectoryEntry]]
     private var listingIndex = 0
@@ -2007,6 +2047,30 @@ private actor FileProviderSequencedSFTPClient: RemuxSFTPReadOnlyClient {
         atPath path: String,
         _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
     ) async throws -> ReturnValue {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func createDirectory(atPath path: String) async throws {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func uploadFile(
+        from localURL: URL,
+        to remotePath: String,
+        progress: @escaping RemuxSFTPFileUploadProgressHandler
+    ) async throws {
+        throw RemuxSFTPClientError.noSuchFile(remotePath)
+    }
+
+    func renameItem(from sourcePath: String, to destinationPath: String) async throws {
+        throw RemuxSFTPClientError.noSuchFile(sourcePath)
+    }
+
+    func removeFile(atPath path: String) async throws {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func removeEmptyDirectory(atPath path: String) async throws {
         throw RemuxSFTPClientError.noSuchFile(path)
     }
 }
