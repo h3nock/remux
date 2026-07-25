@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import FileProvider
 import NIOCore
 import XCTest
@@ -59,6 +60,20 @@ final class FileProviderErrorMapperTests: XCTestCase {
             let mapped = FileProviderErrorMapper.map(error)
             XCTAssertEqual(mapped.domain, NSFileProviderErrorDomain)
             XCTAssertEqual(mapped.code, NSFileProviderError.serverUnreachable.rawValue)
+        }
+    }
+
+    func testErrorMapperMapsConfiguredCitadelAuthenticationFailuresToNotAuthenticated() {
+        let errors: [SSHClientError] = [
+            .allAuthenticationOptionsFailed,
+            .unsupportedPasswordAuthentication,
+            .unsupportedPrivateKeyAuthentication,
+        ]
+
+        for error in errors {
+            let mapped = FileProviderErrorMapper.map(error)
+            XCTAssertEqual(mapped.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(mapped.code, NSFileProviderError.notAuthenticated.rawValue)
         }
     }
 

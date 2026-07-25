@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import FileProvider
 import Foundation
 import NIOCore
@@ -28,6 +29,17 @@ enum FileProviderErrorMapper {
 
         if error is SSHAuthResolverError || error is TrustedHostStoreError {
             return fileProviderError(.notAuthenticated)
+        }
+
+        if let sshClientError = error as? SSHClientError {
+            switch sshClientError {
+            case .allAuthenticationOptionsFailed,
+                 .unsupportedPasswordAuthentication,
+                 .unsupportedPrivateKeyAuthentication:
+                return fileProviderError(.notAuthenticated)
+            case .unsupportedHostBasedAuthentication, .channelCreationFailed:
+                break
+            }
         }
 
         if let snapshotError = error as? FileProviderSnapshotStoreError {
