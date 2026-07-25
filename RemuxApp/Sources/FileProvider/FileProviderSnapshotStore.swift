@@ -43,7 +43,9 @@ actor FileProviderSnapshotStore {
         directory: FileProviderRemotePath,
         items: [FileProviderRemoteItem]
     ) throws -> (anchor: NSFileProviderSyncAnchor, delta: FileProviderSnapshotDelta) {
+        try Task.checkCancellation()
         var state = try loadState()
+        try Task.checkCancellation()
         try validateUniquePaths(in: items)
         let items = items.sorted { $0.path.relative < $1.path.relative }
         let previousItems = state.generations.last?.items(for: directory) ?? []
@@ -67,6 +69,7 @@ actor FileProviderSnapshotStore {
         let latest = PersistedGeneration(generation: nextGeneration, directories: directories)
         state.generations.append(latest)
         state.generations = Array(state.generations.suffix(retainedGenerationCount))
+        try Task.checkCancellation()
         try save(state)
 
         return (

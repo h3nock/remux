@@ -41,6 +41,7 @@ actor FileProviderEnumeratorCore {
 
     func enumerateItems() async throws -> FileProviderEnumerationPage {
         let refresh = try await refresh()
+        try Task.checkCancellation()
         return FileProviderEnumerationPage(
             items: refresh.items,
             nextPage: nil,
@@ -66,6 +67,7 @@ actor FileProviderEnumeratorCore {
 
     func refreshAndSignalChanges() async throws {
         let refresh = try await refresh()
+        try Task.checkCancellation()
         guard !refresh.delta.updated.isEmpty || !refresh.delta.deleted.isEmpty else {
             return
         }
@@ -73,16 +75,20 @@ actor FileProviderEnumeratorCore {
         let directoryIdentifier = FileProviderItemIdentifierCodec()
             .identifier(for: directory)
         await signaler.signalEnumerator(for: directoryIdentifier)
+        try Task.checkCancellation()
         await signaler.signalEnumerator(for: .workingSet)
+        try Task.checkCancellation()
     }
 
     private func refresh() async throws -> FileProviderPollingRefresh {
         try await coordinator.refresh(directory: directory) {
             let items = try await self.service.list(directory: self.directory)
+            try Task.checkCancellation()
             let record = try await self.snapshots.record(
                 directory: self.directory,
                 items: items
             )
+            try Task.checkCancellation()
             return FileProviderPollingRefresh(
                 items: items,
                 anchor: record.anchor,

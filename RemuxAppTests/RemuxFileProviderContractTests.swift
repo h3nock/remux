@@ -665,6 +665,61 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(signals.isEmpty)
     }
 
+    func testCancelledSnapshotRecordDoesNotPersistAfterStorageBoundary() async throws {
+        let snapshotRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let blockingGate = FileProviderBlockingGate()
+        let snapshots = FileProviderSnapshotStore(
+            rootURL: snapshotRoot,
+            fileManager: FileProviderBlockingFileManager(gate: blockingGate)
+        )
+        let item = try fileProviderTestItem(relative: "cancelled.txt", size: 1)
+        let record = Task {
+            try await snapshots.record(directory: .root, items: [item])
+        }
+        await blockingGate.waitUntilEntered()
+
+        record.cancel()
+        blockingGate.release()
+
+        await XCTAssertFileProviderThrowsAsync { try await record.value }
+        let stateURL = snapshotRoot.appendingPathComponent(
+            "snapshot-generations.json"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
+    }
+
+    func testCancellationBetweenChangeSignalsStopsWorkingSetSignal() async throws {
+        let original = try fileProviderTestItem(relative: "item.txt", size: 1)
+        let changed = try fileProviderTestItem(relative: "item.txt", size: 2)
+        let service = FileProviderTestSequencedRemoteService(
+            listings: [[original], [changed]]
+        )
+        let signaler = FileProviderBlockingSignaler()
+        let core = FileProviderEnumeratorCore(
+            directory: .root,
+            service: service,
+            snapshots: FileProviderSnapshotStore(
+                rootURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            ),
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: signaler
+        )
+        _ = try await core.enumerateItems()
+        let refresh = Task {
+            try await core.refreshAndSignalChanges()
+        }
+        await signaler.waitUntilFirstSignal()
+
+        refresh.cancel()
+        await signaler.release()
+
+        await XCTAssertFileProviderThrowsAsync { try await refresh.value }
+        let identifiers = await signaler.signaledIdentifiers()
+        XCTAssertEqual(identifiers, [.rootContainer])
+    }
+
     func testPollingLoopRefreshesImmediatelyWhenEnumeratorOpens() async {
         let refreshes = FileProviderTestRefreshCounter()
         let loop = FileProviderPollingLoop(
@@ -942,12 +997,12 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
 
 private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicing {
     private let listings: [[FileProviderRemoteItem]]
-    private let firstRefreshGate: FileProviderTestRefreshGate
+    private let firstRefreshGate: FileProviderTestRefreshGate?
     private var nextListingIndex = 0
 
     init(
         listings: [[FileProviderRemoteItem]],
-        firstRefreshGate: FileProviderTestRefreshGate
+        firstRefreshGate: FileProviderTestRefreshGate? = nil
     ) {
         self.listings = listings
         self.firstRefreshGate = firstRefreshGate
@@ -960,7 +1015,7 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     func list(directory: FileProviderRemotePath) async -> [FileProviderRemoteItem] {
         let index = min(nextListingIndex, listings.count - 1)
         nextListingIndex += 1
-        if index == 0 {
+        if index == 0, let firstRefreshGate {
             await firstRefreshGate.beginAndWait()
         }
         return listings[index]
@@ -982,11 +1037,72 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     }
 }
 
+private actor FileProviderBlockingSignaler: FileProviderEnumeratorSignaling {
+    private var identifiers: [NSFileProviderItemIdentifier] = []
+    private var firstSignalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isReleased = false
+
+    func signalEnumerator(for identifier: NSFileProviderItemIdentifier) async {
+        identifiers.append(identifier)
+        guard identifiers.count == 1 else { return }
+
+        let firstSignalWaiters = self.firstSignalWaiters
+        self.firstSignalWaiters.removeAll()
+        firstSignalWaiters.forEach { $0.resume() }
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilFirstSignal() async {
+        guard identifiers.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstSignalWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        let releaseWaiters = self.releaseWaiters
+        self.releaseWaiters.removeAll()
+        releaseWaiters.forEach { $0.resume() }
+    }
+
+    func signaledIdentifiers() -> [NSFileProviderItemIdentifier] {
+        identifiers
+    }
+}
+
 private final class FileProviderBlockingGate: @unchecked Sendable {
     private let releaseSemaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var hasEntered = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() {
+        let entryWaiters = lock.withLock {
+            hasEntered = true
+            let entryWaiters = self.entryWaiters
+            self.entryWaiters.removeAll()
+            return entryWaiters
+        }
+        entryWaiters.forEach { $0.resume() }
         releaseSemaphore.wait()
+    }
+
+    func waitUntilEntered() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = lock.withLock {
+                guard !hasEntered else { return true }
+                entryWaiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
     }
 
     func release() {
