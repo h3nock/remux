@@ -154,8 +154,13 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
             guard metadata.type == .regular else {
                 throw RemuxSFTPClientError.noSuchFile(path.relative)
             }
+            let canonicalEntry = try await client.realPath(atPath: entry)
+            _ = try safeLinkResolver.resolve(
+                canonicalEntry,
+                home: canonicalHome
+            )
             try await client.downloadFile(
-                atPath: entry,
+                atPath: canonicalEntry,
                 to: localURL,
                 progress: progress
             )

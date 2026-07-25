@@ -198,6 +198,7 @@ final class FileProviderRemoteServiceTests: XCTestCase {
             realPaths: [
                 ".": .success(home),
                 requestedParent: .success(canonicalParent),
+                canonicalFile: .success(canonicalFile),
             ],
             listings: [
                 requestedParent: [
@@ -228,6 +229,36 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: localURL), Data("safe".utf8))
     }
 
+    func testFetchRejectsFinalComponentSwappedToEscapingSymlinkAfterMetadataCheck() async throws {
+        let home = "/home/reader"
+        let requestedFile = "\(home)/report.txt"
+        let client = FileProviderFinalComponentSwapSFTPClient(
+            home: home,
+            requestedFile: requestedFile,
+            escapedFile: "/outside/secret.txt",
+            metadata: regularMetadata(),
+            escapedData: Data("outside".utf8)
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(
+            client: client
+        )
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: localURL)
+        }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.fetch(
+                path: FileProviderRemotePath(relative: "report.txt"),
+                to: localURL,
+                progress: { _ in }
+            )
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
+    }
+
     func testFetchCancellationCancelsRemoteReadAndRemovesPartialFile() async throws {
         let home = "/home/reader"
         let metadata = RemuxSFTPFileMetadata(
@@ -237,7 +268,10 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         )
         let readState = FileProviderTestReadState()
         let client = FileProviderTestSFTPClient(
-            realPaths: [".": .success(home)],
+            realPaths: [
+                ".": .success(home),
+                "\(home)/large.bin": .success("\(home)/large.bin"),
+            ],
             listings: [
                 home: [RemuxSFTPDirectoryEntry(name: "large.bin", metadata: metadata)],
             ],
@@ -277,6 +311,78 @@ final class FileProviderRemoteServiceTests: XCTestCase {
             size: 4,
             permissions: 0o100644,
             modificationDate: Date(timeIntervalSince1970: 500)
+        )
+    }
+}
+
+private actor FileProviderFinalComponentSwapSFTPClient:
+    RemuxSFTPReadOnlyClient
+{
+    private let home: String
+    private let requestedFile: String
+    private let escapedFile: String
+    private let metadataValue: RemuxSFTPFileMetadata
+    private let escapedData: Data
+    private var didReadMetadata = false
+
+    init(
+        home: String,
+        requestedFile: String,
+        escapedFile: String,
+        metadata: RemuxSFTPFileMetadata,
+        escapedData: Data
+    ) {
+        self.home = home
+        self.requestedFile = requestedFile
+        self.escapedFile = escapedFile
+        self.metadataValue = metadata
+        self.escapedData = escapedData
+    }
+
+    func realPath(atPath path: String) throws -> String {
+        if path == "." {
+            return home
+        }
+        guard path == requestedFile, didReadMetadata else {
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+        return escapedFile
+    }
+
+    func listDirectory(
+        atPath path: String
+    ) throws -> [RemuxSFTPDirectoryEntry] {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func metadata(atPath path: String) throws -> RemuxSFTPFileMetadata {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func linkMetadata(
+        atPath path: String
+    ) throws -> RemuxSFTPFileMetadata {
+        guard path == requestedFile else {
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+        didReadMetadata = true
+        return metadataValue
+    }
+
+    func withFile<ReturnValue: Sendable>(
+        atPath path: String,
+        _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
+    ) async throws -> ReturnValue {
+        guard path == requestedFile, didReadMetadata else {
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+        let escapedData = escapedData
+        return try await operation(
+            RemuxSFTPReadableFile { offset, length in
+                let start = min(Int(offset), escapedData.count)
+                let end = min(start + Int(length), escapedData.count)
+                return escapedData.subdata(in: start..<end)
+            }
         )
     }
 }
@@ -328,6 +434,7 @@ struct FileProviderRemoteServiceFixture {
                 "\(home)/escape-link": .success("/etc/passwd"),
                 "\(home)/broken-link": .failure(.unresolved),
                 "\(home)/cycle-link": .failure(.unresolved),
+                "\(home)/file.txt": .success("\(home)/file.txt"),
             ],
             listings: [
                 home: [
