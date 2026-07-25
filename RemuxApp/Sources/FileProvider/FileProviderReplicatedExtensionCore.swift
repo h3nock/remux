@@ -14,9 +14,9 @@ protocol FileProviderEnumeratorInvalidating: AnyObject, Sendable {
 final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
     private let service: any FileProviderRemoteServicing
     private let rootDisplayName: String
+    private let snapshots: FileProviderSnapshotStore
     private let temporaryDirectoryURL: @Sendable () throws -> URL
     private let requests: FileProviderRequestController
-    private let identifierCodec = FileProviderItemIdentifierCodec()
     private let lifecycleLock = NSLock()
     private var enumerators: [
         ObjectIdentifier: FileProviderWeakEnumerator
@@ -25,11 +25,13 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
 
     init(
         service: any FileProviderRemoteServicing,
+        snapshots: FileProviderSnapshotStore,
         rootDisplayName: String,
         temporaryDirectoryURL: @escaping @Sendable () throws -> URL,
         requests: FileProviderRequestController = FileProviderRequestController()
     ) {
         self.service = service
+        self.snapshots = snapshots
         self.rootDisplayName = rootDisplayName
         self.temporaryDirectoryURL = temporaryDirectoryURL
         self.requests = requests
@@ -44,10 +46,26 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                 FileProviderErrorMapper.map($0, itemIdentifier: identifier)
             },
             operation: {
-                let path = try self.identifierCodec.path(for: identifier)
-                let item = try await self.service.item(at: path)
+                let path = try await self.snapshots.path(for: identifier)
+                let remoteItem = try await self.service.item(at: path)
+                let item: FileProviderIdentifiedItem
+                if identifier == .rootContainer {
+                    item = FileProviderIdentifiedItem(
+                        identity: .root,
+                        parentIdentity: .root,
+                        remoteItem: remoteItem
+                    )
+                } else if let identified = try await self.snapshots.item(for: identifier) {
+                    item = FileProviderIdentifiedItem(
+                        identity: identified.identity,
+                        parentIdentity: identified.parentIdentity,
+                        remoteItem: remoteItem
+                    )
+                } else {
+                    throw FileProviderSnapshotStoreError.itemIdentityNotFound
+                }
                 return FileProviderItemProjection(
-                    remoteItem: item,
+                    item: item,
                     rootDisplayName: self.rootDisplayName
                 )
             },
@@ -64,12 +82,13 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                 FileProviderErrorMapper.map($0, itemIdentifier: identifier)
             },
             progressOperation: { progress in
-                let path = try self.identifierCodec.path(for: identifier)
+                let path = try await self.snapshots.path(for: identifier)
+                let identified = try await self.snapshots.item(for: identifier)
                 let temporaryDirectory = try self.temporaryDirectoryURL()
                 let localURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
                 do {
-                    let item = try await self.service.fetch(
+                    let remoteItem = try await self.service.fetch(
                         path: path,
                         to: localURL,
                         progress: { remoteProgress in
@@ -84,7 +103,11 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                     return FileProviderFetchedContents(
                         localURL: localURL,
                         item: FileProviderItemProjection(
-                            remoteItem: item,
+                            item: try self.identifiedItem(
+                                identifier: identifier,
+                                identified: identified,
+                                remoteItem: remoteItem
+                            ),
                             rootDisplayName: self.rootDisplayName
                         )
                     )
@@ -97,6 +120,28 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                 try? FileManager.default.removeItem(at: fetched.localURL)
             },
             completion: completion
+        )
+    }
+
+    private func identifiedItem(
+        identifier: NSFileProviderItemIdentifier,
+        identified: FileProviderIdentifiedItem?,
+        remoteItem: FileProviderRemoteItem
+    ) throws -> FileProviderIdentifiedItem {
+        if identifier == .rootContainer {
+            return FileProviderIdentifiedItem(
+                identity: .root,
+                parentIdentity: .root,
+                remoteItem: remoteItem
+            )
+        }
+        guard let identified else {
+            throw FileProviderSnapshotStoreError.itemIdentityNotFound
+        }
+        return FileProviderIdentifiedItem(
+            identity: identified.identity,
+            parentIdentity: identified.parentIdentity,
+            remoteItem: remoteItem
         )
     }
 

@@ -150,17 +150,20 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testExtensionCoreItemLookupDecodesIdentifierAndProjectsResult() async throws {
-        let remoteItem = try fileProviderTestItem(relative: "folder/report.txt", size: 42)
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 42)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
         let completions = FileProviderTestCompletionRecorder<FileProviderItemProjection>()
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 FileManager.default.temporaryDirectory
             }
         )
-        let identifier = FileProviderItemIdentifierCodec().identifier(for: remoteItem.path)
+        let identifier = record.items[0].itemIdentifier
 
         _ = core.item(for: identifier) { result in
             Task {
@@ -191,14 +194,17 @@ final class RemuxFileProviderContractTests: XCTestCase {
             at: temporaryDirectory,
             withIntermediateDirectories: true
         )
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 temporaryDirectory
             }
         )
-        let identifier = FileProviderItemIdentifierCodec().identifier(for: remoteItem.path)
+        let identifier = record.items[0].itemIdentifier
 
         _ = core.fetchContents(for: identifier) { result in
             Task {
@@ -236,16 +242,17 @@ final class RemuxFileProviderContractTests: XCTestCase {
         defer {
             try? FileManager.default.removeItem(at: temporaryDirectory)
         }
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 temporaryDirectory
             }
         )
-        let identifier = FileProviderItemIdentifierCodec().identifier(
-            for: remoteItem.path
-        )
+        let identifier = record.items[0].itemIdentifier
 
         let progress = core.fetchContents(for: identifier) { result in
             Task {
@@ -285,16 +292,17 @@ final class RemuxFileProviderContractTests: XCTestCase {
         defer {
             try? FileManager.default.removeItem(at: temporaryDirectory)
         }
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 temporaryDirectory
             }
         )
-        let identifier = FileProviderItemIdentifierCodec().identifier(
-            for: remoteItem.path
-        )
+        let identifier = record.items[0].itemIdentifier
 
         let progress = core.fetchContents(for: identifier) { result in
             Task {
@@ -322,16 +330,17 @@ final class RemuxFileProviderContractTests: XCTestCase {
         defer {
             try? FileManager.default.removeItem(at: temporaryDirectory)
         }
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 temporaryDirectory
             }
         )
-        let identifier = FileProviderItemIdentifierCodec().identifier(
-            for: remoteItem.path
-        )
+        let identifier = record.items[0].itemIdentifier
         let progress = core.fetchContents(for: identifier) { result in
             Task {
                 await completions.record(result)
@@ -358,8 +367,10 @@ final class RemuxFileProviderContractTests: XCTestCase {
     func testExtensionCoreRejectsMutationImmediatelyWithoutRemoteCalls() async throws {
         let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 FileManager.default.temporaryDirectory
@@ -383,8 +394,10 @@ final class RemuxFileProviderContractTests: XCTestCase {
     func testExtensionInvalidationDrainsEnumeratorsBeforeClosingService() async throws {
         let remoteItem = try fileProviderTestItem(relative: "item.txt", size: 1)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
         let core = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 FileManager.default.temporaryDirectory
@@ -490,8 +503,8 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let firstResult = try await first.value
         let secondResult = try await second.value
         let operationCount = await gate.operationCount()
-        XCTAssertEqual(firstResult.items, firstItems)
-        XCTAssertEqual(secondResult.items, firstItems)
+        XCTAssertEqual(firstResult.items.map(\.remoteItem), firstItems)
+        XCTAssertEqual(secondResult.items.map(\.remoteItem), firstItems)
         XCTAssertEqual(operationCount, 1)
     }
 
@@ -528,7 +541,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         _ = try await first.value
         let secondResult = try await second.value
         let operationCount = await gate.operationCount()
-        XCTAssertEqual(secondResult.items, secondItems)
+        XCTAssertEqual(secondResult.items.map(\.remoteItem), secondItems)
         XCTAssertEqual(operationCount, 2)
     }
 
@@ -593,7 +606,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         let firstResult = try await first.value
         await XCTAssertFileProviderThrowsAsync { try await second.value }
-        XCTAssertEqual(firstResult.items, items)
+        XCTAssertEqual(firstResult.items.map(\.remoteItem), items)
         XCTAssertFalse(networkWasCancelled)
     }
 
@@ -640,7 +653,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let firstResult = try await first.value
         await XCTAssertFileProviderThrowsAsync { try await second.value }
         XCTAssertTrue(didFinishBeforeRefresh)
-        XCTAssertEqual(firstResult.items, items)
+        XCTAssertEqual(firstResult.items.map(\.remoteItem), items)
         XCTAssertFalse(networkWasCancelled)
     }
 
@@ -720,7 +733,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         let page = try await core.enumerateItems()
 
-        XCTAssertEqual(page.items.map(\.name), ["now.txt"])
+        XCTAssertEqual(page.items.map(\.remoteItem.name), ["now.txt"])
         XCTAssertNil(page.nextPage)
         XCTAssertNotNil(page.anchor)
         let persisted = try await snapshots.items(directory: .root)
@@ -757,10 +770,10 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         let changes = try await core.enumerateChanges(from: requested.anchor)
 
-        XCTAssertEqual(changes.updated, [updated])
+        XCTAssertEqual(changes.updated.map(\.remoteItem), [updated])
         XCTAssertEqual(
             changes.deleted,
-            [FileProviderItemIdentifierCodec().identifier(for: removed.path)]
+            [requested.items[1].itemIdentifier]
         )
         XCTAssertFalse(changes.moreComing)
         XCTAssertEqual(changes.anchor, latest.anchor)
@@ -820,8 +833,8 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let persisted = try await FileProviderSnapshotStore(rootURL: snapshotRoot)
             .items(directory: .root)
         XCTAssertEqual(callCountAfterCoalescing, 1)
-        XCTAssertEqual(newerPage.items, [newItem])
-        XCTAssertEqual(persisted, [newItem])
+        XCTAssertEqual(newerPage.items.map(\.remoteItem), [newItem])
+        XCTAssertEqual(persisted.map(\.remoteItem), [newItem])
     }
 
     func testWorkingSetAggregatesNestedCreateUpdateDeleteAndSignalsOnlyWorkingSet() async throws {
@@ -850,7 +863,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let snapshotRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let snapshots = FileProviderSnapshotStore(rootURL: snapshotRoot)
-        _ = try await snapshots.record(directory: .root, items: [rootItem])
+        let rootRecord = try await snapshots.record(directory: .root, items: [rootItem])
         let baseline = try await snapshots.record(
             directory: directory,
             items: [original, removed]
@@ -879,12 +892,21 @@ final class RemuxFileProviderContractTests: XCTestCase {
             from: baseline.anchor
         )
 
-        XCTAssertEqual(page.items, [rootItem, created, changed])
-        XCTAssertEqual(changes.updated, [created, changed])
-        XCTAssertEqual(changes.updated.map(\.parent), [directory, directory])
+        XCTAssertEqual(page.items.map(\.remoteItem), [rootItem, created, changed])
+        XCTAssertEqual(changes.updated.map(\.remoteItem), [created, changed])
+        XCTAssertEqual(
+            changes.updated.map(\.parentIdentity),
+            [rootRecord.items[0].identity, rootRecord.items[0].identity]
+        )
         XCTAssertEqual(
             changes.deleted,
-            [FileProviderItemIdentifierCodec().identifier(for: removed.path)]
+            [
+                try XCTUnwrap(
+                    baseline.items.first {
+                        $0.remoteItem.path == removed.path
+                    }
+                ).itemIdentifier,
+            ]
         )
         let signals = await signaler.signaledIdentifiers()
         XCTAssertEqual(signals, [.workingSet])
@@ -1116,7 +1138,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         await blockingSignaler.waitUntilFirstSignal()
 
         let newerPage = try await core.enumerateItems()
-        XCTAssertEqual(newerPage.items, [secondChange])
+        XCTAssertEqual(newerPage.items.map(\.remoteItem), [secondChange])
         await blockingSignaler.release()
         try await firstDelivery.value
 
@@ -1286,18 +1308,28 @@ final class RemuxFileProviderContractTests: XCTestCase {
             )
         )
 
+        let itemIdentity = FileProviderItemIdentity.item(
+            UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        )
+        let parentIdentity = FileProviderItemIdentity.item(
+            UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        )
         let projection = FileProviderItemProjection(
-            remoteItem: remoteItem,
+            item: FileProviderIdentifiedItem(
+                identity: itemIdentity,
+                parentIdentity: parentIdentity,
+                remoteItem: remoteItem
+            ),
             rootDisplayName: "Server"
         )
 
         XCTAssertEqual(
             projection.itemIdentifier,
-            FileProviderItemIdentifierCodec().identifier(for: remoteItem.path)
+            itemIdentity.itemIdentifier
         )
         XCTAssertEqual(
             projection.parentItemIdentifier,
-            FileProviderItemIdentifierCodec().identifier(for: remoteItem.parent)
+            parentIdentity.itemIdentifier
         )
         XCTAssertEqual(projection.filename, "report.txt")
         XCTAssertEqual(projection.contentType, .plainText)
@@ -1813,11 +1845,23 @@ private func fileProviderTestItem(
 private func fileProviderTestRefresh(
     items: [FileProviderRemoteItem]
 ) -> FileProviderPollingRefresh {
-    FileProviderPollingRefresh(
-        items: items,
+    let identifiedItems = items.map {
+        FileProviderIdentifiedItem(
+            identity: .item(UUID()),
+            parentIdentity: .root,
+            remoteItem: $0
+        )
+    }
+    return FileProviderPollingRefresh(
+        items: identifiedItems,
         anchor: NSFileProviderSyncAnchor(rawValue: Data()),
-        delta: FileProviderSnapshotDelta(updated: items, deleted: [])
+        delta: FileProviderSnapshotDelta(updated: identifiedItems, deleted: [])
     )
+}
+
+private func fileProviderTestSnapshotRoot() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
 }
 
 private actor FileProviderTestRefreshGate {

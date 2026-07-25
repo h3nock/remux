@@ -68,6 +68,12 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         try trustedHosts.replaceIdentities([trustedIdentity])
         let core = FileProviderReplicatedExtensionCore(
             service: fixture.service,
+            snapshots: FileProviderSnapshotStore(
+                rootURL: fixture.rootURL.appendingPathComponent(
+                    "snapshots",
+                    isDirectory: true
+                )
+            ),
             rootDisplayName: "Fixture",
             temporaryDirectoryURL: {
                 FileManager.default.temporaryDirectory

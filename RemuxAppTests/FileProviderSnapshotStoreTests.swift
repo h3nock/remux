@@ -29,10 +29,11 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         let changed = try await store.record(directory: .root, items: [c, aChanged])
 
         XCTAssertEqual(first.anchor, unchanged.anchor)
-        XCTAssertEqual(first.delta, FileProviderSnapshotDelta(updated: [a, b], deleted: []))
+        XCTAssertEqual(first.delta.updated.map(\.remoteItem), [a, b])
+        XCTAssertTrue(first.delta.deleted.isEmpty)
         XCTAssertEqual(unchanged.delta, FileProviderSnapshotDelta(updated: [], deleted: []))
-        XCTAssertEqual(changed.delta.updated, [aChanged, c])
-        XCTAssertEqual(changed.delta.deleted, [identifier(for: b)])
+        XCTAssertEqual(changed.delta.updated.map(\.remoteItem), [aChanged, c])
+        XCTAssertEqual(changed.delta.deleted, [first.items[1].itemIdentifier])
         XCTAssertEqual(generation(of: first.anchor), 1)
         XCTAssertEqual(generation(of: changed.anchor), 2)
 
@@ -41,16 +42,120 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(delta.delta, changed.delta)
     }
 
+    func testRecordAllocatesAndPersistsIdentityForPath() async throws {
+        let ids = FileProviderTestIdentitySequence([
+            UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!,
+        ])
+        let store = FileProviderSnapshotStore(
+            rootURL: root,
+            identityGenerator: { ids.next() }
+        )
+        let remote = try item(path: "report.txt")
+
+        let first = try await store.record(directory: .root, items: [remote])
+        let second = try await store.record(directory: .root, items: [remote])
+
+        XCTAssertEqual(first.items, second.items)
+        XCTAssertEqual(
+            first.items.first?.identity,
+            .item(UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!)
+        )
+        let path = try await store.path(for: first.items[0].itemIdentifier)
+        XCTAssertEqual(path, remote.path)
+        XCTAssertEqual(
+            try store.pathSynchronously(for: first.items[0].itemIdentifier),
+            remote.path
+        )
+    }
+
+    func testNestedRecordPersistsOpaqueParentIdentity() async throws {
+        let ids = FileProviderTestIdentitySequence([
+            UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!,
+            UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000002")!,
+        ])
+        let store = FileProviderSnapshotStore(
+            rootURL: root,
+            identityGenerator: { ids.next() }
+        )
+        let directory = try item(path: "reports", type: .directory)
+        let nestedPath = try FileProviderRemotePath(relative: "reports")
+        let child = try item(path: "reports/week.txt")
+
+        let rootRecord = try await store.record(directory: .root, items: [directory])
+        let nestedRecord = try await store.record(
+            directory: nestedPath,
+            items: [child]
+        )
+
+        XCTAssertEqual(nestedRecord.items[0].parentIdentity, rootRecord.items[0].identity)
+        XCTAssertEqual(
+            FileProviderItemProjection(
+                item: nestedRecord.items[0],
+                rootDisplayName: "Fixture"
+            ).parentItemIdentifier,
+            rootRecord.items[0].itemIdentifier
+        )
+    }
+
+    func testRemoteRenameUsesDeleteAndNewIdentity() async throws {
+        let ids = FileProviderTestIdentitySequence([
+            UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!,
+            UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000002")!,
+        ])
+        let store = FileProviderSnapshotStore(
+            rootURL: root,
+            identityGenerator: { ids.next() }
+        )
+        let original = try item(path: "old.txt")
+        let renamed = try item(path: "new.txt")
+        let first = try await store.record(directory: .root, items: [original])
+
+        let second = try await store.record(directory: .root, items: [renamed])
+
+        XCTAssertNotEqual(first.items[0].identity, second.items[0].identity)
+        XCTAssertEqual(second.delta.deleted, [first.items[0].itemIdentifier])
+    }
+
+    func testUnshippedLegacySnapshotFileIsIgnored() async throws {
+        try Data("legacy-path-identity-state".utf8).write(
+            to: root.appendingPathComponent("snapshot-generations.json")
+        )
+        let store = FileProviderSnapshotStore(rootURL: root)
+
+        let result = try await store.record(
+            directory: .root,
+            items: [try item(path: "report.txt")]
+        )
+
+        XCTAssertEqual(result.items.count, 1)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(
+                    "snapshot-generations-v2.json"
+                ).path
+            )
+        )
+    }
+
     func testRecordPersistsMetadataForFreshStoreInstance() async throws {
         let firstStore = FileProviderSnapshotStore(rootURL: root)
+        let documents = try item(path: "documents", type: .directory)
         let document = try item(path: "documents/report.txt", size: 42)
+        let directory = try FileProviderRemotePath(relative: "documents")
 
-        let recorded = try await firstStore.record(directory: .root, items: [document])
+        _ = try await firstStore.record(directory: .root, items: [documents])
+        let recorded = try await firstStore.record(
+            directory: directory,
+            items: [document]
+        )
 
         let reloadedStore = FileProviderSnapshotStore(rootURL: root)
-        let reloadedItems = try await reloadedStore.items(directory: .root)
-        XCTAssertEqual(reloadedItems, [document])
-        let unchanged = try await reloadedStore.record(directory: .root, items: [document])
+        let reloadedItems = try await reloadedStore.items(directory: directory)
+        XCTAssertEqual(reloadedItems.map(\.remoteItem), [document])
+        let unchanged = try await reloadedStore.record(
+            directory: directory,
+            items: [document]
+        )
         XCTAssertEqual(unchanged.anchor, recorded.anchor)
         XCTAssertTrue(
             try FileManager.default.contentsOfDirectory(atPath: root.path)
@@ -141,7 +246,7 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
 
         let delta = try await store.workingSetDelta(from: retained)
         XCTAssertEqual(delta.anchor, latest)
-        XCTAssertEqual(delta.delta.updated, [changed])
+        XCTAssertEqual(delta.delta.updated.map(\.remoteItem), [changed])
         XCTAssertTrue(delta.delta.deleted.isEmpty)
         XCTAssertEqual(generation(of: foreign), generation(of: retained))
         XCTAssertNotEqual(foreign.rawValue, retained.rawValue)
@@ -170,8 +275,8 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         let child = try item(path: "nested/child", type: .directory)
         let leaf = try item(path: "nested/child/leaf.txt")
 
-        _ = try await store.record(directory: .root, items: [nested])
-        _ = try await store.record(directory: nestedPath, items: [child])
+        let rootRecord = try await store.record(directory: .root, items: [nested])
+        let childRecord = try await store.record(directory: nestedPath, items: [child])
         let baseline = try await store.record(directory: childPath, items: [leaf])
 
         let removed = try await store.record(directory: .root, items: [])
@@ -182,17 +287,17 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         XCTAssertTrue(removedDelta.delta.updated.isEmpty)
         XCTAssertEqual(
             removedDelta.delta.deleted,
-            [nested, child, leaf]
-                .map(identifier(for:))
+            [rootRecord.items[0], childRecord.items[0], baseline.items[0]]
+                .map(\.itemIdentifier)
                 .sorted { $0.rawValue < $1.rawValue }
         )
 
         let recreated = try await store.record(directory: .root, items: [nested])
         let recreatedSnapshot = try await store.workingSetSnapshot()
         XCTAssertEqual(recreatedSnapshot.anchor, recreated.anchor)
-        XCTAssertEqual(recreatedSnapshot.items, [nested])
+        XCTAssertEqual(recreatedSnapshot.items.map(\.remoteItem), [nested])
         let recreatedDelta = try await store.workingSetDelta(from: removed.anchor)
-        XCTAssertEqual(recreatedDelta.delta.updated, [nested])
+        XCTAssertEqual(recreatedDelta.delta.updated.map(\.remoteItem), [nested])
         XCTAssertTrue(recreatedDelta.delta.deleted.isEmpty)
     }
 
@@ -205,8 +310,8 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         let oldLeaf = try item(path: "old/child/leaf.txt")
         let renamed = try item(path: "renamed", type: .directory)
 
-        _ = try await store.record(directory: .root, items: [old])
-        _ = try await store.record(directory: oldPath, items: [oldChild])
+        let rootRecord = try await store.record(directory: .root, items: [old])
+        let childRecord = try await store.record(directory: oldPath, items: [oldChild])
         let baseline = try await store.record(directory: oldChildPath, items: [oldLeaf])
 
         let changed = try await store.record(directory: .root, items: [renamed])
@@ -214,15 +319,15 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(generation(of: changed.anchor), generation(of: baseline.anchor) + 1)
         let delta = try await store.workingSetDelta(from: baseline.anchor)
         XCTAssertEqual(delta.anchor, changed.anchor)
-        XCTAssertEqual(delta.delta.updated, [renamed])
+        XCTAssertEqual(delta.delta.updated.map(\.remoteItem), [renamed])
         XCTAssertEqual(
             delta.delta.deleted,
-            [old, oldChild, oldLeaf]
-                .map(identifier(for:))
+            [rootRecord.items[0], childRecord.items[0], baseline.items[0]]
+                .map(\.itemIdentifier)
                 .sorted { $0.rawValue < $1.rawValue }
         )
         let snapshot = try await store.workingSetSnapshot()
-        XCTAssertEqual(snapshot.items, [renamed])
+        XCTAssertEqual(snapshot.items.map(\.remoteItem), [renamed])
     }
 
     func testReplacingDirectoryWithFilePrunesTrackedDescendantsInOneGeneration() async throws {
@@ -235,7 +340,7 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         let nestedFile = try item(path: "nested", size: 7)
 
         _ = try await store.record(directory: .root, items: [nestedDirectory])
-        _ = try await store.record(directory: nestedPath, items: [child])
+        let childRecord = try await store.record(directory: nestedPath, items: [child])
         let baseline = try await store.record(directory: childPath, items: [leaf])
 
         let changed = try await store.record(directory: .root, items: [nestedFile])
@@ -243,22 +348,22 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(generation(of: changed.anchor), generation(of: baseline.anchor) + 1)
         let delta = try await store.workingSetDelta(from: baseline.anchor)
         XCTAssertEqual(delta.anchor, changed.anchor)
-        XCTAssertEqual(delta.delta.updated, [nestedFile])
+        XCTAssertEqual(delta.delta.updated.map(\.remoteItem), [nestedFile])
         XCTAssertEqual(
             delta.delta.deleted,
-            [child, leaf]
-                .map(identifier(for:))
+            [childRecord.items[0], baseline.items[0]]
+                .map(\.itemIdentifier)
                 .sorted { $0.rawValue < $1.rawValue }
         )
         let snapshot = try await store.workingSetSnapshot()
-        XCTAssertEqual(snapshot.items, [nestedFile])
+        XCTAssertEqual(snapshot.items.map(\.remoteItem), [nestedFile])
     }
 
     func testDuplicatePathsInPersistedStateThrowTypedError() async throws {
         let store = FileProviderSnapshotStore(rootURL: root)
         let document = try item(path: "document.txt")
         _ = try await store.record(directory: .root, items: [document])
-        let stateURL = root.appendingPathComponent("snapshot-generations.json")
+        let stateURL = root.appendingPathComponent("snapshot-generations-v2.json")
         var state = try JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as! [String: Any]
         var generations = state["generations"] as! [[String: Any]]
         var generation = generations[0]
@@ -312,10 +417,6 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         )
     }
 
-    private func identifier(for item: FileProviderRemoteItem) -> NSFileProviderItemIdentifier {
-        FileProviderItemIdentifierCodec().identifier(for: item.path)
-    }
-
     private func anchor(for generation: UInt64) -> NSFileProviderSyncAnchor {
         var namespace = UUID().uuid
         var bigEndian = generation.bigEndian
@@ -331,6 +432,22 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(data.count, 16 + MemoryLayout<UInt64>.size)
         return data.suffix(MemoryLayout<UInt64>.size)
             .reduce(0) { ($0 << 8) | UInt64($1) }
+    }
+}
+
+private final class FileProviderTestIdentitySequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [UUID]
+
+    init(_ values: [UUID]) {
+        self.values = values
+    }
+
+    func next() -> UUID {
+        lock.withLock {
+            precondition(!values.isEmpty)
+            return values.removeFirst()
+        }
     }
 }
 

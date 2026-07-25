@@ -2,7 +2,7 @@ import FileProvider
 import Foundation
 
 struct FileProviderSnapshotDelta: Equatable, Sendable {
-    let updated: [FileProviderRemoteItem]
+    let updated: [FileProviderIdentifiedItem]
     let deleted: [NSFileProviderItemIdentifier]
 }
 
@@ -10,10 +10,11 @@ enum FileProviderSnapshotStoreError: Error, Equatable, Sendable {
     case syncAnchorExpired
     case generationExhausted
     case duplicatePath
+    case itemIdentityNotFound
 }
 
 actor FileProviderSnapshotStore {
-    private static let stateFilename = "snapshot-generations.json"
+    private static let stateFilename = "snapshot-generations-v2.json"
     private static let namespaceByteCount = 16
     private static let generationByteCount = MemoryLayout<UInt64>.size
 
@@ -23,11 +24,13 @@ actor FileProviderSnapshotStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let identifierCodec = FileProviderItemIdentifierCodec()
+    private let identityGenerator: @Sendable () -> UUID
 
     init(
         rootURL: URL,
         retainedGenerationCount: Int = 8,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        identityGenerator: @escaping @Sendable () -> UUID = UUID.init
     ) {
         precondition(retainedGenerationCount > 0)
 
@@ -36,23 +39,30 @@ actor FileProviderSnapshotStore {
         self.fileManager = fileManager
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+        self.identityGenerator = identityGenerator
         encoder.outputFormatting = [.sortedKeys]
     }
 
     func record(
         directory: FileProviderRemotePath,
         items: [FileProviderRemoteItem]
-    ) throws -> (anchor: NSFileProviderSyncAnchor, delta: FileProviderSnapshotDelta) {
+    ) throws -> (
+        anchor: NSFileProviderSyncAnchor,
+        items: [FileProviderIdentifiedItem],
+        delta: FileProviderSnapshotDelta
+    ) {
         try Task.checkCancellation()
         var state = try loadState()
         try Task.checkCancellation()
         try validateUniquePaths(in: items)
         let items = items.sorted { $0.path.relative < $1.path.relative }
         let previousItems = state.generations.last?.items(for: directory) ?? []
+        let previousRemoteItems = previousItems.map(\.remoteItem)
 
-        if let latest = state.generations.last, items == previousItems {
+        if let latest = state.generations.last, items == previousRemoteItems {
             return (
                 anchor: makeAnchor(namespace: state.namespace, generation: latest.generation),
+                items: previousItems,
                 delta: .init(updated: [], deleted: [])
             )
         }
@@ -60,14 +70,32 @@ actor FileProviderSnapshotStore {
         let hadPreviousGeneration = state.generations.last != nil
         let nextGeneration = try generation(after: state.generations.last?.generation)
         var directories = state.generations.last?.directories ?? []
+        let previousByPath = Dictionary(
+            uniqueKeysWithValues: previousItems.map { ($0.remoteItem.path, $0.identity) }
+        )
+        let identitiesByPath = Dictionary(
+            uniqueKeysWithValues: directories
+                .flatMap(\.items)
+                .map { ($0.remoteItem.path, $0.identity) }
+        )
+        let identifiedItems = try items.map { remote in
+            FileProviderIdentifiedItem(
+                identity: previousByPath[remote.path] ?? .item(identityGenerator()),
+                parentIdentity: try parentIdentity(
+                    for: remote,
+                    identitiesByPath: identitiesByPath
+                ),
+                remoteItem: remote
+            )
+        }
         if let index = directories.firstIndex(where: { $0.path == directory }) {
-            directories[index] = PersistedDirectory(path: directory, items: items)
+            directories[index] = PersistedDirectory(path: directory, items: identifiedItems)
         } else {
-            directories.append(PersistedDirectory(path: directory, items: items))
+            directories.append(PersistedDirectory(path: directory, items: identifiedItems))
         }
         pruneTrackedSubtrees(
             from: &directories,
-            previousItems: previousItems,
+            previousItems: previousRemoteItems,
             currentItems: items
         )
         directories.sort { $0.path.relative < $1.path.relative }
@@ -75,7 +103,7 @@ actor FileProviderSnapshotStore {
         let latest = PersistedGeneration(generation: nextGeneration, directories: directories)
         state.generations.append(latest)
         state.generations = Array(state.generations.suffix(retainedGenerationCount))
-        let delta = makeDelta(from: previousItems, to: items)
+        let delta = makeDelta(from: previousItems, to: identifiedItems)
         if hadPreviousGeneration,
            !delta.updated.isEmpty || !delta.deleted.isEmpty
         {
@@ -97,6 +125,7 @@ actor FileProviderSnapshotStore {
 
         return (
             anchor: makeAnchor(namespace: state.namespace, generation: nextGeneration),
+            items: identifiedItems,
             delta: delta
         )
     }
@@ -121,8 +150,37 @@ actor FileProviderSnapshotStore {
         try save(state)
     }
 
-    func items(directory: FileProviderRemotePath) throws -> [FileProviderRemoteItem] {
+    func items(directory: FileProviderRemotePath) throws -> [FileProviderIdentifiedItem] {
         try loadState().generations.last?.items(for: directory) ?? []
+    }
+
+    func path(
+        for identifier: NSFileProviderItemIdentifier
+    ) throws -> FileProviderRemotePath {
+        try Self.path(in: loadState(), for: identifier)
+    }
+
+    nonisolated func pathSynchronously(
+        for identifier: NSFileProviderItemIdentifier
+    ) throws -> FileProviderRemotePath {
+        let stateURL = stateURL
+        let decoder = JSONDecoder()
+        guard FileManager.default.fileExists(atPath: stateURL.path) else {
+            throw FileProviderSnapshotStoreError.itemIdentityNotFound
+        }
+        let state = try decoder.decode(PersistedState.self, from: Data(contentsOf: stateURL))
+        return try Self.path(in: state, for: identifier)
+    }
+
+    func item(
+        for identifier: NSFileProviderItemIdentifier
+    ) throws -> FileProviderIdentifiedItem? {
+        let state = try loadState()
+        let identity = try identifierCodec.identity(for: identifier)
+        guard identity != .root else { return nil }
+        return state.generations.last?.directories
+            .flatMap(\.items)
+            .first(where: { $0.identity == identity })
     }
 
     func currentAnchor() throws -> NSFileProviderSyncAnchor? {
@@ -135,7 +193,7 @@ actor FileProviderSnapshotStore {
 
     func workingSetSnapshot() throws -> (
         anchor: NSFileProviderSyncAnchor,
-        items: [FileProviderRemoteItem]
+        items: [FileProviderIdentifiedItem]
     ) {
         let state = try loadState()
         if let latest = state.generations.last {
@@ -279,6 +337,14 @@ actor FileProviderSnapshotStore {
         }
     }
 
+    private func validateUniquePaths(in items: [FileProviderIdentifiedItem]) throws {
+        guard Set(items.map(\.remoteItem.path)).count == items.count,
+              Set(items.map(\.identity)).count == items.count
+        else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+    }
+
     private func pruneTrackedSubtrees(
         from directories: inout [PersistedDirectory],
         previousItems: [FileProviderRemoteItem],
@@ -304,19 +370,52 @@ actor FileProviderSnapshotStore {
     }
 
     private func makeDelta(
-        from previousItems: [FileProviderRemoteItem],
-        to currentItems: [FileProviderRemoteItem]
+        from previousItems: [FileProviderIdentifiedItem],
+        to currentItems: [FileProviderIdentifiedItem]
     ) -> FileProviderSnapshotDelta {
-        let previousByPath = Dictionary(uniqueKeysWithValues: previousItems.map { ($0.path, $0) })
-        let currentByPath = Dictionary(uniqueKeysWithValues: currentItems.map { ($0.path, $0) })
+        let previousByPath = Dictionary(
+            uniqueKeysWithValues: previousItems.map { ($0.remoteItem.path, $0) }
+        )
+        let currentByPath = Dictionary(
+            uniqueKeysWithValues: currentItems.map { ($0.remoteItem.path, $0) }
+        )
 
-        let updated = currentItems.filter { currentByPath[$0.path] != previousByPath[$0.path] }
+        let updated = currentItems.filter {
+            currentByPath[$0.remoteItem.path]?.remoteItem
+                != previousByPath[$0.remoteItem.path]?.remoteItem
+        }
         let deleted = previousByPath.keys
             .filter { currentByPath[$0] == nil }
-            .map { identifierCodec.identifier(for: $0) }
+            .compactMap { previousByPath[$0]?.itemIdentifier }
             .sorted { $0.rawValue < $1.rawValue }
 
         return FileProviderSnapshotDelta(updated: updated, deleted: deleted)
+    }
+
+    private func parentIdentity(
+        for remoteItem: FileProviderRemoteItem,
+        identitiesByPath: [FileProviderRemotePath: FileProviderItemIdentity]
+    ) throws -> FileProviderItemIdentity {
+        guard remoteItem.parent != .root else { return .root }
+        guard let parentIdentity = identitiesByPath[remoteItem.parent] else {
+            throw FileProviderSnapshotStoreError.itemIdentityNotFound
+        }
+        return parentIdentity
+    }
+
+    private nonisolated static func path(
+        in state: PersistedState,
+        for identifier: NSFileProviderItemIdentifier
+    ) throws -> FileProviderRemotePath {
+        let identity = try FileProviderItemIdentifierCodec().identity(for: identifier)
+        guard identity != .root else { return .root }
+        guard let item = state.generations.last?.directories
+            .flatMap(\.items)
+            .first(where: { $0.identity == identity })
+        else {
+            throw FileProviderSnapshotStoreError.itemIdentityNotFound
+        }
+        return item.remoteItem.path
     }
 }
 
@@ -335,15 +434,17 @@ private struct PersistedGeneration: Codable {
     let generation: UInt64
     let directories: [PersistedDirectory]
 
-    func items(for directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+    func items(for directory: FileProviderRemotePath) -> [FileProviderIdentifiedItem] {
         directories.first(where: { $0.path == directory })?.items ?? []
     }
 
-    func workingSetItems() throws -> [FileProviderRemoteItem] {
+    func workingSetItems() throws -> [FileProviderIdentifiedItem] {
         let items = directories
             .flatMap(\.items)
-            .sorted { $0.path.relative < $1.path.relative }
-        guard Set(items.map(\.path)).count == items.count else {
+            .sorted { $0.remoteItem.path.relative < $1.remoteItem.path.relative }
+        guard Set(items.map(\.remoteItem.path)).count == items.count,
+              Set(items.map(\.identity)).count == items.count
+        else {
             throw FileProviderSnapshotStoreError.duplicatePath
         }
         return items
@@ -352,5 +453,5 @@ private struct PersistedGeneration: Codable {
 
 private struct PersistedDirectory: Codable {
     let path: FileProviderRemotePath
-    let items: [FileProviderRemoteItem]
+    let items: [FileProviderIdentifiedItem]
 }

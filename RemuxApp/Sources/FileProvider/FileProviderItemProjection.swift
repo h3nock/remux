@@ -13,10 +13,10 @@ struct FileProviderItemProjection: @unchecked Sendable {
     let itemVersion: NSFileProviderItemVersion
     let symlinkTargetPath: String?
 
-    init(remoteItem: FileProviderRemoteItem, rootDisplayName: String) {
-        let identifierCodec = FileProviderItemIdentifierCodec()
-        self.itemIdentifier = identifierCodec.identifier(for: remoteItem.path)
-        self.parentItemIdentifier = identifierCodec.identifier(for: remoteItem.parent)
+    init(item: FileProviderIdentifiedItem, rootDisplayName: String) {
+        let remoteItem = item.remoteItem
+        self.itemIdentifier = item.itemIdentifier
+        self.parentItemIdentifier = item.parentIdentity.itemIdentifier
         self.filename = remoteItem.path == .root ? rootDisplayName : remoteItem.name
         self.contentType = Self.contentType(for: remoteItem)
         self.documentSize = remoteItem.size.map(NSNumber.init(value:))

@@ -2,7 +2,7 @@ import FileProvider
 import Foundation
 
 struct FileProviderPollingRefresh: Sendable {
-    let items: [FileProviderRemoteItem]
+    let items: [FileProviderIdentifiedItem]
     let anchor: NSFileProviderSyncAnchor
     let delta: FileProviderSnapshotDelta
 }

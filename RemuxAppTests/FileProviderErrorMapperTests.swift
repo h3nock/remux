@@ -32,6 +32,25 @@ final class FileProviderErrorMapperTests: XCTestCase {
         XCTAssertEqual(missing.userInfo[NSFileProviderErrorItemKey] as? NSFileProviderItemIdentifier, identifier)
     }
 
+    func testUnknownOpaqueIdentityMapsToRequestedNoSuchItem() {
+        let identifier = NSFileProviderItemIdentifier(
+            rawValue: "i:11111111-2222-3333-4444-555555555555"
+        )
+
+        let error = FileProviderErrorMapper.map(
+            FileProviderSnapshotStoreError.itemIdentityNotFound,
+            itemIdentifier: identifier
+        )
+
+        XCTAssertEqual(error.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(error.code, NSFileProviderError.noSuchItem.rawValue)
+        XCTAssertEqual(
+            error.userInfo[NSFileProviderErrorNonExistentItemIdentifierKey]
+                as? NSFileProviderItemIdentifier,
+            identifier
+        )
+    }
+
     func testErrorMapperSanitizesUnknownErrorsAndWritePolicy() {
         let sentinel = "password=super-secret-private-key-passphrase"
         let mapped = FileProviderErrorMapper.map(SecretError(sentinel))

@@ -134,8 +134,9 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
         } else {
             do {
                 scope = .directory(
-                    try FileProviderItemIdentifierCodec()
-                        .path(for: containerItemIdentifier)
+                    try setup.snapshots.pathSynchronously(
+                        for: containerItemIdentifier
+                    )
                 )
             } catch {
                 throw FileProviderErrorMapper.map(
@@ -221,6 +222,7 @@ private final class RemuxFileProviderExtensionSetup: @unchecked Sendable {
         self.signaler = signaler
         self.extensionCore = FileProviderReplicatedExtensionCore(
             service: service,
+            snapshots: snapshots,
             rootDisplayName: domain.displayName,
             temporaryDirectoryURL: {
                 try signaler.temporaryDirectoryURL()

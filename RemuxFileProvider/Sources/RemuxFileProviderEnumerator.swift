@@ -69,7 +69,7 @@ final class RemuxFileProviderEnumerator:
                         enumeration.items.map {
                             RemuxFileProviderItem(
                                 projection: FileProviderItemProjection(
-                                    remoteItem: $0,
+                                    item: $0,
                                     rootDisplayName: rootDisplayName
                                 )
                             )
@@ -101,7 +101,7 @@ final class RemuxFileProviderEnumerator:
                         changes.updated.map {
                             RemuxFileProviderItem(
                                 projection: FileProviderItemProjection(
-                                    remoteItem: $0,
+                                    item: $0,
                                     rootDisplayName: rootDisplayName
                                 )
                             )

@@ -46,6 +46,17 @@ enum FileProviderErrorMapper {
             if case .syncAnchorExpired = snapshotError {
                 return fileProviderError(.syncAnchorExpired)
             }
+            if case .itemIdentityNotFound = snapshotError,
+               let itemIdentifier
+            {
+                return NSError(
+                    domain: NSFileProviderErrorDomain,
+                    code: NSFileProviderError.noSuchItem.rawValue,
+                    userInfo: [
+                        NSFileProviderErrorNonExistentItemIdentifierKey: itemIdentifier,
+                    ]
+                )
+            }
         }
 
         if let sftpError = error as? RemuxSFTPClientError {

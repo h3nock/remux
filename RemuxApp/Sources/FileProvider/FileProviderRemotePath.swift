@@ -57,67 +57,32 @@ struct FileProviderRemotePath: Hashable, Codable, Sendable {
 }
 
 struct FileProviderItemIdentifierCodec: Sendable {
-    private static let pathPrefix = "p:"
+    private static let itemPrefix = "i:"
 
-    func identifier(for path: FileProviderRemotePath) -> NSFileProviderItemIdentifier {
-        guard path != .root else { return .rootContainer }
-
-        let encoded = Data(path.relative.utf8)
-            .base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-        return NSFileProviderItemIdentifier(rawValue: Self.pathPrefix + encoded)
+    func identifier(
+        for identity: FileProviderItemIdentity
+    ) -> NSFileProviderItemIdentifier {
+        switch identity {
+        case .root:
+            return .rootContainer
+        case .item(let id):
+            return NSFileProviderItemIdentifier(
+                rawValue: Self.itemPrefix + id.uuidString.lowercased()
+            )
+        }
     }
 
-    func path(for identifier: NSFileProviderItemIdentifier) throws -> FileProviderRemotePath {
-        guard identifier == .rootContainer else {
-            let rawValue = identifier.rawValue
-            guard rawValue.hasPrefix(Self.pathPrefix) else {
-                throw FileProviderRemotePathError.invalidItemIdentifier
-            }
-
-            let encoded = String(rawValue.dropFirst(Self.pathPrefix.count))
-            guard !encoded.isEmpty,
-                  encoded.unicodeScalars.allSatisfy(Self.isURLSafeBase64Scalar)
-            else {
-                throw FileProviderRemotePathError.invalidItemIdentifier
-            }
-
-            let standardBase64 = encoded
-                .replacingOccurrences(of: "-", with: "+")
-                .replacingOccurrences(of: "_", with: "/")
-            let paddingLength = (4 - standardBase64.count % 4) % 4
-            let paddedBase64 = standardBase64 + String(repeating: "=", count: paddingLength)
-            guard let data = Data(base64Encoded: paddedBase64),
-                  let relative = String(data: data, encoding: .utf8)
-            else {
-                throw FileProviderRemotePathError.invalidItemIdentifier
-            }
-
-            let path: FileProviderRemotePath
-            do {
-                path = try FileProviderRemotePath(relative: relative)
-            } catch {
-                throw FileProviderRemotePathError.invalidItemIdentifier
-            }
-
-            guard path != .root, self.identifier(for: path) == identifier else {
-                throw FileProviderRemotePathError.invalidItemIdentifier
-            }
-            return path
+    func identity(
+        for identifier: NSFileProviderItemIdentifier
+    ) throws -> FileProviderItemIdentity {
+        guard identifier != .rootContainer else { return .root }
+        let raw = identifier.rawValue
+        guard raw.hasPrefix(Self.itemPrefix),
+              let id = UUID(uuidString: String(raw.dropFirst(2)))
+        else {
+            throw FileProviderRemotePathError.invalidItemIdentifier
         }
-
-        return .root
-    }
-
-    private static func isURLSafeBase64Scalar(_ scalar: Unicode.Scalar) -> Bool {
-        switch scalar.value {
-        case 45, 48...57, 65...90, 95, 97...122:
-            true
-        default:
-            false
-        }
+        return .item(id)
     }
 }
 

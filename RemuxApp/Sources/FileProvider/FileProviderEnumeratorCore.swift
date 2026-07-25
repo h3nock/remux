@@ -2,13 +2,13 @@ import FileProvider
 import Foundation
 
 struct FileProviderEnumerationPage: Sendable {
-    let items: [FileProviderRemoteItem]
+    let items: [FileProviderIdentifiedItem]
     let nextPage: NSFileProviderPage?
     let anchor: NSFileProviderSyncAnchor
 }
 
 struct FileProviderEnumerationChanges: Sendable {
-    let updated: [FileProviderRemoteItem]
+    let updated: [FileProviderIdentifiedItem]
     let deleted: [NSFileProviderItemIdentifier]
     let moreComing: Bool
     let anchor: NSFileProviderSyncAnchor
@@ -130,7 +130,7 @@ actor FileProviderEnumeratorCore {
             )
             try Task.checkCancellation()
             return FileProviderPollingRefresh(
-                items: items,
+                items: record.items,
                 anchor: record.anchor,
                 delta: record.delta
             )
