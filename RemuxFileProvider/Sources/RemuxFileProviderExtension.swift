@@ -151,7 +151,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
                 scope: scope,
                 service: setup.service,
                 snapshots: setup.snapshots,
-                coordinator: setup.pollingCoordinator,
+                coordinator: setup.operationCoordinator,
                 signaler: setup.signaler
             ),
             rootDisplayName: domain.displayName
@@ -188,7 +188,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
 private final class RemuxFileProviderExtensionSetup: @unchecked Sendable {
     let service: FileProviderRemoteService
     let snapshots: FileProviderSnapshotStore
-    let pollingCoordinator = FileProviderPollingCoordinator()
+    let operationCoordinator = FileProviderDomainOperationCoordinator()
     let signaler: RemuxFileProviderManagerSignaler
     let extensionCore: FileProviderReplicatedExtensionCore
 

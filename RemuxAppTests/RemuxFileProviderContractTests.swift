@@ -472,7 +472,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testPollingCoordinatorCoalescesConcurrentRefreshesForSameDirectory() async throws {
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let gate = FileProviderTestRefreshGate()
         let directory = try FileProviderRemotePath(relative: "shared")
         let firstItems = [
@@ -482,14 +482,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
             try fileProviderTestItem(relative: "shared/second.txt", size: 2),
         ]
         let first = Task {
-            try await coordinator.refresh(directory: directory) {
+            try await coordinator.performRefresh(directory: directory) {
                 await gate.beginAndWait()
                 return fileProviderTestRefresh(items: firstItems)
             }
         }
         await gate.waitUntilStarted()
         let second = Task {
-            try await coordinator.refresh(directory: directory) {
+            try await coordinator.performRefresh(directory: directory) {
                 await gate.recordUnexpectedOperation()
                 return fileProviderTestRefresh(items: secondItems)
             }
@@ -509,7 +509,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testPollingCoordinatorNeverReturnsAnotherDirectorysData() async throws {
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let gate = FileProviderTestRefreshGate()
         let firstDirectory = try FileProviderRemotePath(relative: "first")
         let secondDirectory = try FileProviderRemotePath(relative: "second")
@@ -520,14 +520,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
             try fileProviderTestItem(relative: "second/item.txt", size: 2),
         ]
         let first = Task {
-            try await coordinator.refresh(directory: firstDirectory) {
+            try await coordinator.performRefresh(directory: firstDirectory) {
                 await gate.beginAndWait()
                 return fileProviderTestRefresh(items: firstItems)
             }
         }
         await gate.waitUntilStarted()
         let second = Task {
-            try await coordinator.refresh(directory: secondDirectory) {
+            try await coordinator.performRefresh(directory: secondDirectory) {
                 await gate.recordUnexpectedOperation()
                 return fileProviderTestRefresh(items: secondItems)
             }
@@ -546,14 +546,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testPollingCoordinatorCancelsNetworkRefreshWhenOnlyRequesterCancels() async throws {
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let gate = FileProviderTestRefreshGate()
         let directory = try FileProviderRemotePath(relative: "cancelled")
         let items = [
             try fileProviderTestItem(relative: "cancelled/item.txt", size: 1),
         ]
         let refresh = Task {
-            try await coordinator.refresh(directory: directory) {
+            try await coordinator.performRefresh(directory: directory) {
                 try await gate.beginCancellableAndWait()
                 return fileProviderTestRefresh(items: items)
             }
@@ -574,21 +574,21 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testCancellingOneCoalescedRequesterKeepsSharedRefreshAlive() async throws {
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let gate = FileProviderTestRefreshGate()
         let directory = try FileProviderRemotePath(relative: "coalesced")
         let items = [
             try fileProviderTestItem(relative: "coalesced/item.txt", size: 1),
         ]
         let first = Task {
-            try await coordinator.refresh(directory: directory) {
+            try await coordinator.performRefresh(directory: directory) {
                 try await gate.beginCancellableAndWait()
                 return fileProviderTestRefresh(items: items)
             }
         }
         await gate.waitUntilStarted()
         let second = Task {
-            try await coordinator.refresh(directory: directory) {
+            try await coordinator.performRefresh(directory: directory) {
                 await gate.recordUnexpectedOperation()
                 return fileProviderTestRefresh(items: [])
             }
@@ -611,7 +611,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testCancellingCoalescedRequesterReturnsBeforeSharedRefreshFinishes() async throws {
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let gate = FileProviderTestRefreshGate()
         let completion = FileProviderTestCompletionFlag()
         let directory = try FileProviderRemotePath(relative: "coalesced")
@@ -619,7 +619,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             try fileProviderTestItem(relative: "coalesced/item.txt", size: 1),
         ]
         let first = Task {
-            try await coordinator.refresh(directory: directory) {
+            try await coordinator.performRefresh(directory: directory) {
                 try await gate.beginCancellableAndWait()
                 return fileProviderTestRefresh(items: items)
             }
@@ -627,7 +627,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         await gate.waitUntilStarted()
         let second = Task {
             do {
-                let result = try await coordinator.refresh(directory: directory) {
+                let result = try await coordinator.performRefresh(directory: directory) {
                     await gate.recordUnexpectedOperation()
                     return fileProviderTestRefresh(items: [])
                 }
@@ -658,7 +658,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 
     func testCancellingRequesterWaitingForAnotherDirectoryReturnsBeforeSharedRefreshFinishes() async throws {
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let gate = FileProviderTestRefreshGate()
         let completion = FileProviderTestCompletionFlag()
         let firstDirectory = try FileProviderRemotePath(relative: "first")
@@ -667,7 +667,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             try fileProviderTestItem(relative: "first/item.txt", size: 1),
         ]
         let first = Task {
-            try await coordinator.refresh(directory: firstDirectory) {
+            try await coordinator.performRefresh(directory: firstDirectory) {
                 try await gate.beginCancellableAndWait()
                 return fileProviderTestRefresh(items: firstItems)
             }
@@ -675,7 +675,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         await gate.waitUntilStarted()
         let second = Task {
             do {
-                let result = try await coordinator.refresh(directory: secondDirectory) {
+                let result = try await coordinator.performRefresh(directory: secondDirectory) {
                     await gate.recordUnexpectedOperation()
                     return fileProviderTestRefresh(items: [])
                 }
@@ -727,7 +727,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             scope: .directory(.root),
             service: service,
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: FileProviderTestSignaler()
         )
 
@@ -764,7 +764,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             scope: .directory(.root),
             service: service,
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: FileProviderTestSignaler()
         )
 
@@ -789,7 +789,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             listings: [[oldItem], [newItem]],
             firstRefreshGate: refreshGate
         )
-        let coordinator = FileProviderPollingCoordinator()
+        let coordinator = FileProviderDomainOperationCoordinator()
         let primaryCore = FileProviderEnumeratorCore(
             scope: .directory(.root),
             service: service,
@@ -875,14 +875,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 listings: [[changed, created]]
             ),
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: signaler
         )
         let workingSetCore = FileProviderEnumeratorCore(
             scope: .workingSet,
             service: FileProviderTestSequencedRemoteService(listings: [[]]),
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: signaler
         )
 
@@ -941,7 +941,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             scope: .directory(.root),
             service: service,
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: signaler
         )
         _ = try await core.enumerateItems()
@@ -975,7 +975,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 listings: [[item], [item], [item]]
             ),
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: signaler
         )
         _ = try await core.enumerateItems()
@@ -1047,7 +1047,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             scope: .directory(directory),
             service: service,
             snapshots: snapshots,
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: signaler
         )
         _ = try await core.enumerateItems()
@@ -1070,7 +1070,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 listings: [[changed]]
             ),
             snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: retrySignaler
         )
 
@@ -1094,7 +1094,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 rootURL: FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString, isDirectory: true)
             ),
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: signaler
         )
         _ = try await core.enumerateItems()
@@ -1128,7 +1128,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 listings: [[original], [firstChange], [secondChange]]
             ),
             snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: blockingSignaler
         )
         _ = try await core.enumerateItems()
@@ -1149,7 +1149,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 listings: [[secondChange]]
             ),
             snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
-            coordinator: FileProviderPollingCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(),
             signaler: retrySignaler
         )
 

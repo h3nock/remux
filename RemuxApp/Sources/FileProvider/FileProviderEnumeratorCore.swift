@@ -29,14 +29,14 @@ actor FileProviderEnumeratorCore {
     private let scope: FileProviderEnumeratorScope
     private let service: any FileProviderRemoteServicing
     private let snapshots: FileProviderSnapshotStore
-    private let coordinator: FileProviderPollingCoordinator
+    private let coordinator: FileProviderDomainOperationCoordinator
     private let signaler: any FileProviderEnumeratorSignaling
 
     init(
         scope: FileProviderEnumeratorScope,
         service: any FileProviderRemoteServicing,
         snapshots: FileProviderSnapshotStore,
-        coordinator: FileProviderPollingCoordinator,
+        coordinator: FileProviderDomainOperationCoordinator,
         signaler: any FileProviderEnumeratorSignaling
     ) {
         self.scope = scope
@@ -121,7 +121,7 @@ actor FileProviderEnumeratorCore {
     private func refresh(
         directory: FileProviderRemotePath
     ) async throws -> FileProviderPollingRefresh {
-        try await coordinator.refresh(directory: directory) {
+        try await coordinator.performRefresh(directory: directory) {
             let items = try await self.service.list(directory: directory)
             try Task.checkCancellation()
             let record = try await self.snapshots.record(
