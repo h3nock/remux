@@ -50,6 +50,18 @@ final class TrustedHostStore: @unchecked Sendable {
         )
     }
 
+    func loadIdentities() throws -> [TrustedHostIdentity] {
+        try lock.withLock {
+            try loadLocked()
+        }
+    }
+
+    func replaceIdentities(_ identities: [TrustedHostIdentity]) throws {
+        try lock.withLock {
+            try saveLocked(identities)
+        }
+    }
+
     func deleteIdentity(for serverID: SavedServer.ID) throws {
         try lock.withLock {
             let identities = try loadLocked().filter { $0.serverID != serverID }
