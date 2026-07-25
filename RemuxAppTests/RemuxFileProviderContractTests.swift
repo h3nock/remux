@@ -240,14 +240,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let first = Task {
             try await coordinator.refresh(directory: directory) {
                 await gate.beginAndWait()
-                return firstItems
+                return fileProviderTestRefresh(items: firstItems)
             }
         }
         await gate.waitUntilStarted()
         let second = Task {
             try await coordinator.refresh(directory: directory) {
                 await gate.recordUnexpectedOperation()
-                return secondItems
+                return fileProviderTestRefresh(items: secondItems)
             }
         }
         for _ in 0..<20 {
@@ -259,8 +259,8 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let firstResult = try await first.value
         let secondResult = try await second.value
         let operationCount = await gate.operationCount()
-        XCTAssertEqual(firstResult, firstItems)
-        XCTAssertEqual(secondResult, firstItems)
+        XCTAssertEqual(firstResult.items, firstItems)
+        XCTAssertEqual(secondResult.items, firstItems)
         XCTAssertEqual(operationCount, 1)
     }
 
@@ -278,14 +278,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let first = Task {
             try await coordinator.refresh(directory: firstDirectory) {
                 await gate.beginAndWait()
-                return firstItems
+                return fileProviderTestRefresh(items: firstItems)
             }
         }
         await gate.waitUntilStarted()
         let second = Task {
             try await coordinator.refresh(directory: secondDirectory) {
                 await gate.recordUnexpectedOperation()
-                return secondItems
+                return fileProviderTestRefresh(items: secondItems)
             }
         }
         for _ in 0..<20 {
@@ -297,7 +297,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         _ = try await first.value
         let secondResult = try await second.value
         let operationCount = await gate.operationCount()
-        XCTAssertEqual(secondResult, secondItems)
+        XCTAssertEqual(secondResult.items, secondItems)
         XCTAssertEqual(operationCount, 2)
     }
 
@@ -311,7 +311,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let refresh = Task {
             try await coordinator.refresh(directory: directory) {
                 try await gate.beginCancellableAndWait()
-                return items
+                return fileProviderTestRefresh(items: items)
             }
         }
         await gate.waitUntilStarted()
@@ -339,14 +339,14 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let first = Task {
             try await coordinator.refresh(directory: directory) {
                 try await gate.beginCancellableAndWait()
-                return items
+                return fileProviderTestRefresh(items: items)
             }
         }
         await gate.waitUntilStarted()
         let second = Task {
             try await coordinator.refresh(directory: directory) {
                 await gate.recordUnexpectedOperation()
-                return []
+                return fileProviderTestRefresh(items: [])
             }
         }
         for _ in 0..<20 {
@@ -362,7 +362,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         let firstResult = try await first.value
         await XCTAssertFileProviderThrowsAsync { try await second.value }
-        XCTAssertEqual(firstResult, items)
+        XCTAssertEqual(firstResult.items, items)
         XCTAssertFalse(networkWasCancelled)
     }
 
@@ -377,7 +377,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let first = Task {
             try await coordinator.refresh(directory: directory) {
                 try await gate.beginCancellableAndWait()
-                return items
+                return fileProviderTestRefresh(items: items)
             }
         }
         await gate.waitUntilStarted()
@@ -385,7 +385,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             do {
                 let result = try await coordinator.refresh(directory: directory) {
                     await gate.recordUnexpectedOperation()
-                    return []
+                    return fileProviderTestRefresh(items: [])
                 }
                 await completion.finish()
                 return result
@@ -409,7 +409,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let firstResult = try await first.value
         await XCTAssertFileProviderThrowsAsync { try await second.value }
         XCTAssertTrue(didFinishBeforeRefresh)
-        XCTAssertEqual(firstResult, items)
+        XCTAssertEqual(firstResult.items, items)
         XCTAssertFalse(networkWasCancelled)
     }
 
@@ -425,7 +425,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         let first = Task {
             try await coordinator.refresh(directory: firstDirectory) {
                 try await gate.beginCancellableAndWait()
-                return firstItems
+                return fileProviderTestRefresh(items: firstItems)
             }
         }
         await gate.waitUntilStarted()
@@ -433,7 +433,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
             do {
                 let result = try await coordinator.refresh(directory: secondDirectory) {
                     await gate.recordUnexpectedOperation()
-                    return []
+                    return fileProviderTestRefresh(items: [])
                 }
                 await completion.finish()
                 return result
@@ -533,6 +533,64 @@ final class RemuxFileProviderContractTests: XCTestCase {
         )
         XCTAssertFalse(changes.moreComing)
         XCTAssertEqual(changes.anchor, latest.anchor)
+    }
+
+    func testCoalescedOldRefreshCannotOverwriteNewerSnapshot() async throws {
+        let snapshotRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let oldItem = try fileProviderTestItem(relative: "item.txt", size: 1)
+        let newItem = try fileProviderTestItem(relative: "item.txt", size: 2)
+        let refreshGate = FileProviderTestRefreshGate()
+        let service = FileProviderTestSequencedRemoteService(
+            listings: [[oldItem], [newItem]],
+            firstRefreshGate: refreshGate
+        )
+        let coordinator = FileProviderPollingCoordinator()
+        let primaryCore = FileProviderEnumeratorCore(
+            directory: .root,
+            service: service,
+            snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
+            coordinator: coordinator,
+            signaler: FileProviderTestSignaler()
+        )
+        let blockingGate = FileProviderBlockingGate()
+        let blockingFileManager = FileProviderBlockingFileManager(
+            gate: blockingGate
+        )
+        let delayedCore = FileProviderEnumeratorCore(
+            directory: .root,
+            service: service,
+            snapshots: FileProviderSnapshotStore(
+                rootURL: snapshotRoot,
+                fileManager: blockingFileManager
+            ),
+            coordinator: coordinator,
+            signaler: FileProviderTestSignaler()
+        )
+
+        let first = Task {
+            try await primaryCore.enumerateItems()
+        }
+        await refreshGate.waitUntilStarted()
+        let delayedOldRefresh = Task {
+            try await delayedCore.enumerateItems()
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        await refreshGate.release()
+
+        _ = try await first.value
+        let callCountAfterCoalescing = await service.listCallCount()
+        let newerPage = try await primaryCore.enumerateItems()
+        blockingGate.release()
+        _ = try await delayedOldRefresh.value
+
+        let persisted = try await FileProviderSnapshotStore(rootURL: snapshotRoot)
+            .items(directory: .root)
+        XCTAssertEqual(callCountAfterCoalescing, 1)
+        XCTAssertEqual(newerPage.items, [newItem])
+        XCTAssertEqual(persisted, [newItem])
     }
 
     func testPollingRefreshSignalsDirectoryAndWorkingSetWhenSnapshotChanges() async throws {
@@ -850,6 +908,74 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
     }
 }
 
+private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicing {
+    private let listings: [[FileProviderRemoteItem]]
+    private let firstRefreshGate: FileProviderTestRefreshGate
+    private var nextListingIndex = 0
+
+    init(
+        listings: [[FileProviderRemoteItem]],
+        firstRefreshGate: FileProviderTestRefreshGate
+    ) {
+        self.listings = listings
+        self.firstRefreshGate = firstRefreshGate
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) async -> [FileProviderRemoteItem] {
+        let index = min(nextListingIndex, listings.count - 1)
+        nextListingIndex += 1
+        if index == 0 {
+            await firstRefreshGate.beginAndWait()
+        }
+        return listings[index]
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (Int64) async -> Void
+    ) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func invalidate() {
+    }
+
+    func listCallCount() -> Int {
+        nextListingIndex
+    }
+}
+
+private final class FileProviderBlockingGate: @unchecked Sendable {
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+
+    func wait() {
+        releaseSemaphore.wait()
+    }
+
+    func release() {
+        releaseSemaphore.signal()
+    }
+}
+
+private final class FileProviderBlockingFileManager: FileManager {
+    private let gate: FileProviderBlockingGate
+
+    init(gate: FileProviderBlockingGate) {
+        self.gate = gate
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        gate.wait()
+        return super.fileExists(atPath: path)
+    }
+}
+
 private func XCTAssertFileProviderThrowsAsync<T>(
     _ expression: () async throws -> T,
     file: StaticString = #filePath,
@@ -873,6 +999,16 @@ private func fileProviderTestItem(
             permissions: 0o100644,
             modificationDate: Date(timeIntervalSince1970: TimeInterval(size))
         )
+    )
+}
+
+private func fileProviderTestRefresh(
+    items: [FileProviderRemoteItem]
+) -> FileProviderPollingRefresh {
+    FileProviderPollingRefresh(
+        items: items,
+        anchor: NSFileProviderSyncAnchor(rawValue: Data()),
+        delta: FileProviderSnapshotDelta(updated: items, deleted: [])
     )
 }
 

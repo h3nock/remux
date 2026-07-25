@@ -40,14 +40,11 @@ actor FileProviderEnumeratorCore {
     }
 
     func enumerateItems() async throws -> FileProviderEnumerationPage {
-        let items = try await coordinator.refresh(directory: directory) {
-            try await self.service.list(directory: self.directory)
-        }
-        let record = try await snapshots.record(directory: directory, items: items)
+        let refresh = try await refresh()
         return FileProviderEnumerationPage(
-            items: items,
+            items: refresh.items,
             nextPage: nil,
-            anchor: record.anchor
+            anchor: refresh.anchor
         )
     }
 
@@ -68,11 +65,8 @@ actor FileProviderEnumeratorCore {
     }
 
     func refreshAndSignalChanges() async throws {
-        let items = try await coordinator.refresh(directory: directory) {
-            try await self.service.list(directory: self.directory)
-        }
-        let record = try await snapshots.record(directory: directory, items: items)
-        guard !record.delta.updated.isEmpty || !record.delta.deleted.isEmpty else {
+        let refresh = try await refresh()
+        guard !refresh.delta.updated.isEmpty || !refresh.delta.deleted.isEmpty else {
             return
         }
 
@@ -80,5 +74,20 @@ actor FileProviderEnumeratorCore {
             .identifier(for: directory)
         await signaler.signalEnumerator(for: directoryIdentifier)
         await signaler.signalEnumerator(for: .workingSet)
+    }
+
+    private func refresh() async throws -> FileProviderPollingRefresh {
+        try await coordinator.refresh(directory: directory) {
+            let items = try await self.service.list(directory: self.directory)
+            let record = try await self.snapshots.record(
+                directory: self.directory,
+                items: items
+            )
+            return FileProviderPollingRefresh(
+                items: items,
+                anchor: record.anchor,
+                delta: record.delta
+            )
+        }
     }
 }

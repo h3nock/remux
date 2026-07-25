@@ -1,12 +1,19 @@
+import FileProvider
 import Foundation
+
+struct FileProviderPollingRefresh: Sendable {
+    let items: [FileProviderRemoteItem]
+    let anchor: NSFileProviderSyncAnchor
+    let delta: FileProviderSnapshotDelta
+}
 
 actor FileProviderPollingCoordinator {
     private struct InFlight {
         let id: UUID
         let directory: FileProviderRemotePath
-        let task: Task<[FileProviderRemoteItem], Error>
+        let task: Task<FileProviderPollingRefresh, Error>
         var refreshWaiters: [
-            UUID: CheckedContinuation<[FileProviderRemoteItem], Error>
+            UUID: CheckedContinuation<FileProviderPollingRefresh, Error>
         ]
         var turnWaiters: [UUID: CheckedContinuation<Void, Error>]
     }
@@ -15,8 +22,8 @@ actor FileProviderPollingCoordinator {
 
     func refresh(
         directory: FileProviderRemotePath,
-        operation: @escaping @Sendable () async throws -> [FileProviderRemoteItem]
-    ) async throws -> [FileProviderRemoteItem] {
+        operation: @escaping @Sendable () async throws -> FileProviderPollingRefresh
+    ) async throws -> FileProviderPollingRefresh {
         try Task.checkCancellation()
         let waiterID = UUID()
 
@@ -61,8 +68,8 @@ actor FileProviderPollingCoordinator {
     private func waitForRefresh(
         inFlightID: UUID,
         waiterID: UUID
-    ) async throws -> [FileProviderRemoteItem] {
-        let items: [FileProviderRemoteItem] = try await withTaskCancellationHandler {
+    ) async throws -> FileProviderPollingRefresh {
+        let refresh: FileProviderPollingRefresh = try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 guard var inFlight,
@@ -84,7 +91,7 @@ actor FileProviderPollingCoordinator {
             }
         }
         try Task.checkCancellation()
-        return items
+        return refresh
     }
 
     private func waitForTurn(
@@ -146,7 +153,7 @@ actor FileProviderPollingCoordinator {
 
     private func completeRefresh(
         inFlightID: UUID,
-        result: Result<[FileProviderRemoteItem], Error>
+        result: Result<FileProviderPollingRefresh, Error>
     ) {
         guard let inFlight,
               inFlight.id == inFlightID
