@@ -1,6 +1,6 @@
 # Writable SSH File Provider Design
 
-**Status:** Draft for written review
+**Status:** Approved for implementation
 **Date:** 2026-07-25
 
 ## Context
