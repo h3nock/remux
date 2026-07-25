@@ -99,6 +99,135 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         }
     }
 
+    func testListRejectsDirectoryWhoseSymlinkAncestorEscapesHome() async throws {
+        let home = "/home/reader"
+        let requestedDirectory = "\(home)/escape/nested"
+        let client = FileProviderTestSFTPClient(
+            realPaths: [
+                ".": .success(home),
+                requestedDirectory: .success("/outside/nested"),
+            ],
+            listings: [
+                requestedDirectory: [
+                    RemuxSFTPDirectoryEntry(
+                        name: "secret.txt",
+                        metadata: regularMetadata()
+                    ),
+                ],
+            ]
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.list(
+                directory: FileProviderRemotePath(relative: "escape/nested")
+            )
+        }
+    }
+
+    func testItemRejectsPathWhoseSymlinkAncestorEscapesHome() async throws {
+        let home = "/home/reader"
+        let requestedParent = "\(home)/escape"
+        let client = FileProviderTestSFTPClient(
+            realPaths: [
+                ".": .success(home),
+                requestedParent: .success("/outside"),
+            ],
+            listings: [
+                requestedParent: [
+                    RemuxSFTPDirectoryEntry(
+                        name: "secret.txt",
+                        metadata: regularMetadata()
+                    ),
+                ],
+            ]
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.item(
+                at: FileProviderRemotePath(relative: "escape/secret.txt")
+            )
+        }
+    }
+
+    func testFetchRejectsPathWhoseSymlinkAncestorEscapesHome() async throws {
+        let home = "/home/reader"
+        let requestedParent = "\(home)/escape"
+        let requestedFile = "\(requestedParent)/secret.txt"
+        let client = FileProviderTestSFTPClient(
+            realPaths: [
+                ".": .success(home),
+                requestedParent: .success("/outside"),
+            ],
+            listings: [
+                requestedParent: [
+                    RemuxSFTPDirectoryEntry(
+                        name: "secret.txt",
+                        metadata: regularMetadata()
+                    ),
+                ],
+            ],
+            fileDataByPath: [requestedFile: Data("evil".utf8)]
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: localURL)
+        }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.fetch(
+                path: FileProviderRemotePath(relative: "escape/secret.txt"),
+                to: localURL,
+                progress: { _ in }
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
+    }
+
+    func testFetchReadsCanonicalPathAfterResolvingSymlinkAncestor() async throws {
+        let home = "/home/reader"
+        let requestedParent = "\(home)/alias"
+        let requestedFile = "\(requestedParent)/file.txt"
+        let canonicalParent = "\(home)/real"
+        let canonicalFile = "\(canonicalParent)/file.txt"
+        let metadata = regularMetadata()
+        let client = FileProviderTestSFTPClient(
+            realPaths: [
+                ".": .success(home),
+                requestedParent: .success(canonicalParent),
+            ],
+            listings: [
+                requestedParent: [
+                    RemuxSFTPDirectoryEntry(name: "file.txt", metadata: metadata),
+                ],
+                canonicalParent: [
+                    RemuxSFTPDirectoryEntry(name: "file.txt", metadata: metadata),
+                ],
+            ],
+            fileDataByPath: [
+                requestedFile: Data("evil".utf8),
+                canonicalFile: Data("safe".utf8),
+            ]
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: localURL)
+        }
+
+        _ = try await fixture.service.fetch(
+            path: FileProviderRemotePath(relative: "alias/file.txt"),
+            to: localURL,
+            progress: { _ in }
+        )
+
+        XCTAssertEqual(try Data(contentsOf: localURL), Data("safe".utf8))
+    }
+
     func testFetchCancellationCancelsRemoteReadAndRemovesPartialFile() async throws {
         let home = "/home/reader"
         let metadata = RemuxSFTPFileMetadata(
@@ -141,6 +270,14 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         let wasCancelled = await readState.wasCancelled
         XCTAssertTrue(wasCancelled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: partialURL.path))
+    }
+
+    private func regularMetadata() -> RemuxSFTPFileMetadata {
+        RemuxSFTPFileMetadata(
+            size: 4,
+            permissions: 0o100644,
+            modificationDate: Date(timeIntervalSince1970: 500)
+        )
     }
 }
 

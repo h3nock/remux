@@ -48,8 +48,12 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
     func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem] {
         try await withClient { client in
             let canonicalHome = try await client.realPath(atPath: ".")
-            let remoteDirectory = try directory.remotePath(beneath: canonicalHome)
-            let entries = try await client.listDirectory(atPath: remoteDirectory)
+            let canonicalDirectory = try await canonicalDirectory(
+                for: directory,
+                client: client,
+                home: canonicalHome
+            )
+            let entries = try await client.listDirectory(atPath: canonicalDirectory)
             var items: [FileProviderRemoteItem] = []
 
             for entry in entries {
@@ -61,8 +65,11 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
                 case .other:
                     continue
                 case .symbolicLink:
-                    let remotePath = try path.remotePath(beneath: canonicalHome)
-                    guard let canonicalTarget = try? await client.realPath(atPath: remotePath),
+                    let canonicalEntry = try append(
+                        component: entry.name,
+                        to: canonicalDirectory
+                    )
+                    guard let canonicalTarget = try? await client.realPath(atPath: canonicalEntry),
                           let relativeTarget = try? safeLinkResolver.resolve(
                               canonicalTarget,
                               home: canonicalHome
@@ -91,11 +98,19 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
     func item(at path: FileProviderRemotePath) async throws -> FileProviderRemoteItem {
         try await withClient { client in
             let canonicalHome = try await client.realPath(atPath: ".")
-            let remotePath = try path.remotePath(beneath: canonicalHome)
-            let metadata = if path == .root {
-                try await client.metadata(atPath: remotePath)
+            let entry = if path == .root {
+                canonicalHome
             } else {
-                try await client.linkMetadata(atPath: remotePath)
+                try await canonicalEntry(
+                    for: path,
+                    client: client,
+                    home: canonicalHome
+                )
+            }
+            let metadata = if path == .root {
+                try await client.metadata(atPath: entry)
+            } else {
+                try await client.linkMetadata(atPath: entry)
             }
 
             switch metadata.type {
@@ -103,7 +118,7 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
                 return try FileProviderRemoteItem(path: path, metadata: metadata)
             case .symbolicLink:
                 do {
-                    let canonicalTarget = try await client.realPath(atPath: remotePath)
+                    let canonicalTarget = try await client.realPath(atPath: entry)
                     let relativeTarget = try safeLinkResolver.resolve(
                         canonicalTarget,
                         home: canonicalHome
@@ -114,10 +129,10 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
                         symlinkTargetRelativePath: relativeTarget
                     )
                 } catch {
-                    throw RemuxSFTPClientError.noSuchFile(remotePath)
+                    throw RemuxSFTPClientError.noSuchFile(path.relative)
                 }
             case .other:
-                throw RemuxSFTPClientError.noSuchFile(remotePath)
+                throw RemuxSFTPClientError.noSuchFile(path.relative)
             }
         }
     }
@@ -130,13 +145,17 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
         try await withClient { client in
             try Task.checkCancellation()
             let canonicalHome = try await client.realPath(atPath: ".")
-            let remotePath = try path.remotePath(beneath: canonicalHome)
-            let metadata = try await client.linkMetadata(atPath: remotePath)
+            let entry = try await canonicalEntry(
+                for: path,
+                client: client,
+                home: canonicalHome
+            )
+            let metadata = try await client.linkMetadata(atPath: entry)
             guard metadata.type == .regular else {
-                throw RemuxSFTPClientError.noSuchFile(remotePath)
+                throw RemuxSFTPClientError.noSuchFile(path.relative)
             }
             try await client.downloadFile(
-                atPath: remotePath,
+                atPath: entry,
                 to: localURL,
                 progress: progress
             )
@@ -170,19 +189,82 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
         )
     }
 
+    private func canonicalDirectory(
+        for directory: FileProviderRemotePath,
+        client: any RemuxSFTPReadOnlyClient,
+        home canonicalHome: String
+    ) async throws -> String {
+        let requestedDirectory = try directory.remotePath(
+            beneath: canonicalHome
+        )
+        guard directory != .root else {
+            return requestedDirectory
+        }
+
+        let canonicalDirectory = try await client.realPath(
+            atPath: requestedDirectory
+        )
+        _ = try safeLinkResolver.resolve(
+            canonicalDirectory,
+            home: canonicalHome
+        )
+        return canonicalDirectory
+    }
+
+    private func canonicalEntry(
+        for path: FileProviderRemotePath,
+        client: any RemuxSFTPReadOnlyClient,
+        home canonicalHome: String
+    ) async throws -> String {
+        guard path != .root,
+              let name = path.relative.split(separator: "/").last.map(String.init)
+        else {
+            return canonicalHome
+        }
+
+        let parentRelative = (path.relative as NSString)
+            .deletingLastPathComponent
+        let parent = try FileProviderRemotePath(relative: parentRelative)
+        let canonicalParent = try await canonicalDirectory(
+            for: parent,
+            client: client,
+            home: canonicalHome
+        )
+        return try append(component: name, to: canonicalParent)
+    }
+
+    private func append(
+        component: String,
+        to canonicalDirectory: String
+    ) throws -> String {
+        try FileProviderPathValidation.validateCanonicalAbsolute(
+            canonicalDirectory
+        )
+        guard isValidChildName(component) else {
+            throw FileProviderRemotePathError.invalidRelativePath
+        }
+        guard canonicalDirectory != "/" else {
+            return "/\(component)"
+        }
+        return "\(canonicalDirectory)/\(component)"
+    }
+
     private func childPath(
         named name: String,
         beneath directory: FileProviderRemotePath
     ) -> FileProviderRemotePath? {
-        guard !name.isEmpty,
-              name != ".",
-              name != "..",
-              !name.contains("/"),
-              !name.contains("\0")
-        else {
+        guard isValidChildName(name) else {
             return nil
         }
         let relative = directory.relative.isEmpty ? name : "\(directory.relative)/\(name)"
         return try? FileProviderRemotePath(relative: relative)
+    }
+
+    private func isValidChildName(_ name: String) -> Bool {
+        !name.isEmpty
+            && name != "."
+            && name != ".."
+            && !name.contains("/")
+            && !name.contains("\0")
     }
 }
