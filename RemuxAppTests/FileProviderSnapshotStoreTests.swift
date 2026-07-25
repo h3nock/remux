@@ -97,6 +97,107 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         )
     }
 
+    func testLocalMoveRetainsIdentityRelocatesDescendantsAndDoesNotQueueSignal() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let folder = try item(path: "old", type: .directory)
+        let child = try item(path: "old/child.txt")
+        let rootRecord = try await store.record(directory: .root, items: [folder])
+        _ = try await store.record(
+            directory: FileProviderRemotePath(relative: "old"),
+            items: [child]
+        )
+        let identity = rootRecord.items[0].identity
+
+        let moved = try await store.commit(
+            localMutation: FileProviderSnapshotLocalMutation(
+                refreshedDirectories: [
+                    .init(directory: .root, items: [
+                        try item(path: "new", type: .directory),
+                    ]),
+                    .init(
+                        directory: FileProviderRemotePath(relative: "new"),
+                        items: [try item(path: "new/child.txt")]
+                    ),
+                ],
+                relocations: [
+                    .init(
+                        identity: identity,
+                        from: FileProviderRemotePath(relative: "old"),
+                        to: FileProviderRemotePath(relative: "new")
+                    ),
+                ],
+                deletedIdentities: [],
+                receipt: nil
+            )
+        )
+
+        let movedPath = try await store.path(for: identity.itemIdentifier)
+        XCTAssertEqual(movedPath, try FileProviderRemotePath(relative: "new"))
+        XCTAssertEqual(
+            moved.items.first(where: { $0.identity == identity })?.remoteItem.path,
+            try FileProviderRemotePath(relative: "new")
+        )
+        let pendingSignal = try await store.pendingWorkingSetSignalGeneration()
+        XCTAssertNil(pendingSignal)
+    }
+
+    func testMutationReceiptPersistsAndExpiresWithRetainedGenerations() async throws {
+        let store = FileProviderSnapshotStore(
+            rootURL: root,
+            retainedGenerationCount: 2
+        )
+        let key = FileProviderMutationReplayKey.create(
+            templateIdentifier: "system-template-1"
+        )
+        let created = FileProviderIdentifiedItem(
+            identity: .item(UUID()),
+            parentIdentity: .root,
+            remoteItem: try item(path: "created.txt")
+        )
+
+        _ = try await store.commit(
+            localMutation: .init(
+                refreshedDirectories: [.init(directory: .root, items: [created.remoteItem])],
+                identityReservations: [.init(identity: created.identity, path: created.remoteItem.path)],
+                receipt: .item(key: key, item: created)
+            )
+        )
+        let receipt = try await store.receipt(for: key)
+        XCTAssertEqual(receipt, .item(key: key, item: created))
+
+        _ = try await store.record(directory: .root, items: [created.remoteItem, try item(path: "a")])
+        _ = try await store.record(directory: .root, items: [created.remoteItem, try item(path: "b")])
+
+        let expiredReceipt = try await store.receipt(for: key)
+        XCTAssertNil(expiredReceipt)
+    }
+
+    func testLocalRefreshPrunesRemovedTrackedDirectory() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let directory = try item(path: "nested", type: .directory)
+        let child = try item(path: "nested/child.txt")
+        let rootRecord = try await store.record(directory: .root, items: [directory])
+        let childRecord = try await store.record(
+            directory: FileProviderRemotePath(relative: "nested"),
+            items: [child]
+        )
+
+        let mutation = try await store.commit(
+            localMutation: .init(
+                refreshedDirectories: [.init(directory: .root, items: [])]
+            )
+        )
+
+        XCTAssertEqual(mutation.delta.deleted, [
+            rootRecord.items[0].itemIdentifier,
+            childRecord.items[0].itemIdentifier,
+        ].sorted { $0.rawValue < $1.rawValue })
+        let nestedItems = try await store.items(
+            directory: FileProviderRemotePath(relative: "nested")
+        )
+        XCTAssertTrue(nestedItems.isEmpty)
+    }
+
     func testRemoteRenameUsesDeleteAndNewIdentity() async throws {
         let ids = FileProviderTestIdentitySequence([
             UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!,
