@@ -5,6 +5,8 @@ enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
     case operationTimedOut
     case sessionUnavailable
     case noSuchFile(String)
+    case permissionDenied
+    case unsupportedMutation
     case invalidReadLength(Int)
     case oversizedReadResult(requested: Int, actual: Int)
 
@@ -16,6 +18,10 @@ enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
             return "The terminal session is no longer available."
         case .noSuchFile:
             return "The remote file does not exist."
+        case .permissionDenied:
+            return "You do not have permission to modify the remote file."
+        case .unsupportedMutation:
+            return "The remote server does not support this file operation."
         case .invalidReadLength:
             return "The remote file read length is invalid."
         case .oversizedReadResult:
@@ -167,6 +173,18 @@ protocol RemuxSFTPUploadClient: Sendable {
     ) async throws
     func renameFile(from temporaryPath: String, to finalPath: String) async throws
     func removeFileIfExists(atPath path: String) async throws
+}
+
+protocol RemuxSFTPFileProviderClient: RemuxSFTPReadOnlyClient {
+    func createDirectory(atPath path: String) async throws
+    func uploadFile(
+        from localURL: URL,
+        to remotePath: String,
+        progress: @escaping RemuxSFTPFileUploadProgressHandler
+    ) async throws
+    func renameItem(from sourcePath: String, to destinationPath: String) async throws
+    func removeFile(atPath path: String) async throws
+    func removeEmptyDirectory(atPath path: String) async throws
 }
 
 protocol RemuxSFTPClientProvider: Sendable {

@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import Foundation
 import NIO
 import XCTest
@@ -5,6 +6,86 @@ import XCTest
 @testable import Remux
 
 final class RemuxSFTPReadOnlyClientTests: XCTestCase {
+    func testFileProviderWriteOperationsCallExactCitadelRequests() async throws {
+        let connection = FakeCitadelSFTPConnection(writableFile: RecordingUploadSource())
+        let client = makeClient(connection: connection)
+        let source = try temporaryFile(contents: Data("new".utf8))
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        try await client.createDirectory(atPath: "/home/me/new")
+        try await client.uploadFile(
+            from: source,
+            to: "/home/me/.remux-upload-fixture",
+            progress: { _ in }
+        )
+        try await client.renameItem(
+            from: "/home/me/.remux-upload-fixture",
+            to: "/home/me/report.txt"
+        )
+        try await client.removeFile(atPath: "/home/me/report.txt")
+        try await client.removeEmptyDirectory(atPath: "/home/me/new")
+
+        let mutations = await connection.mutations()
+        XCTAssertEqual(mutations, [
+            .mkdir("/home/me/new"),
+            .openWrite("/home/me/.remux-upload-fixture"),
+            .rename("/home/me/.remux-upload-fixture", "/home/me/report.txt"),
+            .removeFile("/home/me/report.txt"),
+            .rmdir("/home/me/new"),
+        ])
+    }
+
+    func testFileProviderWritePermissionDeniedNormalizesToTypedError() {
+        XCTAssertEqual(
+            RemuxCitadelSFTPClient.normalizedWriteError(for: .permissionDenied),
+            .permissionDenied
+        )
+    }
+
+    func testFileProviderAmbiguousWriteFailureNormalizesToUnsupportedMutation() {
+        XCTAssertEqual(
+            RemuxCitadelSFTPClient.normalizedWriteError(for: .failure),
+            .unsupportedMutation
+        )
+    }
+
+    func testFileProviderUploadCancellationClosesRemoteHandleWithoutMutations() async throws {
+        let source = CancellableUploadSource()
+        let connection = FakeCitadelSFTPConnection(writableFile: source)
+        let client = makeClient(connection: connection)
+        let localFile = try temporaryFile(contents: Data("new".utf8))
+        defer { try? FileManager.default.removeItem(at: localFile) }
+
+        let task = Task {
+            try await client.uploadFile(
+                from: localFile,
+                to: "/home/me/.remux-upload-fixture",
+                progress: { _ in }
+            )
+        }
+
+        for _ in 0..<1_000 {
+            if await source.writeCount() == 1 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let writeCount = await source.writeCount()
+        XCTAssertEqual(writeCount, 1)
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("cancelled upload should throw")
+        } catch is CancellationError {
+        }
+
+        let closeCount = await source.closeCount()
+        let mutations = await connection.mutations()
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(mutations, [
+            .openWrite("/home/me/.remux-upload-fixture"),
+        ])
+    }
+
     func testDirectoryListingFlattensResponsesDropsDotEntriesAndClassifiesModes() async throws {
         // Catches returning Citadel response batches without flattening, hiding dotfiles,
         // or comparing full permission values instead of the POSIX file-type bits.
@@ -261,6 +342,12 @@ final class RemuxSFTPReadOnlyClientTests: XCTestCase {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
     }
+
+    private func temporaryFile(contents: Data) throws -> URL {
+        let url = temporaryURL()
+        try contents.write(to: url)
+        return url
+    }
 }
 
 private extension Array where Element == RemuxSFTPDirectoryEntry {
@@ -372,6 +459,50 @@ private actor CancellableDownloadSource: RemuxCitadelSFTPFile {
     }
 }
 
+private actor RecordingUploadSource: RemuxCitadelSFTPFile {
+    func readData(from offset: UInt64, length: UInt32) throws -> Data {
+        throw FakeCitadelSFTPConnectionError.unexpectedFileRead
+    }
+
+    func writeDataPipelined(
+        _ data: Data,
+        at offset: UInt64,
+        maxInFlight: Int
+    ) {}
+
+    func close() {}
+}
+
+private actor CancellableUploadSource: RemuxCitadelSFTPFile {
+    private var recordedWriteCount = 0
+    private var recordedCloseCount = 0
+
+    func readData(from offset: UInt64, length: UInt32) throws -> Data {
+        throw FakeCitadelSFTPConnectionError.unexpectedFileRead
+    }
+
+    func writeDataPipelined(
+        _ data: Data,
+        at offset: UInt64,
+        maxInFlight: Int
+    ) async throws {
+        recordedWriteCount += 1
+        try await Task.sleep(for: .seconds(30))
+    }
+
+    func close() {
+        recordedCloseCount += 1
+    }
+
+    func writeCount() -> Int {
+        recordedWriteCount
+    }
+
+    func closeCount() -> Int {
+        recordedCloseCount
+    }
+}
+
 private actor Int64Recorder {
     private var recordedValues: [Int64] = []
 
@@ -389,19 +520,26 @@ private actor FakeCitadelSFTPConnection: RemuxCitadelSFTPConnection {
     private let directoryFailures: [String: RemuxSFTPClientError]
     private let directoryDelay: Duration?
     private let readableFile: (any RemuxCitadelSFTPFile)?
+    private let writableFile: (any RemuxCitadelSFTPFile)?
+    private let mutationFailure: Error?
     private var recordedListedPaths: [String] = []
     private var recordedAttributePaths: [String] = []
+    private var recordedMutations: [Mutation] = []
 
     init(
         directoryResponses: [String: [RemuxCitadelSFTPDirectoryResponse]] = [:],
         directoryFailures: [String: RemuxSFTPClientError] = [:],
         directoryDelay: Duration? = nil,
-        readableFile: (any RemuxCitadelSFTPFile)? = nil
+        readableFile: (any RemuxCitadelSFTPFile)? = nil,
+        writableFile: (any RemuxCitadelSFTPFile)? = nil,
+        mutationFailure: Error? = nil
     ) {
         self.directoryResponses = directoryResponses
         self.directoryFailures = directoryFailures
         self.directoryDelay = directoryDelay
         self.readableFile = readableFile
+        self.writableFile = writableFile
+        self.mutationFailure = mutationFailure
     }
 
     func remuxRealPath(atPath path: String) -> String {
@@ -442,12 +580,33 @@ private actor FakeCitadelSFTPConnection: RemuxCitadelSFTPConnection {
     func remuxOpenFileForWriting(
         atPath path: String
     ) async throws -> any RemuxCitadelSFTPFile {
-        throw FakeCitadelSFTPConnectionError.unexpectedFileOpen
+        recordedMutations.append(.openWrite(path))
+        if let mutationFailure { throw mutationFailure }
+        guard let writableFile else {
+            throw FakeCitadelSFTPConnectionError.unexpectedFileOpen
+        }
+        return writableFile
     }
 
-    func remuxCreateDirectory(atPath path: String) {}
-    func remuxRename(from sourcePath: String, to destinationPath: String) {}
-    func remuxRemove(atPath path: String) {}
+    func remuxCreateDirectory(atPath path: String) throws {
+        recordedMutations.append(.mkdir(path))
+        if let mutationFailure { throw mutationFailure }
+    }
+
+    func remuxRename(from sourcePath: String, to destinationPath: String) throws {
+        recordedMutations.append(.rename(sourcePath, destinationPath))
+        if let mutationFailure { throw mutationFailure }
+    }
+
+    func remuxRemove(atPath path: String) throws {
+        recordedMutations.append(.removeFile(path))
+        if let mutationFailure { throw mutationFailure }
+    }
+
+    func remuxRemoveDirectory(atPath path: String) throws {
+        recordedMutations.append(.rmdir(path))
+        if let mutationFailure { throw mutationFailure }
+    }
 
     func listedPaths() -> [String] {
         recordedListedPaths
@@ -456,9 +615,22 @@ private actor FakeCitadelSFTPConnection: RemuxCitadelSFTPConnection {
     func attributePaths() -> [String] {
         recordedAttributePaths
     }
+
+    func mutations() -> [Mutation] {
+        recordedMutations
+    }
+
+    enum Mutation: Equatable {
+        case mkdir(String)
+        case openWrite(String)
+        case rename(String, String)
+        case removeFile(String)
+        case rmdir(String)
+    }
 }
 
 private enum FakeCitadelSFTPConnectionError: Error {
     case unexpectedFileOpen
+    case unexpectedFileRead
     case unexpectedFileWrite
 }

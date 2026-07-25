@@ -73,7 +73,9 @@ enum FileProviderErrorMapper {
                 )
             case .operationTimedOut, .sessionUnavailable:
                 return fileProviderError(.serverUnreachable)
-            case .invalidReadLength, .oversizedReadResult:
+            case .permissionDenied:
+                return writePermission
+            case .invalidReadLength, .oversizedReadResult, .unsupportedMutation:
                 break
             }
         }

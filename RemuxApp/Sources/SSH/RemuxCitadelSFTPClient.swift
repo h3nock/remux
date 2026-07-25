@@ -56,6 +56,7 @@ protocol RemuxCitadelSFTPConnection: Sendable {
     func remuxCreateDirectory(atPath path: String) async throws
     func remuxRename(from sourcePath: String, to destinationPath: String) async throws
     func remuxRemove(atPath path: String) async throws
+    func remuxRemoveDirectory(atPath path: String) async throws
 }
 
 extension SFTPClient: RemuxCitadelSFTPConnection {
@@ -112,9 +113,13 @@ extension SFTPClient: RemuxCitadelSFTPConnection {
     func remuxRemove(atPath path: String) async throws {
         try await remove(at: path)
     }
+
+    func remuxRemoveDirectory(atPath path: String) async throws {
+        try await rmdir(at: path)
+    }
 }
 
-struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
+struct RemuxCitadelSFTPClient: RemuxSFTPFileProviderClient, RemuxSFTPReadOnlyClient, RemuxSFTPUploadClient {
     private static let pipelinedWriteMaxInFlight = 64
 
     private let connection: any RemuxCitadelSFTPConnection
@@ -259,6 +264,16 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         }
     }
 
+    func createDirectory(atPath path: String) async throws {
+        do {
+            try await withOperationTimeout {
+                try await connection.remuxCreateDirectory(atPath: path)
+            }
+        } catch {
+            throw normalizedWriteError(error)
+        }
+    }
+
     func uploadFile(
         from localURL: URL,
         to remotePath: String,
@@ -269,7 +284,12 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
             try? localFile.close()
         }
 
-        let remoteFile = try await openRemoteFile(at: remotePath, mode: .write)
+        let remoteFile: any RemuxCitadelSFTPFile
+        do {
+            remoteFile = try await openRemoteFile(at: remotePath, mode: .write)
+        } catch {
+            throw normalizedWriteError(error)
+        }
 
         do {
             var offset: UInt64 = 0
@@ -296,16 +316,44 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
             throw RemuxSFTPClientError.operationTimedOut
         } catch {
             try? await closeRemoteFile(remoteFile)
-            throw error
+            throw normalizedWriteError(error)
         }
     }
 
     func renameFile(from temporaryPath: String, to finalPath: String) async throws {
-        try await withOperationTimeout {
-            try await connection.remuxRename(
-                from: temporaryPath,
-                to: finalPath
-            )
+        try await renameItem(from: temporaryPath, to: finalPath)
+    }
+
+    func renameItem(from sourcePath: String, to destinationPath: String) async throws {
+        do {
+            try await withOperationTimeout {
+                try await connection.remuxRename(
+                    from: sourcePath,
+                    to: destinationPath
+                )
+            }
+        } catch {
+            throw normalizedWriteError(error)
+        }
+    }
+
+    func removeFile(atPath path: String) async throws {
+        do {
+            try await withOperationTimeout {
+                try await connection.remuxRemove(atPath: path)
+            }
+        } catch {
+            throw normalizedWriteError(error)
+        }
+    }
+
+    func removeEmptyDirectory(atPath path: String) async throws {
+        do {
+            try await withOperationTimeout {
+                try await connection.remuxRemoveDirectory(atPath: path)
+            }
+        } catch {
+            throw normalizedWriteError(error)
         }
     }
 
@@ -416,6 +464,26 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
 
     private func normalizedReadError(_ error: Error, path: String) -> Error {
         isNoSuchFile(error) ? RemuxSFTPClientError.noSuchFile(path) : error
+    }
+
+    static func normalizedWriteError(for statusCode: SFTPStatusCode) -> RemuxSFTPClientError? {
+        switch statusCode {
+        case .permissionDenied:
+            return .permissionDenied
+        case .failure:
+            return .unsupportedMutation
+        default:
+            return nil
+        }
+    }
+
+    private func normalizedWriteError(_ error: Error) -> Error {
+        guard case .errorStatus(let status) = error as? SFTPError,
+              let normalizedError = Self.normalizedWriteError(for: status.errorCode)
+        else {
+            return error
+        }
+        return normalizedError
     }
 }
 
