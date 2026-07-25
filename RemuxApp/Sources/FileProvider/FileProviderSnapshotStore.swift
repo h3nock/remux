@@ -147,15 +147,15 @@ actor FileProviderSnapshotStore {
         var directories = state.generations.last?.directories ?? []
         let previousItems = try state.generations.last?.workingSetItems() ?? []
 
+        pruneDeletedIdentities(
+            localMutation.deletedIdentities,
+            from: &directories
+        )
         try apply(
             localMutation.relocations,
             to: &directories
         )
         _ = try workingSetItems(in: directories)
-        pruneDeletedIdentities(
-            localMutation.deletedIdentities,
-            from: &directories
-        )
         try validateIdentityReservations(
             localMutation.identityReservations,
             in: directories

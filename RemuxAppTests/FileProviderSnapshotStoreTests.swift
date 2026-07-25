@@ -312,6 +312,36 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(items, baseline.items)
     }
 
+    func testRelocationOntoDeletedIdentityRetainsMovedItem() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let old = try item(path: "old.txt")
+        let new = try item(path: "new.txt")
+        let baseline = try await store.record(directory: .root, items: [old, new])
+        let oldIdentity = try XCTUnwrap(
+            baseline.items.first(where: { $0.remoteItem.path == old.path })?.identity
+        )
+        let deletedIdentity = try XCTUnwrap(
+            baseline.items.first(where: { $0.remoteItem.path == new.path })?.identity
+        )
+
+        let moved = try await store.commit(
+            localMutation: .init(
+                refreshedDirectories: [.init(directory: .root, items: [new])],
+                relocations: [.init(
+                    identity: oldIdentity,
+                    from: old.path,
+                    to: new.path
+                )],
+                deletedIdentities: [deletedIdentity]
+            )
+        )
+
+        XCTAssertEqual(moved.items.map(\.identity), [oldIdentity])
+        XCTAssertEqual(moved.items.map(\.remoteItem), [new])
+        let path = try await store.path(for: oldIdentity.itemIdentifier)
+        XCTAssertEqual(path, new.path)
+    }
+
     func testRemoteRenameUsesDeleteAndNewIdentity() async throws {
         let ids = FileProviderTestIdentitySequence([
             UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!,
