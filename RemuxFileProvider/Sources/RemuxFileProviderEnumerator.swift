@@ -145,7 +145,8 @@ struct RemuxFileProviderManagerSignaler: FileProviderEnumeratorSignaling, @unche
         for identifier: NSFileProviderItemIdentifier
     ) async throws {
         try Task.checkCancellation()
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
             manager.signalEnumerator(for: identifier) { error in
                 if let error {
                     continuation.resume(throwing: error)
