@@ -99,7 +99,10 @@
 		788809E168360F97EF516ADF /* GhosttyAttachmentTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = B94CC628E68FDC18E59E9D79 /* GhosttyAttachmentTray.swift */; };
 		7BA64A5EF27BE1C503CAC3B8 /* FileProviderSharedStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEAB20D60BA0EDED606847A /* FileProviderSharedStorageTests.swift */; };
 		A31E0BB1D0A1000000000003 /* FileProviderDomainReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000004 /* FileProviderDomainReconciler.swift */; };
+		A31E0BB1D0A1000000000013 /* FileProviderRemotePath.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000014 /* FileProviderRemotePath.swift */; };
+		A31E0BB1D0A1000000000015 /* FileProviderRemoteItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000016 /* FileProviderRemoteItem.swift */; };
 		A31E0BB1D0A1000000000001 /* FileProviderDomainReconcilerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000002 /* FileProviderDomainReconcilerTests.swift */; };
+		A31E0BB1D0A1000000000011 /* FileProviderRemoteItemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000012 /* FileProviderRemoteItemTests.swift */; };
 		5A2905347098F9AA4332B001 /* FileProviderSharedStorageMigrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A2905347098F9AA4332B002 /* FileProviderSharedStorageMigrator.swift */; };
 		5A2905347098F9AA4332B003 /* FileProviderSharedStorageMigratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A2905347098F9AA4332B004 /* FileProviderSharedStorageMigratorTests.swift */; };
 		7C99EDFDCE3B0927D26C1029 /* GhosttyAttachmentPasteboardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84DD89E37AC083383B988185 /* GhosttyAttachmentPasteboardSnapshotTests.swift */; };
@@ -289,7 +292,10 @@
 		6B657FFBCF25A6A1A77FD231 /* GhosttyAttachmentImagePreviewDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyAttachmentImagePreviewDataTests.swift; sourceTree = "<group>"; };
 		6BEAB20D60BA0EDED606847A /* FileProviderSharedStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSharedStorageTests.swift; sourceTree = "<group>"; };
 		A31E0BB1D0A1000000000004 /* FileProviderDomainReconciler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderDomainReconciler.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A1000000000014 /* FileProviderRemotePath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderRemotePath.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A1000000000016 /* FileProviderRemoteItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderRemoteItem.swift; sourceTree = "<group>"; };
 		A31E0BB1D0A1000000000002 /* FileProviderDomainReconcilerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderDomainReconcilerTests.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A1000000000012 /* FileProviderRemoteItemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderRemoteItemTests.swift; sourceTree = "<group>"; };
 		5A2905347098F9AA4332B002 /* FileProviderSharedStorageMigrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSharedStorageMigrator.swift; sourceTree = "<group>"; };
 		5A2905347098F9AA4332B004 /* FileProviderSharedStorageMigratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSharedStorageMigratorTests.swift; sourceTree = "<group>"; };
 		7001FC8A87E77C3617046DA7 /* GhosttyRuntimeTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyRuntimeTrace.swift; sourceTree = "<group>"; };
@@ -470,6 +476,8 @@
 			isa = PBXGroup;
 			children = (
 				A31E0BB1D0A1000000000004 /* FileProviderDomainReconciler.swift */,
+				A31E0BB1D0A1000000000014 /* FileProviderRemotePath.swift */,
+				A31E0BB1D0A1000000000016 /* FileProviderRemoteItem.swift */,
 			);
 			path = FileProvider;
 			sourceTree = "<group>";
@@ -481,6 +489,7 @@
 				DFD9AF0371D15A892B000530 /* DebugConnectionProfileSeederTests.swift */,
 				6BEAB20D60BA0EDED606847A /* FileProviderSharedStorageTests.swift */,
 				A31E0BB1D0A1000000000002 /* FileProviderDomainReconcilerTests.swift */,
+				A31E0BB1D0A1000000000012 /* FileProviderRemoteItemTests.swift */,
 				5A2905347098F9AA4332B004 /* FileProviderSharedStorageMigratorTests.swift */,
 				2A1CB6877AF169792137FA56 /* GhosttyAttachmentImageMarkupRendererTests.swift */,
 				6B657FFBCF25A6A1A77FD231 /* GhosttyAttachmentImagePreviewDataTests.swift */,
@@ -868,6 +877,8 @@
 				3F71D9F3D7782DCD769CF47E /* ApplicationStorage.swift in Sources */,
 				E35A4C6758E1D06E01EE5826 /* ConnectionProfileRepository.swift in Sources */,
 				A31E0BB1D0A1000000000003 /* FileProviderDomainReconciler.swift in Sources */,
+				A31E0BB1D0A1000000000013 /* FileProviderRemotePath.swift in Sources */,
+				A31E0BB1D0A1000000000015 /* FileProviderRemoteItem.swift in Sources */,
 				5A2905347098F9AA4332B001 /* FileProviderSharedStorageMigrator.swift in Sources */,
 				39A58132CBB849E2CDF37BC2 /* DebugConnectionProfileSeeder.swift in Sources */,
 				3266F0AE9A1F836618FF115D /* DeterministicTmuxControlTransport.swift in Sources */,
@@ -995,6 +1006,7 @@
 				434C420D221F1CAF2A633602 /* DebugConnectionProfileSeederTests.swift in Sources */,
 				7BA64A5EF27BE1C503CAC3B8 /* FileProviderSharedStorageTests.swift in Sources */,
 				A31E0BB1D0A1000000000001 /* FileProviderDomainReconcilerTests.swift in Sources */,
+				A31E0BB1D0A1000000000011 /* FileProviderRemoteItemTests.swift in Sources */,
 				5A2905347098F9AA4332B003 /* FileProviderSharedStorageMigratorTests.swift in Sources */,
 				EE488E8B043F3160004A3C20 /* GhosttyAttachmentImageMarkupRendererTests.swift in Sources */,
 				BCFDD04E99F80E73053BE38A /* GhosttyAttachmentImagePreviewDataTests.swift in Sources */,
