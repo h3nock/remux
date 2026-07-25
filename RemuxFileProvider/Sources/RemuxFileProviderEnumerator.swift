@@ -67,7 +67,7 @@ final class RemuxFileProviderEnumerator:
                 case .success(let enumeration):
                     observer.value.didEnumerate(
                         enumeration.items.map {
-                            RemuxFileProviderItem(
+                            FileProviderSDKItem(
                                 projection: FileProviderItemProjection(
                                     item: $0,
                                     rootDisplayName: rootDisplayName
@@ -99,7 +99,7 @@ final class RemuxFileProviderEnumerator:
                 case .success(let changes):
                     observer.value.didUpdate(
                         changes.updated.map {
-                            RemuxFileProviderItem(
+                            FileProviderSDKItem(
                                 projection: FileProviderItemProjection(
                                     item: $0,
                                     rootDisplayName: rootDisplayName

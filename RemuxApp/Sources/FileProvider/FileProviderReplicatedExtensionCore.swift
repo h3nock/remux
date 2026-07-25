@@ -149,7 +149,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         completion: (NSError) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        completion(FileProviderReadOnlyMutationPolicy.rejection)
+        completion(FileProviderErrorMapper.writePermission)
         progress.completedUnitCount = 1
         return progress
     }

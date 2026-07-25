@@ -8,14 +8,6 @@ import XCTest
 @testable import Remux
 
 final class RemuxFileProviderContractTests: XCTestCase {
-    func testReadOnlyMutationPolicyReturnsWritePermission() {
-        let error = FileProviderReadOnlyMutationPolicy.rejection
-
-        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
-        XCTAssertEqual(error.code, NSFileWriteNoPermissionError)
-        XCTAssertTrue(error.userInfo.isEmpty)
-    }
-
     func testRequestProgressCancellationCancelsWorkAndCompletesExactlyOnce() async {
         let controller = FileProviderRequestController()
         let state = FileProviderTestRequestState()
@@ -179,7 +171,10 @@ final class RemuxFileProviderContractTests: XCTestCase {
         }
         XCTAssertEqual(projection.itemIdentifier, identifier)
         XCTAssertEqual(projection.filename, "report.txt")
-        XCTAssertEqual(projection.capabilities, [.allowsReading])
+        XCTAssertEqual(
+            projection.capabilities,
+            [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        )
         let itemPaths = await service.itemPaths()
         XCTAssertEqual(itemPaths, [remoteItem.path])
     }
@@ -1284,7 +1279,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(finishedAfterRelease)
     }
 
-    func testItemProjectionExposesReadOnlyFileProviderMetadata() throws {
+    func testItemProjectionExposesWritableFileProviderMetadata() throws {
         let remoteItem = try FileProviderRemoteItem(
             path: FileProviderRemotePath(relative: "folder/report.txt"),
             metadata: RemuxSFTPFileMetadata(
@@ -1321,7 +1316,10 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(projection.contentType, .plainText)
         XCTAssertEqual(projection.documentSize, 42)
         XCTAssertEqual(projection.contentModificationDate, Date(timeIntervalSince1970: 800))
-        XCTAssertEqual(projection.capabilities, [.allowsReading])
+        XCTAssertEqual(
+            projection.capabilities,
+            [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        )
         XCTAssertEqual(
             projection.itemVersion.contentVersion,
             remoteItem.contentVersion

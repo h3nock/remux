@@ -2,7 +2,7 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-final class RemuxFileProviderItem: NSObject, NSFileProviderItem {
+final class FileProviderSDKItem: NSObject, NSFileProviderItem {
     let itemIdentifier: NSFileProviderItemIdentifier
     let parentItemIdentifier: NSFileProviderItemIdentifier
     let filename: String
@@ -24,5 +24,14 @@ final class RemuxFileProviderItem: NSObject, NSFileProviderItem {
         self.itemVersion = projection.itemVersion
         self.symlinkTargetPath = projection.symlinkTargetPath
         super.init()
+    }
+
+    convenience init(item: FileProviderIdentifiedItem, rootDisplayName: String) {
+        self.init(
+            projection: FileProviderItemProjection(
+                item: item,
+                rootDisplayName: rootDisplayName
+            )
+        )
     }
 }

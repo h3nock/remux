@@ -129,6 +129,58 @@ final class FileProviderErrorMapperTests: XCTestCase {
         XCTAssertTrue(mapped.userInfo.isEmpty)
     }
 
+    func testErrorMapperProducesWritableMutationErrors() throws {
+        let item = FileProviderSDKItem(
+            item: try identifiedItem(),
+            rootDisplayName: "Fixture"
+        )
+
+        let collision = FileProviderErrorMapper.filenameCollision(existingItem: item)
+        XCTAssertEqual(collision.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(collision.code, NSFileProviderError.filenameCollision.rawValue)
+        XCTAssertEqual(
+            (collision.userInfo[NSFileProviderErrorItemKey] as? FileProviderSDKItem)?.itemIdentifier,
+            item.itemIdentifier
+        )
+
+        let rejectedDeletion = FileProviderErrorMapper.deletionRejected(updatedItem: item)
+        XCTAssertEqual(rejectedDeletion.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(rejectedDeletion.code, NSFileProviderError.deletionRejected.rawValue)
+        XCTAssertEqual(
+            (rejectedDeletion.userInfo[NSFileProviderErrorItemKey] as? FileProviderSDKItem)?.itemIdentifier,
+            item.itemIdentifier
+        )
+
+        XCTAssertEqual(FileProviderErrorMapper.directoryNotEmpty.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(
+            FileProviderErrorMapper.directoryNotEmpty.code,
+            NSFileProviderError.directoryNotEmpty.rawValue
+        )
+        XCTAssertEqual(FileProviderErrorMapper.cannotSynchronize.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(
+            FileProviderErrorMapper.cannotSynchronize.code,
+            NSFileProviderError.cannotSynchronize.rawValue
+        )
+        XCTAssertEqual(FileProviderErrorMapper.writePermission.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(FileProviderErrorMapper.writePermission.code, NSFileWriteNoPermissionError)
+    }
+
+    private func identifiedItem() throws -> FileProviderIdentifiedItem {
+        FileProviderIdentifiedItem(
+            identity: .item(UUID()),
+            parentIdentity: .root,
+            remoteItem: try FileProviderRemoteItem(
+                path: FileProviderRemotePath(relative: "report.txt"),
+                metadata: RemuxSFTPFileMetadata(
+                    size: 1,
+                    permissions: 0o100644,
+                    modificationDate: Date(timeIntervalSince1970: 1),
+                    type: .regular
+                )
+            )
+        )
+    }
+
     private var unknownTrustChallenge: SSHHostKeyTrustChallenge {
         SSHHostKeyTrustChallenge(
             kind: .unknown,

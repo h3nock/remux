@@ -38,7 +38,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
         return setup.extensionCore.item(for: identifier) { result in
             switch result {
             case .success(let projection):
-                completion.value(RemuxFileProviderItem(projection: projection), nil)
+                completion.value(FileProviderSDKItem(projection: projection), nil)
             case .failure(let error):
                 completion.value(nil, error)
             }
@@ -62,7 +62,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             case .success(let fetched):
                 completion.value(
                     fetched.localURL,
-                    RemuxFileProviderItem(projection: fetched.item),
+                    FileProviderSDKItem(projection: fetched.item),
                     nil
                 )
             case .failure(let error):
@@ -173,7 +173,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             return setup.extensionCore.rejectMutation(completion: completion)
         }
         return completedFailure {
-            completion(FileProviderReadOnlyMutationPolicy.rejection)
+            completion(FileProviderErrorMapper.writePermission)
         }
     }
 
