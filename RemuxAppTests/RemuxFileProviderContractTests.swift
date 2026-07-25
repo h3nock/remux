@@ -112,6 +112,43 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(finishedAfterRelease)
     }
 
+    func testRequestStartedAfterInvalidationIsRejectedWithoutRunningOperation() async {
+        let controller = FileProviderRequestController()
+        let invocations = FileProviderTestInvocationCounter()
+        let completions = FileProviderTestCompletionRecorder<Int>()
+        let drained = FileProviderTestCompletionFlag()
+        controller.invalidate {
+            await drained.finish()
+        }
+
+        let progress = controller.perform(
+            operation: {
+                await invocations.record()
+            },
+            completion: { result in
+                Task {
+                    await completions.record(result)
+                }
+            }
+        )
+
+        await completions.waitForFirst()
+        let didDrain = await drained.waitUntilFinished(timeout: .seconds(1))
+        let invocationCount = await invocations.count()
+        let results = await completions.results()
+        XCTAssertEqual(invocationCount, 0)
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected invalidation to reject the request")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+        XCTAssertEqual(progress.totalUnitCount, 1)
+        XCTAssertEqual(progress.completedUnitCount, 1)
+        XCTAssertTrue(didDrain)
+    }
+
     func testExtensionCoreItemLookupDecodesIdentifierAndProjectsResult() async throws {
         let remoteItem = try fileProviderTestItem(relative: "folder/report.txt", size: 42)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
@@ -1084,6 +1121,19 @@ private actor FileProviderTestRequestState {
 
     func wasCancelled() -> Bool {
         cancellationObserved
+    }
+}
+
+private actor FileProviderTestInvocationCounter {
+    private var invocationCount = 0
+
+    func record() -> Int {
+        invocationCount += 1
+        return invocationCount
+    }
+
+    func count() -> Int {
+        invocationCount
     }
 }
 

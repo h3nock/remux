@@ -15,12 +15,20 @@ final class FileProviderRequestController: @unchecked Sendable {
         completion: @escaping @Sendable (Result<Value, NSError>) -> Void
     ) -> Progress {
         let requestID = UUID()
-        let request = FileProviderRequestTask()
-        let shouldCancel = lock.withLock {
-            guard !isInvalidated else { return true }
+        let request: FileProviderRequestTask? = lock.withLock {
+            guard !isInvalidated else { return nil }
+            let request = FileProviderRequestTask()
             requests[requestID] = request
-            return false
+            return request
         }
+        guard let request else {
+            let progress = Progress(totalUnitCount: 1)
+            progress.isCancellable = false
+            completion(.failure(errorMapper(CancellationError())))
+            progress.completedUnitCount = 1
+            return progress
+        }
+
         let progress = Progress(totalUnitCount: -1)
         progress.isCancellable = true
         progress.cancellationHandler = {
@@ -48,9 +56,6 @@ final class FileProviderRequestController: @unchecked Sendable {
             self.remove(requestID)
         }
         request.install(task)
-        if shouldCancel {
-            request.cancel()
-        }
         return progress
     }
 
