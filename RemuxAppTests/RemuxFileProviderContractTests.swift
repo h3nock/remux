@@ -712,6 +712,38 @@ final class RemuxFileProviderContractTests: XCTestCase {
         loop.invalidate()
     }
 
+    func testPollingLoopStartsRefreshesOnFiveSecondCadenceWhenRefreshTakesTime() async {
+        let refreshes = FileProviderTestRefreshCounter()
+        let clock = FileProviderTestPollingClock()
+        let loop = FileProviderPollingLoop(
+            clock: clock,
+            refresh: {
+                await clock.recordRefreshStart()
+                await clock.elapse(.seconds(2))
+                await refreshes.record()
+            }
+        )
+
+        loop.start()
+        await refreshes.wait(for: 1)
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        let durations = await clock.requestedDurations()
+        XCTAssertEqual(durations, [.seconds(3)])
+        guard !durations.isEmpty else {
+            loop.invalidate()
+            return
+        }
+
+        await clock.advance()
+        await refreshes.wait(for: 2)
+
+        let startTimes = await clock.recordedRefreshStartTimes()
+        XCTAssertEqual(startTimes, [.zero, .seconds(5)])
+        loop.invalidate()
+    }
+
     func testPollingLoopInvalidationCancelsCurrentRefresh() async {
         let gate = FileProviderTestRefreshGate()
         let clock = FileProviderTestPollingClock()
@@ -1160,11 +1192,18 @@ private actor FileProviderTestRefreshCounter {
 private actor FileProviderTestPollingClock: FileProviderPollingClock {
     private struct Waiter {
         let id: UUID
+        let duration: Duration
         let continuation: CheckedContinuation<Void, Error>
     }
 
+    private var currentTime: Duration = .zero
     private var durations: [Duration] = []
+    private var refreshStartTimes: [Duration] = []
     private var waiters: [Waiter] = []
+
+    func now() -> Duration {
+        currentTime
+    }
 
     func sleep(for duration: Duration) async throws {
         try Task.checkCancellation()
@@ -1172,7 +1211,13 @@ private actor FileProviderTestPollingClock: FileProviderPollingClock {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 durations.append(duration)
-                waiters.append(Waiter(id: id, continuation: continuation))
+                waiters.append(
+                    Waiter(
+                        id: id,
+                        duration: duration,
+                        continuation: continuation
+                    )
+                )
             }
         } onCancel: {
             Task {
@@ -1185,9 +1230,22 @@ private actor FileProviderTestPollingClock: FileProviderPollingClock {
         durations
     }
 
+    func recordRefreshStart() {
+        refreshStartTimes.append(currentTime)
+    }
+
+    func recordedRefreshStartTimes() -> [Duration] {
+        refreshStartTimes
+    }
+
+    func elapse(_ duration: Duration) {
+        currentTime += duration
+    }
+
     func advance() {
         guard !waiters.isEmpty else { return }
         let waiter = waiters.removeFirst()
+        currentTime += waiter.duration
         waiter.continuation.resume()
     }
 

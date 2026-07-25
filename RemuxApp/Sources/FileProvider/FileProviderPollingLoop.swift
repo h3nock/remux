@@ -1,10 +1,17 @@
 import Foundation
 
 protocol FileProviderPollingClock: Sendable {
+    func now() async -> Duration
     func sleep(for duration: Duration) async throws
 }
 
 struct ContinuousFileProviderPollingClock: FileProviderPollingClock {
+    private let origin = ContinuousClock.now
+
+    func now() async -> Duration {
+        origin.duration(to: ContinuousClock.now)
+    }
+
     func sleep(for duration: Duration) async throws {
         try await Task.sleep(for: duration)
     }
@@ -33,6 +40,7 @@ final class FileProviderPollingLoop: @unchecked Sendable {
             guard task == nil else { return }
             task = Task {
                 while !Task.isCancelled {
+                    let startedAt = await clock.now()
                     do {
                         try await refresh()
                     } catch is CancellationError {
@@ -41,8 +49,13 @@ final class FileProviderPollingLoop: @unchecked Sendable {
                     }
 
                     guard !Task.isCancelled else { return }
+                    let elapsed = await clock.now() - startedAt
+                    let remaining = Self.interval - elapsed
+                    guard remaining > .zero else {
+                        continue
+                    }
                     do {
-                        try await clock.sleep(for: Self.interval)
+                        try await clock.sleep(for: remaining)
                     } catch is CancellationError {
                         return
                     } catch {
