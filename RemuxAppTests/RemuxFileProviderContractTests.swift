@@ -366,6 +366,102 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertFalse(networkWasCancelled)
     }
 
+    func testCancellingCoalescedRequesterReturnsBeforeSharedRefreshFinishes() async throws {
+        let coordinator = FileProviderPollingCoordinator()
+        let gate = FileProviderTestRefreshGate()
+        let completion = FileProviderTestCompletionFlag()
+        let directory = try FileProviderRemotePath(relative: "coalesced")
+        let items = [
+            try fileProviderTestItem(relative: "coalesced/item.txt", size: 1),
+        ]
+        let first = Task {
+            try await coordinator.refresh(directory: directory) {
+                try await gate.beginCancellableAndWait()
+                return items
+            }
+        }
+        await gate.waitUntilStarted()
+        let second = Task {
+            do {
+                let result = try await coordinator.refresh(directory: directory) {
+                    await gate.recordUnexpectedOperation()
+                    return []
+                }
+                await completion.finish()
+                return result
+            } catch {
+                await completion.finish()
+                throw error
+            }
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        second.cancel()
+
+        let didFinishBeforeRefresh = await completion.waitUntilFinished(
+            timeout: .seconds(1)
+        )
+        let networkWasCancelled = await gate.wasCancelled()
+        await gate.release()
+
+        let firstResult = try await first.value
+        await XCTAssertFileProviderThrowsAsync { try await second.value }
+        XCTAssertTrue(didFinishBeforeRefresh)
+        XCTAssertEqual(firstResult, items)
+        XCTAssertFalse(networkWasCancelled)
+    }
+
+    func testCancellingRequesterWaitingForAnotherDirectoryReturnsBeforeSharedRefreshFinishes() async throws {
+        let coordinator = FileProviderPollingCoordinator()
+        let gate = FileProviderTestRefreshGate()
+        let completion = FileProviderTestCompletionFlag()
+        let firstDirectory = try FileProviderRemotePath(relative: "first")
+        let secondDirectory = try FileProviderRemotePath(relative: "second")
+        let firstItems = [
+            try fileProviderTestItem(relative: "first/item.txt", size: 1),
+        ]
+        let first = Task {
+            try await coordinator.refresh(directory: firstDirectory) {
+                try await gate.beginCancellableAndWait()
+                return firstItems
+            }
+        }
+        await gate.waitUntilStarted()
+        let second = Task {
+            do {
+                let result = try await coordinator.refresh(directory: secondDirectory) {
+                    await gate.recordUnexpectedOperation()
+                    return []
+                }
+                await completion.finish()
+                return result
+            } catch {
+                await completion.finish()
+                throw error
+            }
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        second.cancel()
+
+        let didFinishBeforeRefresh = await completion.waitUntilFinished(
+            timeout: .seconds(1)
+        )
+        let networkWasCancelled = await gate.wasCancelled()
+        await gate.release()
+
+        _ = try await first.value
+        await XCTAssertFileProviderThrowsAsync { try await second.value }
+        let operationCount = await gate.operationCount()
+        XCTAssertTrue(didFinishBeforeRefresh)
+        XCTAssertFalse(networkWasCancelled)
+        XCTAssertEqual(operationCount, 1)
+    }
+
     func testEnumeratorCoreRefreshesImmediatelyAndRecordsTerminalPage() async throws {
         let home = "/home/reader"
         let metadata = RemuxSFTPFileMetadata(
@@ -678,6 +774,34 @@ private actor FileProviderTestCompletionRecorder<Value: Sendable> {
 
     func results() -> [Result<Value, NSError>] {
         recordedResults
+    }
+}
+
+private actor FileProviderTestCompletionFlag {
+    private var finished = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+
+    func finish() {
+        finished = true
+        let waiters = self.waiters.values
+        self.waiters.removeAll()
+        waiters.forEach { $0.resume(returning: true) }
+    }
+
+    func waitUntilFinished(timeout: Duration) async -> Bool {
+        guard !finished else { return true }
+        let waiterID = UUID()
+        return await withCheckedContinuation { continuation in
+            waiters[waiterID] = continuation
+            Task {
+                try? await Task.sleep(for: timeout)
+                timeOut(waiterID: waiterID)
+            }
+        }
+    }
+
+    private func timeOut(waiterID: UUID) {
+        waiters.removeValue(forKey: waiterID)?.resume(returning: false)
     }
 }
 

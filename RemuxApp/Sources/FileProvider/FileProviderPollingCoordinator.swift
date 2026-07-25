@@ -5,7 +5,10 @@ actor FileProviderPollingCoordinator {
         let id: UUID
         let directory: FileProviderRemotePath
         let task: Task<[FileProviderRemoteItem], Error>
-        var waiterIDs: Set<UUID>
+        var refreshWaiters: [
+            UUID: CheckedContinuation<[FileProviderRemoteItem], Error>
+        ]
+        var turnWaiters: [UUID: CheckedContinuation<Void, Error>]
     }
 
     private var inFlight: InFlight?
@@ -17,15 +20,18 @@ actor FileProviderPollingCoordinator {
         try Task.checkCancellation()
         let waiterID = UUID()
 
-        if var inFlight {
+        if let inFlight {
             if inFlight.directory == directory {
-                inFlight.waiterIDs.insert(waiterID)
-                self.inFlight = inFlight
-                return try await waitForRefresh(inFlight, waiterID: waiterID)
+                return try await waitForRefresh(
+                    inFlightID: inFlight.id,
+                    waiterID: waiterID
+                )
             }
 
-            _ = try? await inFlight.task.value
-            clearInFlight(id: inFlight.id)
+            try await waitForTurn(
+                inFlightID: inFlight.id,
+                waiterID: waiterID
+            )
             try Task.checkCancellation()
             return try await refresh(directory: directory, operation: operation)
         }
@@ -38,51 +44,122 @@ actor FileProviderPollingCoordinator {
             id: id,
             directory: directory,
             task: task,
-            waiterIDs: [waiterID]
+            refreshWaiters: [:],
+            turnWaiters: [:]
         )
         self.inFlight = inFlight
-        return try await waitForRefresh(inFlight, waiterID: waiterID)
-    }
-
-    private func clearInFlight(id: UUID) {
-        guard inFlight?.id == id else { return }
-        inFlight = nil
+        Task {
+            let result = await task.result
+            completeRefresh(inFlightID: id, result: result)
+        }
+        return try await waitForRefresh(
+            inFlightID: id,
+            waiterID: waiterID
+        )
     }
 
     private func waitForRefresh(
-        _ inFlight: InFlight,
+        inFlightID: UUID,
         waiterID: UUID
     ) async throws -> [FileProviderRemoteItem] {
-        do {
-            let items = try await withTaskCancellationHandler {
-                try await inFlight.task.value
-            } onCancel: {
-                Task {
-                    await self.cancelWaiter(
-                        inFlightID: inFlight.id,
-                        waiterID: waiterID
-                    )
-                }
-            }
-            clearInFlight(id: inFlight.id)
+        let items: [FileProviderRemoteItem] = try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            return items
-        } catch {
-            clearInFlight(id: inFlight.id)
-            throw error
+            return try await withCheckedThrowingContinuation { continuation in
+                guard var inFlight,
+                      inFlight.id == inFlightID
+                else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                inFlight.refreshWaiters[waiterID] = continuation
+                self.inFlight = inFlight
+            }
+        } onCancel: {
+            Task {
+                await self.cancelRefreshWaiter(
+                    inFlightID: inFlightID,
+                    waiterID: waiterID
+                )
+            }
         }
+        try Task.checkCancellation()
+        return items
     }
 
-    private func cancelWaiter(inFlightID: UUID, waiterID: UUID) {
+    private func waitForTurn(
+        inFlightID: UUID,
+        waiterID: UUID
+    ) async throws {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                guard var inFlight,
+                      inFlight.id == inFlightID
+                else {
+                    continuation.resume()
+                    return
+                }
+
+                inFlight.turnWaiters[waiterID] = continuation
+                self.inFlight = inFlight
+            }
+        } onCancel: {
+            Task {
+                await self.cancelTurnWaiter(
+                    inFlightID: inFlightID,
+                    waiterID: waiterID
+                )
+            }
+        }
+        try Task.checkCancellation()
+    }
+
+    private func cancelRefreshWaiter(inFlightID: UUID, waiterID: UUID) {
         guard var inFlight,
               inFlight.id == inFlightID,
-              inFlight.waiterIDs.remove(waiterID) != nil
+              let continuation = inFlight.refreshWaiters.removeValue(
+                forKey: waiterID
+              )
         else {
             return
         }
         self.inFlight = inFlight
-        if inFlight.waiterIDs.isEmpty {
+        continuation.resume(throwing: CancellationError())
+        if inFlight.refreshWaiters.isEmpty {
             inFlight.task.cancel()
+        }
+    }
+
+    private func cancelTurnWaiter(inFlightID: UUID, waiterID: UUID) {
+        guard var inFlight,
+              inFlight.id == inFlightID,
+              let continuation = inFlight.turnWaiters.removeValue(
+                forKey: waiterID
+              )
+        else {
+            return
+        }
+        self.inFlight = inFlight
+        continuation.resume(throwing: CancellationError())
+    }
+
+    private func completeRefresh(
+        inFlightID: UUID,
+        result: Result<[FileProviderRemoteItem], Error>
+    ) {
+        guard let inFlight,
+              inFlight.id == inFlightID
+        else {
+            return
+        }
+
+        self.inFlight = nil
+        inFlight.refreshWaiters.values.forEach {
+            $0.resume(with: result)
+        }
+        inFlight.turnWaiters.values.forEach {
+            $0.resume()
         }
     }
 }
