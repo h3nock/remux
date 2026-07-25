@@ -222,6 +222,92 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(fetchURLs, [fetched.localURL])
     }
 
+    func testFetchProgressTracksRemoteSizeAndCumulativeBytesUntilSuccess() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderProgressRemoteService(item: remoteItem)
+        let completions =
+            FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = FileProviderItemIdentifierCodec().identifier(
+            for: remoteItem.path
+        )
+
+        let progress = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await service.waitUntilPartialProgress()
+
+        XCTAssertEqual(progress.totalUnitCount, 8)
+        XCTAssertEqual(progress.completedUnitCount, 3)
+        XCTAssertFalse(progress.isFinished)
+
+        await service.finishFetch()
+        await completions.waitForFirst()
+
+        XCTAssertEqual(progress.totalUnitCount, 8)
+        XCTAssertEqual(progress.completedUnitCount, 8)
+        XCTAssertTrue(progress.isFinished)
+        let results = await completions.results()
+        guard case .success = results.first else {
+            XCTFail("Expected fetch to succeed")
+            return
+        }
+    }
+
+    func testSuccessfulEmptyFetchCompletesProgress() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "empty.txt", size: 0)
+        let service = FileProviderEmptyFetchRemoteService(item: remoteItem)
+        let completions =
+            FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = FileProviderItemIdentifierCodec().identifier(
+            for: remoteItem.path
+        )
+
+        let progress = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await completions.waitForFirst()
+
+        XCTAssertEqual(progress.totalUnitCount, 1)
+        XCTAssertEqual(progress.completedUnitCount, 1)
+        XCTAssertTrue(progress.isFinished)
+    }
+
     func testFetchCancellationAfterRemoteSuccessRemovesTemporaryFile() async throws {
         let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
         let service = FileProviderDelayedFetchRemoteService(item: remoteItem)
@@ -1230,6 +1316,90 @@ final class RemuxFileProviderContractTests: XCTestCase {
     }
 }
 
+private actor FileProviderEmptyFetchRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        try Data().write(to: localURL)
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 0,
+                completedByteCount: 0
+            )
+        )
+        return returnedItem
+    }
+
+    func invalidate() {
+    }
+}
+
+private actor FileProviderProgressRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private let partialProgressGate = FileProviderTestRefreshGate()
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 8,
+                completedByteCount: 3
+            )
+        )
+        await partialProgressGate.beginAndWait()
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 8,
+                completedByteCount: 6
+            )
+        )
+        try Data("contents".utf8).write(to: localURL)
+        return returnedItem
+    }
+
+    func waitUntilPartialProgress() async {
+        await partialProgressGate.waitUntilStarted()
+    }
+
+    func finishFetch() async {
+        await partialProgressGate.release()
+    }
+
+    func invalidate() {
+    }
+}
+
 private actor FileProviderTestRequestState {
     private var started = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1349,11 +1519,16 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
     func fetch(
         path: FileProviderRemotePath,
         to localURL: URL,
-        progress: @escaping @Sendable (Int64) async -> Void
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
     ) async throws -> FileProviderRemoteItem {
         recordedFetchURLs.append(localURL)
         try Data("contents".utf8).write(to: localURL)
-        await progress(8)
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 8,
+                completedByteCount: 8
+            )
+        )
         return returnedItem
     }
 
@@ -1414,7 +1589,7 @@ private actor FileProviderDelayedFetchRemoteService: FileProviderRemoteServicing
     func fetch(
         path: FileProviderRemotePath,
         to localURL: URL,
-        progress: @escaping @Sendable (Int64) async -> Void
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
     ) async throws -> FileProviderRemoteItem {
         try Data("contents".utf8).write(to: localURL)
         createdURL = localURL
@@ -1507,7 +1682,7 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     func fetch(
         path: FileProviderRemotePath,
         to localURL: URL,
-        progress: @escaping @Sendable (Int64) async -> Void
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
     ) throws -> FileProviderRemoteItem {
         throw RemuxSFTPClientError.noSuchFile(path.relative)
     }

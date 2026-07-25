@@ -63,7 +63,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
             errorMapper: {
                 FileProviderErrorMapper.map($0, itemIdentifier: identifier)
             },
-            operation: {
+            progressOperation: { progress in
                 let path = try self.identifierCodec.path(for: identifier)
                 let temporaryDirectory = try self.temporaryDirectoryURL()
                 let localURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -72,8 +72,15 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                     let item = try await self.service.fetch(
                         path: path,
                         to: localURL,
-                        progress: { _ in }
+                        progress: { remoteProgress in
+                            progress.totalUnitCount = remoteProgress.totalByteCount
+                            progress.completedUnitCount = remoteProgress.completedByteCount
+                        }
                     )
+                    if progress.totalUnitCount <= 0 {
+                        progress.totalUnitCount = max(progress.completedUnitCount, 1)
+                    }
+                    progress.completedUnitCount = progress.totalUnitCount
                     return FileProviderFetchedContents(
                         localURL: localURL,
                         item: FileProviderItemProjection(

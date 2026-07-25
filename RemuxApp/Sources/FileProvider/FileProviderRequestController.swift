@@ -14,6 +14,24 @@ final class FileProviderRequestController: @unchecked Sendable {
         discardResult: @escaping @Sendable (Value) -> Void = { _ in },
         completion: @escaping @Sendable (Result<Value, NSError>) -> Void
     ) -> Progress {
+        perform(
+            errorMapper: errorMapper,
+            progressOperation: { _ in
+                try await operation()
+            },
+            discardResult: discardResult,
+            completion: completion
+        )
+    }
+
+    func perform<Value: Sendable>(
+        errorMapper: @escaping @Sendable (Error) -> NSError = {
+            FileProviderErrorMapper.map($0)
+        },
+        progressOperation: @escaping @Sendable (Progress) async throws -> Value,
+        discardResult: @escaping @Sendable (Value) -> Void = { _ in },
+        completion: @escaping @Sendable (Result<Value, NSError>) -> Void
+    ) -> Progress {
         let requestID = UUID()
         let request: FileProviderRequestTask? = lock.withLock {
             guard !isInvalidated else { return nil }
@@ -39,7 +57,7 @@ final class FileProviderRequestController: @unchecked Sendable {
             let result: Result<Value, NSError>
             do {
                 try Task.checkCancellation()
-                let value = try await operation()
+                let value = try await progressOperation(progress)
                 do {
                     try Task.checkCancellation()
                 } catch {

@@ -15,13 +15,18 @@ protocol FileProviderSFTPClientProviding: Sendable {
     func closeIdleConnections(forServerID serverID: SavedServer.ID) async
 }
 
+struct FileProviderRemoteFetchProgress: Equatable, Sendable {
+    let totalByteCount: Int64
+    let completedByteCount: Int64
+}
+
 protocol FileProviderRemoteServicing: Sendable {
     func item(at path: FileProviderRemotePath) async throws -> FileProviderRemoteItem
     func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem]
     func fetch(
         path: FileProviderRemotePath,
         to localURL: URL,
-        progress: @escaping @Sendable (Int64) async -> Void
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
     ) async throws -> FileProviderRemoteItem
     func invalidate() async
 }
@@ -142,7 +147,7 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
     func fetch(
         path: FileProviderRemotePath,
         to localURL: URL,
-        progress: @escaping @Sendable (Int64) async -> Void
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
     ) async throws -> FileProviderRemoteItem {
         try await withClient { client in
             try Task.checkCancellation()
@@ -156,6 +161,13 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
             guard metadata.type == .regular else {
                 throw RemuxSFTPClientError.noSuchFile(path.relative)
             }
+            let totalByteCount = metadata.size.map(Int64.init(clamping:)) ?? -1
+            await progress(
+                FileProviderRemoteFetchProgress(
+                    totalByteCount: totalByteCount,
+                    completedByteCount: 0
+                )
+            )
             let canonicalEntry = try await client.realPath(atPath: entry)
             try safeLinkResolver.ensureContained(
                 canonicalEntry,
@@ -164,7 +176,14 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
             try await client.downloadFile(
                 atPath: canonicalEntry,
                 to: localURL,
-                progress: progress
+                progress: { completedByteCount in
+                    await progress(
+                        FileProviderRemoteFetchProgress(
+                            totalByteCount: totalByteCount,
+                            completedByteCount: completedByteCount
+                        )
+                    )
+                }
             )
             return try FileProviderRemoteItem(path: path, metadata: metadata)
         }
