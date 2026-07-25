@@ -9,10 +9,13 @@ struct FileProviderSnapshotDelta: Equatable, Sendable {
 enum FileProviderSnapshotStoreError: Error, Equatable, Sendable {
     case syncAnchorExpired
     case generationExhausted
+    case duplicatePath
 }
 
 actor FileProviderSnapshotStore {
     private static let stateFilename = "snapshot-generations.json"
+    private static let namespaceByteCount = 16
+    private static let generationByteCount = MemoryLayout<UInt64>.size
 
     private let stateURL: URL
     private let retainedGenerationCount: Int
@@ -41,11 +44,15 @@ actor FileProviderSnapshotStore {
         items: [FileProviderRemoteItem]
     ) throws -> (anchor: NSFileProviderSyncAnchor, delta: FileProviderSnapshotDelta) {
         var state = try loadState()
+        try validateUniquePaths(in: items)
         let items = items.sorted { $0.path.relative < $1.path.relative }
         let previousItems = state.generations.last?.items(for: directory) ?? []
 
         if let latest = state.generations.last, items == previousItems {
-            return (anchor: makeAnchor(for: latest.generation), delta: .init(updated: [], deleted: []))
+            return (
+                anchor: makeAnchor(namespace: state.namespace, generation: latest.generation),
+                delta: .init(updated: [], deleted: [])
+            )
         }
 
         let nextGeneration = try generation(after: state.generations.last?.generation)
@@ -63,7 +70,7 @@ actor FileProviderSnapshotStore {
         try save(state)
 
         return (
-            anchor: makeAnchor(for: nextGeneration),
+            anchor: makeAnchor(namespace: state.namespace, generation: nextGeneration),
             delta: makeDelta(from: previousItems, to: items)
         )
     }
@@ -77,15 +84,16 @@ actor FileProviderSnapshotStore {
         from anchor: NSFileProviderSyncAnchor
     ) throws -> (anchor: NSFileProviderSyncAnchor, delta: FileProviderSnapshotDelta) {
         let state = try loadState()
-        let requestedGeneration = try generation(from: anchor)
-        guard let requested = state.generations.first(where: { $0.generation == requestedGeneration }),
+        let requestedAnchor = try parse(anchor)
+        guard requestedAnchor.namespace == state.namespace,
+              let requested = state.generations.first(where: { $0.generation == requestedAnchor.generation }),
               let latest = state.generations.last
         else {
             throw FileProviderSnapshotStoreError.syncAnchorExpired
         }
 
         return (
-            anchor: makeAnchor(for: latest.generation),
+            anchor: makeAnchor(namespace: state.namespace, generation: latest.generation),
             delta: makeDelta(
                 from: requested.items(for: directory),
                 to: latest.items(for: directory)
@@ -95,9 +103,11 @@ actor FileProviderSnapshotStore {
 
     private func loadState() throws -> PersistedState {
         guard fileManager.fileExists(atPath: stateURL.path) else {
-            return PersistedState(generations: [])
+            return PersistedState(namespace: UUID(), generations: [])
         }
-        return try decoder.decode(PersistedState.self, from: Data(contentsOf: stateURL))
+        let state = try decoder.decode(PersistedState.self, from: Data(contentsOf: stateURL))
+        try validate(state)
+        return state
     }
 
     private func save(_ state: PersistedState) throws {
@@ -115,19 +125,55 @@ actor FileProviderSnapshotStore {
         return (generation ?? 0) + 1
     }
 
-    private func makeAnchor(for generation: UInt64) -> NSFileProviderSyncAnchor {
+    private func makeAnchor(
+        namespace: UUID,
+        generation: UInt64
+    ) -> NSFileProviderSyncAnchor {
+        var namespaceBytes = namespace.uuid
         var bigEndian = generation.bigEndian
+        var data = Data(bytes: &namespaceBytes, count: Self.namespaceByteCount)
+        data.append(Data(bytes: &bigEndian, count: Self.generationByteCount))
         return NSFileProviderSyncAnchor(
-            rawValue: Data(bytes: &bigEndian, count: MemoryLayout<UInt64>.size)
+            rawValue: data
         )
     }
 
-    private func generation(from anchor: NSFileProviderSyncAnchor) throws -> UInt64 {
+    private func parse(_ anchor: NSFileProviderSyncAnchor) throws -> (namespace: UUID, generation: UInt64) {
         let data = anchor.rawValue
-        guard data.count == MemoryLayout<UInt64>.size else {
+        guard data.count == Self.namespaceByteCount + Self.generationByteCount else {
             throw FileProviderSnapshotStoreError.syncAnchorExpired
         }
-        return data.reduce(0) { ($0 << 8) | UInt64($1) }
+        let bytes = [UInt8](data)
+        let namespace = UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+        let generation = bytes.suffix(Self.generationByteCount)
+            .reduce(0) { ($0 << 8) | UInt64($1) }
+        return (namespace, generation)
+    }
+
+    private func validate(_ state: PersistedState) throws {
+        guard Set(state.generations.map(\.generation)).count == state.generations.count else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+
+        for generation in state.generations {
+            guard Set(generation.directories.map(\.path)).count == generation.directories.count else {
+                throw FileProviderSnapshotStoreError.duplicatePath
+            }
+            for directory in generation.directories {
+                try validateUniquePaths(in: directory.items)
+            }
+        }
+    }
+
+    private func validateUniquePaths(in items: [FileProviderRemoteItem]) throws {
+        guard Set(items.map(\.path)).count == items.count else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
     }
 
     private func makeDelta(
@@ -148,6 +194,7 @@ actor FileProviderSnapshotStore {
 }
 
 private struct PersistedState: Codable {
+    let namespace: UUID
     var generations: [PersistedGeneration]
 }
 

@@ -92,6 +92,53 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         }
     }
 
+    func testForeignAnchorWithSameGenerationThrowsSyncAnchorExpired() async throws {
+        let otherRoot = root.appendingPathComponent("other-domain", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let otherStore = FileProviderSnapshotStore(rootURL: otherRoot)
+
+        _ = try await store.record(directory: .root, items: [try item(path: "local.txt")])
+        let foreign = try await otherStore.record(directory: .root, items: [try item(path: "foreign.txt")])
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.delta(directory: .root, from: foreign.anchor)
+        ) { error in
+            XCTAssertEqual(error as? FileProviderSnapshotStoreError, .syncAnchorExpired)
+        }
+    }
+
+    func testDuplicatePathsInPersistedStateThrowTypedError() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let document = try item(path: "document.txt")
+        _ = try await store.record(directory: .root, items: [document])
+        let stateURL = root.appendingPathComponent("snapshot-generations.json")
+        var state = try JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as! [String: Any]
+        var generations = state["generations"] as! [[String: Any]]
+        var generation = generations[0]
+        var directories = generation["directories"] as! [[String: Any]]
+        var directory = directories[0]
+        var items = directory["items"] as! [Any]
+        items.append(items[0])
+        directory["items"] = items
+        directories[0] = directory
+        generation["directories"] = directories
+        generations[0] = generation
+        state["generations"] = generations
+        try JSONSerialization.data(withJSONObject: state, options: .sortedKeys)
+            .write(to: stateURL, options: .atomic)
+
+        let reloadedStore = FileProviderSnapshotStore(rootURL: root)
+        await XCTAssertThrowsErrorAsync(
+            try await reloadedStore.items(directory: .root)
+        ) { error in
+            XCTAssertEqual(error as? FileProviderSnapshotStoreError, .duplicatePath)
+            let mapped = FileProviderErrorMapper.map(error)
+            XCTAssertEqual(mapped.domain, NSCocoaErrorDomain)
+            XCTAssertEqual(mapped.code, NSXPCConnectionReplyInvalid)
+        }
+    }
+
     private func item(path: String, size: UInt64 = 1) throws -> FileProviderRemoteItem {
         try FileProviderRemoteItem(
             path: FileProviderRemotePath(relative: path),
@@ -109,16 +156,20 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
     }
 
     private func anchor(for generation: UInt64) -> NSFileProviderSyncAnchor {
+        var namespace = UUID().uuid
         var bigEndian = generation.bigEndian
+        var data = Data(bytes: &namespace, count: 16)
+        data.append(Data(bytes: &bigEndian, count: MemoryLayout<UInt64>.size))
         return NSFileProviderSyncAnchor(
-            rawValue: Data(bytes: &bigEndian, count: MemoryLayout<UInt64>.size)
+            rawValue: data
         )
     }
 
     private func generation(of anchor: NSFileProviderSyncAnchor) -> UInt64 {
         let data = anchor.rawValue
-        XCTAssertEqual(data.count, MemoryLayout<UInt64>.size)
-        return data.reduce(0) { ($0 << 8) | UInt64($1) }
+        XCTAssertEqual(data.count, 16 + MemoryLayout<UInt64>.size)
+        return data.suffix(MemoryLayout<UInt64>.size)
+            .reduce(0) { ($0 << 8) | UInt64($1) }
     }
 }
 

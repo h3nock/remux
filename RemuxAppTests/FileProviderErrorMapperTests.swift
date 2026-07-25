@@ -1,4 +1,5 @@
 import FileProvider
+import NIOCore
 import XCTest
 
 @testable import Remux
@@ -42,6 +43,33 @@ final class FileProviderErrorMapperTests: XCTestCase {
 
         XCTAssertEqual(FileProviderErrorMapper.writePermission.domain, NSCocoaErrorDomain)
         XCTAssertEqual(FileProviderErrorMapper.writePermission.code, NSFileWriteNoPermissionError)
+    }
+
+    func testErrorMapperMapsChannelSessionFailuresToServerUnreachable() {
+        let errors: [ChannelError] = [
+            .connectTimeout(.seconds(1)),
+            .eof,
+            .ioOnClosedChannel,
+            .alreadyClosed,
+            .inputClosed,
+            .outputClosed,
+        ]
+
+        for error in errors {
+            let mapped = FileProviderErrorMapper.map(error)
+            XCTAssertEqual(mapped.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(mapped.code, NSFileProviderError.serverUnreachable.rawValue)
+        }
+    }
+
+    func testMissingItemIdentifierDoesNotProduceKeylessNoSuchItem() {
+        let mapped = FileProviderErrorMapper.map(
+            RemuxSFTPClientError.noSuchFile("/private/report.txt")
+        )
+
+        XCTAssertEqual(mapped.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(mapped.code, NSXPCConnectionReplyInvalid)
+        XCTAssertTrue(mapped.userInfo.isEmpty)
     }
 
     private var unknownTrustChallenge: SSHHostKeyTrustChallenge {

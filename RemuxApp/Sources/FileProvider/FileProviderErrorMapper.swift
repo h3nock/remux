@@ -4,9 +4,23 @@ import NIOCore
 import NIOPosix
 
 enum FileProviderErrorMapper {
+    static func map(_ error: Error) -> NSError {
+        if case .noSuchFile = error as? RemuxSFTPClientError {
+            return sanitizedError()
+        }
+        return map(error, itemIdentifier: nil)
+    }
+
     static func map(
         _ error: Error,
-        itemIdentifier: NSFileProviderItemIdentifier? = nil
+        itemIdentifier: NSFileProviderItemIdentifier
+    ) -> NSError {
+        map(error, itemIdentifier: Optional(itemIdentifier))
+    }
+
+    private static func map(
+        _ error: Error,
+        itemIdentifier: NSFileProviderItemIdentifier?
     ) -> NSError {
         if error is SSHAuthResolverError || error is TrustedHostStoreError {
             return fileProviderError(.notAuthenticated)
@@ -37,11 +51,11 @@ enum FileProviderErrorMapper {
             }
         }
 
-        if error is NIOConnectionError || isConnectTimeout(error) || isNetworkURL(error) {
+        if error is NIOConnectionError || isNetworkChannelError(error) || isNetworkURL(error) {
             return fileProviderError(.serverUnreachable)
         }
 
-        return NSError(domain: NSCocoaErrorDomain, code: NSXPCConnectionReplyInvalid)
+        return sanitizedError()
     }
 
     static var writePermission: NSError {
@@ -52,13 +66,24 @@ enum FileProviderErrorMapper {
         NSError(domain: NSFileProviderErrorDomain, code: code.rawValue)
     }
 
-    private static func isConnectTimeout(_ error: Error) -> Bool {
-        guard let error = error as? ChannelError,
-              case .connectTimeout = error
-        else {
+    private static func sanitizedError() -> NSError {
+        NSError(domain: NSCocoaErrorDomain, code: NSXPCConnectionReplyInvalid)
+    }
+
+    private static func isNetworkChannelError(_ error: Error) -> Bool {
+        guard let error = error as? ChannelError else { return false }
+
+        switch error {
+        case .connectTimeout,
+             .eof,
+             .ioOnClosedChannel,
+             .alreadyClosed,
+             .inputClosed,
+             .outputClosed:
+            return true
+        default:
             return false
         }
-        return true
     }
 
     private static func isNetworkURL(_ error: Error) -> Bool {
