@@ -75,7 +75,8 @@ final class TrustedHostStore: @unchecked Sendable {
             let trustedIdentity = Self.identity(challenge: challenge)
 
             if let index = identities.firstIndex(where: { $0.serverID == challenge.serverID }) {
-                if identities[index].openSSHPublicKey == challenge.receivedOpenSSHPublicKey {
+                if identities[index].host == challenge.host,
+                   identities[index].openSSHPublicKey == challenge.receivedOpenSSHPublicKey {
                     return
                 }
 
@@ -105,7 +106,8 @@ final class TrustedHostStore: @unchecked Sendable {
         try lock.withLock {
             let identities = try loadLocked()
             if let existing = identities.first(where: { $0.serverID == server.id }) {
-                guard existing.openSSHPublicKey == identity.openSSHPublicKey else {
+                guard existing.host == identity.host,
+                      existing.openSSHPublicKey == identity.openSSHPublicKey else {
                     throw TrustedHostStoreError.hostKeyTrustRequired(
                         Self.challenge(kind: .changed, trusted: existing, received: identity)
                     )
