@@ -15,6 +15,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
     private let service: any FileProviderRemoteServicing
     private let rootDisplayName: String
     private let snapshots: FileProviderSnapshotStore
+    private let mutations: FileProviderMutationCore
     private let temporaryDirectoryURL: @Sendable () throws -> URL
     private let requests: FileProviderRequestController
     private let lifecycleLock = NSLock()
@@ -32,9 +33,35 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
     ) {
         self.service = service
         self.snapshots = snapshots
+        self.mutations = FileProviderMutationCore(
+            remote: service,
+            snapshots: snapshots,
+            coordinator: FileProviderDomainOperationCoordinator()
+        )
         self.rootDisplayName = rootDisplayName
         self.temporaryDirectoryURL = temporaryDirectoryURL
         self.requests = requests
+    }
+
+    func createItem(
+        request: FileProviderCreateRequest,
+        completion: @escaping @Sendable (
+            Result<FileProviderMutationResult, NSError>
+        ) -> Void
+    ) -> Progress {
+        requests.perform(
+            progressOperation: { progress in
+                let result = try await self.mutations.create(request: request) { bytes in
+                    progress.completedUnitCount = bytes
+                }
+                if progress.totalUnitCount <= 0 {
+                    progress.totalUnitCount = max(progress.completedUnitCount, 1)
+                }
+                progress.completedUnitCount = progress.totalUnitCount
+                return result
+            },
+            completion: completion
+        )
     }
 
     func item(
