@@ -102,8 +102,10 @@ The shared SFTP layer will gain the smallest general-purpose operations needed
 by the provider:
 
 - List one directory with file name and metadata.
-- `lstat` an item without automatically following a symbolic link.
-- Resolve a symbolic link target.
+- Read an item's link-aware attributes without automatically following a
+  symbolic link. The pinned Citadel API supplies these attributes through the
+  parent directory listing rather than a public `lstat` call.
+- Resolve a symbolic link to its canonical target with SFTP `realpath`.
 - Download a regular file in bounded chunks to a supplied local URL.
 - Support cancellation and preserve existing operation timeouts.
 
@@ -123,8 +125,10 @@ The provider exposes:
 - Symbolic links whose fully resolved target remains beneath the home root.
 
 It hides sockets, devices, FIFOs, cyclic links, and links that resolve outside
-the home root. Safe symbolic links use File Provider's symbolic-link metadata
-rather than being silently converted into unrelated regular files.
+the home root. Safe symbolic links use the canonical in-root target as File
+Provider symbolic-link metadata rather than being silently converted into
+unrelated regular files. This avoids adding a custom Citadel fork solely to
+expose raw `lstat` and `readlink` request wrappers.
 
 ## Item Identity and Versions
 
@@ -208,7 +212,8 @@ credential records.
 Development proceeds in four independently testable slices:
 
 1. Shared storage, idempotent migration, and domain reconciliation.
-2. SFTP listing, `lstat`, link handling, and cancellable download.
+2. SFTP listing, link-aware metadata, canonical link handling, and cancellable
+   download.
 3. Read-only File Provider items, enumeration, versions, and content fetching.
 4. Snapshot deltas, polling, error mapping, and simulator qualification.
 
