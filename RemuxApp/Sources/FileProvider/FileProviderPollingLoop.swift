@@ -24,6 +24,7 @@ final class FileProviderPollingLoop: @unchecked Sendable {
     private let refresh: @Sendable () async throws -> Void
     private let lock = NSLock()
     private var task: Task<Void, Never>?
+    private var isInvalidated = false
 
     init(
         clock: any FileProviderPollingClock = ContinuousFileProviderPollingClock(),
@@ -37,7 +38,7 @@ final class FileProviderPollingLoop: @unchecked Sendable {
         let clock = clock
         let refresh = refresh
         lock.withLock {
-            guard task == nil else { return }
+            guard task == nil, !isInvalidated else { return }
             task = Task {
                 while !Task.isCancelled {
                     let startedAt = await clock.now()
@@ -67,11 +68,17 @@ final class FileProviderPollingLoop: @unchecked Sendable {
 
     func invalidate() {
         let task = lock.withLock {
-            let task = self.task
-            self.task = nil
-            return task
+            isInvalidated = true
+            return self.task
         }
         task?.cancel()
+    }
+
+    func waitUntilInvalidated() async {
+        let task = lock.withLock {
+            self.task
+        }
+        await task?.value
     }
 
     deinit {

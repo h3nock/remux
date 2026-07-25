@@ -1,11 +1,18 @@
 import FileProvider
 import Foundation
 
-final class RemuxFileProviderEnumerator: NSObject, NSFileProviderEnumerator {
+final class RemuxFileProviderEnumerator:
+    NSObject,
+    NSFileProviderEnumerator,
+    FileProviderEnumeratorInvalidating,
+    @unchecked Sendable
+{
     private let core: FileProviderEnumeratorCore
     private let rootDisplayName: String
     private let requests = FileProviderRequestController()
     private let polling: FileProviderPollingLoop
+    private let lifecycleLock = NSLock()
+    private var isInvalidated = false
 
     init(
         core: FileProviderEnumeratorCore,
@@ -17,12 +24,31 @@ final class RemuxFileProviderEnumerator: NSObject, NSFileProviderEnumerator {
             try await core.refreshAndSignalChanges()
         }
         super.init()
+    }
+
+    func start() {
+        let shouldStart = lifecycleLock.withLock {
+            !isInvalidated
+        }
+        guard shouldStart else { return }
         polling.start()
     }
 
     func invalidate() {
+        let shouldInvalidate = lifecycleLock.withLock {
+            guard !isInvalidated else { return false }
+            isInvalidated = true
+            return true
+        }
+        guard shouldInvalidate else { return }
+
         polling.invalidate()
         requests.invalidate()
+    }
+
+    func waitUntilInvalidated() async {
+        await polling.waitUntilInvalidated()
+        await requests.waitUntilInvalidated()
     }
 
     func enumerateItems(

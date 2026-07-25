@@ -80,6 +80,38 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(error.code, NSUserCancelledError)
     }
 
+    func testRequestControllerInvalidationWaitsForCancelledWorkToFinish() async {
+        let controller = FileProviderRequestController()
+        let gate = FileProviderTestRefreshGate()
+        let completion = FileProviderTestCompletionFlag()
+        _ = controller.perform(
+            operation: {
+                await gate.beginAndWait()
+                return 1
+            },
+            completion: { _ in }
+        )
+        await gate.waitUntilStarted()
+
+        controller.invalidate()
+        let drain = Task {
+            await controller.waitUntilInvalidated()
+            await completion.finish()
+        }
+        let finishedBeforeRelease = await completion.waitUntilFinished(
+            timeout: .milliseconds(100)
+        )
+        XCTAssertFalse(finishedBeforeRelease)
+
+        await gate.release()
+        await drain.value
+
+        let finishedAfterRelease = await completion.waitUntilFinished(
+            timeout: .seconds(1)
+        )
+        XCTAssertTrue(finishedAfterRelease)
+    }
+
     func testExtensionCoreItemLookupDecodesIdentifierAndProjectsResult() async throws {
         let remoteItem = try fileProviderTestItem(relative: "folder/report.txt", size: 42)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
@@ -176,6 +208,35 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(progress.completedUnitCount, 1)
         let remoteCallCount = await service.totalCallCount()
         XCTAssertEqual(remoteCallCount, 0)
+    }
+
+    func testExtensionInvalidationDrainsEnumeratorsBeforeClosingService() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "item.txt", size: 1)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+        let enumerator = FileProviderTestEnumeratorLifecycle()
+        XCTAssertTrue(core.registerEnumerator(enumerator))
+
+        core.invalidate()
+        core.invalidate()
+        await enumerator.waitUntilDrainStarted()
+
+        let invalidateWasCalled = enumerator.invalidateWasCalled
+        let serviceCallCountBeforeDrain = await service.invalidationCallCount()
+        XCTAssertTrue(invalidateWasCalled)
+        XCTAssertEqual(serviceCallCountBeforeDrain, 0)
+
+        await enumerator.finishDrain()
+        await service.waitUntilInvalidated()
+
+        let serviceCallCountAfterDrain = await service.invalidationCallCount()
+        XCTAssertEqual(serviceCallCountAfterDrain, 1)
     }
 
     func testSharedAuthenticationFactoryPreservesPasswordCredentials() throws {
@@ -827,6 +888,37 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(wasCancelled)
     }
 
+    func testPollingLoopInvalidationWaitsForCurrentRefreshToFinish() async {
+        let gate = FileProviderTestRefreshGate()
+        let completion = FileProviderTestCompletionFlag()
+        let loop = FileProviderPollingLoop(
+            clock: FileProviderTestPollingClock(),
+            refresh: {
+                await gate.beginAndWait()
+            }
+        )
+        loop.start()
+        await gate.waitUntilStarted()
+
+        loop.invalidate()
+        let drain = Task {
+            await loop.waitUntilInvalidated()
+            await completion.finish()
+        }
+        let finishedBeforeRelease = await completion.waitUntilFinished(
+            timeout: .milliseconds(100)
+        )
+        XCTAssertFalse(finishedBeforeRelease)
+
+        await gate.release()
+        await drain.value
+
+        let finishedAfterRelease = await completion.waitUntilFinished(
+            timeout: .seconds(1)
+        )
+        XCTAssertTrue(finishedAfterRelease)
+    }
+
     func testItemProjectionExposesReadOnlyFileProviderMetadata() throws {
         let remoteItem = try FileProviderRemoteItem(
             path: FileProviderRemotePath(relative: "folder/report.txt"),
@@ -954,6 +1046,8 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
     private let returnedItem: FileProviderRemoteItem
     private var recordedItemPaths: [FileProviderRemotePath] = []
     private var recordedFetchURLs: [URL] = []
+    private var invalidationCount = 0
+    private var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(item: FileProviderRemoteItem) {
         self.returnedItem = item
@@ -992,6 +1086,52 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
     }
 
     func invalidate() {
+        invalidationCount += 1
+        let invalidationWaiters = self.invalidationWaiters
+        self.invalidationWaiters.removeAll()
+        invalidationWaiters.forEach { $0.resume() }
+    }
+
+    func invalidationCallCount() -> Int {
+        invalidationCount
+    }
+
+    func waitUntilInvalidated() async {
+        guard invalidationCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            invalidationWaiters.append(continuation)
+        }
+    }
+}
+
+private final class FileProviderTestEnumeratorLifecycle:
+    FileProviderEnumeratorInvalidating,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let drainGate = FileProviderTestRefreshGate()
+    private var invalidated = false
+
+    var invalidateWasCalled: Bool {
+        lock.withLock { invalidated }
+    }
+
+    func invalidate() {
+        lock.withLock {
+            invalidated = true
+        }
+    }
+
+    func waitUntilInvalidated() async {
+        await drainGate.beginAndWait()
+    }
+
+    func waitUntilDrainStarted() async {
+        await drainGate.waitUntilStarted()
+    }
+
+    func finishDrain() async {
+        await drainGate.release()
     }
 }
 

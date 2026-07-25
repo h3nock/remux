@@ -3,6 +3,7 @@ import Foundation
 final class FileProviderRequestController: @unchecked Sendable {
     private let lock = NSLock()
     private var requests: [UUID: FileProviderRequestTask] = [:]
+    private var invalidatedRequests: [FileProviderRequestTask]?
     private var isInvalidated = false
 
     func perform<Value: Sendable>(
@@ -15,8 +16,9 @@ final class FileProviderRequestController: @unchecked Sendable {
         let requestID = UUID()
         let request = FileProviderRequestTask()
         let shouldCancel = lock.withLock {
+            guard !isInvalidated else { return true }
             requests[requestID] = request
-            return isInvalidated
+            return false
         }
         let progress = Progress(totalUnitCount: -1)
         progress.isCancellable = true
@@ -54,6 +56,7 @@ final class FileProviderRequestController: @unchecked Sendable {
             isInvalidated = true
             let requests = Array(self.requests.values)
             self.requests.removeAll()
+            invalidatedRequests = requests
             return requests
         }
         guard let requests else { return }
@@ -62,10 +65,17 @@ final class FileProviderRequestController: @unchecked Sendable {
         guard let onDrained else { return }
 
         Task {
-            for request in requests {
-                await request.waitUntilFinished()
-            }
+            await self.waitUntilInvalidated()
             await onDrained()
+        }
+    }
+
+    func waitUntilInvalidated() async {
+        let requests = lock.withLock {
+            invalidatedRequests ?? []
+        }
+        for request in requests {
+            await request.waitUntilFinished()
         }
     }
 

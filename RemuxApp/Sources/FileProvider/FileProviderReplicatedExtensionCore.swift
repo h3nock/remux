@@ -6,12 +6,22 @@ struct FileProviderFetchedContents: @unchecked Sendable {
     let item: FileProviderItemProjection
 }
 
+protocol FileProviderEnumeratorInvalidating: AnyObject, Sendable {
+    func invalidate()
+    func waitUntilInvalidated() async
+}
+
 final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
     private let service: any FileProviderRemoteServicing
     private let rootDisplayName: String
     private let temporaryDirectoryURL: @Sendable () throws -> URL
     private let requests: FileProviderRequestController
     private let identifierCodec = FileProviderItemIdentifierCodec()
+    private let lifecycleLock = NSLock()
+    private var enumerators: [
+        ObjectIdentifier: FileProviderWeakEnumerator
+    ] = [:]
+    private var isInvalidated = false
 
     init(
         service: any FileProviderRemoteServicing,
@@ -89,10 +99,49 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         return progress
     }
 
+    func registerEnumerator(
+        _ enumerator: any FileProviderEnumeratorInvalidating
+    ) -> Bool {
+        let didRegister = lifecycleLock.withLock {
+            enumerators = enumerators.filter { $0.value.value != nil }
+            guard !isInvalidated else { return false }
+            enumerators[ObjectIdentifier(enumerator)] = FileProviderWeakEnumerator(
+                enumerator
+            )
+            return true
+        }
+        if !didRegister {
+            enumerator.invalidate()
+        }
+        return didRegister
+    }
+
     func invalidate() {
+        let enumerators: [any FileProviderEnumeratorInvalidating]? =
+            lifecycleLock.withLock {
+                guard !isInvalidated else { return nil }
+                isInvalidated = true
+                let enumerators = self.enumerators.values.compactMap(\.value)
+                self.enumerators.removeAll()
+                return enumerators
+            }
+        guard let enumerators else { return }
+
+        enumerators.forEach { $0.invalidate() }
         let service = service
         requests.invalidate {
+            for enumerator in enumerators {
+                await enumerator.waitUntilInvalidated()
+            }
             await service.invalidate()
         }
+    }
+}
+
+private final class FileProviderWeakEnumerator: @unchecked Sendable {
+    weak var value: (any FileProviderEnumeratorInvalidating)?
+
+    init(_ value: any FileProviderEnumeratorInvalidating) {
+        self.value = value
     }
 }

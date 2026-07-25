@@ -143,7 +143,7 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             }
         }
 
-        return RemuxFileProviderEnumerator(
+        let enumerator = RemuxFileProviderEnumerator(
             core: FileProviderEnumeratorCore(
                 directory: path,
                 service: setup.service,
@@ -153,6 +153,14 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             ),
             rootDisplayName: domain.displayName
         )
+        guard setup.extensionCore.registerEnumerator(enumerator) else {
+            throw FileProviderErrorMapper.map(
+                CancellationError(),
+                itemIdentifier: containerItemIdentifier
+            )
+        }
+        enumerator.start()
+        return enumerator
     }
 
     private func rejectMutation(
