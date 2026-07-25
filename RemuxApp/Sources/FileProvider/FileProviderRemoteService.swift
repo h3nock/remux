@@ -5,17 +5,14 @@ enum FileProviderRemoteServiceError: Error, Equatable, Sendable {
     case serverNotFound
 }
 
-protocol FileProviderSFTPClientSession: Sendable {
-    var client: any RemuxSFTPReadOnlyClient { get }
-
-    func close() async
-}
-
-protocol FileProviderSFTPClientSessionOpening: Sendable {
-    func open(
+protocol FileProviderSFTPClientProviding: Sendable {
+    func withClient<Value: Sendable>(
         server: SavedServer,
-        authentication: ResolvedSSHAuth
-    ) async throws -> any FileProviderSFTPClientSession
+        authentication: ResolvedSSHAuth,
+        operation: @Sendable (any RemuxSFTPReadOnlyClient) async throws -> Value
+    ) async throws -> Value
+
+    func closeIdleConnections(forServerID serverID: SavedServer.ID) async
 }
 
 protocol FileProviderRemoteServicing: Sendable {
@@ -26,25 +23,26 @@ protocol FileProviderRemoteServicing: Sendable {
         to localURL: URL,
         progress: @escaping @Sendable (Int64) async -> Void
     ) async throws -> FileProviderRemoteItem
+    func invalidate() async
 }
 
 struct FileProviderRemoteService: FileProviderRemoteServicing {
     private let domainIdentifier: String
     private let profiles: any ConnectionProfileRepository
     private let credentials: any SSHCredentialStore
-    private let sessionOpener: any FileProviderSFTPClientSessionOpening
+    private let clientProvider: any FileProviderSFTPClientProviding
     private let safeLinkResolver = FileProviderSafeLinkResolver()
 
     init(
         domainIdentifier: String,
         profiles: any ConnectionProfileRepository,
         credentials: any SSHCredentialStore,
-        sessionOpener: any FileProviderSFTPClientSessionOpening
+        clientProvider: any FileProviderSFTPClientProviding
     ) {
         self.domainIdentifier = domainIdentifier
         self.profiles = profiles
         self.credentials = credentials
-        self.sessionOpener = sessionOpener
+        self.clientProvider = clientProvider
     }
 
     func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem] {
@@ -94,7 +92,11 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
         try await withClient { client in
             let canonicalHome = try await client.realPath(atPath: ".")
             let remotePath = try path.remotePath(beneath: canonicalHome)
-            let metadata = try await client.linkMetadata(atPath: remotePath)
+            let metadata = if path == .root {
+                try await client.metadata(atPath: remotePath)
+            } else {
+                try await client.linkMetadata(atPath: remotePath)
+            }
 
             switch metadata.type {
             case .regular, .directory:
@@ -142,6 +144,13 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
         }
     }
 
+    func invalidate() async {
+        guard let serverID = UUID(uuidString: domainIdentifier) else {
+            return
+        }
+        await clientProvider.closeIdleConnections(forServerID: serverID)
+    }
+
     private func withClient<Value: Sendable>(
         _ operation: @Sendable (any RemuxSFTPReadOnlyClient) async throws -> Value
     ) async throws -> Value {
@@ -154,19 +163,11 @@ struct FileProviderRemoteService: FileProviderRemoteServicing {
         }
         let authentication = try await SSHAuthResolver(credentialStore: credentials)
             .resolve(server: server, in: snapshot)
-        let session = try await sessionOpener.open(
+        return try await clientProvider.withClient(
             server: server,
-            authentication: authentication
+            authentication: authentication,
+            operation: operation
         )
-
-        do {
-            let value = try await operation(session.client)
-            await session.close()
-            return value
-        } catch {
-            await session.close()
-            throw error
-        }
     }
 
     private func childPath(

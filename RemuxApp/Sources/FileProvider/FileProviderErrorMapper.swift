@@ -22,6 +22,10 @@ enum FileProviderErrorMapper {
         _ error: Error,
         itemIdentifier: NSFileProviderItemIdentifier?
     ) -> NSError {
+        if error is CancellationError {
+            return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        }
+
         if error is SSHAuthResolverError || error is TrustedHostStoreError {
             return fileProviderError(.notAuthenticated)
         }

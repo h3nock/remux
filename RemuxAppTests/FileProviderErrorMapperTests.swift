@@ -62,6 +62,14 @@ final class FileProviderErrorMapperTests: XCTestCase {
         }
     }
 
+    func testErrorMapperMapsCancellationWithoutLeakingImplementationDetails() {
+        let mapped = FileProviderErrorMapper.map(CancellationError())
+
+        XCTAssertEqual(mapped.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(mapped.code, NSUserCancelledError)
+        XCTAssertTrue(mapped.userInfo.isEmpty)
+    }
+
     func testMissingItemIdentifierDoesNotProduceKeylessNoSuchItem() {
         let mapped = FileProviderErrorMapper.map(
             RemuxSFTPClientError.noSuchFile("/private/report.txt")

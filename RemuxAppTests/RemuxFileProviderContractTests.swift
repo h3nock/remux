@@ -1,5 +1,8 @@
+@preconcurrency import Citadel
 import FileProvider
 import Foundation
+import NIOEmbedded
+@preconcurrency import NIOSSH
 import UniformTypeIdentifiers
 import XCTest
 @testable import Remux
@@ -11,6 +14,217 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(error.domain, NSCocoaErrorDomain)
         XCTAssertEqual(error.code, NSFileWriteNoPermissionError)
         XCTAssertTrue(error.userInfo.isEmpty)
+    }
+
+    func testRequestProgressCancellationCancelsWorkAndCompletesExactlyOnce() async {
+        let controller = FileProviderRequestController()
+        let state = FileProviderTestRequestState()
+        let completions = FileProviderTestCompletionRecorder<Int>()
+
+        let progress = controller.perform(
+            operation: {
+                try await state.run()
+            },
+            completion: { result in
+                Task {
+                    await completions.record(result)
+                }
+            }
+        )
+        await state.waitUntilStarted()
+
+        progress.cancel()
+        await completions.waitForFirst()
+
+        let wasCancelled = await state.wasCancelled()
+        let results = await completions.results()
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected cancellation to fail the request")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+    }
+
+    func testRequestControllerInvalidationCancelsWorkAndCompletesExactlyOnce() async {
+        let controller = FileProviderRequestController()
+        let state = FileProviderTestRequestState()
+        let completions = FileProviderTestCompletionRecorder<Int>()
+
+        _ = controller.perform(
+            operation: {
+                try await state.run()
+            },
+            completion: { result in
+                Task {
+                    await completions.record(result)
+                }
+            }
+        )
+        await state.waitUntilStarted()
+
+        controller.invalidate()
+        await completions.waitForFirst()
+
+        let wasCancelled = await state.wasCancelled()
+        let results = await completions.results()
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected invalidation to fail the request")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+    }
+
+    func testExtensionCoreItemLookupDecodesIdentifierAndProjectsResult() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "folder/report.txt", size: 42)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let completions = FileProviderTestCompletionRecorder<FileProviderItemProjection>()
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+        let identifier = FileProviderItemIdentifierCodec().identifier(for: remoteItem.path)
+
+        _ = core.item(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await completions.waitForFirst()
+
+        let results = await completions.results()
+        guard case .success(let projection) = results.first else {
+            XCTFail("Expected a projected item")
+            return
+        }
+        XCTAssertEqual(projection.itemIdentifier, identifier)
+        XCTAssertEqual(projection.filename, "report.txt")
+        XCTAssertEqual(projection.capabilities, [.allowsReading])
+        let itemPaths = await service.itemPaths()
+        XCTAssertEqual(itemPaths, [remoteItem.path])
+    }
+
+    func testExtensionCoreFetchUsesOnlyTheDomainTemporaryDirectory() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let completions = FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = FileProviderItemIdentifierCodec().identifier(for: remoteItem.path)
+
+        _ = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await completions.waitForFirst()
+
+        let results = await completions.results()
+        guard case .success(let fetched) = results.first else {
+            XCTFail("Expected fetched contents")
+            return
+        }
+        XCTAssertEqual(
+            fetched.localURL.deletingLastPathComponent().standardizedFileURL,
+            temporaryDirectory.standardizedFileURL
+        )
+        XCTAssertEqual(try Data(contentsOf: fetched.localURL), Data("contents".utf8))
+        XCTAssertEqual(fetched.item.itemIdentifier, identifier)
+        let fetchURLs = await service.fetchURLs()
+        XCTAssertEqual(fetchURLs, [fetched.localURL])
+    }
+
+    func testExtensionCoreRejectsMutationImmediatelyWithoutRemoteCalls() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+        var errors: [NSError] = []
+
+        let progress = core.rejectMutation { error in
+            errors.append(error)
+        }
+
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(errors.first?.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(errors.first?.code, NSFileWriteNoPermissionError)
+        XCTAssertEqual(progress.totalUnitCount, 1)
+        XCTAssertEqual(progress.completedUnitCount, 1)
+        let remoteCallCount = await service.totalCallCount()
+        XCTAssertEqual(remoteCallCount, 0)
+    }
+
+    func testSharedAuthenticationFactoryPreservesPasswordCredentials() throws {
+        let authentication = ResolvedSSHAuth.password(
+            username: "reader",
+            password: "test-password",
+            identityID: UUID(),
+            displayLabel: "Fixture"
+        )
+
+        let method = try RemuxSSHAuthenticationMethodFactory.make(for: authentication)
+        let eventLoop = EmbeddedEventLoop()
+        let promise = eventLoop.makePromise(of: NIOSSHUserAuthenticationOffer?.self)
+        method.nextAuthenticationType(
+            availableMethods: [.password],
+            nextChallengePromise: promise
+        )
+        let offer = try XCTUnwrap(promise.futureResult.wait())
+
+        XCTAssertEqual(offer.username, "reader")
+        guard case .password(let password) = offer.offer else {
+            XCTFail("Expected password authentication")
+            return
+        }
+        XCTAssertEqual(password.password, "test-password")
+    }
+
+    func testSSHRootKeyCanBeBuiltWithoutATmuxConnectionTarget() {
+        let identityID = UUID()
+        let server = SavedServer(
+            displayName: "Fixture",
+            host: "reader.example.test",
+            port: 2222,
+            username: "saved-user",
+            identityID: identityID
+        )
+        let authentication = ResolvedSSHAuth.password(
+            username: "resolved-user",
+            password: "test-password",
+            identityID: identityID,
+            displayLabel: "Fixture"
+        )
+
+        let key = RemuxSSHRootKey(server: server, auth: authentication)
+
+        XCTAssertEqual(key.serverID, server.id)
+        XCTAssertEqual(key.host, "reader.example.test")
+        XCTAssertEqual(key.port, 2222)
+        XCTAssertEqual(key.username, "resolved-user")
     }
 
     func testPollingCoordinatorCoalescesConcurrentRefreshesForSameDirectory() async throws {
@@ -409,6 +623,106 @@ final class RemuxFileProviderContractTests: XCTestCase {
             remoteItem.metadataVersion
         )
         XCTAssertNil(projection.symlinkTargetPath)
+    }
+}
+
+private actor FileProviderTestRequestState {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancellationObserved = false
+
+    func run() async throws -> Int {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        do {
+            try await Task.sleep(for: .seconds(60))
+            return 1
+        } catch is CancellationError {
+            cancellationObserved = true
+            throw CancellationError()
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func wasCancelled() -> Bool {
+        cancellationObserved
+    }
+}
+
+private actor FileProviderTestCompletionRecorder<Value: Sendable> {
+    private var recordedResults: [Result<Value, NSError>] = []
+    private var firstWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func record(_ result: Result<Value, NSError>) {
+        recordedResults.append(result)
+        let waiters = firstWaiters
+        firstWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitForFirst() async {
+        guard recordedResults.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstWaiters.append(continuation)
+        }
+    }
+
+    func results() -> [Result<Value, NSError>] {
+        recordedResults
+    }
+}
+
+private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private var recordedItemPaths: [FileProviderRemotePath] = []
+    private var recordedFetchURLs: [URL] = []
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    func item(at path: FileProviderRemotePath) -> FileProviderRemoteItem {
+        recordedItemPaths.append(path)
+        return returnedItem
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (Int64) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        recordedFetchURLs.append(localURL)
+        try Data("contents".utf8).write(to: localURL)
+        await progress(8)
+        return returnedItem
+    }
+
+    func itemPaths() -> [FileProviderRemotePath] {
+        recordedItemPaths
+    }
+
+    func fetchURLs() -> [URL] {
+        recordedFetchURLs
+    }
+
+    func totalCallCount() -> Int {
+        recordedItemPaths.count + recordedFetchURLs.count
+    }
+
+    func invalidate() {
     }
 }
 

@@ -115,6 +115,11 @@
 		A31E0BB1D0A100000000002F /* FileProviderEnumeratorCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000030 /* FileProviderEnumeratorCore.swift */; };
 		A31E0BB1D0A1000000000031 /* FileProviderPollingLoop.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000032 /* FileProviderPollingLoop.swift */; };
 		A31E0BB1D0A1000000000033 /* FileProviderItemProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000034 /* FileProviderItemProjection.swift */; };
+		A31E0BB1D0A1000000000035 /* FileProviderRequestController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000036 /* FileProviderRequestController.swift */; };
+		A31E0BB1D0A1000000000037 /* FileProviderReplicatedExtensionCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A1000000000038 /* FileProviderReplicatedExtensionCore.swift */; };
+		A31E0BB1D0A1000000000039 /* RemuxSSHAuthenticationMethodFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A100000000003A /* RemuxSSHAuthenticationMethodFactory.swift */; };
+		A31E0BB1D0A100000000003B /* RemuxTransportStartupTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A100000000003C /* RemuxTransportStartupTrace.swift */; };
+		A31E0BB1D0A100000000003D /* FileProviderCitadelSFTPClientProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31E0BB1D0A100000000003E /* FileProviderCitadelSFTPClientProvider.swift */; };
 		5A2905347098F9AA4332B001 /* FileProviderSharedStorageMigrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A2905347098F9AA4332B002 /* FileProviderSharedStorageMigrator.swift */; };
 		5A2905347098F9AA4332B003 /* FileProviderSharedStorageMigratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A2905347098F9AA4332B004 /* FileProviderSharedStorageMigratorTests.swift */; };
 		7C99EDFDCE3B0927D26C1029 /* GhosttyAttachmentPasteboardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84DD89E37AC083383B988185 /* GhosttyAttachmentPasteboardSnapshotTests.swift */; };
@@ -320,6 +325,11 @@
 		A31E0BB1D0A1000000000030 /* FileProviderEnumeratorCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderEnumeratorCore.swift; sourceTree = "<group>"; };
 		A31E0BB1D0A1000000000032 /* FileProviderPollingLoop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderPollingLoop.swift; sourceTree = "<group>"; };
 		A31E0BB1D0A1000000000034 /* FileProviderItemProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderItemProjection.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A1000000000036 /* FileProviderRequestController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderRequestController.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A1000000000038 /* FileProviderReplicatedExtensionCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderReplicatedExtensionCore.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A100000000003A /* RemuxSSHAuthenticationMethodFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxSSHAuthenticationMethodFactory.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A100000000003C /* RemuxTransportStartupTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxTransportStartupTrace.swift; sourceTree = "<group>"; };
+		A31E0BB1D0A100000000003E /* FileProviderCitadelSFTPClientProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderCitadelSFTPClientProvider.swift; sourceTree = "<group>"; };
 		5A2905347098F9AA4332B002 /* FileProviderSharedStorageMigrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSharedStorageMigrator.swift; sourceTree = "<group>"; };
 		5A2905347098F9AA4332B004 /* FileProviderSharedStorageMigratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSharedStorageMigratorTests.swift; sourceTree = "<group>"; };
 		7001FC8A87E77C3617046DA7 /* GhosttyRuntimeTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyRuntimeTrace.swift; sourceTree = "<group>"; };
@@ -510,6 +520,9 @@
 				A31E0BB1D0A1000000000030 /* FileProviderEnumeratorCore.swift */,
 				A31E0BB1D0A1000000000032 /* FileProviderPollingLoop.swift */,
 				A31E0BB1D0A1000000000034 /* FileProviderItemProjection.swift */,
+				A31E0BB1D0A1000000000036 /* FileProviderRequestController.swift */,
+				A31E0BB1D0A1000000000038 /* FileProviderReplicatedExtensionCore.swift */,
+				A31E0BB1D0A100000000003E /* FileProviderCitadelSFTPClientProvider.swift */,
 			);
 			path = FileProvider;
 			sourceTree = "<group>";
@@ -599,6 +612,8 @@
 				4564640EE19BD1AF5ED60E2C /* RemuxCitadelSFTPClient.swift */,
 				D047E23F9EFC609398779342 /* RemuxSessionLiveForward.swift */,
 				FC3F9F61A40DD02A7DD80980 /* RemuxSFTPClient.swift */,
+				A31E0BB1D0A100000000003A /* RemuxSSHAuthenticationMethodFactory.swift */,
+				A31E0BB1D0A100000000003C /* RemuxTransportStartupTrace.swift */,
 				CC23D872C331C7574737CCDA /* RemuxSSHRootService.swift */,
 			);
 			path = SSH;
@@ -923,6 +938,11 @@
 				A31E0BB1D0A100000000002F /* FileProviderEnumeratorCore.swift in Sources */,
 				A31E0BB1D0A1000000000031 /* FileProviderPollingLoop.swift in Sources */,
 				A31E0BB1D0A1000000000033 /* FileProviderItemProjection.swift in Sources */,
+				A31E0BB1D0A1000000000035 /* FileProviderRequestController.swift in Sources */,
+				A31E0BB1D0A1000000000037 /* FileProviderReplicatedExtensionCore.swift in Sources */,
+				A31E0BB1D0A1000000000039 /* RemuxSSHAuthenticationMethodFactory.swift in Sources */,
+				A31E0BB1D0A100000000003B /* RemuxTransportStartupTrace.swift in Sources */,
+				A31E0BB1D0A100000000003D /* FileProviderCitadelSFTPClientProvider.swift in Sources */,
 				5A2905347098F9AA4332B001 /* FileProviderSharedStorageMigrator.swift in Sources */,
 				39A58132CBB849E2CDF37BC2 /* DebugConnectionProfileSeeder.swift in Sources */,
 				3266F0AE9A1F836618FF115D /* DeterministicTmuxControlTransport.swift in Sources */,

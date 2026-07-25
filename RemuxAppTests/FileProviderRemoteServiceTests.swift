@@ -27,6 +27,62 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         XCTAssertEqual(item.size, 4)
     }
 
+    func testServiceLoadsTheCanonicalHomeAsTheRootItem() async throws {
+        let home = "/home/reader"
+        let directory = RemuxSFTPFileMetadata(
+            size: nil,
+            permissions: 0o040755,
+            modificationDate: Date(timeIntervalSince1970: 200)
+        )
+        let client = FileProviderTestSFTPClient(
+            realPaths: [".": .success(home)],
+            listings: [:],
+            metadataByPath: [home: directory]
+        )
+        let fixture = try await FileProviderRemoteServiceFixture.make(client: client)
+
+        let item = try await fixture.service.item(at: .root)
+
+        XCTAssertEqual(item.path, .root)
+        XCTAssertEqual(item.type, .directory)
+    }
+
+    func testServiceUsesOneScopedClientOperationPerRequest() async throws {
+        let fixture = try await FileProviderRemoteServiceFixture.make()
+
+        _ = try await fixture.service.list(directory: .root)
+
+        XCTAssertEqual(fixture.clientProvider.callCount, 1)
+    }
+
+    func testExtensionInvalidationClosesDomainRootOnceWithoutOpeningClientOrChangingTrust() async throws {
+        let fixture = try await FileProviderRemoteServiceFixture.make()
+        let trustedHosts = TrustedHostStore(rootURL: fixture.rootURL)
+        let trustedIdentity = TrustedHostIdentity(
+            serverID: fixture.server.id,
+            host: fixture.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 fixture-public-key",
+            trustedAt: Date(timeIntervalSince1970: 300)
+        )
+        try trustedHosts.replaceIdentities([trustedIdentity])
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+
+        core.invalidate()
+        core.invalidate()
+        await fixture.clientProvider.waitForCloseCall()
+
+        XCTAssertEqual(fixture.clientProvider.closedServerIDs, [fixture.server.id])
+        XCTAssertEqual(fixture.clientProvider.callCount, 0)
+        XCTAssertEqual(try trustedHosts.loadIdentities(), [trustedIdentity])
+    }
+
     func testServiceLoadsOnlySymlinksWhoseCanonicalTargetStaysInHome() async throws {
         let fixture = try await FileProviderRemoteServiceFixture.make()
 
@@ -102,6 +158,9 @@ private func XCTAssertThrowsErrorAsync<T>(
 
 struct FileProviderRemoteServiceFixture {
     let service: FileProviderRemoteService
+    let clientProvider: FileProviderTestSFTPClientProvider
+    let rootURL: URL
+    let server: SavedServer
 
     static func make() async throws -> FileProviderRemoteServiceFixture {
         let home = "/home/reader"
@@ -168,14 +227,17 @@ struct FileProviderRemoteServiceFixture {
         try await profiles.saveServer(server)
         await credentials.saveCredential(.password("fixture-password"), identityID: identity.id)
 
-        let opener = FileProviderTestSFTPSessionOpener(client: client)
+        let clientProvider = FileProviderTestSFTPClientProvider(client: client)
         return FileProviderRemoteServiceFixture(
             service: FileProviderRemoteService(
                 domainIdentifier: server.id.uuidString.lowercased(),
                 profiles: profiles,
                 credentials: credentials,
-                sessionOpener: opener
-            )
+                clientProvider: clientProvider
+            ),
+            clientProvider: clientProvider,
+            rootURL: root,
+            server: server
         )
     }
 }
@@ -196,21 +258,46 @@ actor FileProviderTestCredentialStore: SSHCredentialStore {
     }
 }
 
-struct FileProviderTestSFTPSession: FileProviderSFTPClientSession {
+final class FileProviderTestSFTPClientProvider: FileProviderSFTPClientProviding, @unchecked Sendable {
     let client: any RemuxSFTPReadOnlyClient
+    private let lock = NSLock()
+    private var calls = 0
+    private var closedServers: [SavedServer.ID] = []
 
-    func close() async {
+    init(client: any RemuxSFTPReadOnlyClient) {
+        self.client = client
     }
-}
 
-struct FileProviderTestSFTPSessionOpener: FileProviderSFTPClientSessionOpening {
-    let client: any RemuxSFTPReadOnlyClient
+    var callCount: Int {
+        lock.withLock { calls }
+    }
 
-    func open(
+    var closedServerIDs: [SavedServer.ID] {
+        lock.withLock { closedServers }
+    }
+
+    func withClient<Value: Sendable>(
         server: SavedServer,
-        authentication: ResolvedSSHAuth
-    ) async throws -> any FileProviderSFTPClientSession {
-        FileProviderTestSFTPSession(client: client)
+        authentication: ResolvedSSHAuth,
+        operation: @Sendable (any RemuxSFTPReadOnlyClient) async throws -> Value
+    ) async throws -> Value {
+        lock.withLock {
+            calls += 1
+        }
+        return try await operation(client)
+    }
+
+    func closeIdleConnections(forServerID serverID: SavedServer.ID) async {
+        lock.withLock {
+            closedServers.append(serverID)
+        }
+    }
+
+    func waitForCloseCall() async {
+        for _ in 0..<100 {
+            guard closedServerIDs.isEmpty else { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
     }
 }
 

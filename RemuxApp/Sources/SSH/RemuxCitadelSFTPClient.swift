@@ -627,12 +627,14 @@ struct RemuxSessionCitadelSFTPClientProvider: RemuxSFTPClientProvider {
     ) async throws -> RemuxSFTPClientLease<RemuxCitadelSFTPClient> {
         let registration = try await scope.begin()
         do {
+#if !REMUX_FILE_PROVIDER_EXTENSION
             let startedAt = GhosttyRuntimeTrace.latencyEnabled
                 ? GhosttyRuntimeTrace.nowNanos()
                 : nil
             GhosttyRuntimeTrace.latency(
                 "sftp.open begin host=\(hostDescription) source=session"
             )
+#endif
 
             // Citadel bounds subsystem negotiation internally. Await the raw
             // open so shutdown cannot release a shared root while a child is
@@ -640,11 +642,13 @@ struct RemuxSessionCitadelSFTPClientProvider: RemuxSFTPClientProvider {
             let sftp = try await SFTPClient.open(
                 overAuthenticatedSSHChannel: registration.rootChannel
             )
+#if !REMUX_FILE_PROVIDER_EXTENSION
             if let startedAt {
                 GhosttyRuntimeTrace.latency(
                     "sftp.open end host=\(hostDescription) source=session elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
                 )
             }
+#endif
 
             let teardown = RemuxSFTPLeaseTeardown(
                 closeBorrowedChild: {
@@ -764,8 +768,10 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
         }
 
         do {
+#if !REMUX_FILE_PROVIDER_EXTENSION
             let sftpOpenStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
             GhosttyRuntimeTrace.latency("sftp.open begin host=\(rootConfiguration.host):\(rootConfiguration.port)")
+#endif
             let sftp = try await RemuxSFTPTimeout.run(
                 timeout: operationTimeout,
                 operation: {
@@ -779,11 +785,13 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
                     }
                 }
             )
+#if !REMUX_FILE_PROVIDER_EXTENSION
             if let sftpOpenStartedAt {
                 GhosttyRuntimeTrace.latency(
                     "sftp.open end host=\(rootConfiguration.host):\(rootConfiguration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"
                 )
             }
+#endif
             let leaseState = RemuxSFTPLeaseTeardown(
                 closeChild: {
                     try await RemuxSFTPTimeout.run(
