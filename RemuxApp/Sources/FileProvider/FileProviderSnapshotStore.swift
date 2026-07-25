@@ -72,12 +72,19 @@ actor FileProviderSnapshotStore {
         state.generations = Array(state.generations.suffix(retainedGenerationCount))
         let delta = makeDelta(from: previousItems, to: items)
         if hadPreviousGeneration,
-           (!delta.updated.isEmpty || !delta.deleted.isEmpty),
-           !state.pendingSignalDirectories.contains(directory)
+           !delta.updated.isEmpty || !delta.deleted.isEmpty
         {
-            state.pendingSignalDirectories.append(directory)
-            state.pendingSignalDirectories.sort {
-                $0.relative < $1.relative
+            state.pendingSignals.removeAll {
+                $0.directory == directory
+            }
+            state.pendingSignals.append(
+                PersistedPendingSignal(
+                    directory: directory,
+                    generation: nextGeneration
+                )
+            )
+            state.pendingSignals.sort {
+                $0.directory.relative < $1.directory.relative
             }
         }
         try Task.checkCancellation()
@@ -89,17 +96,25 @@ actor FileProviderSnapshotStore {
         )
     }
 
-    func hasPendingSignals(for directory: FileProviderRemotePath) throws -> Bool {
-        try loadState().pendingSignalDirectories.contains(directory)
+    func pendingSignalGeneration(
+        for directory: FileProviderRemotePath
+    ) throws -> UInt64? {
+        try loadState().pendingSignals
+            .first(where: { $0.directory == directory })?
+            .generation
     }
 
-    func acknowledgeSignals(for directory: FileProviderRemotePath) throws {
+    func acknowledgeSignals(
+        for directory: FileProviderRemotePath,
+        generation: UInt64
+    ) throws {
         var state = try loadState()
-        let originalCount = state.pendingSignalDirectories.count
-        state.pendingSignalDirectories.removeAll { $0 == directory }
-        guard state.pendingSignalDirectories.count != originalCount else {
+        guard let index = state.pendingSignals.firstIndex(where: {
+            $0.directory == directory && $0.generation == generation
+        }) else {
             return
         }
+        state.pendingSignals.remove(at: index)
         try save(state)
     }
 
@@ -142,7 +157,7 @@ actor FileProviderSnapshotStore {
             return PersistedState(
                 namespace: UUID(),
                 generations: [],
-                pendingSignalDirectories: []
+                pendingSignals: []
             )
         }
         let state = try decoder.decode(PersistedState.self, from: Data(contentsOf: stateURL))
@@ -236,7 +251,12 @@ actor FileProviderSnapshotStore {
 private struct PersistedState: Codable {
     let namespace: UUID
     var generations: [PersistedGeneration]
-    var pendingSignalDirectories: [FileProviderRemotePath]
+    var pendingSignals: [PersistedPendingSignal]
+}
+
+private struct PersistedPendingSignal: Codable {
+    let directory: FileProviderRemotePath
+    let generation: UInt64
 }
 
 private struct PersistedGeneration: Codable {

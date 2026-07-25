@@ -70,7 +70,9 @@ actor FileProviderEnumeratorCore {
     func refreshAndSignalChanges() async throws {
         _ = try await refresh()
         try Task.checkCancellation()
-        guard try await snapshots.hasPendingSignals(for: directory) else {
+        guard let pendingGeneration = try await snapshots
+            .pendingSignalGeneration(for: directory)
+        else {
             return
         }
 
@@ -79,7 +81,10 @@ actor FileProviderEnumeratorCore {
         try await signaler.signalEnumerator(for: directoryIdentifier)
         try Task.checkCancellation()
         try await signaler.signalEnumerator(for: .workingSet)
-        try await snapshots.acknowledgeSignals(for: directory)
+        try await snapshots.acknowledgeSignals(
+            for: directory,
+            generation: pendingGeneration
+        )
     }
 
     private func refresh() async throws -> FileProviderPollingRefresh {

@@ -914,6 +914,57 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(identifiers, [.rootContainer, .workingSet])
     }
 
+    func testOlderSignalDeliveryDoesNotAcknowledgeNewerSnapshot() async throws {
+        let original = try fileProviderTestItem(relative: "item.txt", size: 1)
+        let firstChange = try fileProviderTestItem(
+            relative: "item.txt",
+            size: 2
+        )
+        let secondChange = try fileProviderTestItem(
+            relative: "item.txt",
+            size: 3
+        )
+        let snapshotRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let blockingSignaler = FileProviderBlockingSignaler()
+        let core = FileProviderEnumeratorCore(
+            directory: .root,
+            service: FileProviderTestSequencedRemoteService(
+                listings: [[original], [firstChange], [secondChange]]
+            ),
+            snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: blockingSignaler
+        )
+        _ = try await core.enumerateItems()
+        let firstDelivery = Task {
+            try await core.refreshAndSignalChanges()
+        }
+        await blockingSignaler.waitUntilFirstSignal()
+
+        let newerPage = try await core.enumerateItems()
+        XCTAssertEqual(newerPage.items, [secondChange])
+        await blockingSignaler.release()
+        try await firstDelivery.value
+
+        let retrySignaler = FileProviderTestSignaler()
+        let reopenedCore = FileProviderEnumeratorCore(
+            directory: .root,
+            service: FileProviderTestSequencedRemoteService(
+                listings: [[secondChange]]
+            ),
+            snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: retrySignaler
+        )
+
+        try await reopenedCore.refreshAndSignalChanges()
+        try await reopenedCore.refreshAndSignalChanges()
+
+        let retryIdentifiers = await retrySignaler.signaledIdentifiers()
+        XCTAssertEqual(retryIdentifiers, [.rootContainer, .workingSet])
+    }
+
     func testPollingLoopRefreshesImmediatelyWhenEnumeratorOpens() async {
         let refreshes = FileProviderTestRefreshCounter()
         let loop = FileProviderPollingLoop(
