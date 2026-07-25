@@ -32,14 +32,17 @@ struct FileProviderRemoteItem: Equatable, Codable, Sendable {
         metadata: RemuxSFTPFileMetadata,
         symlinkTargetRelativePath: String? = nil
     ) throws {
+        let parent = try Self.parent(of: path)
         self.path = path
-        self.parent = try Self.parent(of: path)
+        self.parent = parent
         self.name = path.relative.split(separator: "/").last.map(String.init) ?? ""
         self.type = metadata.type
         self.size = metadata.size
         self.permissions = metadata.permissions
         self.modificationDate = metadata.modificationDate
-        self.symlinkTargetRelativePath = symlinkTargetRelativePath
+        self.symlinkTargetRelativePath = try symlinkTargetRelativePath.map {
+            try Self.validatedSymlinkTarget($0, relativeTo: parent)
+        }
     }
 
     init(from decoder: any Decoder) throws {
@@ -63,6 +66,37 @@ struct FileProviderRemoteItem: Equatable, Codable, Sendable {
             return .root
         }
         return try FileProviderRemotePath(relative: String(path.relative[..<separator]))
+    }
+
+    private static func validatedSymlinkTarget(
+        _ target: String,
+        relativeTo parent: FileProviderRemotePath
+    ) throws -> String {
+        guard !target.isEmpty, !target.hasPrefix("/"), !target.contains("\0") else {
+            throw FileProviderRemotePathError.invalidRelativePath
+        }
+        guard target != "." else { return target }
+
+        let components = target.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.allSatisfy({ !$0.isEmpty && $0 != "." }) else {
+            throw FileProviderRemotePathError.invalidRelativePath
+        }
+
+        var remainingParentComponents = parent.relative.isEmpty
+            ? 0
+            : parent.relative.split(separator: "/").count
+        var encounteredDestinationComponent = false
+        for component in components {
+            if component == ".." {
+                guard !encounteredDestinationComponent, remainingParentComponents > 0 else {
+                    throw FileProviderRemotePathError.invalidRelativePath
+                }
+                remainingParentComponents -= 1
+            } else {
+                encounteredDestinationComponent = true
+            }
+        }
+        return target
     }
 }
 

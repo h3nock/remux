@@ -139,6 +139,41 @@ final class FileProviderRemoteItemTests: XCTestCase {
         )
     }
 
+    func testItemRejectsUnsafeSymlinkTargetsAndAcceptsParentRelativeTarget() throws {
+        let nestedLink = try FileProviderRemotePath(relative: "projects/link")
+
+        XCTAssertEqual(
+            try item(path: nestedLink, symlinkTargetRelativePath: "../shared/target").symlinkTargetRelativePath,
+            "../shared/target"
+        )
+        XCTAssertThrowsError(try item(path: nestedLink, symlinkTargetRelativePath: "/etc/passwd"))
+        XCTAssertThrowsError(try item(path: nestedLink, symlinkTargetRelativePath: "target\0name"))
+        XCTAssertThrowsError(try item(path: nestedLink, symlinkTargetRelativePath: "./target"))
+        XCTAssertThrowsError(try item(path: nestedLink, symlinkTargetRelativePath: "folder//target"))
+        XCTAssertThrowsError(try item(path: nestedLink, symlinkTargetRelativePath: "folder/../target"))
+        XCTAssertThrowsError(try item(path: nestedLink, symlinkTargetRelativePath: "../../escape"))
+        XCTAssertThrowsError(
+            try item(
+                path: FileProviderRemotePath(relative: "link"),
+                symlinkTargetRelativePath: "../escape"
+            )
+        )
+    }
+
+    func testItemDecodingRejectsUnsafeSymlinkTarget() throws {
+        let source = try item(
+            path: FileProviderRemotePath(relative: "projects/link"),
+            symlinkTargetRelativePath: "../shared/target"
+        )
+        var payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(source)) as? [String: Any]
+        )
+        payload["symlinkTargetRelativePath"] = "../../escape"
+        let unsafePayload = try JSONSerialization.data(withJSONObject: payload)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(FileProviderRemoteItem.self, from: unsafePayload))
+    }
+
     private func item(
         path: FileProviderRemotePath? = nil,
         type: RemuxSFTPFileType = .regular,
