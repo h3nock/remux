@@ -797,19 +797,20 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
     }
 
-    func testCancellationBetweenChangeSignalsStopsWorkingSetSignal() async throws {
+    func testInterruptedSignalDeliveryRetriesDurablyUntilComplete() async throws {
         let original = try fileProviderTestItem(relative: "item.txt", size: 1)
         let changed = try fileProviderTestItem(relative: "item.txt", size: 2)
         let service = FileProviderTestSequencedRemoteService(
             listings: [[original], [changed]]
         )
         let signaler = FileProviderBlockingSignaler()
+        let snapshotRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let core = FileProviderEnumeratorCore(
             directory: .root,
             service: service,
             snapshots: FileProviderSnapshotStore(
-                rootURL: FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                rootURL: snapshotRoot
             ),
             coordinator: FileProviderPollingCoordinator(),
             signaler: signaler
@@ -826,6 +827,54 @@ final class RemuxFileProviderContractTests: XCTestCase {
         await XCTAssertFileProviderThrowsAsync { try await refresh.value }
         let identifiers = await signaler.signaledIdentifiers()
         XCTAssertEqual(identifiers, [.rootContainer])
+
+        let retrySignaler = FileProviderTestSignaler()
+        let reopenedCore = FileProviderEnumeratorCore(
+            directory: .root,
+            service: FileProviderTestSequencedRemoteService(
+                listings: [[changed]]
+            ),
+            snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: retrySignaler
+        )
+
+        try await reopenedCore.refreshAndSignalChanges()
+        try await reopenedCore.refreshAndSignalChanges()
+
+        let retryIdentifiers = await retrySignaler.signaledIdentifiers()
+        XCTAssertEqual(
+            retryIdentifiers,
+            [.rootContainer, .workingSet]
+        )
+    }
+
+    func testFailedSignalDeliveryRemainsPendingUntilRetrySucceeds() async throws {
+        let original = try fileProviderTestItem(relative: "item.txt", size: 1)
+        let changed = try fileProviderTestItem(relative: "item.txt", size: 2)
+        let signaler = FileProviderFailingOnceSignaler()
+        let core = FileProviderEnumeratorCore(
+            directory: .root,
+            service: FileProviderTestSequencedRemoteService(
+                listings: [[original], [changed]]
+            ),
+            snapshots: FileProviderSnapshotStore(
+                rootURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            ),
+            coordinator: FileProviderPollingCoordinator(),
+            signaler: signaler
+        )
+        _ = try await core.enumerateItems()
+
+        await XCTAssertFileProviderThrowsAsync {
+            try await core.refreshAndSignalChanges()
+        }
+        try await core.refreshAndSignalChanges()
+        try await core.refreshAndSignalChanges()
+
+        let identifiers = await signaler.signaledIdentifiers()
+        XCTAssertEqual(identifiers, [.rootContainer, .workingSet])
     }
 
     func testPollingLoopRefreshesImmediatelyWhenEnumeratorOpens() async {
@@ -1474,6 +1523,31 @@ private actor FileProviderTestSignaler: FileProviderEnumeratorSignaling {
     private var identifiers: [NSFileProviderItemIdentifier] = []
 
     func signalEnumerator(for identifier: NSFileProviderItemIdentifier) {
+        identifiers.append(identifier)
+    }
+
+    func signaledIdentifiers() -> [NSFileProviderItemIdentifier] {
+        identifiers
+    }
+}
+
+private actor FileProviderFailingOnceSignaler:
+    FileProviderEnumeratorSignaling
+{
+    private enum Failure: Error {
+        case rejected
+    }
+
+    private var shouldFail = true
+    private var identifiers: [NSFileProviderItemIdentifier] = []
+
+    func signalEnumerator(
+        for identifier: NSFileProviderItemIdentifier
+    ) throws {
+        if shouldFail {
+            shouldFail = false
+            throw Failure.rejected
+        }
         identifiers.append(identifier)
     }
 

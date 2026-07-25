@@ -141,10 +141,17 @@ struct RemuxFileProviderManagerSignaler: FileProviderEnumeratorSignaling, @unche
         try manager.temporaryDirectoryURL()
     }
 
-    func signalEnumerator(for identifier: NSFileProviderItemIdentifier) async {
-        await withCheckedContinuation { continuation in
-            manager.signalEnumerator(for: identifier) { _ in
-                continuation.resume()
+    func signalEnumerator(
+        for identifier: NSFileProviderItemIdentifier
+    ) async throws {
+        try Task.checkCancellation()
+        try await withCheckedThrowingContinuation { continuation in
+            manager.signalEnumerator(for: identifier) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
             }
         }
     }

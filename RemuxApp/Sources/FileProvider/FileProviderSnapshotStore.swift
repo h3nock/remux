@@ -57,6 +57,7 @@ actor FileProviderSnapshotStore {
             )
         }
 
+        let hadPreviousGeneration = state.generations.last != nil
         let nextGeneration = try generation(after: state.generations.last?.generation)
         var directories = state.generations.last?.directories ?? []
         if let index = directories.firstIndex(where: { $0.path == directory }) {
@@ -69,13 +70,37 @@ actor FileProviderSnapshotStore {
         let latest = PersistedGeneration(generation: nextGeneration, directories: directories)
         state.generations.append(latest)
         state.generations = Array(state.generations.suffix(retainedGenerationCount))
+        let delta = makeDelta(from: previousItems, to: items)
+        if hadPreviousGeneration,
+           (!delta.updated.isEmpty || !delta.deleted.isEmpty),
+           !state.pendingSignalDirectories.contains(directory)
+        {
+            state.pendingSignalDirectories.append(directory)
+            state.pendingSignalDirectories.sort {
+                $0.relative < $1.relative
+            }
+        }
         try Task.checkCancellation()
         try save(state)
 
         return (
             anchor: makeAnchor(namespace: state.namespace, generation: nextGeneration),
-            delta: makeDelta(from: previousItems, to: items)
+            delta: delta
         )
+    }
+
+    func hasPendingSignals(for directory: FileProviderRemotePath) throws -> Bool {
+        try loadState().pendingSignalDirectories.contains(directory)
+    }
+
+    func acknowledgeSignals(for directory: FileProviderRemotePath) throws {
+        var state = try loadState()
+        let originalCount = state.pendingSignalDirectories.count
+        state.pendingSignalDirectories.removeAll { $0 == directory }
+        guard state.pendingSignalDirectories.count != originalCount else {
+            return
+        }
+        try save(state)
     }
 
     func items(directory: FileProviderRemotePath) throws -> [FileProviderRemoteItem] {
@@ -114,7 +139,11 @@ actor FileProviderSnapshotStore {
 
     private func loadState() throws -> PersistedState {
         guard fileManager.fileExists(atPath: stateURL.path) else {
-            return PersistedState(namespace: UUID(), generations: [])
+            return PersistedState(
+                namespace: UUID(),
+                generations: [],
+                pendingSignalDirectories: []
+            )
         }
         let state = try decoder.decode(PersistedState.self, from: Data(contentsOf: stateURL))
         try validate(state)
@@ -207,6 +236,7 @@ actor FileProviderSnapshotStore {
 private struct PersistedState: Codable {
     let namespace: UUID
     var generations: [PersistedGeneration]
+    var pendingSignalDirectories: [FileProviderRemotePath]
 }
 
 private struct PersistedGeneration: Codable {

@@ -15,7 +15,9 @@ struct FileProviderEnumerationChanges: Sendable {
 }
 
 protocol FileProviderEnumeratorSignaling: Sendable {
-    func signalEnumerator(for identifier: NSFileProviderItemIdentifier) async
+    func signalEnumerator(
+        for identifier: NSFileProviderItemIdentifier
+    ) async throws
 }
 
 actor FileProviderEnumeratorCore {
@@ -66,18 +68,18 @@ actor FileProviderEnumeratorCore {
     }
 
     func refreshAndSignalChanges() async throws {
-        let refresh = try await refresh()
+        _ = try await refresh()
         try Task.checkCancellation()
-        guard !refresh.delta.updated.isEmpty || !refresh.delta.deleted.isEmpty else {
+        guard try await snapshots.hasPendingSignals(for: directory) else {
             return
         }
 
         let directoryIdentifier = FileProviderItemIdentifierCodec()
             .identifier(for: directory)
-        await signaler.signalEnumerator(for: directoryIdentifier)
+        try await signaler.signalEnumerator(for: directoryIdentifier)
         try Task.checkCancellation()
-        await signaler.signalEnumerator(for: .workingSet)
-        try Task.checkCancellation()
+        try await signaler.signalEnumerator(for: .workingSet)
+        try await snapshots.acknowledgeSignals(for: directory)
     }
 
     private func refresh() async throws -> FileProviderPollingRefresh {
