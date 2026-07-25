@@ -22,6 +22,26 @@ final class FileProviderSharedStorageMigratorTests: XCTestCase {
         XCTAssertTrue(fixture.markerExists)
     }
 
+    func testMigrationCopiesPrivateKeyCredentialWithPassphrase() async throws {
+        let fixture = try MigrationFixture(identityAuthenticationKind: .privateKey)
+        let credential = SSHCredential.privateKey(
+            SSHPrivateKeyCredential(
+                privateKeyPEM: """
+                -----BEGIN OPENSSH PRIVATE KEY-----
+                private-key-fixture
+                -----END OPENSSH PRIVATE KEY-----
+                """,
+                passphrase: "passphrase-fixture"
+            )
+        )
+        try await fixture.seedLegacy(credential: credential)
+
+        try await fixture.migrator.migrateIfNeeded()
+
+        let sharedCredential = try await fixture.sharedCredentials.loadCredential(identityID: fixture.identity.id)
+        XCTAssertEqual(sharedCredential, credential)
+    }
+
     func testMigrationFailureLeavesSourceIntactDoesNotMarkAndRetriesIdempotently() async throws {
         let fixture = try MigrationFixture(sharedCredentials: FailingOnceCredentialStore())
         try await fixture.seedLegacy(password: "secret")
@@ -52,11 +72,7 @@ final class FileProviderSharedStorageMigratorTests: XCTestCase {
 }
 
 private final class MigrationFixture {
-    let identity = SSHIdentity(
-        id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-        name: "Primary password",
-        authenticationKind: .password
-    )
+    let identity: SSHIdentity
     let legacyProfiles: FileBackedConnectionProfileRepository
     let legacyCredentials: InMemorySSHCredentialStore
     let legacyTrust: TrustedHostStore
@@ -93,13 +109,21 @@ private final class MigrationFixture {
     private let server: SavedServer
     private let workspace: SavedWorkspace
 
-    init(sharedCredentials: any SSHCredentialStore = InMemorySSHCredentialStore()) throws {
+    init(
+        identityAuthenticationKind: SSHAuthenticationKind = .password,
+        sharedCredentials: any SSHCredentialStore = InMemorySSHCredentialStore()
+    ) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let legacyRoot = root.appendingPathComponent("legacy", isDirectory: true)
         let sharedRoot = root.appendingPathComponent("shared", isDirectory: true)
         markerURL = root.appendingPathComponent("file-provider-shared-storage-migration-v1")
 
+        identity = SSHIdentity(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            name: "Primary credential",
+            authenticationKind: identityAuthenticationKind
+        )
         server = SavedServer(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
             displayName: "Example Server",
@@ -131,11 +155,15 @@ private final class MigrationFixture {
     }
 
     func seedLegacy(password: String) async throws {
+        try await seedLegacy(credential: .password(password))
+    }
+
+    func seedLegacy(credential: SSHCredential) async throws {
         try await legacyProfiles.saveIdentity(identity)
         try await legacyProfiles.saveServer(server)
         try await legacyProfiles.saveWorkspace(workspace)
         try legacyTrust.replaceIdentities(expectedTrust)
-        try await legacyCredentials.saveCredential(.password(password), identityID: identity.id)
+        try await legacyCredentials.saveCredential(credential, identityID: identity.id)
     }
 }
 
