@@ -1332,7 +1332,7 @@
 				PRODUCT_NAME = RemuxFileProvider;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) REMUX_FILE_PROVIDER_EXTENSION";
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -1493,7 +1493,7 @@
 				PRODUCT_NAME = RemuxFileProvider;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) REMUX_FILE_PROVIDER_EXTENSION";
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};

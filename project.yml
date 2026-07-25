@@ -99,6 +99,7 @@ targets:
         PRODUCT_MODULE_NAME: RemuxFileProvider
         CODE_SIGN_ENTITLEMENTS: RemuxFileProvider/RemuxFileProvider.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
+        TARGETED_DEVICE_FAMILY: "1"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) REMUX_FILE_PROVIDER_EXTENSION
     info:
       path: RemuxFileProvider/Info.plist

@@ -8,6 +8,7 @@
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
+		<string>$(AppIdentifierPrefix)dev.remux.app</string>
 		<string>$(AppIdentifierPrefix)dev.remux.shared</string>
 	</array>
 </dict>
