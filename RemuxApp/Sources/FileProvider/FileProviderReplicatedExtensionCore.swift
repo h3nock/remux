@@ -86,6 +86,9 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                     throw error
                 }
             },
+            discardResult: { fetched in
+                try? FileManager.default.removeItem(at: fetched.localURL)
+            },
             completion: completion
         )
     }

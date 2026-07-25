@@ -185,6 +185,53 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(fetchURLs, [fetched.localURL])
     }
 
+    func testFetchCancellationAfterRemoteSuccessRemovesTemporaryFile() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderDelayedFetchRemoteService(item: remoteItem)
+        let completions =
+            FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = FileProviderItemIdentifierCodec().identifier(
+            for: remoteItem.path
+        )
+        let progress = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await service.waitUntilFetchCreated()
+
+        progress.cancel()
+        await service.finishFetch()
+        await completions.waitForFirst()
+
+        let results = await completions.results()
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected cancellation to fail the fetch")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+        let fetchedLocalURL = await service.localURL
+        let localURL = try XCTUnwrap(fetchedLocalURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
+    }
+
     func testExtensionCoreRejectsMutationImmediatelyWithoutRemoteCalls() async throws {
         let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
@@ -1101,6 +1148,65 @@ private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
         await withCheckedContinuation { continuation in
             invalidationWaiters.append(continuation)
         }
+    }
+}
+
+private actor FileProviderDelayedFetchRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private var createdURL: URL?
+    private var creationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shouldFinish = false
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    var localURL: URL? {
+        createdURL
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (Int64) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        try Data("contents".utf8).write(to: localURL)
+        createdURL = localURL
+        let creationWaiters = self.creationWaiters
+        self.creationWaiters.removeAll()
+        creationWaiters.forEach { $0.resume() }
+
+        guard !shouldFinish else { return returnedItem }
+        await withCheckedContinuation { continuation in
+            finishWaiters.append(continuation)
+        }
+        return returnedItem
+    }
+
+    func waitUntilFetchCreated() async {
+        guard createdURL == nil else { return }
+        await withCheckedContinuation { continuation in
+            creationWaiters.append(continuation)
+        }
+    }
+
+    func finishFetch() {
+        shouldFinish = true
+        let finishWaiters = self.finishWaiters
+        self.finishWaiters.removeAll()
+        finishWaiters.forEach { $0.resume() }
+    }
+
+    func invalidate() {
     }
 }
 

@@ -11,6 +11,7 @@ final class FileProviderRequestController: @unchecked Sendable {
             FileProviderErrorMapper.map($0)
         },
         operation: @escaping @Sendable () async throws -> Value,
+        discardResult: @escaping @Sendable (Value) -> Void = { _ in },
         completion: @escaping @Sendable (Result<Value, NSError>) -> Void
     ) -> Progress {
         let requestID = UUID()
@@ -31,7 +32,12 @@ final class FileProviderRequestController: @unchecked Sendable {
             do {
                 try Task.checkCancellation()
                 let value = try await operation()
-                try Task.checkCancellation()
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    discardResult(value)
+                    throw error
+                }
                 result = .success(value)
             } catch {
                 result = .failure(errorMapper(error))
