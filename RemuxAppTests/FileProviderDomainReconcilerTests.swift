@@ -52,6 +52,45 @@ final class FileProviderDomainReconcilerTests: XCTestCase {
             .add(.init(serverID: passwordServerID, displayName: "Password")),
         ])
     }
+
+    func testChangingServerHostRemovesDomainUntilTheNewHostIsTrusted() async throws {
+        let fixture = try await DomainFixture(
+            passwordServer: .eligible,
+            keyServer: .missingTrust,
+            thirdServer: .missingTrust
+        )
+        try await fixture.reconciler.reconcile()
+
+        var editedServer = fixture.passwordServer
+        editedServer.host = "replacement.example.test"
+        try await fixture.profiles.saveServer(editedServer)
+        try await fixture.reconciler.reconcile()
+
+        let recordsAfterHostChange = try await fixture.registry.records()
+        XCTAssertEqual(recordsAfterHostChange, [])
+
+        try fixture.trust.replaceIdentities([
+            TrustedHostIdentity(
+                serverID: editedServer.id,
+                host: editedServer.host,
+                keyType: "ssh-ed25519",
+                openSSHPublicKey: "ssh-ed25519 replacement",
+                trustedAt: Date(timeIntervalSince1970: 2)
+            )
+        ])
+        try await fixture.reconciler.reconcile()
+
+        let recordsAfterTrust = try await fixture.registry.records()
+        XCTAssertEqual(
+            recordsAfterTrust,
+            [
+                FileProviderDomainRecord(
+                    serverID: editedServer.id,
+                    displayName: editedServer.displayName
+                )
+            ]
+        )
+    }
 }
 
 private final class DomainFixture {
@@ -62,6 +101,8 @@ private final class DomainFixture {
     }
 
     let passwordServer: SavedServer
+    let profiles: FileBackedConnectionProfileRepository
+    let trust: TrustedHostStore
     let registry: InMemoryFileProviderDomainRegistry
     let reconciler: FileProviderDomainReconciler
     let existingRecords: [FileProviderDomainRecord]
@@ -108,6 +149,8 @@ private final class DomainFixture {
         )
 
         self.passwordServer = servers[0]
+        self.profiles = profiles
+        self.trust = trust
         self.registry = InMemoryFileProviderDomainRegistry(records: existing)
         self.reconciler = FileProviderDomainReconciler(
             profiles: profiles,

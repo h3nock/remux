@@ -53,10 +53,12 @@ actor FileProviderDomainReconciler: FileProviderDomainReconciling {
 
     private func reconcileDomains() async throws {
         let snapshot = try await profiles.loadSnapshot()
-        let trustedServerIDs = Set(try trust.loadIdentities().map(\.serverID))
+        let trustedIdentities = try trust.loadIdentities()
         var desiredRecords: [FileProviderDomainRecord] = []
 
-        for server in snapshot.servers where trustedServerIDs.contains(server.id) {
+        for server in snapshot.servers where trustedIdentities.contains(where: {
+            $0.serverID == server.id && $0.host == server.host
+        }) {
             guard try await credentials.loadCredential(identityID: server.identityID) != nil else {
                 continue
             }
