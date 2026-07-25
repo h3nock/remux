@@ -24,6 +24,8 @@
 		<string>group.dev.remux</string>
 		<key>NSExtensionFileProviderDownloadPipelineDepth</key>
 		<integer>1</integer>
+		<key>NSExtensionFileProviderReadOnly</key>
+		<true/>
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
 		<true/>
 		<key>NSExtensionPointIdentifier</key>
