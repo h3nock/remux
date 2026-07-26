@@ -7,6 +7,10 @@ struct FileProviderMutationResult: Sendable {
     let shouldFetchContent: Bool
 }
 
+enum FileProviderCreateMutationError: Error, Sendable {
+    case collision(existing: FileProviderIdentifiedItem)
+}
+
 actor FileProviderMutationCore {
     private let remote: any FileProviderRemoteServicing
     private let snapshots: FileProviderSnapshotStore
@@ -73,10 +77,26 @@ actor FileProviderMutationCore {
                 let parent = try await access.item(at: parentPath)
                 try validator.validateParent(exists: parent.type == .directory)
                 let existing = try await access.list(directory: parentPath)
-                try validator.validateDestination(
-                    destination,
-                    occupiedPaths: existing.map(\.path)
-                )
+                do {
+                    try validator.validateDestination(
+                        destination,
+                        occupiedPaths: existing.map(\.path)
+                    )
+                } catch FileProviderMutationValidationError.destinationOccupied {
+                    guard let remoteItem = existing.first(where: { $0.path == destination }) else {
+                        throw FileProviderMutationValidationError.destinationOccupied
+                    }
+                    let snapshotsItems = try await snapshots.items(directory: parentPath)
+                    let existingIdentity = snapshotsItems
+                        .first { $0.remoteItem.path == destination }?.identity ?? .item(identity())
+                    throw FileProviderCreateMutationError.collision(
+                        existing: FileProviderIdentifiedItem(
+                            identity: existingIdentity,
+                            parentIdentity: parentIdentity,
+                            remoteItem: remoteItem
+                        )
+                    )
+                }
 
                 var renamed = false
                 do {

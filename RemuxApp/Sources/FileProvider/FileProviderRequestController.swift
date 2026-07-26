@@ -30,6 +30,7 @@ final class FileProviderRequestController: @unchecked Sendable {
         },
         progressOperation: @escaping @Sendable (Progress) async throws -> Value,
         discardResult: @escaping @Sendable (Value) -> Void = { _ in },
+        preserveResultAfterCancellation: Bool = false,
         completion: @escaping @Sendable (Result<Value, NSError>) -> Void
     ) -> Progress {
         let requestID = UUID()
@@ -58,11 +59,13 @@ final class FileProviderRequestController: @unchecked Sendable {
             do {
                 try Task.checkCancellation()
                 let value = try await progressOperation(progress)
-                do {
-                    try Task.checkCancellation()
-                } catch {
-                    discardResult(value)
-                    throw error
+                if !preserveResultAfterCancellation {
+                    do {
+                        try Task.checkCancellation()
+                    } catch {
+                        discardResult(value)
+                        throw error
+                    }
                 }
                 result = .success(value)
             } catch {

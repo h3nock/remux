@@ -63,7 +63,11 @@ final class FileProviderMutationCoreTests: XCTestCase {
                 )
             ) { _ in }
         }) { error in
-            XCTAssertEqual(error as? FileProviderMutationValidationError, .destinationOccupied)
+            guard case .collision(let existing) = error as? FileProviderCreateMutationError else {
+                XCTFail("Expected collision carrying the existing item")
+                return
+            }
+            XCTAssertEqual(existing.remoteItem.path.relative, "report.txt")
         }
         let mutations = await fixture.remote.mutations()
         XCTAssertTrue(mutations.isEmpty)
@@ -205,6 +209,101 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertEqual(receipt, .item(key: .create(templateIdentifier: "cancel-after"), item: result.item))
         XCTAssertEqual(path.relative, "report.txt")
     }
+
+    func testExtensionCreatePreservesCommittedResultAfterCancellation() async throws {
+        let fixture = try MutationFixture()
+        let completion = MutationCompletionRecorder()
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory },
+            coordinator: FileProviderDomainOperationCoordinator()
+        )
+        await fixture.remote.blockItemReadAfterRename()
+        let progress = core.createItem(
+            request: fixture.createRequest(template: "bridge-cancel", parent: .rootContainer, filename: "report.txt", type: .regular, contentsURL: fixture.localFile(contents: Data("hello".utf8)))
+        ) { result in
+            Task { await completion.record(result) }
+        }
+        await fixture.remote.waitUntilItemReadBlocked()
+        progress.cancel()
+        await fixture.remote.releaseItemRead()
+        await completion.waitForFirst()
+        let results = await completion.results()
+        XCTAssertEqual(results.count, 1)
+        guard case .success(let result) = results[0] else {
+            XCTFail("Expected committed create to succeed after cancellation")
+            return
+        }
+        let receipt = try await fixture.snapshots.receipt(for: .create(templateIdentifier: "bridge-cancel"))
+        XCTAssertNotNil(receipt)
+        XCTAssertEqual(result.item.remoteItem.path.relative, "report.txt")
+    }
+
+    func testExtensionCreateMapsCollisionToFilenameCollisionWithExistingItem() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let completion = MutationCompletionRecorder()
+        let core = FileProviderReplicatedExtensionCore(service: fixture.remote, snapshots: fixture.snapshots, rootDisplayName: "Fixture", temporaryDirectoryURL: { FileManager.default.temporaryDirectory })
+        _ = core.createItem(request: fixture.createRequest(template: "bridge-collision", parent: .rootContainer, filename: "report.txt", type: .regular, contentsURL: nil)) { result in Task { await completion.record(result) } }
+        await completion.waitForFirst()
+        guard case .failure(let error) = (await completion.results())[0] else { XCTFail("Expected collision"); return }
+        XCTAssertEqual(error.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(error.code, NSFileProviderError.filenameCollision.rawValue)
+        XCTAssertNotNil(error.userInfo[NSFileProviderErrorItemKey] as? FileProviderSDKItem)
+    }
+
+    func testExtensionCreateMapsSymbolicLinkToCannotSynchronize() async throws {
+        let fixture = try MutationFixture()
+        let completion = MutationCompletionRecorder()
+        let core = FileProviderReplicatedExtensionCore(service: fixture.remote, snapshots: fixture.snapshots, rootDisplayName: "Fixture", temporaryDirectoryURL: { FileManager.default.temporaryDirectory })
+        _ = core.createItem(request: fixture.createRequest(template: "bridge-link", parent: .rootContainer, filename: "link", type: .symbolicLink, contentsURL: nil)) { result in Task { await completion.record(result) } }
+        await completion.waitForFirst()
+        guard case .failure(let error) = (await completion.results())[0] else { XCTFail("Expected cannot synchronize"); return }
+        XCTAssertEqual(error.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(error.code, NSFileProviderError.cannotSynchronize.rawValue)
+    }
+
+    func testSharedCoordinatorPreventsStaleRefreshFromPublishingAfterCreate() async throws {
+        let fixture = try MutationFixture()
+        let coordinator = FileProviderDomainOperationCoordinator()
+        let core = FileProviderMutationCore(remote: fixture.remote, snapshots: fixture.snapshots, coordinator: coordinator, nonce: { UUID(uuidString: "11111111-2222-3333-4444-555555555555")! })
+        let gate = MutationGate()
+        let refresh = Task {
+            try await coordinator.performRefresh(directory: .root) {
+                await gate.beginAndWait()
+                let record = try await fixture.snapshots.record(directory: .root, items: [])
+                return FileProviderPollingRefresh(items: record.items, anchor: record.anchor, delta: record.delta)
+            }
+        }
+        await gate.waitUntilStarted()
+        let create = Task {
+            try await core.create(request: fixture.createRequest(template: "race", parent: .rootContainer, filename: "report.txt", type: .regular, contentsURL: fixture.localFile(contents: Data("hello".utf8)))) { _ in }
+        }
+        await gate.release()
+        _ = try await refresh.value
+        _ = try await create.value
+        let items = try await fixture.snapshots.items(directory: .root)
+        XCTAssertEqual(items.map { $0.remoteItem.path.relative }, ["report.txt"])
+    }
+}
+
+private actor MutationCompletionRecorder {
+    private var values: [Result<FileProviderMutationResult, NSError>] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func record(_ value: Result<FileProviderMutationResult, NSError>) { values.append(value); let waiters = waiters; self.waiters.removeAll(); waiters.forEach { $0.resume() } }
+    func waitForFirst() async { guard values.isEmpty else { return }; await withCheckedContinuation { waiters.append($0) } }
+    func results() -> [Result<FileProviderMutationResult, NSError>] { values }
+}
+
+private actor MutationGate {
+    private var started = false
+    private var released = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    func beginAndWait() async { started = true; let waiters = startedWaiters; startedWaiters.removeAll(); waiters.forEach { $0.resume() }; guard !released else { return }; await withCheckedContinuation { releaseWaiters.append($0) } }
+    func waitUntilStarted() async { guard !started else { return }; await withCheckedContinuation { startedWaiters.append($0) } }
+    func release() { released = true; let waiters = releaseWaiters; releaseWaiters.removeAll(); waiters.forEach { $0.resume() } }
 }
 
 private func assertThrows<Value: Sendable>(
@@ -310,6 +409,9 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     private var itemReadAfterRename = false
     private var itemReadWaiters: [CheckedContinuation<Void, Never>] = []
     private var itemReadStartedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var removalBlocked = false
+    private var removalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var removalStartedWaiters: [CheckedContinuation<Void, Never>] = []
 
     init() {
         entries[.root] = (
@@ -336,6 +438,9 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     func blockItemReadAfterRename() { itemReadBlocked = true }
     func releaseItemRead() { itemReadBlocked = false; let waiters = itemReadWaiters; itemReadWaiters.removeAll(); waiters.forEach { $0.resume() } }
     func waitUntilItemReadBlocked() async { guard itemReadStartedWaiters.isEmpty else { return }; await withCheckedContinuation { itemReadStartedWaiters.append($0) } }
+    func blockRemoval() { removalBlocked = true }
+    func releaseRemoval() { removalBlocked = false; let waiters = removalWaiters; removalWaiters.removeAll(); waiters.forEach { $0.resume() } }
+    func waitUntilRemovalBlocked() async { guard removalStartedWaiters.isEmpty else { return }; await withCheckedContinuation { removalStartedWaiters.append($0) } }
 
     func item(at path: FileProviderRemotePath) async throws -> FileProviderRemoteItem {
         if itemReadBlocked && itemReadAfterRename {
@@ -355,7 +460,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     func invalidate() {}
     func createDirectory(at path: FileProviderRemotePath) throws { try Task.checkCancellation(); guard entries[path] == nil else { throw FileProviderMutationValidationError.destinationOccupied }; entries[path] = (RemuxSFTPFileMetadata(size: nil, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .directory), Data()); recordedMutations.append(.mkdir("/home/me/\(path.relative)")) }
     func uploadFile(from localURL: URL, to path: FileProviderRemotePath, progress: @escaping @Sendable (Int64) async -> Void) async throws { try Task.checkCancellation(); recordedMutations.append(.upload(localURL, "/home/me/\(path.relative)")); await progress(0); if uploadFailure { uploadFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; let data = try Data(contentsOf: localURL); await progress(Int64(data.count)); entries[path] = (RemuxSFTPFileMetadata(size: UInt64(data.count), permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .regular), data) }
-    func renameItem(from source: FileProviderRemotePath, to destination: FileProviderRemotePath) async throws { let waiters = renameStartedWaiters; renameStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if renameBlocked { await withCheckedContinuation { renameWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.rename("/home/me/\(source.relative)", "/home/me/\(destination.relative)")); if renameFailure { renameFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; guard let entry = entries.removeValue(forKey: source) else { throw RemuxSFTPClientError.noSuchFile(source.relative) }; entries[destination] = entry; itemReadAfterRename = true }
-    func removeFile(at path: FileProviderRemotePath) throws { entries.removeValue(forKey: path); recordedMutations.append(.removeFile("/home/me/\(path.relative)")) }
+    func renameItem(from source: FileProviderRemotePath, to destination: FileProviderRemotePath) async throws { let waiters = renameStartedWaiters; renameStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if renameBlocked { await withCheckedContinuation { renameWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.rename("/home/me/\(source.relative)", "/home/me/\(destination.relative)")); if renameFailure { renameFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; let moved = entries.filter { $0.key == source || $0.key.relative.hasPrefix(source.relative + "/") }; guard !moved.isEmpty else { throw RemuxSFTPClientError.noSuchFile(source.relative) }; for path in moved.keys { entries.removeValue(forKey: path) }; for (path, entry) in moved { let suffix = path == source ? "" : String(path.relative.dropFirst(source.relative.count)); entries[try FileProviderRemotePath(relative: destination.relative + suffix)] = entry }; itemReadAfterRename = true }
+    func removeFile(at path: FileProviderRemotePath) async throws { let waiters = removalStartedWaiters; removalStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if removalBlocked { await withCheckedContinuation { removalWaiters.append($0) } }; entries.removeValue(forKey: path); recordedMutations.append(.removeFile("/home/me/\(path.relative)")) }
     func removeEmptyDirectory(at path: FileProviderRemotePath) throws { guard !entries.keys.contains(where: { $0.relative.hasPrefix(path.relative + "/") }) else { throw FileProviderMutationValidationError.destinationOccupied }; entries.removeValue(forKey: path); recordedMutations.append(.rmdir("/home/me/\(path.relative)")) }
 }

@@ -58,3 +58,34 @@ The result bundle reports 46 passed, 0 failed. `git diff --check` passed.
 - No physical-device Files/File Provider qualification was run.
 - The extension Info.plist still has its existing read-only installation gate;
   Task 7 does not change installed-provider configuration.
+
+## Review round 1
+
+Root causes found in fresh review:
+
+- Extension-core create allocated a second operation coordinator while
+  enumerators used setup's coordinator, permitting refresh and create to race.
+- The generic request controller correctly discarded ordinary results after
+  cancellation, but incorrectly discarded a create result whose remote rename
+  and authoritative persistence had already committed.
+- Collision validation discarded the existing remote item before the extension
+  could create the required File Provider collision NSError.
+
+Fixes inject setup's coordinator into extension core, add an opt-in committed
+result cancellation policy used only by create, and carry structured collision
+data through the bridge. The actor-backed mutable fake now supports removal
+gates and directory descendant rename behavior.
+
+Verification:
+
+```sh
+xcodebuild test -quiet -parallel-testing-enabled NO \
+  -derivedDataPath /tmp/remux-task7-round1 \
+  -resultBundlePath /tmp/remux-task7-round1-final.xcresult \
+  -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  -only-testing:RemuxTests/FileProviderMutationCoreTests \
+  -only-testing:RemuxTests/RemuxFileProviderContractTests
+```
+
+Result: 50 passed, 0 failed. `git diff --check` passed.

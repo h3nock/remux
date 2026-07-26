@@ -29,6 +29,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         snapshots: FileProviderSnapshotStore,
         rootDisplayName: String,
         temporaryDirectoryURL: @escaping @Sendable () throws -> URL,
+        coordinator: FileProviderDomainOperationCoordinator = FileProviderDomainOperationCoordinator(),
         requests: FileProviderRequestController = FileProviderRequestController()
     ) {
         self.service = service
@@ -36,7 +37,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         self.mutations = FileProviderMutationCore(
             remote: service,
             snapshots: snapshots,
-            coordinator: FileProviderDomainOperationCoordinator()
+            coordinator: coordinator
         )
         self.rootDisplayName = rootDisplayName
         self.temporaryDirectoryURL = temporaryDirectoryURL
@@ -50,6 +51,23 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         ) -> Void
     ) -> Progress {
         requests.perform(
+            errorMapper: { error in
+                if let createError = error as? FileProviderCreateMutationError {
+                    return switch createError {
+                    case .collision(let existing):
+                        FileProviderErrorMapper.filenameCollision(
+                            existingItem: FileProviderSDKItem(
+                                item: existing,
+                                rootDisplayName: self.rootDisplayName
+                            )
+                        )
+                    }
+                }
+                if error as? FileProviderMutationValidationError == .symbolicLinkMutation {
+                    return FileProviderErrorMapper.cannotSynchronize
+                }
+                return FileProviderErrorMapper.map(error)
+            },
             progressOperation: { progress in
                 let result = try await self.mutations.create(request: request) { bytes in
                     progress.completedUnitCount = bytes
@@ -60,6 +78,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
                 progress.completedUnitCount = progress.totalUnitCount
                 return result
             },
+            preserveResultAfterCancellation: true,
             completion: completion
         )
     }

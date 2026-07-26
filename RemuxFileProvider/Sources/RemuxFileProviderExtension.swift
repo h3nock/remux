@@ -226,7 +226,8 @@ private final class RemuxFileProviderExtensionSetup: @unchecked Sendable {
             rootDisplayName: domain.displayName,
             temporaryDirectoryURL: {
                 try signaler.temporaryDirectoryURL()
-            }
+            },
+            coordinator: operationCoordinator
         )
     }
 }
