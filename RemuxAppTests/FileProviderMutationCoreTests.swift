@@ -167,6 +167,22 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertFalse(exists)
     }
 
+    func testCreateRenameFailureWaitsForExactTemporaryCleanup() async throws {
+        let fixture = try MutationFixture()
+        await fixture.remote.failNextRename()
+        await fixture.remote.blockRemoval()
+        let task = Task {
+            try await fixture.core.create(request: fixture.createRequest(template: "rename-cleanup-gate", parent: .rootContainer, filename: "report.txt", type: .regular, contentsURL: fixture.localFile(contents: Data("hello".utf8)))) { _ in }
+        }
+        await fixture.remote.waitUntilRemovalBlocked()
+        await fixture.remote.releaseRemoval()
+        await assertThrows { try await task.value }
+        let temporaryExists = await fixture.remote.exists("/home/me/.remux-upload-\(fixture.nonce)")
+        let destinationExists = await fixture.remote.exists("/home/me/report.txt")
+        XCTAssertFalse(temporaryExists)
+        XCTAssertFalse(destinationExists)
+    }
+
     func testCreateReportsCumulativeProgressAndCancellationBeforeRenameDoesNotCommit() async throws {
         let fixture = try MutationFixture()
         await fixture.remote.blockRename()
@@ -264,27 +280,33 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertEqual(error.code, NSFileProviderError.cannotSynchronize.rawValue)
     }
 
-    func testSharedCoordinatorPreventsStaleRefreshFromPublishingAfterCreate() async throws {
+    func testSharedExtensionAndEnumeratorCoordinatorPreventsStaleRefreshAfterCreate() async throws {
         let fixture = try MutationFixture()
         let coordinator = FileProviderDomainOperationCoordinator()
-        let core = FileProviderMutationCore(remote: fixture.remote, snapshots: fixture.snapshots, coordinator: coordinator, nonce: { UUID(uuidString: "11111111-2222-3333-4444-555555555555")! })
-        let gate = MutationGate()
-        let refresh = Task {
-            try await coordinator.performRefresh(directory: .root) {
-                await gate.beginAndWait()
-                let record = try await fixture.snapshots.record(directory: .root, items: [])
-                return FileProviderPollingRefresh(items: record.items, anchor: record.anchor, delta: record.delta)
-            }
-        }
-        await gate.waitUntilStarted()
-        let create = Task {
-            try await core.create(request: fixture.createRequest(template: "race", parent: .rootContainer, filename: "report.txt", type: .regular, contentsURL: fixture.localFile(contents: Data("hello".utf8)))) { _ in }
-        }
-        await gate.release()
+        let extensionCore = FileProviderReplicatedExtensionCore(service: fixture.remote, snapshots: fixture.snapshots, rootDisplayName: "Fixture", temporaryDirectoryURL: { FileManager.default.temporaryDirectory }, coordinator: coordinator)
+        let enumerator = FileProviderEnumeratorCore(scope: .directory(.root), service: fixture.remote, snapshots: fixture.snapshots, coordinator: coordinator, signaler: MutationSignaler())
+        await fixture.remote.blockNextList()
+        let refresh = Task { try await enumerator.enumerateItems() }
+        await fixture.remote.waitUntilListBlocked()
+        let completion = MutationCompletionRecorder()
+        _ = extensionCore.createItem(request: fixture.createRequest(template: "race", parent: .rootContainer, filename: "report.txt", type: .regular, contentsURL: fixture.localFile(contents: Data("hello".utf8)))) { result in Task { await completion.record(result) } }
+        await fixture.remote.releaseList()
         _ = try await refresh.value
-        _ = try await create.value
+        await completion.waitForFirst()
+        guard case .success = (await completion.results())[0] else { XCTFail("Expected create"); return }
         let items = try await fixture.snapshots.items(directory: .root)
         XCTAssertEqual(items.map { $0.remoteItem.path.relative }, ["report.txt"])
+    }
+
+    func testMutableRemoteRenameMovesDirectoryDescendants() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "old", children: ["child.txt"])
+        try await fixture.remote.renameItem(from: FileProviderRemotePath(relative: "old"), to: FileProviderRemotePath(relative: "new"))
+        let newExists = await fixture.remote.exists("/home/me/new")
+        let childContents = await fixture.remote.contents(path: "/home/me/new/child.txt")
+        let oldChildExists = await fixture.remote.exists("/home/me/old/child.txt")
+        XCTAssertTrue(newExists)
+        XCTAssertEqual(childContents, Data("contents".utf8))
+        XCTAssertFalse(oldChildExists)
     }
 }
 
@@ -304,6 +326,10 @@ private actor MutationGate {
     func beginAndWait() async { started = true; let waiters = startedWaiters; startedWaiters.removeAll(); waiters.forEach { $0.resume() }; guard !released else { return }; await withCheckedContinuation { releaseWaiters.append($0) } }
     func waitUntilStarted() async { guard !started else { return }; await withCheckedContinuation { startedWaiters.append($0) } }
     func release() { released = true; let waiters = releaseWaiters; releaseWaiters.removeAll(); waiters.forEach { $0.resume() } }
+}
+
+private actor MutationSignaler: FileProviderEnumeratorSignaling {
+    func signalEnumerator(for identifier: NSFileProviderItemIdentifier) async throws {}
 }
 
 private func assertThrows<Value: Sendable>(
@@ -412,6 +438,9 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     private var removalBlocked = false
     private var removalWaiters: [CheckedContinuation<Void, Never>] = []
     private var removalStartedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var listBlocked = false
+    private var listWaiters: [CheckedContinuation<Void, Never>] = []
+    private var listStartedWaiters: [CheckedContinuation<Void, Never>] = []
 
     init() {
         entries[.root] = (
@@ -441,6 +470,9 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     func blockRemoval() { removalBlocked = true }
     func releaseRemoval() { removalBlocked = false; let waiters = removalWaiters; removalWaiters.removeAll(); waiters.forEach { $0.resume() } }
     func waitUntilRemovalBlocked() async { guard removalStartedWaiters.isEmpty else { return }; await withCheckedContinuation { removalStartedWaiters.append($0) } }
+    func blockNextList() { listBlocked = true }
+    func releaseList() { listBlocked = false; let waiters = listWaiters; listWaiters.removeAll(); waiters.forEach { $0.resume() } }
+    func waitUntilListBlocked() async { guard listStartedWaiters.isEmpty else { return }; await withCheckedContinuation { listStartedWaiters.append($0) } }
 
     func item(at path: FileProviderRemotePath) async throws -> FileProviderRemoteItem {
         if itemReadBlocked && itemReadAfterRename {
@@ -454,7 +486,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
         }
         return try FileProviderRemoteItem(path: path, metadata: entry.metadata)
     }
-    func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem] { try entries.compactMap { path, entry in guard path != .root, try FileProviderRemoteItem(path: path, metadata: entry.metadata).parent == directory else { return nil }; return try FileProviderRemoteItem(path: path, metadata: entry.metadata) }.sorted { $0.path.relative < $1.path.relative } }
+    func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem] { if listBlocked { listBlocked = false; let waiters = listStartedWaiters; listStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; await withCheckedContinuation { listWaiters.append($0) } }; return try entries.compactMap { path, entry in guard path != .root, try FileProviderRemoteItem(path: path, metadata: entry.metadata).parent == directory else { return nil }; return try FileProviderRemoteItem(path: path, metadata: entry.metadata) }.sorted { $0.path.relative < $1.path.relative } }
     func fetch(path: FileProviderRemotePath, to localURL: URL, progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void) async throws -> FileProviderRemoteItem { throw RemuxSFTPClientError.unsupportedMutation }
     func withMutationAccess<Value: Sendable>(_ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value) async throws -> Value { try await operation(self) }
     func invalidate() {}

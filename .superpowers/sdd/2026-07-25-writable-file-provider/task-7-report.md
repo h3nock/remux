@@ -89,3 +89,28 @@ xcodebuild test -quiet -parallel-testing-enabled NO \
 ```
 
 Result: 50 passed, 0 failed. `git diff --check` passed.
+
+## Review round 2
+
+Replaced the coordinator-only race with a real extension-core create and
+enumerator refresh using the same injected coordinator. The refresh listing is
+gated before `createItem`; final snapshots retain the created item, proving the
+create waits behind the refresh instead of being published and then overwritten.
+
+Added deterministic cleanup-gate coverage for rename failure, including exact
+temporary-path removal and no destination residue. Added direct mutable-fake
+directory rename coverage for descendant path and content relocation.
+
+Focused verification result bundle:
+
+```sh
+xcodebuild test -quiet -parallel-testing-enabled NO \
+  -derivedDataPath /tmp/remux-task7-round2 \
+  -resultBundlePath /tmp/remux-task7-round2.xcresult \
+  -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  -only-testing:RemuxTests/FileProviderMutationCoreTests \
+  -only-testing:RemuxTests/RemuxFileProviderContractTests
+```
+
+Result: 52 passed, 0 failed. `git diff --check` passed.
