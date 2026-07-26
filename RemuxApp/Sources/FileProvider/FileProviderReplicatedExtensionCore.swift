@@ -51,7 +51,9 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         ) -> Void
     ) -> Progress {
         requests.perform(
-            errorMapper: mapMutationError,
+            errorMapper: { error in
+                self.mapMutationError(error, itemIdentifier: request.parentIdentifier)
+            },
             progressOperation: { progress in
                 let result = try await self.mutations.create(request: request) { bytes in
                     progress.completedUnitCount = bytes
@@ -74,7 +76,9 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         ) -> Void
     ) -> Progress {
         requests.perform(
-            errorMapper: mapMutationError,
+            errorMapper: { error in
+                self.mapMutationError(error, itemIdentifier: request.identifier)
+            },
             progressOperation: { progress in
                 let result = try await self.mutations.modify(request: request) { bytes in
                     progress.completedUnitCount = bytes
@@ -95,7 +99,9 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         completion: @escaping @Sendable (Result<Void, NSError>) -> Void
     ) -> Progress {
         requests.perform(
-            errorMapper: mapMutationError,
+            errorMapper: { error in
+                self.mapMutationError(error, itemIdentifier: request.identifier)
+            },
             progressOperation: { _ in
                 try await self.mutations.delete(request: request)
             },
@@ -109,7 +115,9 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         completion: @escaping @Sendable (NSError) -> Void
     ) -> Progress {
         requests.perform(
-            errorMapper: mapMutationError,
+            errorMapper: { error in
+                self.mapMutationError(error)
+            },
             operation: {
                 throw error
             },
@@ -266,7 +274,10 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         }
     }
 
-    private func mapMutationError(_ error: Error) -> NSError {
+    private func mapMutationError(
+        _ error: Error,
+        itemIdentifier: NSFileProviderItemIdentifier? = nil
+    ) -> NSError {
         if let createError = error as? FileProviderCreateMutationError {
             return switch createError {
             case .collision(let existing):
@@ -280,13 +291,8 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         }
         if let modifyError = error as? FileProviderModifyMutationError {
             return switch modifyError {
-            case .conflict(let current):
-                FileProviderErrorMapper.filenameCollision(
-                    existingItem: FileProviderSDKItem(
-                        item: current,
-                        rootDisplayName: rootDisplayName
-                    )
-                )
+            case .conflict:
+                FileProviderErrorMapper.localVersionConflictingWithServer
             }
         }
         if let deleteError = error as? FileProviderDeleteMutationError {
@@ -302,6 +308,9 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         }
         if error as? FileProviderMutationValidationError == .symbolicLinkMutation {
             return FileProviderErrorMapper.cannotSynchronize
+        }
+        if let itemIdentifier {
+            return FileProviderErrorMapper.map(error, itemIdentifier: itemIdentifier)
         }
         return FileProviderErrorMapper.map(error)
     }

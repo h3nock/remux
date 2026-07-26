@@ -453,6 +453,7 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertTrue(mutations.isEmpty)
     }
 
+    @available(iOS 26.0, *)
     func testModifyContentsRejectsChangedRemoteBaseVersionWithoutUpload() async throws {
         let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
         let original = try await fixture.identifiedItem(path: "report.txt")
@@ -463,7 +464,8 @@ final class FileProviderMutationCoreTests: XCTestCase {
                 request: fixture.modifyRequest(
                     item: original,
                     contentsURL: fixture.localFile(contents: Data("new".utf8)),
-                    changedFields: [.contents]
+                    changedFields: [.contents],
+                    options: [.failOnConflict]
                 )
             ) { _ in }
         }) { error in
@@ -722,6 +724,7 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertTrue(mutations.isEmpty)
     }
 
+    @available(iOS 26.0, *)
     func testModifyRejectsChangedRemoteBaseVersionWithCurrentItemWithoutMutation() async throws {
         let fixture = try await MutationFixture.withFile(path: "old.txt")
         let original = try await fixture.identifiedItem(path: "old.txt")
@@ -729,7 +732,12 @@ final class FileProviderMutationCoreTests: XCTestCase {
 
         await assertThrows({
             try await fixture.core.modify(
-                request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+                request: fixture.modifyRequest(
+                    item: original,
+                    filename: "new.txt",
+                    changedFields: [.filename],
+                    options: [.failOnConflict]
+                )
             ) { _ in }
         }) { error in
             guard case .conflict(let current) = error as? FileProviderModifyMutationError else {
@@ -741,6 +749,142 @@ final class FileProviderMutationCoreTests: XCTestCase {
         }
         let mutations = await fixture.remote.mutations()
         XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyStaleContentsWithoutFailOnConflictReturnsCurrentItemForFetch() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.changeMetadata(path: "report.txt")
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                changedFields: [.contents]
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.item.remoteItem.path.relative, "report.txt")
+        XCTAssertNotEqual(result.item.remoteItem.metadataVersion, original.remoteItem.metadataVersion)
+        XCTAssertEqual(result.stillPendingFields, [])
+        XCTAssertTrue(result.shouldFetchContent)
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyStaleMetadataWithoutFailOnConflictReturnsCurrentItemWithoutFetch() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.changeMetadata(path: "report.txt")
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                filename: "renamed.txt",
+                changedFields: [.filename]
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.item.remoteItem.path.relative, "report.txt")
+        XCTAssertEqual(result.stillPendingFields, [])
+        XCTAssertFalse(result.shouldFetchContent)
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    @available(iOS 26.0, *)
+    func testExtensionModifyMapsFailOnConflictToLocalVersionConflict() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.changeMetadata(path: "report.txt")
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory }
+        )
+        let completion = MutationCompletionRecorder()
+
+        _ = core.modifyItem(
+            request: fixture.modifyRequest(
+                item: original,
+                filename: "renamed.txt",
+                changedFields: [.filename],
+                options: [.failOnConflict]
+            )
+        ) { result in
+            Task { await completion.record(result) }
+        }
+        await completion.waitForFirst()
+
+        guard case .failure(let error) = (await completion.results())[0] else {
+            XCTFail("Expected local version conflict")
+            return
+        }
+        XCTAssertEqual(error.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(
+            error.code,
+            NSFileProviderError.localVersionConflictingWithServer.rawValue
+        )
+    }
+
+    func testExtensionModifyCompletesOnceWithAuthoritativeTuple() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory }
+        )
+        let completion = MutationCompletionRecorder()
+
+        _ = core.modifyItem(
+            request: fixture.modifyRequest(
+                item: original,
+                filename: "new.txt",
+                changedFields: [.filename]
+            )
+        ) { result in
+            Task { await completion.record(result) }
+        }
+        await completion.waitForFirst()
+
+        let results = await completion.results()
+        XCTAssertEqual(results.count, 1)
+        guard case .success(let result) = results[0] else {
+            XCTFail("Expected successful modified item")
+            return
+        }
+        XCTAssertEqual(result.item.remoteItem.path.relative, "new.txt")
+        XCTAssertEqual(result.stillPendingFields, [])
+        XCTAssertFalse(result.shouldFetchContent)
+    }
+
+    func testExtensionDeleteCompletesOnceWithoutError() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory }
+        )
+        let completion = MutationVoidCompletionRecorder()
+
+        _ = core.deleteItem(request: fixture.deleteRequest(item: item)) { result in
+            Task { await completion.record(result) }
+        }
+        await completion.waitForFirst()
+
+        let results = await completion.results()
+        XCTAssertEqual(results.count, 1)
+        guard case .success = results[0] else {
+            XCTFail("Expected successful deletion")
+            return
+        }
+        let exists = await fixture.remote.exists("/home/me/report.txt")
+        XCTAssertFalse(exists)
     }
 
     func testModifyRejectsRootAndSymlinkWithoutMutation() async throws {
@@ -788,6 +932,7 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertEqual(replayMutations, mutations)
     }
 
+    @available(iOS 26.0, *)
     func testModifyDifferentDestinationDoesNotReplayEarlierRename() async throws {
         let fixture = try await MutationFixture.withFile(path: "old.txt")
         let original = try await fixture.identifiedItem(path: "old.txt")
@@ -797,7 +942,12 @@ final class FileProviderMutationCoreTests: XCTestCase {
 
         await assertThrows({
             try await fixture.core.modify(
-                request: fixture.modifyRequest(item: original, filename: "two.txt", changedFields: [.filename])
+                request: fixture.modifyRequest(
+                    item: original,
+                    filename: "two.txt",
+                    changedFields: [.filename],
+                    options: [.failOnConflict]
+                )
             ) { _ in }
         }) { error in
             guard case .conflict(let current) = error as? FileProviderModifyMutationError else {
@@ -1079,6 +1229,103 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertEqual(childContents, Data("contents".utf8))
         XCTAssertFalse(oldChildExists)
     }
+
+    func testExtensionCreateMissingParentReportsRequestedParentIdentifier() async throws {
+        let fixture = try MutationFixture()
+        let parentIdentifier = FileProviderItemIdentity.item(UUID()).itemIdentifier
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory }
+        )
+        let completion = MutationCompletionRecorder()
+
+        _ = core.createItem(
+            request: fixture.createRequest(
+                template: "missing-parent",
+                parent: parentIdentifier,
+                filename: "report.txt",
+                type: .regular,
+                contentsURL: nil
+            )
+        ) { result in
+            Task { await completion.record(result) }
+        }
+        await completion.waitForFirst()
+        let results = await completion.results()
+
+        assertNoSuchItem(
+            try XCTUnwrap(results.first?.failureValue),
+            identifier: parentIdentifier
+        )
+    }
+
+    func testExtensionModifyMissingSourceReportsRequestedSourceIdentifier() async throws {
+        let fixture = try MutationFixture()
+        let identifier = FileProviderItemIdentity.item(UUID()).itemIdentifier
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory }
+        )
+        let completion = MutationCompletionRecorder()
+        let request = FileProviderModifyRequest(
+            identifier: identifier,
+            parentIdentifier: .rootContainer,
+            filename: "report.txt",
+            baseVersion: NSFileProviderItemVersion(
+                contentVersion: Data(),
+                metadataVersion: Data()
+            ),
+            changedFields: [.filename],
+            contentsURL: nil,
+            options: []
+        )
+
+        _ = core.modifyItem(request: request) { result in
+            Task { await completion.record(result) }
+        }
+        await completion.waitForFirst()
+        let results = await completion.results()
+
+        assertNoSuchItem(
+            try XCTUnwrap(results.first?.failureValue),
+            identifier: identifier
+        )
+    }
+
+    func testExtensionDeleteMissingSourceReportsRequestedSourceIdentifier() async throws {
+        let fixture = try MutationFixture()
+        let identifier = FileProviderItemIdentity.item(UUID()).itemIdentifier
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.remote,
+            snapshots: fixture.snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: { FileManager.default.temporaryDirectory }
+        )
+        let completion = MutationVoidCompletionRecorder()
+        let request = FileProviderDeleteRequest(
+            identifier: identifier,
+            baseVersion: NSFileProviderItemVersion(
+                contentVersion: Data(),
+                metadataVersion: Data()
+            ),
+            options: []
+        )
+
+        _ = core.deleteItem(request: request) { result in
+            Task { await completion.record(result) }
+        }
+        await completion.waitForFirst()
+        let results = await completion.results()
+
+        assertNoSuchItem(
+            try XCTUnwrap(results.first?.failureValue),
+            identifier: identifier
+        )
+    }
 }
 
 private actor MutationCompletionRecorder {
@@ -1087,6 +1334,38 @@ private actor MutationCompletionRecorder {
     func record(_ value: Result<FileProviderMutationResult, NSError>) { values.append(value); let waiters = waiters; self.waiters.removeAll(); waiters.forEach { $0.resume() } }
     func waitForFirst() async { guard values.isEmpty else { return }; await withCheckedContinuation { waiters.append($0) } }
     func results() -> [Result<FileProviderMutationResult, NSError>] { values }
+}
+
+private actor MutationVoidCompletionRecorder {
+    private var values: [Result<Void, NSError>] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func record(_ value: Result<Void, NSError>) { values.append(value); let waiters = waiters; self.waiters.removeAll(); waiters.forEach { $0.resume() } }
+    func waitForFirst() async { guard values.isEmpty else { return }; await withCheckedContinuation { waiters.append($0) } }
+    func results() -> [Result<Void, NSError>] { values }
+}
+
+private func assertNoSuchItem(
+    _ error: NSError,
+    identifier: NSFileProviderItemIdentifier,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    XCTAssertEqual(error.domain, NSFileProviderErrorDomain, file: file, line: line)
+    XCTAssertEqual(error.code, NSFileProviderError.noSuchItem.rawValue, file: file, line: line)
+    XCTAssertEqual(
+        error.userInfo[NSFileProviderErrorNonExistentItemIdentifierKey]
+            as? NSFileProviderItemIdentifier,
+        identifier,
+        file: file,
+        line: line
+    )
+}
+
+private extension Result where Failure == NSError {
+    var failureValue: NSError? {
+        if case .failure(let error) = self { return error }
+        return nil
+    }
 }
 
 private actor MutationCancellationDeliveryLatch {
@@ -1198,7 +1477,7 @@ private final class MutationFixture: @unchecked Sendable {
         FileProviderCreateRequest(templateIdentifier: .init(rawValue: template), parentIdentifier: parent, filename: filename, type: type, fields: [.filename, .parentItemIdentifier, .contents], contentsURL: contentsURL, options: [])
     }
 
-    func modifyRequest(item: FileProviderIdentifiedItem, parent: NSFileProviderItemIdentifier? = nil, filename: String? = nil, contentsURL: URL? = nil, changedFields: NSFileProviderItemFields) -> FileProviderModifyRequest {
+    func modifyRequest(item: FileProviderIdentifiedItem, parent: NSFileProviderItemIdentifier? = nil, filename: String? = nil, contentsURL: URL? = nil, changedFields: NSFileProviderItemFields, options: NSFileProviderModifyItemOptions = []) -> FileProviderModifyRequest {
         FileProviderModifyRequest(
             identifier: item.itemIdentifier,
             parentIdentifier: parent ?? item.parentIdentity.itemIdentifier,
@@ -1209,7 +1488,7 @@ private final class MutationFixture: @unchecked Sendable {
             ),
             changedFields: changedFields,
             contentsURL: contentsURL,
-            options: []
+            options: options
         )
     }
     func deleteRequest(item: FileProviderIdentifiedItem, options: NSFileProviderDeleteItemOptions = []) -> FileProviderDeleteRequest {

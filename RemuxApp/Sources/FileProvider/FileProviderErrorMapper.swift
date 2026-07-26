@@ -107,6 +107,10 @@ enum FileProviderErrorMapper {
         fileProviderError(.cannotSynchronize)
     }
 
+    static var localVersionConflictingWithServer: NSError {
+        NSError(domain: NSFileProviderErrorDomain, code: -2015)
+    }
+
     private static func fileProviderError(_ code: NSFileProviderError.Code) -> NSError {
         NSError(domain: NSFileProviderErrorDomain, code: code.rawValue)
     }

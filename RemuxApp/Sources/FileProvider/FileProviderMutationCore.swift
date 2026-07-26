@@ -231,7 +231,14 @@ actor FileProviderMutationCore {
                     requested: request.baseVersion,
                     current: current
                 ) {
-                    throw FileProviderModifyMutationError.conflict(current: current)
+                    if Self.shouldFailOnConflict(request.options) {
+                        throw FileProviderModifyMutationError.conflict(current: current)
+                    }
+                    return FileProviderMutationResult(
+                        item: current,
+                        stillPendingFields: stillPendingFields,
+                        shouldFetchContent: changesContents
+                    )
                 }
                 guard !supportedFields.isEmpty else {
                     return FileProviderMutationResult(
@@ -475,6 +482,13 @@ actor FileProviderMutationCore {
             stillPendingFields: stillPendingFields,
             shouldFetchContent: false
         )
+    }
+
+    private static func shouldFailOnConflict(
+        _ options: NSFileProviderModifyItemOptions
+    ) -> Bool {
+        guard #available(iOS 26.0, *) else { return false }
+        return options.contains(.failOnConflict)
     }
 }
 
