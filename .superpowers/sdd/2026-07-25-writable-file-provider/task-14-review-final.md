@@ -18,9 +18,10 @@ authorization. This is an evidence review only; it makes no production change.
   read-only key. The evidence correctly limits the empty Simulator `codesign`
   entitlement output to build-configuration evidence rather than device-signed
   entitlement proof.
-- The retained `/tmp/remux-magic-live-20260725-1916.xcresult` summary reports
-  19 passed, zero skipped, and zero failed tests. The Task 13 report and the
-  final progress record accurately leave the Simulator Files matrix and
+- The replacement retained-root result bundle
+  `/tmp/remux-magic-live-retained-20260725-1930.xcresult` reports 19 passed,
+  zero skipped, and zero failed tests. The Task 13 report and the final
+  progress record accurately leave the Simulator Files matrix and
   physical-device validation unrun.
 - The Tasks 1-8 review/fix disposition is represented by the final review
   commits `6e676bb`, `c5b31af`, `b7563b2`, `3062e8b`, `5049676`, `2e062c0`,
@@ -54,3 +55,31 @@ Automated suite, helper, and Simulator build evidence: approved.
 The remaining Simulator Files and physical-device gates are honestly marked
 open. The magic-kingdom result is not approved as created-only remote evidence
 until it is rerun without deleting the pre-created root.
+
+## Retained-root replacement review
+
+Reviewed `9a66bc0`, which replaces the removed-root qualification rather than
+altering the production implementation.
+
+- The retained result bundle reports 19 passed, zero skipped, and zero failed
+  tests on the booted iPhone 17 Simulator.
+- The recorded root is
+  `/home/jesse/remux-writable-qualification-retained-8345c41c4172432c9566a801f3c14e65`.
+  A post-run read-only SSH check confirms that it still exists and has no
+  children.
+- The revised Task 13 report and progress record say only test-created children
+  were mutated and cleaned, the root was retained, and the earlier
+  removed-root artifact is historical evidence only. They continue to leave
+  the Files UI matrix and physical-device gates open.
+
+### Resolution of P1
+
+Resolved. The replacement run retains the qualification root and records only
+test-created children as mutable cleanup targets, satisfying Jesse's stated
+remote-mutation boundary. The earlier P1 applies only to the superseded run.
+
+## Final verdict
+
+Approved: final automated/build evidence and the retained-root SFTP mutation
+qualification are accurately recorded. Simulator Files UI and physical-device
+qualification remain required, explicitly open acceptance gates.
