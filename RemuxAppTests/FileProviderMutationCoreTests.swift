@@ -520,14 +520,21 @@ final class FileProviderMutationCoreTests: XCTestCase {
         let fixture = try await MutationFixture.withFile(path: "old.txt")
         let original = try await fixture.identifiedItem(path: "old.txt")
         await fixture.remote.blockRename()
+        let cancellationDelivery = MutationCancellationDeliveryLatch()
         let task = Task {
-            try await fixture.core.modify(
-                request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
-            ) { _ in }
+            try await withTaskCancellationHandler {
+                try await fixture.core.modify(
+                    request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+                ) { _ in }
+            } onCancel: {
+                Task { await cancellationDelivery.record() }
+            }
         }
 
         await fixture.remote.waitUntilRenameBlocked()
         task.cancel()
+        await Task.yield()
+        await cancellationDelivery.wait()
         await fixture.remote.releaseRename()
         await assertThrows { try await task.value }
         let mutations = await fixture.remote.mutations()
@@ -548,21 +555,44 @@ final class FileProviderMutationCoreTests: XCTestCase {
         let original = try await fixture.identifiedItem(path: "old")
         let child = try await fixture.identifiedItem(path: "old/child.txt")
         await fixture.remote.blockItemReadAfterRename()
+        let cancellationDelivery = MutationCancellationDeliveryLatch()
         let task = Task {
-            try await fixture.core.modify(
-                request: fixture.modifyRequest(item: original, filename: "new", changedFields: [.filename])
-            ) { _ in }
+            try await withTaskCancellationHandler {
+                try await fixture.core.modify(
+                    request: fixture.modifyRequest(item: original, filename: "new", changedFields: [.filename])
+                ) { _ in }
+            } onCancel: {
+                Task { await cancellationDelivery.record() }
+            }
         }
 
         await fixture.remote.waitUntilItemReadBlocked()
         task.cancel()
+        await Task.yield()
+        await cancellationDelivery.wait()
         await fixture.remote.releaseItemRead()
         let result = try await task.value
         let path = try await fixture.snapshots.path(for: original.itemIdentifier)
         let childPath = try await fixture.snapshots.path(for: child.itemIdentifier)
+        let receipt = try await fixture.snapshots.receipt(for: .modify(
+            identity: original.identity,
+            contentVersion: original.remoteItem.contentVersion,
+            metadataVersion: original.remoteItem.metadataVersion,
+            changedFields: UInt(NSFileProviderItemFields.filename.rawValue),
+            parentIdentifier: original.parentIdentity.itemIdentifier.rawValue,
+            filename: "new"
+        ))
         XCTAssertEqual(result.item.remoteItem.path.relative, "new")
         XCTAssertEqual(path.relative, "new")
         XCTAssertEqual(childPath.relative, "new/child.txt")
+        XCTAssertEqual(receipt, .item(key: .modify(
+            identity: original.identity,
+            contentVersion: original.remoteItem.contentVersion,
+            metadataVersion: original.remoteItem.metadataVersion,
+            changedFields: UInt(NSFileProviderItemFields.filename.rawValue),
+            parentIdentifier: original.parentIdentity.itemIdentifier.rawValue,
+            filename: "new"
+        ), item: result.item))
     }
 
     func testModifyUnsupportedFieldsReturnCurrentItemAndExactPendingFields() async throws {
@@ -601,6 +631,23 @@ private actor MutationCompletionRecorder {
     func record(_ value: Result<FileProviderMutationResult, NSError>) { values.append(value); let waiters = waiters; self.waiters.removeAll(); waiters.forEach { $0.resume() } }
     func waitForFirst() async { guard values.isEmpty else { return }; await withCheckedContinuation { waiters.append($0) } }
     func results() -> [Result<FileProviderMutationResult, NSError>] { values }
+}
+
+private actor MutationCancellationDeliveryLatch {
+    private var delivered = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func record() {
+        delivered = true
+        let waiters = waiters
+        self.waiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        guard !delivered else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
 }
 
 private actor MutationGate {

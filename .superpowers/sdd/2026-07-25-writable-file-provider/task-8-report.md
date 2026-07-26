@@ -79,3 +79,20 @@ xcodebuild test -project Remux.xcodeproj -scheme Remux \
 Result bundle inspected with `xcrun xcresulttool get test-results summary`:
 `result: Passed`, `passedTests: 52`, `failedTests: 0`, `skippedTests: 0`
 (31 mutation-core and 21 snapshot tests). `git diff --check` passed.
+
+## Round 2 cancellation evidence
+
+The cancellation tests now wrap the outer `core.modify` task in
+`withTaskCancellationHandler` and wait for a cancellation-delivery latch after
+`task.cancel()` before releasing either remote gate. This proves cancellation
+has reached the outer operation at the boundary under test.
+
+- Before rename: cancellation delivery is observed before the blocked rename
+  is released; no rename and no modify receipt are asserted.
+- After rename: cancellation delivery is observed before the authoritative item
+  read is released; the task succeeds with the exact modify item receipt and
+  stable relocated source and descendant paths.
+
+The exact focused command above was rerun. Its inspected result bundle reports
+`result: Passed`, `passedTests: 52`, `failedTests: 0`, `skippedTests: 0`.
+`git diff --check` passed. Production behavior was unchanged.
