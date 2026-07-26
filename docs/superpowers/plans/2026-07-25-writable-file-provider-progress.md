@@ -14,7 +14,7 @@
 | 10 | fc568ba, 28135e5 | FileProviderMutationCoreTests and FileProviderSnapshotStoreTests (75 passed) | task-10-review.md | complete |
 | 11 | 7ce7882 | contract and mutation-core tests (101 passed) | task-11-review.md | complete |
 | 12 | cd914bf, cc19780 | FileProviderExtensionConfigurationTests (1 passed) | task-12-review.md | complete |
-| 13 | 744c393 | RemuxSFTPReadOnlyClientTests: 15 passed, 1 skipped | diff check and helper run | automated complete; live pending |
+| 13 | 744c393, 8efc585, 999e676 | magic-kingdom live: 19 passed, 0 skipped, 0 failures | e07a390 host selector; c5b31af root fix | live SFTP complete; Files UI/device pending |
 | 14 | pending | focused suite: 194 passed, 1 opt-in disposable-host test skipped; complete suite: 1,041 passed, 1 opt-in disposable-host test skipped | branch diff check: no whitespace errors; task-by-task review remains incomplete for Tasks 1-8 | automated/build evidence recorded; live gates pending |
 
 ## Task 14 verification evidence (2026-07-25)
@@ -37,5 +37,5 @@ Task 9-13 review artifacts exist in the worktree, but Task 1-8 have not received
 
 ## Remaining live gates
 
-- [ ] Disposable SFTP host: Jesse provides the exact pre-created empty remote root and confirms the saved Remux profile points to that disposable host. Then run the opt-in mutation test. Every create, upload, download, rename, replacement, deletion, cancellation, and explicit cleanup must remain beneath that root.
+- [x] Disposable SFTP host: `magic-kingdom` qualification used the pre-created empty root `/home/jesse/remux-writable-qualification-8c79abc31b4345f1a8bb4fa1ae9b7f6e`; all mutations were test-created children, explicit cleanup left it empty, and the root was then removed with non-recursive `rmdir`. Result: 19 passed, 0 skipped, 0 failures; `/tmp/remux-magic-live-20260725-1916.xcresult`; log: `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/magic-kingdom-live-simenv.log`. Simulator `launchctl` environment was cleared afterward.
 - [ ] Physical device: validate Files create, edit, rename, move, delete, non-empty-directory rejection, and callback behavior on a physical device. Simulator-only results do not establish this behavior.
