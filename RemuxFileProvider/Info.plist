@@ -24,10 +24,12 @@
 		<string>group.dev.remux</string>
 		<key>NSExtensionFileProviderDownloadPipelineDepth</key>
 		<integer>1</integer>
-		<key>NSExtensionFileProviderReadOnly</key>
-		<true/>
+		<key>NSExtensionFileProviderMetadataOnlyUploadPipelineDepth</key>
+		<integer>1</integer>
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
 		<true/>
+		<key>NSExtensionFileProviderUploadPipelineDepth</key>
+		<integer>1</integer>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.fileprovider-nonui</string>
 		<key>NSExtensionPrincipalClass</key>

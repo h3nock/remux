@@ -111,7 +111,8 @@ targets:
         NSExtension:
           NSExtensionFileProviderDocumentGroup: group.dev.remux
           NSExtensionFileProviderDownloadPipelineDepth: 1
-          NSExtensionFileProviderReadOnly: true
+          NSExtensionFileProviderUploadPipelineDepth: 1
+          NSExtensionFileProviderMetadataOnlyUploadPipelineDepth: 1
           NSExtensionFileProviderSupportsEnumeration: true
           NSExtensionPointIdentifier: com.apple.fileprovider-nonui
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).RemuxFileProviderExtension
