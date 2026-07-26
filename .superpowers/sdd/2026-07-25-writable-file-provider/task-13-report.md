@@ -61,3 +61,24 @@ by `c5b31af`.
 
 The live SFTP mutation gate is complete. The Files UI matrix and physical-device
 qualification remain unchecked; this run did not exercise either.
+
+## Retained-root replacement qualification
+
+This replaces the removed-root evidence above as the live qualification record.
+Using the saved `magic-kingdom` profile, the test created and retained the new
+empty root
+`/home/jesse/remux-writable-qualification-retained-8345c41c4172432c9566a801f3c14e65`.
+It was verified empty before the run and remains present and empty afterward.
+Only test-created children beneath that root were mutated and explicitly
+cleaned; no pre-existing remote path was touched and the root itself was not
+removed.
+
+The booted iPhone 17 run completed with 19 passed, 0 skipped, and 0 failures.
+Result bundle:
+`/tmp/remux-magic-live-retained-20260725-1930.xcresult`. Execution log:
+`.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/magic-kingdom-live-retained-simenv.log`.
+The simulator `launchctl` environment for all writable-SFTP integration
+variables was cleared after the run.
+
+This verifies the SFTP mutation path only. The Files UI matrix and physical
+device qualification remain unchecked.
