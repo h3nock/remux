@@ -15,7 +15,7 @@
 | 11 | 7ce7882 | contract and mutation-core tests (101 passed) | task-11-review.md | complete |
 | 12 | cd914bf, cc19780 | FileProviderExtensionConfigurationTests (1 passed) | task-12-review.md | complete |
 | 13 | 744c393, 8efc585, 999e676 | magic-kingdom retained-root live: 19 passed, 0 skipped, 0 failures | e07a390 host selector; c5b31af root fix | live SFTP complete; Files UI/device pending |
-| 14 | pending | final focused suite: 198 passed, 1 opt-in disposable-host test skipped; final complete suite: 1,045 passed, 1 opt-in disposable-host test skipped | ae100f5 Task 14 review; 1bab149 coordinator ordering-race fix review | automated/build and disposable-host evidence recorded; Files/device pending |
+| 14 | 38458b2, 9a66bc0 | final focused suite: 198 passed, 1 opt-in disposable-host test skipped; final complete suite: 1,045 passed, 1 opt-in disposable-host test skipped | 1bab149 coordinator ordering-race fix review; 35ff9fc retained-root qualification review | automated/build and disposable-host evidence recorded; Files/device pending |
 
 ## Task 14 verification evidence (2026-07-25)
 
