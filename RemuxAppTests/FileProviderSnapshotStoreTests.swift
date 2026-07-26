@@ -68,6 +68,15 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         )
     }
 
+    func testPathSynchronouslyReturnsRootForFreshDomain() throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+
+        XCTAssertEqual(
+            try store.pathSynchronously(for: .rootContainer),
+            .root
+        )
+    }
+
     func testNestedRecordPersistsOpaqueParentIdentity() async throws {
         let ids = FileProviderTestIdentitySequence([
             UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!,

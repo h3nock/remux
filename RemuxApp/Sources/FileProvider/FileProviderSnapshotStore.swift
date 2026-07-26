@@ -282,6 +282,7 @@ actor FileProviderSnapshotStore {
     nonisolated func pathSynchronously(
         for identifier: NSFileProviderItemIdentifier
     ) throws -> FileProviderRemotePath {
+        guard identifier != .rootContainer else { return .root }
         let stateURL = stateURL
         let decoder = JSONDecoder()
         guard FileManager.default.fileExists(atPath: stateURL.path) else {
