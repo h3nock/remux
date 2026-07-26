@@ -11,6 +11,10 @@ enum FileProviderCreateMutationError: Error, Sendable {
     case collision(existing: FileProviderIdentifiedItem)
 }
 
+enum FileProviderModifyMutationError: Error, Sendable {
+    case conflict(current: FileProviderIdentifiedItem)
+}
+
 actor FileProviderMutationCore {
     private let remote: any FileProviderRemoteServicing
     private let snapshots: FileProviderSnapshotStore
@@ -151,6 +155,146 @@ actor FileProviderMutationCore {
                             .filename,
                             .parentItemIdentifier,
                         ]),
+                        shouldFetchContent: false
+                    )
+                }
+            }
+        }
+    }
+
+    func modify(
+        request: FileProviderModifyRequest,
+        progress: @escaping @Sendable (Int64) async -> Void
+    ) async throws -> FileProviderMutationResult {
+        let sourceIdentity = try FileProviderItemIdentifierCodec().identity(for: request.identifier)
+        try validator.validateMutablePath(try await snapshots.path(for: request.identifier))
+        let key = FileProviderMutationReplayKey.modify(
+            identity: sourceIdentity,
+            contentVersion: request.baseVersion.contentVersion,
+            metadataVersion: request.baseVersion.metadataVersion,
+            changedFields: UInt(request.changedFields.rawValue)
+        )
+        if let receipt = try await snapshots.receipt(for: key) {
+            return try Self.replayedResult(from: receipt)
+        }
+
+        return try await coordinator.performMutation { [remote, snapshots, validator] in
+            if let receipt = try await snapshots.receipt(for: key) {
+                return try Self.replayedResult(from: receipt)
+            }
+
+            let partition = FileProviderMutationFieldPartition(
+                changedFields: request.changedFields
+            )
+            let supportedMetadataFields = partition.supported.intersection([
+                .filename,
+                .parentItemIdentifier,
+            ])
+            let stillPendingFields = request.changedFields.subtracting(supportedMetadataFields)
+            let sourcePath = try await snapshots.path(for: request.identifier)
+            let sourceSnapshot = try await snapshots.item(for: request.identifier)
+
+            return try await remote.withMutationAccess { access in
+                let sourceRemote = try await access.item(at: sourcePath)
+                let oldParentPath = sourceRemote.parent
+                let oldParentRemote = try await access.item(at: oldParentPath)
+                try validator.validateParent(exists: oldParentRemote.type == .directory)
+                try validator.validateMutation(of: sourceRemote.type)
+
+                let current = FileProviderIdentifiedItem(
+                    identity: sourceIdentity,
+                    parentIdentity: sourceSnapshot?.parentIdentity ?? .root,
+                    remoteItem: sourceRemote
+                )
+                if case .conflict = validator.validateBaseVersion(
+                    requested: request.baseVersion,
+                    current: current
+                ) {
+                    throw FileProviderModifyMutationError.conflict(current: current)
+                }
+                guard !supportedMetadataFields.isEmpty else {
+                    return FileProviderMutationResult(
+                        item: current,
+                        stillPendingFields: stillPendingFields,
+                        shouldFetchContent: false
+                    )
+                }
+
+                let newParentPath = try await snapshots.path(for: request.parentIdentifier)
+                let newParentIdentity = try FileProviderItemIdentifierCodec().identity(
+                    for: request.parentIdentifier
+                )
+                let newParentRemote = newParentPath == oldParentPath
+                    ? oldParentRemote
+                    : try await access.item(at: newParentPath)
+                try validator.validateParent(exists: newParentRemote.type == .directory)
+
+                let filename = request.changedFields.contains(.filename)
+                    ? request.filename
+                    : sourceRemote.name
+                try validator.validateChildName(filename)
+                let destination = try FileProviderRemotePath(
+                    relative: newParentPath.relative.isEmpty
+                        ? filename
+                        : newParentPath.relative + "/" + filename
+                )
+                try validator.validateMove(
+                    source: sourcePath,
+                    destination: destination,
+                    sourceType: sourceRemote.type
+                )
+                guard destination != sourcePath else {
+                    return FileProviderMutationResult(
+                        item: current,
+                        stillPendingFields: stillPendingFields,
+                        shouldFetchContent: false
+                    )
+                }
+
+                let oldParentItems = try await access.list(directory: oldParentPath)
+                let newParentItems = newParentPath == oldParentPath
+                    ? oldParentItems
+                    : try await access.list(directory: newParentPath)
+                try validator.validateDestination(
+                    destination,
+                    occupiedPaths: newParentItems
+                        .map(\.path)
+                        .filter { $0 != sourcePath }
+                )
+
+                try await access.renameItem(from: sourcePath, to: destination)
+                return try await finishCommittedMutation {
+                    let movedRemote = try await access.item(at: destination)
+                    let refreshedOldParentItems = try await access.list(directory: oldParentPath)
+                    let refreshedDirectories: [FileProviderSnapshotLocalMutation.DirectoryRefresh]
+                    if newParentPath == oldParentPath {
+                        refreshedDirectories = [
+                            .init(directory: oldParentPath, items: refreshedOldParentItems),
+                        ]
+                    } else {
+                        let refreshedNewParentItems = try await access.list(directory: newParentPath)
+                        refreshedDirectories = [
+                            .init(directory: oldParentPath, items: refreshedOldParentItems),
+                            .init(directory: newParentPath, items: refreshedNewParentItems),
+                        ]
+                    }
+                    let moved = FileProviderIdentifiedItem(
+                        identity: sourceIdentity,
+                        parentIdentity: newParentIdentity,
+                        remoteItem: movedRemote
+                    )
+                    _ = try await snapshots.commit(
+                        localMutation: FileProviderSnapshotLocalMutation(
+                            refreshedDirectories: refreshedDirectories,
+                            relocations: [
+                                .init(identity: sourceIdentity, from: sourcePath, to: destination),
+                            ],
+                            receipt: .item(key: key, item: moved)
+                        )
+                    )
+                    return FileProviderMutationResult(
+                        item: moved,
+                        stillPendingFields: stillPendingFields,
                         shouldFetchContent: false
                     )
                 }

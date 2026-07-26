@@ -314,6 +314,186 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertTrue(items.isEmpty)
     }
 
+    func testRenameRetainsIdentityAndRefreshesParent() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        await fixture.remote.clearListedDirectories()
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                filename: "new.txt",
+                changedFields: [.filename]
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.item.identity, original.identity)
+        XCTAssertEqual(result.item.remoteItem.path.relative, "new.txt")
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations, [
+            .rename("/home/me/old.txt", "/home/me/new.txt"),
+        ])
+        let listedDirectories = await fixture.remote.listedDirectories()
+        XCTAssertEqual(listedDirectories, [.root, .root])
+    }
+
+    func testMoveRefreshesOldAndNewParentsAndRetainsIdentity() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "from", children: ["report.txt"])
+        try await fixture.seedDirectory("to")
+        let original = try await fixture.identifiedItem(path: "from/report.txt")
+        await fixture.remote.clearListedDirectories()
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                parent: try await fixture.identifier(path: "to"),
+                changedFields: [.parentItemIdentifier]
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.item.identity, original.identity)
+        XCTAssertEqual(result.item.remoteItem.path.relative, "to/report.txt")
+        let listedDirectories = await fixture.remote.listedDirectories()
+        XCTAssertEqual(listedDirectories, [
+            try FileProviderRemotePath(relative: "from"),
+            try FileProviderRemotePath(relative: "to"),
+        ])
+    }
+
+    func testMoveDirectoryRelocatesKnownDescendantIdentities() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "old", children: ["child.txt"])
+        let original = try await fixture.identifiedItem(path: "old")
+        let child = try await fixture.identifiedItem(path: "old/child.txt")
+
+        _ = try await fixture.core.modify(
+            request: fixture.modifyRequest(item: original, filename: "new", changedFields: [.filename])
+        ) { _ in }
+
+        let movedPath = try await fixture.snapshots.path(for: original.itemIdentifier)
+        let movedChildPath = try await fixture.snapshots.path(for: child.itemIdentifier)
+        XCTAssertEqual(movedPath.relative, "new")
+        XCTAssertEqual(movedChildPath.relative, "new/child.txt")
+    }
+
+    func testMoveRejectsDirectoryCycleWithoutMutation() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "old", children: ["child.txt"])
+        try await fixture.seedDirectory("old/child")
+        let original = try await fixture.identifiedItem(path: "old")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(
+                    item: original,
+                    parent: try await fixture.identifier(path: "old/child"),
+                    changedFields: [.parentItemIdentifier]
+                )
+            ) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? FileProviderMutationValidationError, .directoryCycle)
+        }
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testRenameRejectsOccupiedDestinationWithoutMutation() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "root", children: ["old.txt", "new.txt"])
+        let original = try await fixture.identifiedItem(path: "root/old.txt")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+            ) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? FileProviderMutationValidationError, .destinationOccupied)
+        }
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyRejectsChangedRemoteBaseVersionWithCurrentItemWithoutMutation() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        await fixture.remote.changeMetadata(path: "old.txt")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+            ) { _ in }
+        }) { error in
+            guard case .conflict(let current) = error as? FileProviderModifyMutationError else {
+                XCTFail("Expected conflict carrying the current remote item")
+                return
+            }
+            XCTAssertEqual(current.remoteItem.path.relative, "old.txt")
+            XCTAssertNotEqual(current.remoteItem.metadataVersion, original.remoteItem.metadataVersion)
+        }
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyRejectsRootAndSymlinkWithoutMutation() async throws {
+        let fixture = try await MutationFixture.withFile(path: "link")
+        await fixture.remote.seed(path: "symlink", type: .symbolicLink, contents: Data())
+        try await fixture.recordRoot()
+        let symlink = try await fixture.identifiedItem(path: "symlink")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(
+                    item: FileProviderIdentifiedItem(
+                        identity: .root,
+                        parentIdentity: .root,
+                        remoteItem: try await fixture.remote.item(at: .root)
+                    ),
+                    filename: "renamed",
+                    changedFields: [.filename]
+                )
+            ) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? FileProviderMutationValidationError, .rootMutation)
+        }
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: symlink, filename: "renamed", changedFields: [.filename])
+            ) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? FileProviderMutationValidationError, .symbolicLinkMutation)
+        }
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyReplayReturnsMovedItemWithoutSecondRename() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        let request = fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+        let moved = try await fixture.core.modify(request: request) { _ in }
+        let mutations = await fixture.remote.mutations()
+        let replay = try await fixture.core.modify(request: request) { _ in }
+
+        XCTAssertEqual(replay.item, moved.item)
+        let replayMutations = await fixture.remote.mutations()
+        XCTAssertEqual(replayMutations, mutations)
+    }
+
+    func testModifyUnsupportedFieldsReturnCurrentItemAndExactPendingFields() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+
+        let pendingFields: NSFileProviderItemFields = [.tagData, .extendedAttributes]
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                changedFields: pendingFields
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.item, original)
+        XCTAssertEqual(result.stillPendingFields, pendingFields)
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
     func testMutableRemoteRenameMovesDirectoryDescendants() async throws {
         let fixture = try await MutationFixture.withDirectory(path: "old", children: ["child.txt"])
         try await fixture.remote.renameItem(from: FileProviderRemotePath(relative: "old"), to: FileProviderRemotePath(relative: "new"))
@@ -416,7 +596,20 @@ private final class MutationFixture: @unchecked Sendable {
         FileProviderCreateRequest(templateIdentifier: .init(rawValue: template), parentIdentifier: parent, filename: filename, type: type, fields: [.filename, .parentItemIdentifier, .contents], contentsURL: contentsURL, options: [])
     }
 
-    func modifyRequest(item: FileProviderIdentifiedItem, parent: NSFileProviderItemIdentifier? = nil, filename: String? = nil, contentsURL: URL? = nil, changedFields: NSFileProviderItemFields) -> FileProviderModifyRequest { fatalError("Task 7 only") }
+    func modifyRequest(item: FileProviderIdentifiedItem, parent: NSFileProviderItemIdentifier? = nil, filename: String? = nil, contentsURL: URL? = nil, changedFields: NSFileProviderItemFields) -> FileProviderModifyRequest {
+        FileProviderModifyRequest(
+            identifier: item.itemIdentifier,
+            parentIdentifier: parent ?? item.parentIdentity.itemIdentifier,
+            filename: filename ?? item.remoteItem.name,
+            baseVersion: NSFileProviderItemVersion(
+                contentVersion: item.remoteItem.contentVersion,
+                metadataVersion: item.remoteItem.metadataVersion
+            ),
+            changedFields: changedFields,
+            contentsURL: contentsURL,
+            options: []
+        )
+    }
     func deleteRequest(item: FileProviderIdentifiedItem, options: NSFileProviderDeleteItemOptions = []) -> FileProviderDeleteRequest { fatalError("Task 7 only") }
     func identifiedItem(path: String) async throws -> FileProviderIdentifiedItem { try await snapshots.item(for: try await identifier(path: path))! }
     func identifier(path: String) async throws -> NSFileProviderItemIdentifier { try await identifiedItemForPath(path).itemIdentifier }
@@ -428,7 +621,12 @@ private final class MutationFixture: @unchecked Sendable {
         return try XCTUnwrap(items.first { $0.remoteItem.path == remotePath })
     }
 
-    private func recordRoot() async throws { _ = try await snapshots.record(directory: .root, items: await remote.list(directory: .root)) }
+    func seedDirectory(_ path: String) async throws {
+        await remote.seed(path: path, type: .directory, contents: Data())
+        try await recordRoot()
+    }
+
+    func recordRoot() async throws { _ = try await snapshots.record(directory: .root, items: await remote.list(directory: .root)) }
     private func recordDirectory(_ path: String) async throws { let directory = try FileProviderRemotePath(relative: path); _ = try await snapshots.record(directory: directory, items: await remote.list(directory: directory)) }
 }
 
@@ -457,6 +655,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     private var listBlocked = false
     private var listWaiters: [CheckedContinuation<Void, Never>] = []
     private var listStartedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var listedDirectoryPaths: [FileProviderRemotePath] = []
 
     init() {
         entries[.root] = (
@@ -471,10 +670,13 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     }
 
     func mutations() -> [Mutation] { recordedMutations }
+    func listedDirectories() -> [FileProviderRemotePath] { listedDirectoryPaths }
+    func clearListedDirectories() { listedDirectoryPaths.removeAll() }
     func listedPaths() -> [String] { entries.keys.map { "/home/me/\($0.relative)" }.sorted() }
     func contents(path: String) -> Data? { entries.first { "/home/me/\($0.key.relative)" == path }?.value.contents }
     func exists(_ absolutePath: String) -> Bool { contents(path: absolutePath) != nil }
     func seed(path: String, type: RemuxSFTPFileType, contents: Data) { let remotePath = try! FileProviderRemotePath(relative: path); entries[remotePath] = (RemuxSFTPFileMetadata(size: type == .regular ? UInt64(contents.count) : nil, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: type), contents) }
+    func changeMetadata(path: String) { let remotePath = try! FileProviderRemotePath(relative: path); guard var entry = entries[remotePath] else { return }; entry.metadata = RemuxSFTPFileMetadata(size: entry.metadata.size, permissions: 0o600, modificationDate: Date(timeIntervalSince1970: 2), type: entry.metadata.type); entries[remotePath] = entry }
     func failNextUpload() { uploadFailure = true }
     func failNextRename() { renameFailure = true }
     func blockRename() { renameBlocked = true }
@@ -502,7 +704,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
         }
         return try FileProviderRemoteItem(path: path, metadata: entry.metadata)
     }
-    func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem] { let listed: [FileProviderRemoteItem] = try entries.compactMap { path, entry in guard path != .root, try FileProviderRemoteItem(path: path, metadata: entry.metadata).parent == directory else { return nil }; return try FileProviderRemoteItem(path: path, metadata: entry.metadata) }.sorted { $0.path.relative < $1.path.relative }; if listBlocked { listBlocked = false; let waiters = listStartedWaiters; listStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; await withCheckedContinuation { listWaiters.append($0) } }; return listed }
+    func list(directory: FileProviderRemotePath) async throws -> [FileProviderRemoteItem] { listedDirectoryPaths.append(directory); let listed: [FileProviderRemoteItem] = try entries.compactMap { path, entry in guard path != .root, try FileProviderRemoteItem(path: path, metadata: entry.metadata).parent == directory else { return nil }; return try FileProviderRemoteItem(path: path, metadata: entry.metadata) }.sorted { $0.path.relative < $1.path.relative }; if listBlocked { listBlocked = false; let waiters = listStartedWaiters; listStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; await withCheckedContinuation { listWaiters.append($0) } }; return listed }
     func fetch(path: FileProviderRemotePath, to localURL: URL, progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void) async throws -> FileProviderRemoteItem { throw RemuxSFTPClientError.unsupportedMutation }
     func withMutationAccess<Value: Sendable>(_ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value) async throws -> Value { try await operation(self) }
     func invalidate() {}
