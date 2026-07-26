@@ -27,6 +27,7 @@ final class FileProviderDomainOperationCoordinatorTests: XCTestCase {
                 return 2
             }
         }
+        await coordinator.waitUntilMutationIsQueued()
         let secondRefresh = Task {
             try await coordinator.performRefresh(directory: .root) {
                 await events.record("refresh-2")

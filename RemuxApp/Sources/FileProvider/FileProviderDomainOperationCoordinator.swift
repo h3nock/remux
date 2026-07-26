@@ -68,6 +68,7 @@ actor FileProviderDomainOperationCoordinator {
     private var queuedRefreshWaiters: [
         FileProviderRemotePath: [CheckedContinuation<Void, Never>]
     ] = [:]
+    private var queuedMutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var coalescedRefreshWaiters: [
         FileProviderRemotePath: [CheckedContinuation<Void, Never>]
     ] = [:]
@@ -186,6 +187,9 @@ actor FileProviderDomainOperationCoordinator {
             start(request)
         } else {
             pending.append(request)
+#if DEBUG
+            notifyQueuedMutationWaiters()
+#endif
         }
     }
 
@@ -283,6 +287,15 @@ actor FileProviderDomainOperationCoordinator {
     }
 
 #if DEBUG
+    func waitUntilMutationIsQueued() async {
+        guard !pending.contains(where: { $0.kind == .mutation }) else {
+            return
+        }
+        await withCheckedContinuation {
+            queuedMutationWaiters.append($0)
+        }
+    }
+
     func waitUntilRefreshIsQueued(directory: FileProviderRemotePath) async {
         guard !pending.contains(where: {
             if case .refresh(_, let pendingDirectory, _, _) = $0 {
@@ -311,6 +324,11 @@ actor FileProviderDomainOperationCoordinator {
 
     private func notifyQueuedRefreshWaiters(for directory: FileProviderRemotePath) {
         queuedRefreshWaiters.removeValue(forKey: directory)?.forEach { $0.resume() }
+    }
+
+    private func notifyQueuedMutationWaiters() {
+        queuedMutationWaiters.forEach { $0.resume() }
+        queuedMutationWaiters.removeAll()
     }
 
     private func notifyCoalescedRefreshWaiters(for directory: FileProviderRemotePath) {
