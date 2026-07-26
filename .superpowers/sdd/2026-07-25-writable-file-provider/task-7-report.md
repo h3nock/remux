@@ -114,3 +114,14 @@ xcodebuild test -quiet -parallel-testing-enabled NO \
 ```
 
 Result: 52 passed, 0 failed. `git diff --check` passed.
+
+## Review round 3
+
+The mutable remote listing gate now captures directory entries before blocking.
+This makes the refresh a genuine stale-list race: a separate-coordinator control
+creates `report.txt` while the captured empty refresh waits, then overwrites the
+snapshot with that empty list. The shared extension/enumerator coordinator test
+queues create behind the refresh and retains `report.txt` in the final snapshot.
+
+Focused result bundle `/tmp/remux-task7-round3-fixed.xcresult`: 53 passed, 0
+failed. `git diff --check` passed.
