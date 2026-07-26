@@ -26,7 +26,9 @@ enum FileProviderMutationReplayKey: Hashable, Codable, Sendable {
         identity: FileProviderItemIdentity,
         contentVersion: Data,
         metadataVersion: Data,
-        changedFields: UInt
+        changedFields: UInt,
+        parentIdentifier: String,
+        filename: String
     )
     case delete(
         identity: FileProviderItemIdentity,

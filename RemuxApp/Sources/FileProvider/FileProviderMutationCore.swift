@@ -172,7 +172,9 @@ actor FileProviderMutationCore {
             identity: sourceIdentity,
             contentVersion: request.baseVersion.contentVersion,
             metadataVersion: request.baseVersion.metadataVersion,
-            changedFields: UInt(request.changedFields.rawValue)
+            changedFields: UInt(request.changedFields.rawValue),
+            parentIdentifier: request.parentIdentifier.rawValue,
+            filename: request.filename
         )
         if let receipt = try await snapshots.receipt(for: key) {
             return try Self.replayedResult(from: receipt)
@@ -305,12 +307,20 @@ actor FileProviderMutationCore {
     private static func replayedResult(
         from receipt: FileProviderMutationReceipt
     ) throws -> FileProviderMutationResult {
-        guard case .item(_, let item) = receipt else {
+        guard case .item(let key, let item) = receipt else {
             throw FileProviderSnapshotStoreError.itemIdentityNotFound
+        }
+        let stillPendingFields: NSFileProviderItemFields
+        switch key {
+        case .modify(_, _, _, let changedFields, _, _):
+            stillPendingFields = NSFileProviderItemFields(rawValue: changedFields)
+                .subtracting([.filename, .parentItemIdentifier])
+        case .create, .delete:
+            stillPendingFields = []
         }
         return FileProviderMutationResult(
             item: item,
-            stillPendingFields: [],
+            stillPendingFields: stillPendingFields,
             shouldFetchContent: false
         )
     }

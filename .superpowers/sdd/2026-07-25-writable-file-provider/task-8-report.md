@@ -41,3 +41,41 @@ and the snapshot relocation transaction. `git diff --check` also passed.
   File Provider conflict/collision presentation and identity continuity across
   rename and move.
 - Delete remains intentionally unimplemented and is outside Task 8.
+
+## Round 1 replay and fixture repair
+
+### Root causes
+
+- The modify replay key contained only the original item identity, base version,
+  and changed field mask. Two distinct destination requests with the same base
+  version therefore shared a receipt key and could replay the first move.
+- Generic item-receipt replay always returned no pending fields, which lost
+  unsupported metadata fields from a mixed modify request.
+- The mutation fixture reused one identity UUID for every snapshot allocation
+  and did not consistently record nested parent snapshots. Its cross-parent
+  list assertion also omitted post-rename parent refreshes.
+
+### Repair
+
+- Extend modify replay keys with the requested parent identifier and filename.
+- Reconstruct modify pending fields from the receipt key's changed field mask;
+  create receipt replay remains unchanged.
+- Use a locked deterministic identity sequence, record the nested parent during
+  fixture setup, and assert two pre-rename plus two post-rename listings for a
+  cross-parent move.
+- Add cancellation boundaries: cancellation before the blocked rename performs
+  no mutation or receipt commit; cancellation after a successful rename waits
+  for authoritative refresh and commits relocation.
+
+### Exact focused green command and result
+
+```sh
+xcodebuild test -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  -only-testing:RemuxTests/FileProviderMutationCoreTests \
+  -only-testing:RemuxTests/FileProviderSnapshotStoreTests
+```
+
+Result bundle inspected with `xcrun xcresulttool get test-results summary`:
+`result: Passed`, `passedTests: 52`, `failedTests: 0`, `skippedTests: 0`
+(31 mutation-core and 21 snapshot tests). `git diff --check` passed.

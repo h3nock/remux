@@ -357,6 +357,8 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertEqual(listedDirectories, [
             try FileProviderRemotePath(relative: "from"),
             try FileProviderRemotePath(relative: "to"),
+            try FileProviderRemotePath(relative: "from"),
+            try FileProviderRemotePath(relative: "to"),
         ])
     }
 
@@ -476,6 +478,93 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertEqual(replayMutations, mutations)
     }
 
+    func testModifyDifferentDestinationDoesNotReplayEarlierRename() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        _ = try await fixture.core.modify(
+            request: fixture.modifyRequest(item: original, filename: "one.txt", changedFields: [.filename])
+        ) { _ in }
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, filename: "two.txt", changedFields: [.filename])
+            ) { _ in }
+        }) { error in
+            guard case .conflict(let current) = error as? FileProviderModifyMutationError else {
+                XCTFail("Expected an authoritative conflict, not receipt replay")
+                return
+            }
+            XCTAssertEqual(current.remoteItem.path.relative, "one.txt")
+        }
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations, [.rename("/home/me/old.txt", "/home/me/one.txt")])
+    }
+
+    func testModifyReplayPreservesPendingUnsupportedFields() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        let request = fixture.modifyRequest(
+            item: original,
+            filename: "new.txt",
+            changedFields: [.filename, .tagData]
+        )
+
+        let first = try await fixture.core.modify(request: request) { _ in }
+        let replay = try await fixture.core.modify(request: request) { _ in }
+
+        XCTAssertEqual(first.stillPendingFields, [.tagData])
+        XCTAssertEqual(replay.stillPendingFields, [.tagData])
+    }
+
+    func testModifyCancellationBeforeRenameDoesNotMutateOrCommit() async throws {
+        let fixture = try await MutationFixture.withFile(path: "old.txt")
+        let original = try await fixture.identifiedItem(path: "old.txt")
+        await fixture.remote.blockRename()
+        let task = Task {
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+            ) { _ in }
+        }
+
+        await fixture.remote.waitUntilRenameBlocked()
+        task.cancel()
+        await fixture.remote.releaseRename()
+        await assertThrows { try await task.value }
+        let mutations = await fixture.remote.mutations()
+        let receipt = try await fixture.snapshots.receipt(for: .modify(
+            identity: original.identity,
+            contentVersion: original.remoteItem.contentVersion,
+            metadataVersion: original.remoteItem.metadataVersion,
+            changedFields: UInt(NSFileProviderItemFields.filename.rawValue),
+            parentIdentifier: original.parentIdentity.itemIdentifier.rawValue,
+            filename: "new.txt"
+        ))
+        XCTAssertTrue(mutations.isEmpty)
+        XCTAssertNil(receipt)
+    }
+
+    func testModifyCancellationAfterRenameCommitsRelocationAndReceipt() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "old", children: ["child.txt"])
+        let original = try await fixture.identifiedItem(path: "old")
+        let child = try await fixture.identifiedItem(path: "old/child.txt")
+        await fixture.remote.blockItemReadAfterRename()
+        let task = Task {
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, filename: "new", changedFields: [.filename])
+            ) { _ in }
+        }
+
+        await fixture.remote.waitUntilItemReadBlocked()
+        task.cancel()
+        await fixture.remote.releaseItemRead()
+        let result = try await task.value
+        let path = try await fixture.snapshots.path(for: original.itemIdentifier)
+        let childPath = try await fixture.snapshots.path(for: child.itemIdentifier)
+        XCTAssertEqual(result.item.remoteItem.path.relative, "new")
+        XCTAssertEqual(path.relative, "new")
+        XCTAssertEqual(childPath.relative, "new/child.txt")
+    }
+
     func testModifyUnsupportedFieldsReturnCurrentItemAndExactPendingFields() async throws {
         let fixture = try await MutationFixture.withFile(path: "old.txt")
         let original = try await fixture.identifiedItem(path: "old.txt")
@@ -554,7 +643,10 @@ private final class MutationFixture: @unchecked Sendable {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        snapshots = FileProviderSnapshotStore(rootURL: root, identityGenerator: { UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")! })
+        let identities = MutationIdentitySequence()
+        snapshots = FileProviderSnapshotStore(rootURL: root, identityGenerator: {
+            identities.next()
+        })
         remote = FileProviderMutableRemoteService()
         core = FileProviderMutationCore(
             remote: remote,
@@ -624,10 +716,29 @@ private final class MutationFixture: @unchecked Sendable {
     func seedDirectory(_ path: String) async throws {
         await remote.seed(path: path, type: .directory, contents: Data())
         try await recordRoot()
+        let parent = (try FileProviderRemotePath(relative: path)).relative
+            .split(separator: "/")
+            .dropLast()
+            .joined(separator: "/")
+        if !parent.isEmpty {
+            try await recordDirectory(parent)
+        }
     }
 
     func recordRoot() async throws { _ = try await snapshots.record(directory: .root, items: await remote.list(directory: .root)) }
     private func recordDirectory(_ path: String) async throws { let directory = try FileProviderRemotePath(relative: path); _ = try await snapshots.record(directory: directory, items: await remote.list(directory: directory)) }
+}
+
+private final class MutationIdentitySequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 1
+
+    func next() -> UUID {
+        lock.withLock {
+            defer { value += 1 }
+            return UUID(uuidString: String(format: "AAAAAAAA-0000-0000-0000-%012llX", value))!
+        }
+    }
 }
 
 private actor FileProviderTestProgressRecorder {
