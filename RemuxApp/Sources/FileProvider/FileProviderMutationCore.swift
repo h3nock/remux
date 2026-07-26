@@ -180,7 +180,7 @@ actor FileProviderMutationCore {
             return try Self.replayedResult(from: receipt)
         }
 
-        return try await coordinator.performMutation { [remote, snapshots, validator] in
+        return try await coordinator.performMutation { [remote, snapshots, validator, nonce, identity] in
             if let receipt = try await snapshots.receipt(for: key) {
                 return try Self.replayedResult(from: receipt)
             }
@@ -192,7 +192,11 @@ actor FileProviderMutationCore {
                 .filename,
                 .parentItemIdentifier,
             ])
-            let stillPendingFields = request.changedFields.subtracting(supportedMetadataFields)
+            let changesContents = request.changedFields.contains(.contents)
+            let supportedFields = changesContents
+                ? supportedMetadataFields.union([.contents])
+                : supportedMetadataFields
+            let stillPendingFields = request.changedFields.subtracting(supportedFields)
             let sourcePath = try await snapshots.path(for: request.identifier)
             let sourceSnapshot = try await snapshots.item(for: request.identifier)
 
@@ -202,6 +206,10 @@ actor FileProviderMutationCore {
                 let oldParentRemote = try await access.item(at: oldParentPath)
                 try validator.validateParent(exists: oldParentRemote.type == .directory)
                 try validator.validateMutation(of: sourceRemote.type)
+                try validator.validateContents(
+                    supplied: changesContents,
+                    for: sourceRemote.type
+                )
 
                 let current = FileProviderIdentifiedItem(
                     identity: sourceIdentity,
@@ -214,7 +222,7 @@ actor FileProviderMutationCore {
                 ) {
                     throw FileProviderModifyMutationError.conflict(current: current)
                 }
-                guard !supportedMetadataFields.isEmpty else {
+                guard !supportedFields.isEmpty else {
                     return FileProviderMutationResult(
                         item: current,
                         stillPendingFields: stillPendingFields,
@@ -245,7 +253,7 @@ actor FileProviderMutationCore {
                     destination: destination,
                     sourceType: sourceRemote.type
                 )
-                guard destination != sourcePath else {
+                guard destination != sourcePath || changesContents else {
                     return FileProviderMutationResult(
                         item: current,
                         stillPendingFields: stillPendingFields,
@@ -264,7 +272,44 @@ actor FileProviderMutationCore {
                         .filter { $0 != sourcePath }
                 )
 
-                try await access.renameItem(from: sourcePath, to: destination)
+                let temporary = try FileProviderRemotePath(
+                    relative: newParentPath.relative.isEmpty
+                        ? ".remux-upload-\(nonce().uuidString.lowercased())"
+                        : newParentPath.relative + "/.remux-upload-\(nonce().uuidString.lowercased())"
+                )
+                var committed = false
+                if changesContents {
+                    do {
+                        try await access.uploadFile(
+                            from: try request.contentsURL ?? emptyFileURL(),
+                            to: temporary,
+                            progress: progress
+                        )
+                        try Task.checkCancellation()
+                        try await access.renameItem(from: temporary, to: destination)
+                        committed = true
+                    } catch {
+                        if !committed {
+                            try? await access.removeFile(at: temporary)
+                        }
+                        throw error
+                    }
+                } else {
+                    try await access.renameItem(from: sourcePath, to: destination)
+                    committed = true
+                }
+
+                let sourceRemovalFailed: Bool
+                if changesContents && destination != sourcePath {
+                    do {
+                        try await access.removeFile(at: sourcePath)
+                        sourceRemovalFailed = false
+                    } catch {
+                        sourceRemovalFailed = true
+                    }
+                } else {
+                    sourceRemovalFailed = false
+                }
                 return try await finishCommittedMutation {
                     let movedRemote = try await access.item(at: destination)
                     let refreshedOldParentItems = try await access.list(directory: oldParentPath)
@@ -288,10 +333,14 @@ actor FileProviderMutationCore {
                     _ = try await snapshots.commit(
                         localMutation: FileProviderSnapshotLocalMutation(
                             refreshedDirectories: refreshedDirectories,
+                            identityReservations: sourceRemovalFailed
+                                ? [.init(identity: .item(identity()), path: sourcePath)]
+                                : [],
                             relocations: [
                                 .init(identity: sourceIdentity, from: sourcePath, to: destination),
                             ],
-                            receipt: .item(key: key, item: moved)
+                            receipt: .item(key: key, item: moved),
+                            queuesWorkingSetSignal: sourceRemovalFailed
                         )
                     )
                     return FileProviderMutationResult(
