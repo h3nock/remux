@@ -27,7 +27,8 @@ final class FileProviderDomainOperationCoordinatorTests: XCTestCase {
                 return 2
             }
         }
-        await coordinator.waitUntilMutationIsQueued()
+        await refreshGate.release()
+        await mutationGate.waitUntilEntered()
         let secondRefresh = Task {
             try await coordinator.performRefresh(directory: .root) {
                 await events.record("refresh-2")
@@ -35,8 +36,6 @@ final class FileProviderDomainOperationCoordinatorTests: XCTestCase {
             }
         }
 
-        await refreshGate.release()
-        await mutationGate.waitUntilEntered()
         let eventsBeforeMutationCompletes = await events.values()
         XCTAssertEqual(
             eventsBeforeMutationCompletes,
