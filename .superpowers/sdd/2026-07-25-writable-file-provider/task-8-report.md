@@ -96,3 +96,22 @@ has reached the outer operation at the boundary under test.
 The exact focused command above was rerun. Its inspected result bundle reports
 `result: Passed`, `passedTests: 52`, `failedTests: 0`, `skippedTests: 0`.
 `git diff --check` passed. Production behavior was unchanged.
+
+## Round 3 coordinator cancellation acknowledgement
+
+The outer-task cancellation latch did not by itself prove that the coordinator's
+unawaited `cancelMutation` task had reached the active mutation. The coordinator
+now accepts a default-no-op synchronous mutation-cancellation observer and
+invokes it immediately after cancelling a matching active mutation task.
+
+The fixture injects an observer that records an acknowledgement latch. Both
+cancellation tests now wait in this order before releasing their remote gate:
+
+1. cancel the outer task;
+2. observe the outer cancellation handler;
+3. observe the coordinator acknowledgement after it cancels the active task;
+4. release the rename or authoritative-read gate.
+
+The exact focused command above was rerun and its result bundle inspected:
+`result: Passed`, `passedTests: 52`, `failedTests: 0`, `skippedTests: 0`.
+`git diff --check` passed.

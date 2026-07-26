@@ -8,6 +8,14 @@ struct FileProviderPollingRefresh: Sendable {
 }
 
 actor FileProviderDomainOperationCoordinator {
+    private let mutationCancellationObserver: @Sendable () -> Void
+
+    init(
+        mutationCancellationObserver: @escaping @Sendable () -> Void = {}
+    ) {
+        self.mutationCancellationObserver = mutationCancellationObserver
+    }
+
     private enum OperationKind: Equatable {
         case refresh(FileProviderRemotePath)
         case mutation
@@ -207,6 +215,7 @@ actor FileProviderDomainOperationCoordinator {
     private func cancelMutation(id: UUID) {
         if active?.id == id {
             active?.task.cancel()
+            mutationCancellationObserver()
             return
         }
 

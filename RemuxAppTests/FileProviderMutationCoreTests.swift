@@ -535,6 +535,7 @@ final class FileProviderMutationCoreTests: XCTestCase {
         task.cancel()
         await Task.yield()
         await cancellationDelivery.wait()
+        await fixture.mutationCancellationAcknowledgement.wait()
         await fixture.remote.releaseRename()
         await assertThrows { try await task.value }
         let mutations = await fixture.remote.mutations()
@@ -570,6 +571,7 @@ final class FileProviderMutationCoreTests: XCTestCase {
         task.cancel()
         await Task.yield()
         await cancellationDelivery.wait()
+        await fixture.mutationCancellationAcknowledgement.wait()
         await fixture.remote.releaseItemRead()
         let result = try await task.value
         let path = try await fixture.snapshots.path(for: original.itemIdentifier)
@@ -683,6 +685,7 @@ private final class MutationFixture: @unchecked Sendable {
     let snapshots: FileProviderSnapshotStore
     let remote: FileProviderMutableRemoteService
     let progress = FileProviderTestProgressRecorder()
+    let mutationCancellationAcknowledgement: MutationCancellationDeliveryLatch
     let nonce = "11111111-2222-3333-4444-555555555555"
     private let root: URL
 
@@ -695,10 +698,16 @@ private final class MutationFixture: @unchecked Sendable {
             identities.next()
         })
         remote = FileProviderMutableRemoteService()
+        let mutationCancellationAcknowledgement = MutationCancellationDeliveryLatch()
+        self.mutationCancellationAcknowledgement = mutationCancellationAcknowledgement
         core = FileProviderMutationCore(
             remote: remote,
             snapshots: snapshots,
-            coordinator: FileProviderDomainOperationCoordinator(),
+            coordinator: FileProviderDomainOperationCoordinator(
+                mutationCancellationObserver: {
+                    Task { await mutationCancellationAcknowledgement.record() }
+                }
+            ),
             nonce: { UUID(uuidString: "11111111-2222-3333-4444-555555555555")! }
         )
     }
