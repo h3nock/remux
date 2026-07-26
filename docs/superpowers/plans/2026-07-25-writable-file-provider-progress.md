@@ -15,6 +15,25 @@
 | 11 | 7ce7882 | contract and mutation-core tests (101 passed) | task-11-review.md | complete |
 | 12 | cd914bf, cc19780 | FileProviderExtensionConfigurationTests (1 passed) | task-12-review.md | complete |
 | 13 | 744c393 | RemuxSFTPReadOnlyClientTests: 15 passed, 1 skipped | diff check and helper run | automated complete; live pending |
+| 14 | pending | focused suite: 194 passed, 1 opt-in disposable-host test skipped; complete suite: 1,041 passed, 1 opt-in disposable-host test skipped | branch diff check: no whitespace errors; task-by-task review remains incomplete for Tasks 1-8 | automated/build evidence recorded; live gates pending |
+
+## Task 14 verification evidence (2026-07-25)
+
+- Focused writable-provider suite: `xcodebuild test` with all ten Task 14 `-only-testing` targets completed successfully: 194 executed, 1 skipped, 0 failures. The only skip was `RemuxSFTPReadOnlyClientTests.testWritableSFTPIntegrationMutationsStayInDedicatedRoot`, which is explicitly opt-in and requires `REMUX_WRITABLE_SFTP_INTEGRATION=1`. Full log: `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/task-14-focused-suite.log`; Xcode result: `/Users/jesse/Library/Developer/Xcode/DerivedData/Remux-baapfdiwnnvmtnfolpbdblblyvtw/Logs/Test/Test-Remux-2026.07.25_18-55-51--0700.xcresult`.
+- Complete Remux automated suite: completed successfully: 1,041 executed, 1 skipped, 0 failures. The same explicitly opt-in disposable-host test was the sole skip. Full log: `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/task-14-full-suite.log`; Xcode result: `/Users/jesse/Library/Developer/Xcode/DerivedData/Remux-baapfdiwnnvmtnfolpbdblblyvtw/Logs/Test/Test-Remux-2026.07.25_18-56-11--0700.xcresult`.
+- `scripts/qualify-writable-file-provider.sh` exited successfully and reported `Automated configuration checks passed.` Its log is `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/task-14-qualification.log`; it regenerated the project with no `Remux.xcodeproj/project.pbxproj` or `RemuxFileProvider/Info.plist` drift.
+- Generic iOS Simulator build: `xcodebuild build -project Remux.xcodeproj -scheme Remux -destination 'generic/platform=iOS Simulator' -derivedDataPath .derived-data/writable-file-provider` completed successfully. Log: `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/task-14-generic-simulator-build.log`. The extension exists at `.derived-data/writable-file-provider/Build/Products/Debug-iphonesimulator/Remux.app/PlugIns/RemuxFileProvider.appex`.
+- Built extension configuration: `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/task-14-appex-nsextension.plist` confirms `NSExtensionFileProviderUploadPipelineDepth = 1` and `NSExtensionFileProviderMetadataOnlyUploadPipelineDepth = 1`; no `NSExtensionFileProviderReadOnly` key is present.
+- Entitlement inspection limitation: the requested `codesign -d --entitlements :-` against the simulator extension returned an empty dictionary (recorded in `.superpowers/sdd/2026-07-25-writable-file-provider/artifacts/task-14-appex-entitlements.plist`). The build's generated simulator entitlement payload at `.derived-data/writable-file-provider/Build/Intermediates.noindex/Remux.build/Debug-iphonesimulator/RemuxFileProvider.build/RemuxFileProvider.appex-Simulated.xcent` contains `com.apple.security.application-groups = group.dev.remux` and `keychain-access-groups = 87WJ58S66M.dev.remux.shared`, matching `RemuxFileProvider/RemuxFileProvider.entitlements`. This is build configuration evidence only; the simulator ad-hoc signature does not provide the requested codesign entitlement proof.
+- Final branch check: `git diff --check 527604b..HEAD` produced no whitespace errors. `git log --oneline 527604b..HEAD` contains the coherent Tasks 1-13 series. The worktree was not clean before Task 14: it already contained untracked Task 9-13 review/report files; Task 14 also leaves its untracked report/log artifacts outside the commit by instruction.
+
+## Unrun simulator Files matrix
+
+The development simulator domain was not removed or recreated, and no Files matrix entry was run. There is no safe, pre-created live fixture with both password and private-key server profiles in this worktree. Therefore all eleven matrix behaviors remain unrun for both authentication modes; no simulator reset, profile/credential/trusted-host mutation, remote SSH mutation, upload cancellation, or extension restart was performed.
+
+## Review disposition
+
+Task 9-13 review artifacts exist in the worktree, but Task 1-8 have not received the Task 14 task-by-task code review required by the brief. No review fix was made in this verification pass; the focused suite above is the current post-Task-13 automated evidence.
 
 ## Remaining live gates
 
