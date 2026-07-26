@@ -123,7 +123,7 @@ actor FileProviderMutationCore {
                     }
                 } catch {
                     if request.type == .regular, !renamed {
-                        try? await access.removeFile(at: temporary)
+                        await cleanupTemporaryFile(temporary, using: access)
                     }
                     throw error
                 }
@@ -277,6 +277,10 @@ actor FileProviderMutationCore {
                         ? ".remux-upload-\(nonce().uuidString.lowercased())"
                         : newParentPath.relative + "/.remux-upload-\(nonce().uuidString.lowercased())"
                 )
+                try validator.validateDestination(
+                    temporary,
+                    occupiedPaths: newParentItems.map(\.path)
+                )
                 var committed = false
                 if changesContents {
                     do {
@@ -290,7 +294,7 @@ actor FileProviderMutationCore {
                         committed = true
                     } catch {
                         if !committed {
-                            try? await access.removeFile(at: temporary)
+                            await cleanupTemporaryFile(temporary, using: access)
                         }
                         throw error
                     }
@@ -379,6 +383,15 @@ private func finishCommittedMutation<Value: Sendable>(
     _ operation: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
     try await Task.detached(operation: operation).value
+}
+
+private func cleanupTemporaryFile(
+    _ temporary: FileProviderRemotePath,
+    using access: any FileProviderRemoteMutationAccess
+) async {
+    _ = try? await Task.detached {
+        try await access.removeFile(at: temporary)
+    }.value
 }
 
 private func emptyFileURL() throws -> URL {

@@ -51,3 +51,33 @@ working-set signal.
 - A physical iOS device must prove Files content editing, cancellation during
   upload and after final rename, progress delivery, and identity continuity for
   content-plus-rename and content-plus-cross-parent move.
+
+## Round 1 review repair
+
+### Root cause
+
+The pre-commit content path caught cancellation after the upload and attempted
+temporary-file removal from the cancelled mutation task. The production
+mutation session correctly calls `Task.checkCancellation()` before removal, so
+the discarded cleanup attempt never reached SFTP and leaked the temporary
+sibling.
+
+### Repair and coverage
+
+- Added a narrow, awaited detached cleanup helper used only for a known
+  temporary upload path. It preserves the original upload, rename, or
+  cancellation error and leaves normal mutation cancellation checks intact.
+- Checked the generated temporary path against the already-read destination
+  parent listing before upload, so an existing nonce sibling is rejected rather
+  than opened by the upload path.
+- The cancellation-aware fake now checks cancellation before removal. The
+  content cancellation test blocks after upload, waits until both outer and
+  coordinator cancellation delivery are observed, releases the final rename,
+  then proves the exact temporary removal, no rename, and unchanged destination.
+- Added coverage for refused replacement rename preserving the old destination,
+  upload failure cleanup, cross-parent content move ordering and parent
+  refreshes, symlink-content rejection, and replay without another upload.
+
+The exact focused command was rerun with
+`/tmp/remux-task9-round1-final2.xcresult`. `xcresulttool` reports 77 passed,
+0 failed, 0 skipped. `git diff --check` passed.
