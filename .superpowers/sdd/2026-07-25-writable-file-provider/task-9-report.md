@@ -81,3 +81,17 @@ sibling.
 The exact focused command was rerun with
 `/tmp/remux-task9-round1-final2.xcresult`. `xcresulttool` reports 77 passed,
 0 failed, 0 skipped. `git diff --check` passed.
+
+## Round 2 review repair
+
+- Create now validates its generated temporary sibling against the parent
+  listing before beginning an upload. A fixed-nonce sentinel test proves an
+  existing sibling is neither uploaded over nor removed, even when the pending
+  upload is configured to fail.
+- Temporary path generation and collision validation in modify now occur only
+  for `.contents` changes. The metadata-only rename regression proves an
+  unrelated temporary sibling does not block a normal rename.
+
+The exact focused suite was rerun with
+`/tmp/remux-task9-round2-final.xcresult`: 79 passed, 0 failed, 0 skipped.
+`git diff --check` passed.

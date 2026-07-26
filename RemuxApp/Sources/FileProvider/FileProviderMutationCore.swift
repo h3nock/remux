@@ -102,6 +102,13 @@ actor FileProviderMutationCore {
                     )
                 }
 
+                if request.type == .regular {
+                    try validator.validateDestination(
+                        temporary,
+                        occupiedPaths: existing.map(\.path)
+                    )
+                }
+
                 var renamed = false
                 do {
                     switch request.type {
@@ -272,17 +279,17 @@ actor FileProviderMutationCore {
                         .filter { $0 != sourcePath }
                 )
 
-                let temporary = try FileProviderRemotePath(
-                    relative: newParentPath.relative.isEmpty
-                        ? ".remux-upload-\(nonce().uuidString.lowercased())"
-                        : newParentPath.relative + "/.remux-upload-\(nonce().uuidString.lowercased())"
-                )
-                try validator.validateDestination(
-                    temporary,
-                    occupiedPaths: newParentItems.map(\.path)
-                )
                 var committed = false
                 if changesContents {
+                    let temporary = try FileProviderRemotePath(
+                        relative: newParentPath.relative.isEmpty
+                            ? ".remux-upload-\(nonce().uuidString.lowercased())"
+                            : newParentPath.relative + "/.remux-upload-\(nonce().uuidString.lowercased())"
+                    )
+                    try validator.validateDestination(
+                        temporary,
+                        occupiedPaths: newParentItems.map(\.path)
+                    )
                     do {
                         try await access.uploadFile(
                             from: try request.contentsURL ?? emptyFileURL(),

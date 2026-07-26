@@ -153,6 +153,31 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertFalse(exists)
     }
 
+    func testCreateRejectsPreexistingTemporarySiblingWithoutOverwritingOrRemovingIt() async throws {
+        let fixture = try MutationFixture()
+        let temporary = ".remux-upload-\(fixture.nonce)"
+        let sentinel = Data("sentinel".utf8)
+        await fixture.remote.seed(path: temporary, type: .regular, contents: sentinel)
+        await fixture.remote.failNextUpload(afterCreatingTemporaryFile: true)
+
+        await assertThrows {
+            try await fixture.core.create(
+                request: fixture.createRequest(
+                    template: "temporary-collision",
+                    parent: .rootContainer,
+                    filename: "report.txt",
+                    type: .regular,
+                    contentsURL: fixture.localFile(contents: Data("new".utf8))
+                )
+            ) { _ in }
+        }
+
+        let mutations = await fixture.remote.mutations()
+        let contents = await fixture.remote.contents(path: "/home/me/\(temporary)")
+        XCTAssertTrue(mutations.isEmpty)
+        XCTAssertEqual(contents, sentinel)
+    }
+
     func testCreateRenameFailureRemovesTemporarySiblingAndLeavesDestination() async throws {
         let fixture = try MutationFixture()
         await fixture.remote.failNextRename()
@@ -335,6 +360,26 @@ final class FileProviderMutationCoreTests: XCTestCase {
         ])
         let listedDirectories = await fixture.remote.listedDirectories()
         XCTAssertEqual(listedDirectories, [.root, .root])
+    }
+
+    func testMetadataOnlyRenameIgnoresPreexistingTemporarySibling() async throws {
+        let fixture = try MutationFixture()
+        await fixture.remote.seed(path: "old.txt", type: .regular, contents: Data("old".utf8))
+        await fixture.remote.seed(
+            path: ".remux-upload-\(fixture.nonce)",
+            type: .regular,
+            contents: Data("sentinel".utf8)
+        )
+        try await fixture.recordRoot()
+        let original = try await fixture.identifiedItem(path: "old.txt")
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+        ) { _ in }
+
+        XCTAssertEqual(result.item.remoteItem.path.relative, "new.txt")
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations, [.rename("/home/me/old.txt", "/home/me/new.txt")])
     }
 
     func testModifyContentsUploadsTemporaryFileThenReplacesDestination() async throws {
