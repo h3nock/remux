@@ -84,8 +84,40 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             Error?
         ) -> Void
     ) -> Progress {
-        rejectMutation { error in
-            completionHandler(nil, [], false, error)
+        guard let setup else {
+            return completedFailure {
+                completionHandler(nil, [], false, initializationError)
+            }
+        }
+        let completion = RemuxFileProviderExtensionUncheckedSendable(value: completionHandler)
+        let rootDisplayName = domain.displayName
+        do {
+            let mutation = try FileProviderSDKRequestAdapter.createRequest(
+                itemTemplate: itemTemplate,
+                fields: fields,
+                contentsURL: url,
+                options: options
+            )
+            return setup.extensionCore.createItem(request: mutation) { result in
+                switch result {
+                case .success(let result):
+                    completion.value(
+                        FileProviderSDKItem(
+                            item: result.item,
+                            rootDisplayName: rootDisplayName
+                        ),
+                        result.stillPendingFields,
+                        result.shouldFetchContent,
+                        nil
+                    )
+                case .failure(let error):
+                    completion.value(nil, [], false, error)
+                }
+            }
+        } catch {
+            return setup.extensionCore.failedMutation(error: error) { error in
+                completion.value(nil, [], false, error)
+            }
         }
     }
 
@@ -103,8 +135,35 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
             Error?
         ) -> Void
     ) -> Progress {
-        rejectMutation { error in
-            completionHandler(nil, [], false, error)
+        guard let setup else {
+            return completedFailure {
+                completionHandler(nil, [], false, initializationError)
+            }
+        }
+        let completion = RemuxFileProviderExtensionUncheckedSendable(value: completionHandler)
+        let rootDisplayName = domain.displayName
+        let mutation = FileProviderSDKRequestAdapter.modifyRequest(
+            item: item,
+            baseVersion: version,
+            changedFields: changedFields,
+            contentsURL: newContents,
+            options: options
+        )
+        return setup.extensionCore.modifyItem(request: mutation) { result in
+            switch result {
+            case .success(let result):
+                completion.value(
+                    FileProviderSDKItem(
+                        item: result.item,
+                        rootDisplayName: rootDisplayName
+                    ),
+                    result.stillPendingFields,
+                    result.shouldFetchContent,
+                    nil
+                )
+            case .failure(let error):
+                completion.value(nil, [], false, error)
+            }
         }
     }
 
@@ -115,7 +174,20 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
         request: NSFileProviderRequest,
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
-        rejectMutation(completionHandler)
+        guard let setup else {
+            return completedFailure {
+                completionHandler(initializationError)
+            }
+        }
+        let completion = RemuxFileProviderExtensionUncheckedSendable(value: completionHandler)
+        let mutation = FileProviderSDKRequestAdapter.deleteRequest(
+            identifier: identifier,
+            baseVersion: version,
+            options: options
+        )
+        return setup.extensionCore.deleteItem(request: mutation) { result in
+            completion.value(result.failureValue)
+        }
     }
 
     func enumerator(
@@ -166,22 +238,20 @@ final class RemuxFileProviderExtension: NSObject, NSFileProviderReplicatedExtens
         return enumerator
     }
 
-    private func rejectMutation(
-        _ completion: (NSError) -> Void
-    ) -> Progress {
-        if let setup {
-            return setup.extensionCore.rejectMutation(completion: completion)
-        }
-        return completedFailure {
-            completion(FileProviderErrorMapper.writePermission)
-        }
-    }
-
     private func completedFailure(_ completion: () -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         completion()
         progress.completedUnitCount = 1
         return progress
+    }
+}
+
+private extension Result where Failure == NSError {
+    var failureValue: NSError? {
+        if case .failure(let error) = self {
+            return error
+        }
+        return nil
     }
 }
 

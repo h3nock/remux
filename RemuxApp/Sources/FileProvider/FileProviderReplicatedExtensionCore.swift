@@ -51,23 +51,7 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         ) -> Void
     ) -> Progress {
         requests.perform(
-            errorMapper: { error in
-                if let createError = error as? FileProviderCreateMutationError {
-                    return switch createError {
-                    case .collision(let existing):
-                        FileProviderErrorMapper.filenameCollision(
-                            existingItem: FileProviderSDKItem(
-                                item: existing,
-                                rootDisplayName: self.rootDisplayName
-                            )
-                        )
-                    }
-                }
-                if error as? FileProviderMutationValidationError == .symbolicLinkMutation {
-                    return FileProviderErrorMapper.cannotSynchronize
-                }
-                return FileProviderErrorMapper.map(error)
-            },
+            errorMapper: mapMutationError,
             progressOperation: { progress in
                 let result = try await self.mutations.create(request: request) { bytes in
                     progress.completedUnitCount = bytes
@@ -80,6 +64,59 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
             },
             preserveResultAfterCancellation: true,
             completion: completion
+        )
+    }
+
+    func modifyItem(
+        request: FileProviderModifyRequest,
+        completion: @escaping @Sendable (
+            Result<FileProviderMutationResult, NSError>
+        ) -> Void
+    ) -> Progress {
+        requests.perform(
+            errorMapper: mapMutationError,
+            progressOperation: { progress in
+                let result = try await self.mutations.modify(request: request) { bytes in
+                    progress.completedUnitCount = bytes
+                }
+                if progress.totalUnitCount <= 0 {
+                    progress.totalUnitCount = max(progress.completedUnitCount, 1)
+                }
+                progress.completedUnitCount = progress.totalUnitCount
+                return result
+            },
+            preserveResultAfterCancellation: true,
+            completion: completion
+        )
+    }
+
+    func deleteItem(
+        request: FileProviderDeleteRequest,
+        completion: @escaping @Sendable (Result<Void, NSError>) -> Void
+    ) -> Progress {
+        requests.perform(
+            errorMapper: mapMutationError,
+            progressOperation: { _ in
+                try await self.mutations.delete(request: request)
+            },
+            preserveResultAfterCancellation: true,
+            completion: completion
+        )
+    }
+
+    func failedMutation(
+        error: Error,
+        completion: @escaping @Sendable (NSError) -> Void
+    ) -> Progress {
+        requests.perform(
+            errorMapper: mapMutationError,
+            operation: {
+                throw error
+            },
+            completion: { result in
+                guard case .failure(let error) = result else { return }
+                completion(error)
+            }
         )
     }
 
@@ -191,15 +228,6 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
         )
     }
 
-    func rejectMutation(
-        completion: (NSError) -> Void
-    ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
-        completion(FileProviderErrorMapper.writePermission)
-        progress.completedUnitCount = 1
-        return progress
-    }
-
     func registerEnumerator(
         _ enumerator: any FileProviderEnumeratorInvalidating
     ) -> Bool {
@@ -236,6 +264,46 @@ final class FileProviderReplicatedExtensionCore: @unchecked Sendable {
             }
             await service.invalidate()
         }
+    }
+
+    private func mapMutationError(_ error: Error) -> NSError {
+        if let createError = error as? FileProviderCreateMutationError {
+            return switch createError {
+            case .collision(let existing):
+                FileProviderErrorMapper.filenameCollision(
+                    existingItem: FileProviderSDKItem(
+                        item: existing,
+                        rootDisplayName: rootDisplayName
+                    )
+                )
+            }
+        }
+        if let modifyError = error as? FileProviderModifyMutationError {
+            return switch modifyError {
+            case .conflict(let current):
+                FileProviderErrorMapper.filenameCollision(
+                    existingItem: FileProviderSDKItem(
+                        item: current,
+                        rootDisplayName: rootDisplayName
+                    )
+                )
+            }
+        }
+        if let deleteError = error as? FileProviderDeleteMutationError {
+            return switch deleteError {
+            case .conflict(let current):
+                FileProviderErrorMapper.deletionRejected(
+                    updatedItem: FileProviderSDKItem(
+                        item: current,
+                        rootDisplayName: rootDisplayName
+                    )
+                )
+            }
+        }
+        if error as? FileProviderMutationValidationError == .symbolicLinkMutation {
+            return FileProviderErrorMapper.cannotSynchronize
+        }
+        return FileProviderErrorMapper.map(error)
     }
 }
 

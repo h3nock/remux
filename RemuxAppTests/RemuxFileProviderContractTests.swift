@@ -8,6 +8,121 @@ import XCTest
 @testable import Remux
 
 final class RemuxFileProviderContractTests: XCTestCase {
+    func testSDKCreateRequestPreservesSupportedFieldsAndOptions() throws {
+        let contentsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let template = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "template"),
+            parentIdentifier: .rootContainer,
+            filename: "report.txt",
+            contentType: .plainText
+        )
+
+        let request = try FileProviderSDKRequestAdapter.createRequest(
+            itemTemplate: template,
+            fields: [.filename, .contents],
+            contentsURL: contentsURL,
+            options: [.mayAlreadyExist]
+        )
+
+        XCTAssertEqual(request.parentIdentifier, template.parentItemIdentifier)
+        XCTAssertEqual(request.filename, template.filename)
+        XCTAssertEqual(request.type, .regular)
+        XCTAssertEqual(request.templateIdentifier, template.itemIdentifier)
+        XCTAssertEqual(request.contentsURL, contentsURL)
+        XCTAssertEqual(request.fields, [.filename, .contents])
+        XCTAssertEqual(request.options, [.mayAlreadyExist])
+    }
+
+    func testSDKCreateRequestMapsFoldersToDirectories() throws {
+        let template = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "template"),
+            parentIdentifier: .rootContainer,
+            filename: "notes",
+            contentType: .folder
+        )
+
+        let request = try FileProviderSDKRequestAdapter.createRequest(
+            itemTemplate: template,
+            fields: [.filename],
+            contentsURL: nil,
+            options: []
+        )
+
+        XCTAssertEqual(request.type, .directory)
+    }
+
+    func testSDKCreateRequestRejectsSymbolicLinks() {
+        let template = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "template"),
+            parentIdentifier: .rootContainer,
+            filename: "link",
+            contentType: .symbolicLink
+        )
+
+        XCTAssertThrowsError(
+            try FileProviderSDKRequestAdapter.createRequest(
+                itemTemplate: template,
+                fields: [.filename],
+                contentsURL: nil,
+                options: []
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? FileProviderMutationValidationError,
+                .symbolicLinkMutation
+            )
+        }
+    }
+
+    func testSDKModifyRequestPreservesOnlyMutationInputs() throws {
+        let contentsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let item = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "item"),
+            parentIdentifier: .rootContainer,
+            filename: "renamed.txt",
+            contentType: .plainText
+        )
+        let version = NSFileProviderItemVersion(
+            contentVersion: Data("content".utf8),
+            metadataVersion: Data("metadata".utf8)
+        )
+
+        let request = FileProviderSDKRequestAdapter.modifyRequest(
+            item: item,
+            baseVersion: version,
+            changedFields: [.filename, .contents, .tagData],
+            contentsURL: contentsURL,
+            options: [.mayAlreadyExist]
+        )
+
+        XCTAssertEqual(request.identifier, item.itemIdentifier)
+        XCTAssertEqual(request.parentIdentifier, item.parentItemIdentifier)
+        XCTAssertEqual(request.filename, item.filename)
+        XCTAssertEqual(request.baseVersion, version)
+        XCTAssertEqual(request.changedFields, [.filename, .contents, .tagData])
+        XCTAssertEqual(request.contentsURL, contentsURL)
+        XCTAssertEqual(request.options, [.mayAlreadyExist])
+    }
+
+    func testSDKDeleteRequestPreservesIdentifierVersionAndOptions() {
+        let version = NSFileProviderItemVersion(
+            contentVersion: Data("content".utf8),
+            metadataVersion: Data("metadata".utf8)
+        )
+
+        let request = FileProviderSDKRequestAdapter.deleteRequest(
+            identifier: NSFileProviderItemIdentifier(rawValue: "item"),
+            baseVersion: version,
+            options: [.recursive]
+        )
+
+        XCTAssertEqual(request.identifier, NSFileProviderItemIdentifier(rawValue: "item"))
+        XCTAssertEqual(request.baseVersion, version)
+        XCTAssertEqual(request.options, [.recursive])
+    }
+
     func testRequestProgressCancellationCancelsWorkAndCompletesExactlyOnce() async {
         let controller = FileProviderRequestController()
         let state = FileProviderTestRequestState()
@@ -359,7 +474,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
     }
 
-    func testExtensionCoreRejectsMutationImmediatelyWithoutRemoteCalls() async throws {
+    func testExtensionCoreMapsRejectedMutationWithoutRemoteCalls() async throws {
         let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
         let service = FileProviderRecordingRemoteService(item: remoteItem)
         let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
@@ -371,17 +486,24 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 FileManager.default.temporaryDirectory
             }
         )
-        var errors: [NSError] = []
+        let completions = FileProviderTestCompletionRecorder<Void>()
 
-        let progress = core.rejectMutation { error in
-            errors.append(error)
+        _ = core.failedMutation(
+            error: FileProviderMutationValidationError.symbolicLinkMutation
+        ) { error in
+            Task {
+                await completions.record(.failure(error))
+            }
         }
-
-        XCTAssertEqual(errors.count, 1)
-        XCTAssertEqual(errors.first?.domain, NSCocoaErrorDomain)
-        XCTAssertEqual(errors.first?.code, NSFileWriteNoPermissionError)
-        XCTAssertEqual(progress.totalUnitCount, 1)
-        XCTAssertEqual(progress.completedUnitCount, 1)
+        await completions.waitForFirst()
+        let results = await completions.results()
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected rejected mutation error")
+            return
+        }
+        XCTAssertEqual(error.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(error.code, NSFileProviderError.cannotSynchronize.rawValue)
         let remoteCallCount = await service.totalCallCount()
         XCTAssertEqual(remoteCallCount, 0)
     }
@@ -1847,6 +1969,25 @@ private func XCTAssertFileProviderThrowsAsync<T>(
         _ = try await expression()
         XCTFail("Expected expression to throw", file: file, line: line)
     } catch {
+    }
+}
+
+private final class FileProviderTestSDKItem: NSObject, NSFileProviderItem {
+    let itemIdentifier: NSFileProviderItemIdentifier
+    let parentItemIdentifier: NSFileProviderItemIdentifier
+    let filename: String
+    let contentType: UTType
+
+    init(
+        identifier: NSFileProviderItemIdentifier,
+        parentIdentifier: NSFileProviderItemIdentifier,
+        filename: String,
+        contentType: UTType
+    ) {
+        itemIdentifier = identifier
+        parentItemIdentifier = parentIdentifier
+        self.filename = filename
+        self.contentType = contentType
     }
 }
 
