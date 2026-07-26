@@ -6,6 +6,179 @@ import XCTest
 @testable import Remux
 
 final class RemuxSFTPReadOnlyClientTests: XCTestCase {
+    func testWritableSFTPIntegrationRootRejectsUnsafePaths() {
+        XCTAssertNil(WritableSFTPIntegrationRoot(""))
+        XCTAssertNil(WritableSFTPIntegrationRoot("/"))
+        XCTAssertNil(WritableSFTPIntegrationRoot("."))
+        XCTAssertNil(WritableSFTPIntegrationRoot("/one"))
+        XCTAssertNil(WritableSFTPIntegrationRoot("/one/../two"))
+        XCTAssertNil(WritableSFTPIntegrationRoot("one/../../two"))
+    }
+
+    func testWritableSFTPIntegrationRootAcceptsDedicatedNestedDirectory() {
+        XCTAssertEqual(
+            WritableSFTPIntegrationRoot("/srv/remux-writable-tests")?.path,
+            "/srv/remux-writable-tests"
+        )
+    }
+
+    func testWritableSFTPIntegrationMutationsStayInDedicatedRoot() async throws {
+        guard ProcessInfo.processInfo.environment[
+            "REMUX_WRITABLE_SFTP_INTEGRATION"
+        ] == "1" else {
+            throw XCTSkip("Set REMUX_WRITABLE_SFTP_INTEGRATION=1 for disposable-host tests")
+        }
+
+        guard let root = WritableSFTPIntegrationRoot(
+            ProcessInfo.processInfo.environment["REMUX_WRITABLE_SFTP_TEST_ROOT"]
+        ) else {
+            throw XCTSkip(
+                "Set REMUX_WRITABLE_SFTP_TEST_ROOT to an empty dedicated remote directory"
+            )
+        }
+
+        let dependencies = try RemuxAppDependencies.live()
+        let snapshot = try await dependencies.profileRepository.loadSnapshot()
+        guard let (server, _) = snapshot.latestProfile else {
+            throw XCTSkip("Configure the disposable host as Remux's latest saved profile")
+        }
+        let authentication = try await SSHAuthResolver(
+            credentialStore: dependencies.credentialStore
+        ).resolve(server: server, in: snapshot)
+        let provider = FileProviderCitadelSFTPClientProvider(
+            sshRootService: RemuxSSHRootService(),
+            trustedHosts: dependencies.trustedHostStore
+        )
+        let oldContents = Data("old destination".utf8)
+        let newContents = Data("replacement destination".utf8)
+        let source = try temporaryFile(contents: oldContents)
+        let replacement = try temporaryFile(contents: newContents)
+        let largeSource = try temporaryFile(
+            contents: Data(repeating: 0xA5, count: 16 * 1024 * 1024)
+        )
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: replacement)
+            try? FileManager.default.removeItem(at: largeSource)
+        }
+
+        try await provider.withClient(server: server, authentication: authentication) { client in
+            let canonicalRoot = try await client.realPath(atPath: root.path)
+            guard canonicalRoot == root.path else {
+                XCTFail("The supplied integration root must already be canonical")
+                throw WritableSFTPIntegrationError.nonCanonicalRoot
+            }
+            let initialRootEntries = try await client.listDirectory(atPath: root.path)
+            guard initialRootEntries.isEmpty else {
+                XCTFail("The supplied integration root must be empty before mutation tests begin")
+                throw WritableSFTPIntegrationError.nonEmptyRoot
+            }
+
+            let paths = WritableSFTPIntegrationPaths(root: root)
+
+            do {
+                try await client.createDirectory(atPath: paths.createdDirectory)
+                try await client.uploadFile(
+                    from: source,
+                    to: paths.uploadedFile,
+                    progress: { _ in }
+                )
+                let downloaded = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: downloaded) }
+                try await client.downloadFile(
+                    atPath: paths.uploadedFile,
+                    to: downloaded,
+                    progress: { _ in }
+                )
+                XCTAssertEqual(try Data(contentsOf: downloaded), oldContents)
+
+                try await client.renameItem(
+                    from: paths.uploadedFile,
+                    to: paths.renamedFile
+                )
+                try await client.createDirectory(atPath: paths.directoryToRename)
+                try await client.renameItem(
+                    from: paths.directoryToRename,
+                    to: paths.renamedDirectory
+                )
+
+                try await client.uploadFile(
+                    from: source,
+                    to: paths.replacedFile,
+                    progress: { _ in }
+                )
+                try await client.uploadFile(
+                    from: replacement,
+                    to: paths.replacementTemporaryFile,
+                    progress: { _ in }
+                )
+                try await client.renameItem(
+                    from: paths.replacementTemporaryFile,
+                    to: paths.replacedFile
+                )
+                try await client.downloadFile(
+                    atPath: paths.replacedFile,
+                    to: downloaded,
+                    progress: { _ in }
+                )
+                XCTAssertEqual(try Data(contentsOf: downloaded), newContents)
+
+                try await client.uploadFile(
+                    from: source,
+                    to: paths.fileToRemove,
+                    progress: { _ in }
+                )
+                try await client.removeFile(atPath: paths.fileToRemove)
+                try await client.createDirectory(atPath: paths.emptyDirectory)
+                try await client.removeEmptyDirectory(atPath: paths.emptyDirectory)
+
+                try await client.createDirectory(atPath: paths.nonEmptyDirectory)
+                try await client.uploadFile(
+                    from: source,
+                    to: paths.nonEmptyChild,
+                    progress: { _ in }
+                )
+                await XCTAssertThrowsErrorAsync {
+                    try await client.removeEmptyDirectory(atPath: paths.nonEmptyDirectory)
+                }
+                _ = try await client.metadata(atPath: paths.nonEmptyChild)
+
+                try await client.uploadFile(
+                    from: source,
+                    to: paths.cancelledDestination,
+                    progress: { _ in }
+                )
+                let uploadProgress = WritableSFTPIntegrationUploadProgress()
+                let cancelledUpload = Task {
+                    try await client.uploadFile(
+                        from: largeSource,
+                        to: paths.cancelledTemporaryFile,
+                        progress: { _ in await uploadProgress.recordProgress() }
+                    )
+                }
+                await uploadProgress.waitForProgress()
+                cancelledUpload.cancel()
+                await XCTAssertThrowsErrorAsync {
+                    _ = try await cancelledUpload.value
+                }
+                try await client.downloadFile(
+                    atPath: paths.cancelledDestination,
+                    to: downloaded,
+                    progress: { _ in }
+                )
+                XCTAssertEqual(try Data(contentsOf: downloaded), oldContents)
+            } catch {
+                await paths.removeExplicitly(using: client)
+                throw error
+            }
+
+            await paths.removeExplicitly(using: client)
+            let finalRootEntries = try await client.listDirectory(atPath: root.path)
+            XCTAssertTrue(finalRootEntries.isEmpty)
+        }
+    }
+
     func testFileProviderWriteOperationsCallExactCitadelRequests() async throws {
         let connection = FakeCitadelSFTPConnection(writableFile: RecordingUploadSource())
         let client = makeClient(connection: connection)
@@ -384,6 +557,122 @@ final class RemuxSFTPReadOnlyClientTests: XCTestCase {
         let url = temporaryURL()
         try contents.write(to: url)
         return url
+    }
+}
+
+private enum WritableSFTPIntegrationError: Error {
+    case nonCanonicalRoot
+    case nonEmptyRoot
+}
+
+private struct WritableSFTPIntegrationRoot: Sendable {
+    let path: String
+
+    init?(_ value: String?) {
+        guard let value,
+              !value.isEmpty,
+              value != "/",
+              value != "."
+        else {
+            return nil
+        }
+
+        let components = value.split(separator: "/", omittingEmptySubsequences: true)
+        guard components.count >= 2,
+              !components.contains("."),
+              !components.contains("..")
+        else {
+            return nil
+        }
+
+        path = value
+    }
+}
+
+private struct WritableSFTPIntegrationPaths: Sendable {
+    let createdDirectory: String
+    let uploadedFile: String
+    let renamedFile: String
+    let directoryToRename: String
+    let renamedDirectory: String
+    let replacedFile: String
+    let replacementTemporaryFile: String
+    let fileToRemove: String
+    let emptyDirectory: String
+    let nonEmptyDirectory: String
+    let nonEmptyChild: String
+    let cancelledDestination: String
+    let cancelledTemporaryFile: String
+
+    init(root: WritableSFTPIntegrationRoot) {
+        let prefix = root.path + "/remux-writable-" + UUID().uuidString.lowercased()
+        createdDirectory = prefix + "-created"
+        uploadedFile = prefix + "-uploaded.txt"
+        renamedFile = prefix + "-renamed.txt"
+        directoryToRename = prefix + "-directory-before-rename"
+        renamedDirectory = prefix + "-directory-after-rename"
+        replacedFile = prefix + "-replace.txt"
+        replacementTemporaryFile = prefix + "-replace-uploading.txt"
+        fileToRemove = prefix + "-remove.txt"
+        emptyDirectory = prefix + "-empty"
+        nonEmptyDirectory = prefix + "-non-empty"
+        nonEmptyChild = nonEmptyDirectory + "/child.txt"
+        cancelledDestination = prefix + "-cancelled-destination.txt"
+        cancelledTemporaryFile = prefix + "-cancelled-uploading.txt"
+    }
+
+    func removeExplicitly(using client: any RemuxSFTPFileProviderClient) async {
+        for file in [
+            uploadedFile,
+            renamedFile,
+            replacedFile,
+            replacementTemporaryFile,
+            fileToRemove,
+            nonEmptyChild,
+            cancelledDestination,
+            cancelledTemporaryFile,
+        ] {
+            try? await client.removeFile(atPath: file)
+        }
+        for directory in [
+            createdDirectory,
+            directoryToRename,
+            renamedDirectory,
+            emptyDirectory,
+            nonEmptyDirectory,
+        ] {
+            try? await client.removeEmptyDirectory(atPath: directory)
+        }
+    }
+}
+
+private actor WritableSFTPIntegrationUploadProgress {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var hasProgress = false
+
+    func recordProgress() {
+        hasProgress = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func waitForProgress() async {
+        guard !hasProgress else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+}
+
+private func XCTAssertThrowsErrorAsync(
+    _ expression: @escaping @Sendable () async throws -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        try await expression()
+        XCTFail("Expected an error", file: file, line: line)
+    } catch {
     }
 }
 
