@@ -6,6 +6,64 @@ import XCTest
 @testable import Remux
 
 final class RemuxSFTPReadOnlyClientTests: XCTestCase {
+    func testWritableSFTPIntegrationProfileSelectsRequestedServerHost() {
+        let requestedServer = integrationServer(host: "magic-kingdom")
+        let otherServer = integrationServer(host: "other-host")
+        let requestedWorkspace = integrationWorkspace(serverID: requestedServer.id)
+        let snapshot = ConnectionLibrarySnapshot(
+            servers: [otherServer, requestedServer],
+            workspaces: [
+                integrationWorkspace(serverID: otherServer.id),
+                requestedWorkspace,
+            ]
+        )
+
+        let profile = writableSFTPIntegrationProfile(
+            in: snapshot,
+            requestedHost: "magic-kingdom"
+        )
+
+        XCTAssertEqual(profile?.0, requestedServer)
+        XCTAssertEqual(profile?.1, requestedWorkspace)
+    }
+
+    func testWritableSFTPIntegrationProfileDoesNotFallBackWhenRequestedHostIsMissing() {
+        let server = integrationServer(host: "other-host")
+        let snapshot = ConnectionLibrarySnapshot(
+            servers: [server],
+            workspaces: [integrationWorkspace(serverID: server.id)]
+        )
+
+        XCTAssertNil(
+            writableSFTPIntegrationProfile(
+                in: snapshot,
+                requestedHost: "magic-kingdom"
+            )
+        )
+    }
+
+    func testWritableSFTPIntegrationProfileUsesLatestProfileWithoutRequestedHost() {
+        let olderServer = integrationServer(host: "older-host")
+        let latestServer = integrationServer(host: "latest-host")
+        let oldWorkspace = integrationWorkspace(
+            serverID: olderServer.id,
+            lastOpenedAt: .distantPast
+        )
+        let latestWorkspace = integrationWorkspace(
+            serverID: latestServer.id,
+            lastOpenedAt: .distantFuture
+        )
+        let snapshot = ConnectionLibrarySnapshot(
+            servers: [olderServer, latestServer],
+            workspaces: [oldWorkspace, latestWorkspace]
+        )
+
+        let profile = writableSFTPIntegrationProfile(in: snapshot, requestedHost: nil)
+
+        XCTAssertEqual(profile?.0, latestServer)
+        XCTAssertEqual(profile?.1, latestWorkspace)
+    }
+
     func testWritableSFTPIntegrationRootRejectsUnsafePaths() {
         XCTAssertNil(WritableSFTPIntegrationRoot(""))
         XCTAssertNil(WritableSFTPIntegrationRoot("/"))
@@ -39,7 +97,19 @@ final class RemuxSFTPReadOnlyClientTests: XCTestCase {
 
         let dependencies = try RemuxAppDependencies.live()
         let snapshot = try await dependencies.profileRepository.loadSnapshot()
-        guard let (server, _) = snapshot.latestProfile else {
+        let requestedHost = ProcessInfo.processInfo.environment[
+            "REMUX_WRITABLE_SFTP_SERVER_HOST"
+        ]
+        guard let (server, _) = writableSFTPIntegrationProfile(
+            in: snapshot,
+            requestedHost: requestedHost
+        ) else {
+            if let requestedHost {
+                throw XCTSkip(
+                    "Configure a saved workspace for "
+                        + "REMUX_WRITABLE_SFTP_SERVER_HOST=\(requestedHost)"
+                )
+            }
             throw XCTSkip("Configure the disposable host as Remux's latest saved profile")
         }
         let authentication = try await SSHAuthResolver(
@@ -835,6 +905,45 @@ private actor CancellableUploadSource: RemuxCitadelSFTPFile {
     func closeCount() -> Int {
         recordedCloseCount
     }
+}
+
+private func writableSFTPIntegrationProfile(
+    in snapshot: ConnectionLibrarySnapshot,
+    requestedHost: String?
+) -> (SavedServer, SavedWorkspace)? {
+    guard let requestedHost else {
+        return snapshot.latestProfile
+    }
+
+    guard let server = snapshot.servers.first(where: { $0.host == requestedHost }) else {
+        return nil
+    }
+
+    guard let workspace = snapshot.workspaces(for: server.id).first else {
+        return nil
+    }
+
+    return (server, workspace)
+}
+
+private func integrationServer(host: String) -> SavedServer {
+    SavedServer(
+        displayName: host,
+        host: host,
+        username: "jesse",
+        identityID: UUID()
+    )
+}
+
+private func integrationWorkspace(
+    serverID: SavedServer.ID,
+    lastOpenedAt: Date = Date()
+) -> SavedWorkspace {
+    SavedWorkspace(
+        serverID: serverID,
+        sessionName: "remux-tests",
+        lastOpenedAt: lastOpenedAt
+    )
 }
 
 private actor Int64Recorder {
