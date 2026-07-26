@@ -635,6 +635,30 @@ final class FileProviderSnapshotStoreTests: XCTestCase {
         }
     }
 
+    func testDeleteDirectoryPrunesTrackedDescendants() async throws {
+        let store = FileProviderSnapshotStore(rootURL: root)
+        let directory = try item(path: "folder", type: .directory)
+        let child = try item(path: "folder/child.txt")
+        let rootRecord = try await store.record(directory: .root, items: [directory])
+        let childRecord = try await store.record(
+            directory: FileProviderRemotePath(relative: "folder"),
+            items: [child]
+        )
+        let directoryIdentity = rootRecord.items[0].identity
+
+        _ = try await store.commit(
+            localMutation: .init(
+                refreshedDirectories: [.init(directory: .root, items: [])],
+                deletedIdentities: [directoryIdentity]
+            )
+        )
+
+        let deletedDirectory = try await store.item(for: rootRecord.items[0].itemIdentifier)
+        let deletedChild = try await store.item(for: childRecord.items[0].itemIdentifier)
+        XCTAssertNil(deletedDirectory)
+        XCTAssertNil(deletedChild)
+    }
+
     private func item(
         path: String,
         size: UInt64 = 1,

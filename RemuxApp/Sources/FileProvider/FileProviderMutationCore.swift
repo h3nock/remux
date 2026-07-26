@@ -15,6 +15,10 @@ enum FileProviderModifyMutationError: Error, Sendable {
     case conflict(current: FileProviderIdentifiedItem)
 }
 
+enum FileProviderDeleteMutationError: Error, Sendable {
+    case conflict(current: FileProviderIdentifiedItem)
+}
+
 actor FileProviderMutationCore {
     private let remote: any FileProviderRemoteServicing
     private let snapshots: FileProviderSnapshotStore
@@ -358,6 +362,94 @@ actor FileProviderMutationCore {
                         item: moved,
                         stillPendingFields: stillPendingFields,
                         shouldFetchContent: false
+                    )
+                }
+            }
+        }
+    }
+
+    func delete(request: FileProviderDeleteRequest) async throws {
+        let sourceIdentity = try FileProviderItemIdentifierCodec().identity(for: request.identifier)
+        if sourceIdentity == .root {
+            throw FileProviderMutationValidationError.rootMutation
+        }
+        let key = FileProviderMutationReplayKey.delete(
+            identity: sourceIdentity,
+            contentVersion: request.baseVersion.contentVersion,
+            metadataVersion: request.baseVersion.metadataVersion
+        )
+        if try await snapshots.receipt(for: key) != nil {
+            return
+        }
+
+        try validator.validateMutablePath(try await snapshots.path(for: request.identifier))
+
+        try await coordinator.performMutation { [remote, snapshots, validator] in
+            if try await snapshots.receipt(for: key) != nil {
+                return
+            }
+
+            let sourcePath = try await snapshots.path(for: request.identifier)
+            try validator.validateMutablePath(sourcePath)
+            guard let sourceSnapshot = try await snapshots.item(for: request.identifier) else {
+                throw FileProviderSnapshotStoreError.itemIdentityNotFound
+            }
+            let parentPath = sourceSnapshot.remoteItem.parent
+
+            return try await remote.withMutationAccess { access in
+                let sourceRemote: FileProviderRemoteItem
+                do {
+                    sourceRemote = try await access.item(at: sourcePath)
+                } catch RemuxSFTPClientError.noSuchFile {
+                    return try await finishCommittedMutation {
+                        let parentItems = try await access.list(directory: parentPath)
+                        _ = try await snapshots.commit(
+                            localMutation: FileProviderSnapshotLocalMutation(
+                                refreshedDirectories: [
+                                    .init(directory: parentPath, items: parentItems),
+                                ],
+                                deletedIdentities: [sourceIdentity],
+                                receipt: .deleted(key: key),
+                                queuesWorkingSetSignal: true
+                            )
+                        )
+                    }
+                }
+
+                try validator.validateMutation(of: sourceRemote.type)
+                let current = FileProviderIdentifiedItem(
+                    identity: sourceIdentity,
+                    parentIdentity: sourceSnapshot.parentIdentity,
+                    remoteItem: sourceRemote
+                )
+                if case .conflict = validator.validateBaseVersion(
+                    requested: request.baseVersion,
+                    current: current
+                ) {
+                    throw FileProviderDeleteMutationError.conflict(current: current)
+                }
+
+                if sourceRemote.type == .directory {
+                    let children = try await access.list(directory: sourcePath)
+                    guard children.isEmpty else {
+                        throw FileProviderErrorMapper.directoryNotEmpty
+                    }
+                    try await access.removeEmptyDirectory(at: sourcePath)
+                } else {
+                    try await access.removeFile(at: sourcePath)
+                }
+
+                return try await finishCommittedMutation {
+                    let parentItems = try await access.list(directory: parentPath)
+                    _ = try await snapshots.commit(
+                        localMutation: FileProviderSnapshotLocalMutation(
+                            refreshedDirectories: [
+                                .init(directory: parentPath, items: parentItems),
+                            ],
+                            deletedIdentities: [sourceIdentity],
+                            receipt: .deleted(key: key),
+                            queuesWorkingSetSignal: true
+                        )
                     )
                 }
             }

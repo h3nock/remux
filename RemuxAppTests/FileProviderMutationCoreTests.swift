@@ -925,6 +925,150 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertTrue(mutations.isEmpty)
     }
 
+    func testDeleteRegularFileRemovesOneFileAndCommitsReceipt() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+
+        try await fixture.core.delete(request: fixture.deleteRequest(item: item))
+
+        let mutations = await fixture.remote.mutations()
+        let deletedItem = try await fixture.snapshots.item(for: item.itemIdentifier)
+        let receipt = try await fixture.snapshots.receipt(for: fixture.deleteKey(for: item))
+        XCTAssertEqual(mutations, [.removeFile("/home/me/report.txt")])
+        XCTAssertNil(deletedItem)
+        XCTAssertEqual(
+            receipt,
+            .deleted(key: fixture.deleteKey(for: item))
+        )
+    }
+
+    func testDeleteEmptyDirectoryListsThenUsesRmdir() async throws {
+        let fixture = try await MutationFixture.withEmptyDirectory(path: "empty")
+        let item = try await fixture.identifiedItem(path: "empty")
+        await fixture.remote.clearListedDirectories()
+
+        try await fixture.core.delete(request: fixture.deleteRequest(item: item))
+
+        let mutations = await fixture.remote.mutations()
+        let listedDirectories = await fixture.remote.listedDirectories()
+        XCTAssertEqual(mutations, [.rmdir("/home/me/empty")])
+        XCTAssertEqual(listedDirectories, [try FileProviderRemotePath(relative: "empty"), .root])
+    }
+
+    func testRecursiveOptionStillRejectsNonEmptyDirectoryWithoutRemovingChildren() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "folder", children: ["child.txt"])
+        let item = try await fixture.identifiedItem(path: "folder")
+
+        await assertThrows({
+            try await fixture.core.delete(request: fixture.deleteRequest(item: item, options: [.recursive]))
+        }) { error in
+            XCTAssertEqual((error as NSError).code, NSFileProviderError.directoryNotEmpty.rawValue)
+        }
+
+        let directoryExists = await fixture.remote.exists("/home/me/folder")
+        let childExists = await fixture.remote.exists("/home/me/folder/child.txt")
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(directoryExists)
+        XCTAssertTrue(childExists)
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testDeleteAlreadyAbsentCommitsDeletedReceiptWithoutRemoteMutation() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+        try await fixture.remote.removeFile(at: try FileProviderRemotePath(relative: "report.txt"))
+        await fixture.remote.clearMutations()
+
+        try await fixture.core.delete(request: fixture.deleteRequest(item: item))
+
+        let mutations = await fixture.remote.mutations()
+        let deletedItem = try await fixture.snapshots.item(for: item.itemIdentifier)
+        let receipt = try await fixture.snapshots.receipt(for: fixture.deleteKey(for: item))
+        XCTAssertTrue(mutations.isEmpty)
+        XCTAssertNil(deletedItem)
+        XCTAssertEqual(receipt, .deleted(key: fixture.deleteKey(for: item)))
+    }
+
+    func testDeleteRejectsStaleBaseVersionWithoutRemoval() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.changeMetadata(path: "report.txt")
+
+        await assertThrows({
+            try await fixture.core.delete(request: fixture.deleteRequest(item: item))
+        }) { error in
+            guard case .conflict(let current) = error as? FileProviderDeleteMutationError else {
+                return XCTFail("Expected delete conflict")
+            }
+            XCTAssertEqual(current.remoteItem.path.relative, "report.txt")
+        }
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testDeleteRejectsRootSymlinkAndSpecialFileWithoutMutation() async throws {
+        let fixture = try await MutationFixture.withFile(path: "file")
+        await fixture.remote.seed(path: "link", type: .symbolicLink, contents: Data())
+        await fixture.remote.seed(path: "special", type: .other, contents: Data())
+        try await fixture.recordRoot()
+        let root = FileProviderIdentifiedItem(identity: .root, parentIdentity: .root, remoteItem: try await fixture.remote.item(at: .root))
+        let link = try await fixture.identifiedItem(path: "link")
+        let special = try await fixture.identifiedItem(path: "special")
+
+        await assertThrows { try await fixture.core.delete(request: fixture.deleteRequest(item: root)) }
+        await assertThrows { try await fixture.core.delete(request: fixture.deleteRequest(item: link)) }
+        await assertThrows { try await fixture.core.delete(request: fixture.deleteRequest(item: special)) }
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testDeletePropagatesPermissionDeniedWithoutSnapshotCommit() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.failNextRemoval(with: .permissionDenied)
+
+        await assertThrows({
+            try await fixture.core.delete(request: fixture.deleteRequest(item: item))
+        }) { error in
+            XCTAssertEqual(error as? RemuxSFTPClientError, .permissionDenied)
+            let mapped = FileProviderErrorMapper.map(error, itemIdentifier: item.itemIdentifier)
+            XCTAssertEqual(mapped.domain, NSCocoaErrorDomain)
+            XCTAssertEqual(mapped.code, NSFileWriteNoPermissionError)
+        }
+        let snapshotItem = try await fixture.snapshots.item(for: item.itemIdentifier)
+        XCTAssertNotNil(snapshotItem)
+    }
+
+    func testDeleteReceiptReplayDoesNotRemoveAgain() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+        let request = fixture.deleteRequest(item: item)
+
+        try await fixture.core.delete(request: request)
+        try await fixture.core.delete(request: request)
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations, [.removeFile("/home/me/report.txt")])
+    }
+
+    func testDeleteCancellationAfterRemoteCommitPrunesSnapshotAndCommitsReceipt() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt")
+        let item = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.blockNextList()
+        let task = Task { try await fixture.core.delete(request: fixture.deleteRequest(item: item)) }
+
+        await fixture.remote.waitUntilListBlocked()
+        task.cancel()
+        await fixture.remote.releaseList()
+        try await task.value
+
+        let deletedItem = try await fixture.snapshots.item(for: item.itemIdentifier)
+        let receipt = try await fixture.snapshots.receipt(for: fixture.deleteKey(for: item))
+        XCTAssertNil(deletedItem)
+        XCTAssertEqual(receipt, .deleted(key: fixture.deleteKey(for: item)))
+    }
+
     func testMutableRemoteRenameMovesDirectoryDescendants() async throws {
         let fixture = try await MutationFixture.withDirectory(path: "old", children: ["child.txt"])
         try await fixture.remote.renameItem(from: FileProviderRemotePath(relative: "old"), to: FileProviderRemotePath(relative: "new"))
@@ -1068,7 +1212,24 @@ private final class MutationFixture: @unchecked Sendable {
             options: []
         )
     }
-    func deleteRequest(item: FileProviderIdentifiedItem, options: NSFileProviderDeleteItemOptions = []) -> FileProviderDeleteRequest { fatalError("Task 7 only") }
+    func deleteRequest(item: FileProviderIdentifiedItem, options: NSFileProviderDeleteItemOptions = []) -> FileProviderDeleteRequest {
+        FileProviderDeleteRequest(
+            identifier: item.itemIdentifier,
+            baseVersion: NSFileProviderItemVersion(
+                contentVersion: item.remoteItem.contentVersion,
+                metadataVersion: item.remoteItem.metadataVersion
+            ),
+            options: options
+        )
+    }
+
+    func deleteKey(for item: FileProviderIdentifiedItem) -> FileProviderMutationReplayKey {
+        .delete(
+            identity: item.identity,
+            contentVersion: item.remoteItem.contentVersion,
+            metadataVersion: item.remoteItem.metadataVersion
+        )
+    }
     func identifiedItem(path: String) async throws -> FileProviderIdentifiedItem { try await snapshots.item(for: try await identifier(path: path))! }
     func identifier(path: String) async throws -> NSFileProviderItemIdentifier { try await identifiedItemForPath(path).itemIdentifier }
 
@@ -1139,6 +1300,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     private var uploadFailureCreatesTemporaryFile = false
     private var renameFailure = false
     private var removalFailure = false
+    private var removalError: RemuxSFTPClientError?
     private var renameBlocked = false
     private var renameWaiters: [CheckedContinuation<Void, Never>] = []
     private var renameStartedWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1167,6 +1329,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     }
 
     func mutations() -> [Mutation] { recordedMutations }
+    func clearMutations() { recordedMutations.removeAll() }
     func listedDirectories() -> [FileProviderRemotePath] { listedDirectoryPaths }
     func clearListedDirectories() { listedDirectoryPaths.removeAll() }
     func listedPaths() -> [String] { entries.keys.map { "/home/me/\($0.relative)" }.sorted() }
@@ -1180,6 +1343,7 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     }
     func failNextRename() { renameFailure = true }
     func failNextRemoval() { removalFailure = true }
+    func failNextRemoval(with error: RemuxSFTPClientError) { removalError = error }
     func blockRename() { renameBlocked = true }
     func releaseRename() { renameBlocked = false; let waiters = renameWaiters; renameWaiters.removeAll(); waiters.forEach { $0.resume() } }
     func waitUntilRenameBlocked() async { guard renameStartedWaiters.isEmpty else { return }; await withCheckedContinuation { renameStartedWaiters.append($0) } }
@@ -1212,6 +1376,6 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     func createDirectory(at path: FileProviderRemotePath) throws { try Task.checkCancellation(); guard entries[path] == nil else { throw FileProviderMutationValidationError.destinationOccupied }; entries[path] = (RemuxSFTPFileMetadata(size: nil, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .directory), Data()); recordedMutations.append(.mkdir("/home/me/\(path.relative)")) }
     func uploadFile(from localURL: URL, to path: FileProviderRemotePath, progress: @escaping @Sendable (Int64) async -> Void) async throws { try Task.checkCancellation(); recordedMutations.append(.upload(localURL, "/home/me/\(path.relative)")); await progress(0); if uploadFailure { uploadFailure = false; if uploadFailureCreatesTemporaryFile { uploadFailureCreatesTemporaryFile = false; entries[path] = (RemuxSFTPFileMetadata(size: 0, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .regular), Data()) }; throw RemuxSFTPClientError.unsupportedMutation }; let data = try Data(contentsOf: localURL); await progress(Int64(data.count)); entries[path] = (RemuxSFTPFileMetadata(size: UInt64(data.count), permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .regular), data) }
     func renameItem(from source: FileProviderRemotePath, to destination: FileProviderRemotePath) async throws { let waiters = renameStartedWaiters; renameStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if renameBlocked { await withCheckedContinuation { renameWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.rename("/home/me/\(source.relative)", "/home/me/\(destination.relative)")); if renameFailure { renameFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; let moved = entries.filter { $0.key == source || $0.key.relative.hasPrefix(source.relative + "/") }; guard !moved.isEmpty else { throw RemuxSFTPClientError.noSuchFile(source.relative) }; for path in moved.keys { entries.removeValue(forKey: path) }; for (path, entry) in moved { let suffix = path == source ? "" : String(path.relative.dropFirst(source.relative.count)); entries[try FileProviderRemotePath(relative: destination.relative + suffix)] = entry }; itemReadAfterRename = true }
-    func removeFile(at path: FileProviderRemotePath) async throws { try Task.checkCancellation(); let waiters = removalStartedWaiters; removalStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if removalBlocked { await withCheckedContinuation { removalWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.removeFile("/home/me/\(path.relative)")); if removalFailure { removalFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; entries.removeValue(forKey: path) }
+    func removeFile(at path: FileProviderRemotePath) async throws { try Task.checkCancellation(); let waiters = removalStartedWaiters; removalStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if removalBlocked { await withCheckedContinuation { removalWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.removeFile("/home/me/\(path.relative)")); if removalFailure { removalFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; if let removalError { self.removalError = nil; throw removalError }; entries.removeValue(forKey: path) }
     func removeEmptyDirectory(at path: FileProviderRemotePath) throws { guard !entries.keys.contains(where: { $0.relative.hasPrefix(path.relative + "/") }) else { throw FileProviderMutationValidationError.destinationOccupied }; entries.removeValue(forKey: path); recordedMutations.append(.rmdir("/home/me/\(path.relative)")) }
 }
