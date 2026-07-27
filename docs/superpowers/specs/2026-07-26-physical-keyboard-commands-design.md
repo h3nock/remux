@@ -126,6 +126,23 @@ failed snapshot from one surface does not block results from other surfaces.
 The palette cancels obsolete searches when the query changes or the palette
 closes.
 
+## Visual Integration and Input Ownership
+
+The command palette uses Remux's dynamic app background, grouped row surface,
+separator, corner treatment, and color-scheme behavior. Its panel and list are
+opaque rather than using a generic translucent material, so terminal content
+does not bleed through and reduce contrast.
+
+The keyboard settings entry uses the same grouped row surface as the other
+settings entries. It must not fall back to a translucent or system-default list
+background that visually separates it from the settings design system.
+
+While the command palette is presented, it owns keyboard input. The selected
+terminal relinquishes first-responder eligibility before the palette search
+field requests focus. Typing immediately after Command-K therefore enters the
+query without requiring a tap or leaking characters to the terminal. Dismissing
+the palette restores the terminal's normal focus policy.
+
 ## GhosttyKit Boundary
 
 The pinned GhosttyKit terminal-surface API can read a user selection but does
@@ -163,7 +180,7 @@ Focused tests cover:
 - route-aware command availability and dispatch;
 - wrapping window and active-session navigation;
 - palette command filtering, search debouncing, cancellation, result metadata,
-  and selection routing;
+  selection routing, and immediate keyboard focus;
 - physical-keyboard connection projection and floating-bar visibility/timer
   state;
 - GhosttyKit viewport snapshot ownership, visible-row boundaries, alternate
