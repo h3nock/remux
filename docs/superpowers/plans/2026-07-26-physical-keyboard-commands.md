@@ -27,7 +27,7 @@
 **Files:**
 - Create: `RemuxApp/Sources/Domain/AppKeyboardCommand.swift`
 - Create: `RemuxApp/Sources/Domain/KeyboardSettings.swift`
-- Create: `RemuxApp/Tests/KeyboardSettingsTests.swift`
+- Create: `RemuxAppTests/KeyboardSettingsTests.swift`
 
 **Interfaces:**
 - Produces: `enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable`
@@ -44,7 +44,7 @@ Create tests asserting all nine default chords, that `nil` clears a command, tha
 Run:
 
 ```bash
-xcodebuild test -project Remux.xcodeproj -scheme RemuxApp -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' -only-testing:RemuxAppTests/KeyboardSettingsTests
+xcodebuild test -project Remux.xcodeproj -scheme Remux -destination 'platform=iOS Simulator,id=53D1EE7F-E770-41B6-BEDF-9F416C35D2B9' -only-testing:RemuxTests/KeyboardSettingsTests
 ```
 
 Expected: compilation fails because the keyboard settings types do not exist.
@@ -68,7 +68,7 @@ Run the Task 1 test command and confirm zero failures.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add RemuxApp/Sources/Domain/AppKeyboardCommand.swift RemuxApp/Sources/Domain/KeyboardSettings.swift RemuxApp/Tests/KeyboardSettingsTests.swift
+git add RemuxApp/Sources/Domain/AppKeyboardCommand.swift RemuxApp/Sources/Domain/KeyboardSettings.swift RemuxAppTests/KeyboardSettingsTests.swift
 git commit -m "Add configurable keyboard command domain
 
 Define Remux's fixed app command set, the documented default bindings,
@@ -80,7 +80,7 @@ duplicate chords before persistence."
 
 **Files:**
 - Create: `RemuxApp/Sources/Persistence/KeyboardSettingsRepository.swift`
-- Create: `RemuxApp/Tests/KeyboardSettingsRepositoryTests.swift`
+- Create: `RemuxAppTests/KeyboardSettingsRepositoryTests.swift`
 - Modify: `RemuxApp/Sources/App/RemuxAppDependencies.swift`
 
 **Interfaces:**
@@ -114,7 +114,7 @@ Stage only the repository, dependency wiring, and tests; commit with a detailed 
 **Files:**
 - Create: `RemuxApp/Sources/App/AppKeyboardCommandRouter.swift`
 - Create: `RemuxApp/Sources/App/AppKeyboardCommandResponder.swift`
-- Create: `RemuxApp/Tests/AppKeyboardCommandRouterTests.swift`
+- Create: `RemuxAppTests/AppKeyboardCommandRouterTests.swift`
 - Modify: `RemuxApp/Sources/App/RootView.swift`
 - Modify: `RemuxApp/Sources/Terminal/GhosttyTerminalResponderUIView.swift`
 
@@ -154,9 +154,9 @@ Commit the central router, UIKit responders, root wiring, and tests with a messa
 **Files:**
 - Create: `RemuxApp/Sources/App/KeyboardSettingsView.swift`
 - Create: `RemuxApp/Sources/App/KeyboardShortcutCaptureView.swift`
-- Create: `RemuxApp/Tests/KeyboardShortcutCaptureTests.swift`
+- Create: `RemuxAppTests/KeyboardShortcutCaptureTests.swift`
 - Modify: `RemuxApp/Sources/App/RootView.swift`
-- Modify: `RemuxApp/UITests/RemuxAppUITests.swift`
+- Modify: `RemuxAppUITests/RemuxAppUITests.swift`
 
 **Interfaces:**
 - Consumes: repository, settings validation, command metadata
@@ -192,8 +192,8 @@ Commit the settings UI, capture behavior, tests, and accessibility identifiers.
 **Files:**
 - Create: `RemuxApp/Sources/App/PhysicalKeyboardMonitor.swift`
 - Create: `RemuxApp/Sources/Terminal/PhysicalKeyboardChromeState.swift`
-- Create: `RemuxApp/Tests/PhysicalKeyboardChromeStateTests.swift`
-- Modify: `RemuxApp/project.yml`
+- Create: `RemuxAppTests/PhysicalKeyboardChromeStateTests.swift`
+- Modify: `project.yml`
 
 **Interfaces:**
 - Produces: `@MainActor @Observable final class PhysicalKeyboardMonitor`
@@ -225,7 +225,7 @@ Regenerate the Xcode project, build, run the focused tests, and commit monitor/s
 **Files:**
 - Modify: `RemuxApp/Sources/Terminal/GhosttySurfaceScreen.swift`
 - Modify: `RemuxApp/Sources/Terminal/GhosttyKeyboardChrome.swift`
-- Modify: `RemuxApp/UITests/RemuxAppUITests.swift`
+- Modify: `RemuxAppUITests/RemuxAppUITests.swift`
 
 **Interfaces:**
 - Consumes: `PhysicalKeyboardMonitor`, `PhysicalKeyboardChromeState`, `KeyboardSettings.hideButtonBarWhenPhysicalKeyboardConnected`
@@ -304,7 +304,7 @@ Commit only the three API files with a detailed message covering snapshot scope,
 - Modify: `RemuxApp/Sources/Terminal/TmuxTerminalSession.swift`
 - Modify: `RemuxApp/Sources/Terminal/TmuxTerminalScreenAdapter.swift`
 - Create: `RemuxApp/Sources/Domain/TerminalViewportSnapshot.swift`
-- Create: `RemuxApp/Tests/TerminalViewportSnapshotTests.swift`
+- Create: `RemuxAppTests/TerminalViewportSnapshotTests.swift`
 
 **Interfaces:**
 - Consumes: `ghostty_terminal_surface_read_viewport`
@@ -343,7 +343,7 @@ Commit the Remux wrapper, projection, tests, and updated pinned framework togeth
 **Files:**
 - Create: `RemuxApp/Sources/App/CommandPaletteModel.swift`
 - Create: `RemuxApp/Sources/App/CommandPaletteSearch.swift`
-- Create: `RemuxApp/Tests/CommandPaletteModelTests.swift`
+- Create: `RemuxAppTests/CommandPaletteModelTests.swift`
 
 **Interfaces:**
 - Consumes: hosts, route-aware commands, active-session snapshot providers
@@ -376,7 +376,7 @@ Commit model/search behavior and tests.
 - Create: `RemuxApp/Sources/App/CommandPaletteView.swift`
 - Modify: `RemuxApp/Sources/App/RootView.swift`
 - Modify: `RemuxApp/Sources/Terminal/GhosttySurfaceScreen.swift`
-- Modify: `RemuxApp/UITests/RemuxAppUITests.swift`
+- Modify: `RemuxAppUITests/RemuxAppUITests.swift`
 
 **Interfaces:**
 - Consumes: `CommandPaletteModel`, root model methods, terminal focus methods
@@ -428,7 +428,7 @@ Run all new test classes in one fresh `xcodebuild test` invocation and record te
 Run:
 
 ```bash
-xcodebuild test -project Remux.xcodeproj -scheme RemuxApp -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)'
+xcodebuild test -project Remux.xcodeproj -scheme Remux -destination 'platform=iOS Simulator,id=53D1EE7F-E770-41B6-BEDF-9F416C35D2B9'
 ```
 
 Read the complete result and do not infer full-suite success from focused tests.
