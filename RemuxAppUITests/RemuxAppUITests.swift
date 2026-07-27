@@ -111,7 +111,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(autoHide.waitForExistence(timeout: 2))
         XCTAssertEqual(autoHide.value as? String, "1")
         XCTAssertTrue(app.staticTexts["Command Palette"].waitForExistence(timeout: 2))
-        let homeBinding = app.staticTexts["⌘ H"]
+        let homeBinding = app.staticTexts["⇧ ⌘ H"]
         XCTAssertTrue(homeBinding.waitForExistence(timeout: 2))
         let homeTitle = app.staticTexts["Home"]
         XCTAssertTrue(homeTitle.waitForExistence(timeout: 2))
@@ -127,7 +127,7 @@ final class RemuxAppUITests: XCTestCase {
             app.staticTexts["Press the shortcut for Command Palette"]
                 .waitForExistence(timeout: 2)
         )
-        app.typeKey("h", modifierFlags: .command)
+        app.typeKey("h", modifierFlags: [])
         XCTAssertTrue(
             app.staticTexts["keyboard-settings.capture.validation"]
                 .waitForExistence(timeout: 2)

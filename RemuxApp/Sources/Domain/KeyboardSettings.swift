@@ -24,6 +24,7 @@ struct KeyboardSettings: Codable, Equatable, Sendable {
         case missingKey
         case missingModifier
         case unsupportedModifiers
+        case reservedSystemShortcut
         case duplicateBinding(command: AppKeyboardCommand)
     }
 
@@ -45,7 +46,7 @@ struct KeyboardSettings: Codable, Equatable, Sendable {
                 input: UIKeyCommand.inputRightArrow,
                 modifiers: [.command, .shift]
             ),
-            .home: KeyboardKeyBinding(input: "h", modifiers: [.command]),
+            .home: KeyboardKeyBinding(input: "h", modifiers: [.command, .shift]),
             .windows: KeyboardKeyBinding(input: "o", modifiers: [.command]),
             .panes: KeyboardKeyBinding(input: "p", modifiers: [.command]),
             .attachments: KeyboardKeyBinding(input: "a", modifiers: [.command]),
@@ -131,11 +132,18 @@ struct KeyboardSettings: Codable, Equatable, Sendable {
         guard binding.modifiers.subtracting(supportedModifiers).isEmpty else {
             throw ValidationError.unsupportedModifiers
         }
-        return KeyboardKeyBinding(
+        let canonicalBinding = KeyboardKeyBinding(
             input: binding.input.count == 1
                 ? binding.input.lowercased()
                 : binding.input,
             modifiers: binding.modifiers
         )
+        guard canonicalBinding != KeyboardKeyBinding(
+            input: "h",
+            modifiers: [.command]
+        ) else {
+            throw ValidationError.reservedSystemShortcut
+        }
+        return canonicalBinding
     }
 }

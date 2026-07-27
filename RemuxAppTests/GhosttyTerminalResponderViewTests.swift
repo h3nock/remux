@@ -25,7 +25,12 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertEqual(commands.count, AppKeyboardCommand.allCases.count)
         XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
 
-        let home = try! XCTUnwrap(commands.first { $0.input == "h" })
+        let home = try! XCTUnwrap(
+            commands.first {
+                $0.input == "h"
+                    && $0.modifierFlags == [.command, .shift]
+            }
+        )
         view.perform(home.action, with: home)
         XCTAssertEqual(receivedCommands, [.home])
     }

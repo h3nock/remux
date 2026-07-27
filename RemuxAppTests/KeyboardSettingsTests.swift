@@ -24,7 +24,7 @@ final class KeyboardSettingsTests: XCTestCase {
         )
         XCTAssertEqual(
             settings.binding(for: .home),
-            KeyboardKeyBinding(input: "h", modifiers: [.command])
+            KeyboardKeyBinding(input: "h", modifiers: [.command, .shift])
         )
         XCTAssertEqual(
             settings.binding(for: .windows),
@@ -62,6 +62,20 @@ final class KeyboardSettingsTests: XCTestCase {
             )
         ) { error in
             XCTAssertEqual(error as? KeyboardSettings.ValidationError, .missingModifier)
+        }
+    }
+
+    func testUpdatingBindingRejectsSystemHomeShortcut() {
+        XCTAssertThrowsError(
+            try KeyboardSettings.default.validated(
+                updating: .home,
+                to: KeyboardKeyBinding(input: "h", modifiers: [.command])
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? KeyboardSettings.ValidationError,
+                .reservedSystemShortcut
+            )
         }
     }
 

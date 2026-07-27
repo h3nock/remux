@@ -126,6 +126,8 @@ struct KeyboardSettingsView: View {
             onChange(updated)
         } catch KeyboardSettings.ValidationError.duplicateBinding(let existingCommand) {
             validationMessage = "That shortcut is already assigned to \(existingCommand.displayTitle)."
+        } catch KeyboardSettings.ValidationError.reservedSystemShortcut {
+            validationMessage = "⌘ H is reserved by iPadOS. Choose another shortcut."
         } catch {
             validationMessage = "A shortcut needs a key and at least one modifier."
         }
