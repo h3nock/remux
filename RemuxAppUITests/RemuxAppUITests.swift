@@ -114,6 +114,19 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Set"].firstMatch.waitForExistence(timeout: 2))
     }
 
+    func testPhysicalKeyboardKeepsConnectionFormEditableAndStartsWithHiddenButtonBar() {
+        app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        XCTAssertNil(optionalTerminalHomeButton(timeout: 0.5))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+    }
+
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
         launchSimulatorApp()
         openConnectionSetup()
@@ -152,6 +165,37 @@ final class RemuxAppUITests: XCTestCase {
             "yes 'REMUX_RENDER_CHECK ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' | head -120"
         )
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
+    }
+
+    func testLivePhysicalKeyboardRevealsFloatingButtonBarAndOpensCommandPaletteWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("physical-keyboard")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+
+        waitForLiveTerminalReady(timeout: 60)
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        let terminalFrame = terminal.frame
+        XCTAssertNil(optionalTerminalHomeButton(timeout: 0.5))
+
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        XCTAssertNotNil(optionalTerminalHomeButton(timeout: 2))
+        XCTAssertEqual(terminal.frame, terminalFrame)
+
+        app.typeKey("k", modifierFlags: .command)
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["command-palette"]
+                .waitForExistence(timeout: 2)
+        )
     }
 
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {

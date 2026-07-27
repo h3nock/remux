@@ -58,11 +58,31 @@ final class AppKeyboardCommandResponderView: UIView {
 
         if isEnabled {
             DispatchQueue.main.async { [weak self] in
-                _ = self?.becomeFirstResponder()
+                guard let self, !self.hasFocusedTextInput else { return }
+                _ = self.becomeFirstResponder()
             }
         } else if isFirstResponder {
             resignFirstResponder()
         }
+    }
+
+    private var hasFocusedTextInput: Bool {
+        guard let window, let responder = firstResponder(in: window) else {
+            return false
+        }
+        return responder is any UITextInput
+    }
+
+    private func firstResponder(in view: UIView) -> UIView? {
+        if view.isFirstResponder {
+            return view
+        }
+        for subview in view.subviews {
+            if let responder = firstResponder(in: subview) {
+                return responder
+            }
+        }
+        return nil
     }
 
     @objc
