@@ -26,6 +26,8 @@ enum GhosttyKitBuildModePolicy {
 
 @main
 struct RemuxApp: App {
+    @StateObject private var keyboardCommandCenter = AppKeyboardCommandCenter()
+
     init() {
         #if !DEBUG
         if let failure = GhosttyKitBuildModePolicy.releaseValidationFailure(
@@ -38,7 +40,10 @@ struct RemuxApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            AppKeyboardCommandHost(center: keyboardCommandCenter) {
+                RootView()
+                    .environment(\.appKeyboardCommandCenter, keyboardCommandCenter)
+            }
         }
     }
 }

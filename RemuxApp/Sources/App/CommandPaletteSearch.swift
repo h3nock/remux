@@ -29,6 +29,36 @@ struct CommandPaletteItem: Identifiable, Equatable {
     }
 }
 
+enum CommandPaletteSelectionDirection {
+    case previous
+    case next
+}
+
+enum CommandPaletteSelection {
+    static func initialID(in results: [CommandPaletteItem]) -> CommandPaletteItem.ID? {
+        results.first(where: \.isEnabled)?.id
+    }
+
+    static func moving(
+        from selectedID: CommandPaletteItem.ID?,
+        direction: CommandPaletteSelectionDirection,
+        in results: [CommandPaletteItem]
+    ) -> CommandPaletteItem.ID? {
+        let enabledResults = results.filter(\.isEnabled)
+        guard !enabledResults.isEmpty else { return nil }
+        guard
+            let selectedID,
+            let selectedIndex = enabledResults.firstIndex(where: { $0.id == selectedID })
+        else {
+            return direction == .previous ? enabledResults.last?.id : enabledResults.first?.id
+        }
+
+        let offset = direction == .previous ? -1 : 1
+        let nextIndex = min(max(selectedIndex + offset, 0), enabledResults.count - 1)
+        return enabledResults[nextIndex].id
+    }
+}
+
 enum CommandPaletteSearch {
     static func results(
         query: String,

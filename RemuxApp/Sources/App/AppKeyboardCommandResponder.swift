@@ -1,53 +1,93 @@
 import SwiftUI
 import UIKit
 
-struct AppKeyboardCommandResponder: UIViewRepresentable {
-    var settings: KeyboardSettings
-    var isEnabled: Bool
-    var onCommand: (AppKeyboardCommand) -> Void
-
-    func makeUIView(context: Context) -> AppKeyboardCommandResponderView {
-        AppKeyboardCommandResponderView()
-    }
-
-    func updateUIView(
-        _ view: AppKeyboardCommandResponderView,
-        context: Context
-    ) {
-        view.update(
-            settings: settings,
-            isEnabled: isEnabled,
-            onCommand: onCommand
-        )
-    }
-}
-
-final class AppKeyboardCommandResponderView: UIView {
-    private var appKeyCommands: [UIKeyCommand] = []
+@MainActor
+final class AppKeyboardCommandCenter: ObservableObject {
+    @Published private(set) var settings: KeyboardSettings = .default
     private var commandHandler: ((AppKeyboardCommand) -> Void)?
-    private var isEnabled = false
-
-    override var canBecomeFirstResponder: Bool {
-        isEnabled
-    }
-
-    override var keyCommands: [UIKeyCommand]? {
-        appKeyCommands
-    }
+    private weak var hostingController: AppKeyboardCommandHostingController?
+    private var isShortcutCaptureActive = false
 
     func update(
         settings: KeyboardSettings,
-        isEnabled: Bool,
         onCommand: @escaping (AppKeyboardCommand) -> Void
     ) {
-        self.isEnabled = isEnabled
         commandHandler = onCommand
-        appKeyCommands = AppKeyboardCommand.allCases.compactMap { command -> UIKeyCommand? in
+        if self.settings != settings {
+            self.settings = settings
+        }
+    }
+
+    func perform(_ command: AppKeyboardCommand) {
+        commandHandler?(command)
+    }
+
+    func register(_ hostingController: AppKeyboardCommandHostingController) {
+        self.hostingController = hostingController
+        hostingController.setSuspended(isShortcutCaptureActive)
+    }
+
+    func setShortcutCaptureActive(_ isActive: Bool) {
+        isShortcutCaptureActive = isActive
+        hostingController?.setSuspended(isActive)
+    }
+}
+
+private struct AppKeyboardCommandCenterKey: EnvironmentKey {
+    static let defaultValue: AppKeyboardCommandCenter? = nil
+}
+
+extension EnvironmentValues {
+    var appKeyboardCommandCenter: AppKeyboardCommandCenter? {
+        get { self[AppKeyboardCommandCenterKey.self] }
+        set { self[AppKeyboardCommandCenterKey.self] = newValue }
+    }
+}
+
+struct AppKeyboardCommandHost<Content: View>: UIViewControllerRepresentable {
+    @ObservedObject var center: AppKeyboardCommandCenter
+    private let content: Content
+
+    init(
+        center: AppKeyboardCommandCenter,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.center = center
+        self.content = content()
+    }
+
+    func makeUIViewController(context: Context) -> AppKeyboardCommandHostingController {
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(content),
+            commandCenter: center
+        )
+        controller.update(settings: center.settings, commandCenter: center)
+        center.register(controller)
+        return controller
+    }
+
+    func updateUIViewController(
+        _ controller: AppKeyboardCommandHostingController,
+        context: Context
+    ) {
+        controller.update(settings: center.settings, commandCenter: center)
+        center.register(controller)
+    }
+}
+
+@MainActor
+enum AppKeyboardKeyCommandBuilder {
+    static func commands(
+        settings: KeyboardSettings,
+        commands: [AppKeyboardCommand],
+        action: Selector
+    ) -> [UIKeyCommand] {
+        commands.compactMap { command -> UIKeyCommand? in
             guard let binding = settings.binding(for: command) else { return nil }
             let keyCommand = UIKeyCommand(
                 title: command.displayTitle,
                 image: nil,
-                action: #selector(performAppKeyboardCommand(_:)),
+                action: action,
                 input: binding.input,
                 modifierFlags: binding.modifiers.uiKeyModifierFlags,
                 propertyList: command.rawValue
@@ -55,44 +95,116 @@ final class AppKeyboardCommandResponderView: UIView {
             keyCommand.wantsPriorityOverSystemBehavior = true
             return keyCommand
         }
+    }
+}
 
-        if isEnabled {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.hasExternalFirstResponder else { return }
-                _ = self.becomeFirstResponder()
+final class AppKeyboardCommandHostingController: UIViewController {
+    private let contentController: UIHostingController<AnyView>
+    private weak var commandCenter: AppKeyboardCommandCenter?
+    private var appKeyCommands: [UIKeyCommand] = []
+    private var keyboardSettings: KeyboardSettings = .default
+    private var isSuspended = false
+
+    init(rootView: AnyView, commandCenter: AppKeyboardCommandCenter) {
+        contentController = UIHostingController(rootView: rootView)
+        self.commandCenter = commandCenter
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        addChild(contentController)
+        contentController.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentController.view)
+        NSLayoutConstraint.activate([
+            contentController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            contentController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        contentController.didMove(toParent: self)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        _ = becomeFirstResponder()
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        return isSuspended ? [] : appKeyCommands
+    }
+
+    override var canBecomeFirstResponder: Bool {
+        true
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var unhandledPresses: Set<UIPress> = []
+        for press in presses {
+            guard
+                let key = press.key,
+                handleKeyPress(
+                    input: key.charactersIgnoringModifiers,
+                    modifierFlags: key.modifierFlags
+                )
+            else {
+                unhandledPresses.insert(press)
+                continue
             }
-        } else if isFirstResponder {
-            resignFirstResponder()
+        }
+        if !unhandledPresses.isEmpty {
+            super.pressesBegan(unhandledPresses, with: event)
         }
     }
 
-    private var hasExternalFirstResponder: Bool {
-        guard let window, let responder = firstResponder(in: window) else {
+    func update(
+        settings: KeyboardSettings,
+        commandCenter: AppKeyboardCommandCenter
+    ) {
+        self.commandCenter = commandCenter
+        keyboardSettings = settings
+        appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
+            settings: settings,
+            commands: AppKeyboardCommand.allCases.filter { !$0.requiresTerminal },
+            action: #selector(performAppKeyboardCommand(_:))
+        )
+    }
+
+    func setSuspended(_ isSuspended: Bool) {
+        self.isSuspended = isSuspended
+    }
+
+    func handleKeyPress(
+        input: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> Bool {
+        guard !isSuspended else { return false }
+        guard
+            let command = AppKeyboardCommandResolver(settings: keyboardSettings)
+                .command(input: input, modifierFlags: modifierFlags),
+            !command.requiresTerminal
+        else {
             return false
         }
-        return responder !== self
-    }
-
-    private func firstResponder(in view: UIView) -> UIView? {
-        if view.isFirstResponder {
-            return view
-        }
-        for subview in view.subviews {
-            if let responder = firstResponder(in: subview) {
-                return responder
-            }
-        }
-        return nil
+        commandCenter?.perform(command)
+        return true
     }
 
     @objc
     private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
         guard
             let rawValue = sender.propertyList as? String,
-            let command = AppKeyboardCommand(rawValue: rawValue)
+            let command = AppKeyboardCommand(rawValue: rawValue),
+            !command.requiresTerminal
         else {
             return
         }
-        commandHandler?(command)
+        commandCenter?.perform(command)
     }
 }

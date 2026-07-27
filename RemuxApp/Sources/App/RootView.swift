@@ -56,6 +56,7 @@ private struct RemuxRootContentView: View {
 
 private struct RemuxWorkspaceShell: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.appKeyboardCommandCenter) private var appKeyboardCommandCenter
     @ObservedObject var model: RemuxRootModel
     let shortcutStore: ShortcutStore
     @StateObject private var physicalKeyboardMonitor = PhysicalKeyboardMonitor()
@@ -66,13 +67,6 @@ private struct RemuxWorkspaceShell: View {
         ZStack {
             activeTerminalLayer
             routeLayer
-            AppKeyboardCommandResponder(
-                settings: model.keyboardSettings,
-                isEnabled: selectedTerminalID == nil,
-                onCommand: performKeyboardCommand
-            )
-            .frame(width: 1, height: 1)
-            .opacity(0.01)
 
             if isCommandPalettePresented {
                 Color.black.opacity(0.28)
@@ -89,6 +83,7 @@ private struct RemuxWorkspaceShell: View {
             }
         }
         .onAppear {
+            updateAppKeyboardCommandCenter()
             model.handleAppLifecyclePhase(
                 RemuxAppLifecycleProjection(scenePhase: scenePhase).appLifecyclePhase
             )
@@ -101,6 +96,9 @@ private struct RemuxWorkspaceShell: View {
         .onChange(of: selectedTerminalID) { _, newValue in
             guard let newValue else { return }
             retainedTerminalID = newValue
+        }
+        .onChange(of: model.keyboardSettings) { _, _ in
+            updateAppKeyboardCommandCenter()
         }
         .onChange(of: model.activeTerminalScreenEntries.map(\.id)) { _, ids in
             guard !ids.isEmpty else {
@@ -345,11 +343,13 @@ private struct RemuxWorkspaceShell: View {
         case .terminal:
             break
         case .showHome:
+            isCommandPalettePresented = false
             dismissKeyboard()
             Task { await model.showLibrary() }
         case .showCommandPalette:
             isCommandPalettePresented = true
         case .showSession(let id):
+            isCommandPalettePresented = false
             model.showActiveSession(id)
         case .adjustFontSize(let delta):
             let effectiveDefault =
@@ -363,6 +363,13 @@ private struct RemuxWorkspaceShell: View {
         case .unavailable:
             break
         }
+    }
+
+    private func updateAppKeyboardCommandCenter() {
+        appKeyboardCommandCenter?.update(
+            settings: model.keyboardSettings,
+            onCommand: performKeyboardCommand
+        )
     }
 
     private func selectCommandPaletteAction(_ action: CommandPaletteAction) {

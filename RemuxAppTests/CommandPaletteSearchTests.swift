@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Remux
 
 final class CommandPaletteSearchTests: XCTestCase {
@@ -67,6 +68,126 @@ final class CommandPaletteSearchTests: XCTestCase {
                 .first?
                 .isEnabled,
             false
+        )
+    }
+
+    func testSelectionStartsAtFirstEnabledResult() {
+        let disabled = item(id: "disabled", isEnabled: false)
+        let first = item(id: "first")
+        let second = item(id: "second")
+
+        XCTAssertEqual(
+            CommandPaletteSelection.initialID(in: [disabled, first, second]),
+            first.id
+        )
+    }
+
+    func testSelectionMovesPastDisabledResultsAndStopsAtEnds() {
+        let first = item(id: "first")
+        let disabled = item(id: "disabled", isEnabled: false)
+        let last = item(id: "last")
+        let results = [first, disabled, last]
+
+        XCTAssertEqual(
+            CommandPaletteSelection.moving(
+                from: first.id,
+                direction: .next,
+                in: results
+            ),
+            last.id
+        )
+        XCTAssertEqual(
+            CommandPaletteSelection.moving(
+                from: last.id,
+                direction: .next,
+                in: results
+            ),
+            last.id
+        )
+        XCTAssertEqual(
+            CommandPaletteSelection.moving(
+                from: last.id,
+                direction: .previous,
+                in: results
+            ),
+            first.id
+        )
+        XCTAssertEqual(
+            CommandPaletteSelection.moving(
+                from: first.id,
+                direction: .previous,
+                in: results
+            ),
+            first.id
+        )
+    }
+
+    @MainActor
+    func testSearchFieldRoutesNavigationAndActivationKeysWithoutModifiers() {
+        let field = CommandPaletteTextField()
+        var actions: [String] = []
+        field.onMoveSelection = {
+            switch $0 {
+            case .previous:
+                actions.append("previous")
+            case .next:
+                actions.append("next")
+            }
+        }
+        field.onActivateSelection = {
+            actions.append("activate")
+        }
+        field.onDismiss = {
+            actions.append("dismiss")
+        }
+
+        XCTAssertTrue(
+            field.handleKeyPress(
+                input: UIKeyCommand.inputUpArrow,
+                modifierFlags: []
+            )
+        )
+        XCTAssertTrue(
+            field.handleKeyPress(
+                input: UIKeyCommand.inputDownArrow,
+                modifierFlags: []
+            )
+        )
+        XCTAssertTrue(field.handleKeyPress(input: "\r", modifierFlags: []))
+        XCTAssertTrue(
+            field.handleKeyPress(
+                input: UIKeyCommand.inputEscape,
+                modifierFlags: []
+            )
+        )
+        XCTAssertFalse(
+            field.handleKeyPress(
+                input: UIKeyCommand.inputDownArrow,
+                modifierFlags: .command
+            )
+        )
+        XCTAssertFalse(field.handleKeyPress(input: "a", modifierFlags: []))
+        XCTAssertEqual(actions, ["previous", "next", "activate", "dismiss"])
+        XCTAssertEqual(
+            field.keyCommands?.compactMap(\.input),
+            ["\r", UIKeyCommand.inputEscape]
+        )
+        XCTAssertTrue(
+            field.keyCommands?.allSatisfy(\.wantsPriorityOverSystemBehavior)
+                == true
+        )
+    }
+
+    private func item(
+        id: String,
+        isEnabled: Bool = true
+    ) -> CommandPaletteItem {
+        CommandPaletteItem(
+            id: id,
+            title: id,
+            subtitle: nil,
+            action: .addConnection,
+            isEnabled: isEnabled
         )
     }
 }

@@ -143,6 +143,34 @@ final class RemuxAppUITests: XCTestCase {
         openCommandPaletteAndAssertImmediateTyping()
     }
 
+    func testCommandPaletteSupportsKeyboardSelectionAndDismissal() {
+        launchSimulatorApp()
+        XCTAssertTrue(
+            app.buttons["library.empty.add-server"].waitForExistence(timeout: 5)
+        )
+        app.typeKey("k", modifierFlags: .command)
+
+        let palette = app.descendants(matching: .any)["command-palette"]
+        XCTAssertTrue(palette.waitForExistence(timeout: 2))
+
+        let addConnection = app.buttons["command-palette.item.add-connection"]
+        XCTAssertTrue(addConnection.waitForExistence(timeout: 2))
+        XCTAssertTrue(addConnection.isSelected)
+
+        app.typeKey(.downArrow, modifierFlags: [])
+        let home = app.buttons["command-palette.item.command:home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 2))
+        XCTAssertTrue(home.isSelected)
+
+        app.typeText("\n")
+        XCTAssertTrue(palette.waitForNonExistence(timeout: 2))
+
+        app.typeKey("k", modifierFlags: .command)
+        XCTAssertTrue(palette.waitForExistence(timeout: 2))
+        app.buttons["xmark.circle.fill"].tap()
+        XCTAssertTrue(palette.waitForNonExistence(timeout: 2))
+    }
+
     func testPhysicalKeyboardKeepsConnectionFormEditableAndStartsWithHiddenButtonBar() {
         app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
         launchSimulatorApp()
@@ -2669,6 +2697,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let password = app.secureTextFields["connection.password"]
         XCTAssertTrue(password.waitForExistence(timeout: 2))
+        password.tap()
         password.typeText("demo-password")
 
         app.swipeUp()

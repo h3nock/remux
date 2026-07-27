@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 import XCTest
 @testable import Remux
@@ -136,5 +137,151 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
         )
         XCTAssertNil(resolver.command(input: "g", modifierFlags: [.control]))
         XCTAssertNil(resolver.command(input: "h", modifierFlags: [.command]))
+    }
+}
+
+final class AppKeyboardCommandResponderTests: XCTestCase {
+    @MainActor
+    func testHostingControllerExposesGlobalCommands() throws {
+        let center = AppKeyboardCommandCenter()
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+
+        controller.update(settings: .default, commandCenter: center)
+
+        let commands = try XCTUnwrap(controller.keyCommands)
+        XCTAssertEqual(
+            Set(commands.compactMap { $0.propertyList as? String }),
+            Set(
+                AppKeyboardCommand.allCases
+                    .filter { !$0.requiresTerminal }
+                    .map(\.rawValue)
+            )
+        )
+        XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
+    }
+
+    @MainActor
+    func testTextFieldResponderChainReachesGlobalCommandTarget() throws {
+        let center = AppKeyboardCommandCenter()
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+        controller.update(settings: .default, commandCenter: center)
+        controller.loadViewIfNeeded()
+
+        let contentController = try XCTUnwrap(controller.children.first)
+        let textField = UITextField()
+        contentController.view.addSubview(textField)
+        let command = try XCTUnwrap(
+            controller.keyCommands?.first(where: {
+                $0.propertyList as? String
+                    == AppKeyboardCommand.commandPalette.rawValue
+            })
+        )
+        let action = try XCTUnwrap(command.action)
+
+        let target = textField.target(
+            forAction: action,
+            withSender: command
+        ) as? AppKeyboardCommandHostingController
+        XCTAssertTrue(target === controller)
+    }
+
+    @MainActor
+    func testShortcutCaptureSuspendsAndRestoresGlobalCommands() {
+        let center = AppKeyboardCommandCenter()
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+        controller.update(settings: .default, commandCenter: center)
+        center.register(controller)
+
+        center.setShortcutCaptureActive(true)
+        XCTAssertTrue((controller.keyCommands ?? []).isEmpty)
+
+        center.setShortcutCaptureActive(false)
+        XCTAssertFalse((controller.keyCommands ?? []).isEmpty)
+    }
+}
+
+final class AppKeyboardCommandCenterTests: XCTestCase {
+    @MainActor
+    func testDispatchesCommandsThroughCurrentHandler() {
+        let center = AppKeyboardCommandCenter()
+        var receivedCommands: [AppKeyboardCommand] = []
+
+        center.update(settings: .default) {
+            receivedCommands.append($0)
+        }
+        center.perform(.commandPalette)
+
+        XCTAssertEqual(receivedCommands, [.commandPalette])
+    }
+}
+
+final class AppKeyboardCommandResponderActionTests: XCTestCase {
+    @MainActor
+    func testDispatchesRegisteredCommandThroughCurrentCenter() throws {
+        let center = AppKeyboardCommandCenter()
+        var receivedCommands: [AppKeyboardCommand] = []
+        center.update(settings: .default) {
+            receivedCommands.append($0)
+        }
+
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+        controller.update(settings: .default, commandCenter: center)
+        let registeredCommand = try XCTUnwrap(
+            controller.keyCommands?.first(where: {
+                $0.propertyList as? String == AppKeyboardCommand.commandPalette.rawValue
+            })
+        )
+        let action = try XCTUnwrap(registeredCommand.action)
+        XCTAssertTrue(controller.responds(to: action))
+        XCTAssertTrue(
+            controller.canPerformAction(action, withSender: registeredCommand)
+        )
+        XCTAssertTrue(
+            UIApplication.shared.sendAction(
+                action,
+                to: controller,
+                from: registeredCommand,
+                for: nil
+            )
+        )
+
+        XCTAssertEqual(receivedCommands, [.commandPalette])
+    }
+
+    @MainActor
+    func testHandlesConfiguredRawGlobalChordAndIgnoresPlainText() {
+        let center = AppKeyboardCommandCenter()
+        var receivedCommands: [AppKeyboardCommand] = []
+        center.update(settings: .default) {
+            receivedCommands.append($0)
+        }
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+        controller.update(settings: .default, commandCenter: center)
+
+        XCTAssertTrue(
+            controller.handleKeyPress(
+                input: "h",
+                modifierFlags: [.command, .shift]
+            )
+        )
+        XCTAssertFalse(
+            controller.handleKeyPress(input: "h", modifierFlags: [])
+        )
+        XCTAssertEqual(receivedCommands, [.home])
     }
 }

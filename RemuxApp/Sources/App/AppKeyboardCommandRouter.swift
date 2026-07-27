@@ -92,9 +92,19 @@ struct AppKeyboardCommandResolver {
         input: String,
         modifierFlags: UIKeyModifierFlags
     ) -> AppKeyboardCommand? {
+        command(
+            input: input,
+            modifiers: KeyboardKeyModifiers(modifierFlags)
+        )
+    }
+
+    func command(
+        input: String,
+        modifiers: KeyboardKeyModifiers
+    ) -> AppKeyboardCommand? {
         let binding = KeyboardKeyBinding(
             input: Self.normalizedInput(input),
-            modifiers: KeyboardKeyModifiers(modifierFlags)
+            modifiers: modifiers
         )
         return commandsByBinding[binding]
     }

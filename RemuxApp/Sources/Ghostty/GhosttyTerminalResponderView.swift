@@ -270,6 +270,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         cancelTrackpadGestureIfActive(reason: "resignFirstResponder")
         let didResignFirstResponder = super.resignFirstResponder()
         reportFirstResponderStateIfChanged()
+        if didResignFirstResponder, isResponderEnabled, wantsFirstResponder {
+            pendingFirstResponderRequest = true
+            scheduleResponderReconciliationIfNeeded(reason: "unexpected-resign")
+        }
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
             event: "responder.resignFirstResponder.result",
@@ -451,19 +455,11 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     private func updateAppKeyCommands(settings: KeyboardSettings) {
         appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: settings)
-        appKeyCommands = AppKeyboardCommand.allCases.compactMap { command -> UIKeyCommand? in
-            guard let binding = settings.binding(for: command) else { return nil }
-            let keyCommand = UIKeyCommand(
-                title: command.displayTitle,
-                image: nil,
-                action: #selector(performAppKeyboardCommand(_:)),
-                input: binding.input,
-                modifierFlags: binding.modifiers.uiKeyModifierFlags,
-                propertyList: command.rawValue
-            )
-            keyCommand.wantsPriorityOverSystemBehavior = true
-            return keyCommand
-        }
+        appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
+            settings: settings,
+            commands: AppKeyboardCommand.allCases,
+            action: #selector(performAppKeyboardCommand(_:))
+        )
     }
 
     @objc
@@ -528,6 +524,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             GhosttyRuntimeTrace.perf("responder.requestFirstResponder skip-no-window token=\(activationToken)")
             return
         }
+        guard !hasExternalFirstResponder else {
+            pendingFirstResponderRequest = false
+            return
+        }
 
         GhosttyRuntimeTrace.perf(
             "responder.requestFirstResponder deferred token=\(activationToken) firstResponder=\(isFirstResponder)"
@@ -545,6 +545,25 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     private var isResponderEnabled: Bool {
         isInputEnabled || areAppKeyboardCommandsEnabled
+    }
+
+    private var hasExternalFirstResponder: Bool {
+        guard let window, let responder = firstResponder(in: window) else {
+            return false
+        }
+        return responder !== self
+    }
+
+    private func firstResponder(in view: UIView) -> UIView? {
+        if view.isFirstResponder {
+            return view
+        }
+        for subview in view.subviews {
+            if let responder = firstResponder(in: subview) {
+                return responder
+            }
+        }
+        return nil
     }
 
     @discardableResult
