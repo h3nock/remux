@@ -728,7 +728,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             showPanes()
         case .attachments:
             toggleAttachmentTray()
-        case .previousSession, .nextSession, .home, .commandPalette:
+        case .previousSession, .nextSession, .home, .commandPalette,
+             .increaseFontSize, .decreaseFontSize:
             onAppKeyboardCommand(command)
         }
     }

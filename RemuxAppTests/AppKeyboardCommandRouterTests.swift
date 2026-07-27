@@ -22,6 +22,23 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
         XCTAssertEqual(AppKeyboardCommandRouter.route(.windows, in: context), .unavailable)
     }
 
+    func testFontSizeCommandsAreGlobalAdjustments() {
+        let context = AppKeyboardCommandRouteContext(
+            selectedSessionID: nil,
+            isSelectedTerminalReady: false,
+            orderedActiveSessionIDs: []
+        )
+
+        XCTAssertEqual(
+            AppKeyboardCommandRouter.route(.increaseFontSize, in: context),
+            .adjustFontSize(by: 1)
+        )
+        XCTAssertEqual(
+            AppKeyboardCommandRouter.route(.decreaseFontSize, in: context),
+            .adjustFontSize(by: -1)
+        )
+    }
+
     func testSelectedTerminalCommandsRouteLocally() {
         let selectedID = UUID()
         let context = AppKeyboardCommandRouteContext(

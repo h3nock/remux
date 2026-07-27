@@ -351,6 +351,17 @@ private struct RemuxWorkspaceShell: View {
             isCommandPalettePresented = true
         case .showSession(let id):
             model.showActiveSession(id)
+        case .adjustFontSize(let delta):
+            let effectiveDefault =
+                GhosttyTerminalAppearancePolicy.currentDeviceFontSize(
+                    settings: model.terminalSettings
+                ) ?? TerminalSettings.defaultExplicitFontSize
+            Task {
+                await model.adjustTerminalFontSize(
+                    by: delta,
+                    effectiveDefault: effectiveDefault
+                )
+            }
         case .unavailable:
             break
         }

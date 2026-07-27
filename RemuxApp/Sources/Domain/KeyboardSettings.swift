@@ -51,6 +51,8 @@ struct KeyboardSettings: Codable, Equatable, Sendable {
             .panes: KeyboardKeyBinding(input: "p", modifiers: [.command]),
             .attachments: KeyboardKeyBinding(input: "a", modifiers: [.command]),
             .commandPalette: KeyboardKeyBinding(input: "k", modifiers: [.command]),
+            .increaseFontSize: KeyboardKeyBinding(input: "+", modifiers: [.command]),
+            .decreaseFontSize: KeyboardKeyBinding(input: "-", modifiers: [.command]),
         ],
         hideButtonBarWhenPhysicalKeyboardConnected: true
     )

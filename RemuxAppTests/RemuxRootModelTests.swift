@@ -32,6 +32,22 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
+    func testAdjustTerminalFontSizePersistsAppGlobalSetting() async throws {
+        let harness = makeHarness(
+            settings: TerminalSettings(fontSize: nil, theme: .remuxDark)
+        )
+        await harness.model.load()
+
+        await harness.model.adjustTerminalFontSize(
+            by: 1,
+            effectiveDefault: 12
+        )
+
+        XCTAssertEqual(harness.model.terminalSettings.fontSize, 13)
+        let saved = try await harness.settingsRepository.loadSettings()
+        XCTAssertEqual(saved.fontSize, 13)
+    }
+
     func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
         let settings = TerminalSettings(fontSize: 15, theme: .remuxDark)
         let harness = makeHarness(settings: settings)

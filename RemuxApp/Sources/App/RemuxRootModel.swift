@@ -798,6 +798,18 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
+    func adjustTerminalFontSize(
+        by delta: Float32,
+        effectiveDefault: Float32
+    ) async {
+        await updateTerminalSettings { settings in
+            settings.adjustFontSize(
+                by: delta,
+                effectiveDefault: effectiveDefault
+            )
+        }
+    }
+
     func updateKeyboardSettings(_ settings: KeyboardSettings) async {
         do {
             keyboardSettings = try settings.validated()

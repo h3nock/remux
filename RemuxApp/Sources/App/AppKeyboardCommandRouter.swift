@@ -12,6 +12,7 @@ enum AppKeyboardCommandRoute: Equatable {
     case showHome
     case showCommandPalette
     case showSession(SavedWorkspace.ID)
+    case adjustFontSize(by: Float32)
     case unavailable
 }
 
@@ -35,6 +36,12 @@ enum AppKeyboardCommandRouter {
 
         case .commandPalette:
             return .showCommandPalette
+
+        case .increaseFontSize:
+            return .adjustFontSize(by: 1)
+
+        case .decreaseFontSize:
+            return .adjustFontSize(by: -1)
 
         case .previousSession:
             return sessionRoute(offset: -1, in: context)

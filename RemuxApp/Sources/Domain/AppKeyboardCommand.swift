@@ -9,6 +9,8 @@ enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable, Sendable {
     case windows
     case panes
     case attachments
+    case increaseFontSize
+    case decreaseFontSize
     case commandPalette
 
     var id: String { rawValue }
@@ -33,6 +35,10 @@ enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable, Sendable {
             "Attachments"
         case .commandPalette:
             "Command Palette"
+        case .increaseFontSize:
+            "Increase Font Size"
+        case .decreaseFontSize:
+            "Decrease Font Size"
         }
     }
 
@@ -40,7 +46,8 @@ enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .previousWindow, .nextWindow, .windows, .panes, .attachments:
             true
-        case .previousSession, .nextSession, .home, .commandPalette:
+        case .previousSession, .nextSession, .home, .commandPalette,
+             .increaseFontSize, .decreaseFontSize:
             false
         }
     }

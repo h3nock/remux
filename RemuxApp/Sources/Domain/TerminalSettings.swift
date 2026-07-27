@@ -142,6 +142,15 @@ struct TerminalSettings: Equatable, Codable, Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    mutating func adjustFontSize(
+        by delta: Float32,
+        effectiveDefault: Float32
+    ) {
+        fontSize = Self.normalizedFontSize(
+            (fontSize ?? effectiveDefault) + delta
+        )
+    }
+
     private static func normalizedFontSize(_ value: Float32?) -> Float32? {
         guard let value, value.isFinite else { return nil }
         return min(max(value, minimumFontSize), maximumFontSize)

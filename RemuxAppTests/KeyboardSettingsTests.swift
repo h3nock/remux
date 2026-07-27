@@ -42,6 +42,14 @@ final class KeyboardSettingsTests: XCTestCase {
             settings.binding(for: .commandPalette),
             KeyboardKeyBinding(input: "k", modifiers: [.command])
         )
+        XCTAssertEqual(
+            settings.binding(for: .increaseFontSize),
+            KeyboardKeyBinding(input: "+", modifiers: [.command])
+        )
+        XCTAssertEqual(
+            settings.binding(for: .decreaseFontSize),
+            KeyboardKeyBinding(input: "-", modifiers: [.command])
+        )
         XCTAssertTrue(settings.hideButtonBarWhenPhysicalKeyboardConnected)
     }
 
