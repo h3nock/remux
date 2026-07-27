@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import GhosttyKit
 
@@ -180,6 +181,11 @@ extension TmuxControlViewport {
 /// this wrapper adds no lock, ownership mode, or alternate backend.
 @MainActor
 final class GhosttyKitControlSurface {
+    private typealias ReadViewportFunction = @convention(c) (
+        ghostty_terminal_surface_t?,
+        UnsafeMutablePointer<ghostty_text_s>?
+    ) -> ghostty_terminal_surface_input_result_e
+
     enum Failure: Equatable {
         case native(ghostty_terminal_surface_result_e)
         case scaleChanged
@@ -204,9 +210,33 @@ final class GhosttyKitControlSurface {
 
     var isInvalidated: Bool { invalidated }
 
+    func visibleText() -> String? {
+        guard !invalidated, let readViewport = Self.readViewport else { return nil }
+        var text = ghostty_text_s()
+        guard readViewport(handle, &text) == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT else {
+            return nil
+        }
+        defer { _ = ghostty_terminal_surface_free_text(handle, &text) }
+        guard let bytes = text.text else { return "" }
+        return String(
+            decoding: UnsafeBufferPointer(
+                start: UnsafeRawPointer(bytes).assumingMemoryBound(to: UInt8.self),
+                count: Int(text.text_len)
+            ),
+            as: UTF8.self
+        )
+    }
+
     func invalidate() {
         invalidated = true
     }
+
+    private static let readViewport: ReadViewportFunction? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "ghostty_terminal_surface_read_viewport") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: ReadViewportFunction.self)
+    }()
 
     @discardableResult
     func sendInput(_ text: String) -> Bool {

@@ -60,6 +60,10 @@ final class TmuxPaneSurface {
         case failed
     }
 
+    func visibleText() -> String? {
+        renderer?.control.visibleText()
+    }
+
     private final class FailureRelay {
         weak var pane: TmuxPaneSurface?
     }

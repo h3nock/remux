@@ -73,6 +73,20 @@ private struct RemuxWorkspaceShell: View {
             )
             .frame(width: 1, height: 1)
             .opacity(0.01)
+
+            if isCommandPalettePresented {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture { isCommandPalettePresented = false }
+                    .zIndex(20)
+                CommandPaletteView(
+                    commands: commandPaletteItems,
+                    snapshots: viewportSnapshots,
+                    onSelect: selectCommandPaletteAction,
+                    onDismiss: { isCommandPalettePresented = false }
+                )
+                .zIndex(21)
+            }
         }
         .onAppear {
             model.handleAppLifecyclePhase(
@@ -121,6 +135,49 @@ private struct RemuxWorkspaceShell: View {
                 .sorted { $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt }
                 .map(\.id)
         )
+    }
+
+    private var commandPaletteItems: [CommandPaletteItem] {
+        var items = [
+            CommandPaletteItem(
+                id: "add-connection",
+                title: "Add Connection",
+                subtitle: nil,
+                action: .addConnection
+            ),
+        ]
+        items += model.library.servers.map { server in
+            CommandPaletteItem(
+                id: "new-session:\(server.id)",
+                title: "New Session on \(server.displayName)",
+                subtitle: server.host,
+                action: .newSession(server.id)
+            )
+        }
+        items += AppKeyboardCommand.allCases.compactMap { command in
+            guard command != .commandPalette,
+                  AppKeyboardCommandRouter.isAvailable(command, in: keyboardCommandContext)
+            else {
+                return nil
+            }
+            return CommandPaletteItem(
+                id: "command:\(command.rawValue)",
+                title: command.displayTitle,
+                subtitle: nil,
+                action: .appCommand(command)
+            )
+        }
+        return items
+    }
+
+    private func viewportSnapshots() -> [TerminalViewportSnapshot] {
+        model.activeTerminalScreenEntries.flatMap { entry in
+            entry.model.terminalScreenAdapter.viewportSnapshots(
+                workspaceID: entry.id,
+                serverName: entry.model.target.server.displayName,
+                sessionName: entry.presentation.sessionName
+            )
+        }
     }
 
     private var activeTerminalLayer: some View {
@@ -291,6 +348,27 @@ private struct RemuxWorkspaceShell: View {
             model.showActiveSession(id)
         case .unavailable:
             break
+        }
+    }
+
+    private func selectCommandPaletteAction(_ action: CommandPaletteAction) {
+        isCommandPalettePresented = false
+        switch action {
+        case .addConnection:
+            model.beginNewServer()
+        case .newSession(let serverID):
+            Task { await model.beginNewWorkspace(for: serverID) }
+        case .appCommand(let command):
+            performKeyboardCommand(command)
+        case .viewport(let snapshot):
+            model.showActiveSession(snapshot.workspaceID)
+            guard let entry = model.activeTerminalScreenEntries.first(where: {
+                $0.id == snapshot.workspaceID
+            }) else {
+                return
+            }
+            _ = entry.model.terminalScreenAdapter.focusTmuxTopLevel(snapshot.windowID)
+            _ = entry.model.terminalScreenAdapter.focusTmuxPane(snapshot.paneID)
         }
     }
 }

@@ -130,6 +130,34 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         return paneID
     }
 
+    func viewportSnapshots(
+        workspaceID: SavedWorkspace.ID,
+        serverName: String,
+        sessionName: String
+    ) -> [TerminalViewportSnapshot] {
+        guard let session, let topology = latestTopology else { return [] }
+        let textByPaneID = Dictionary(
+            uniqueKeysWithValues: session.visiblePaneTexts().map { ($0.paneID, $0.text) }
+        )
+        return topology.panes.compactMap { pane in
+            guard
+                let text = textByPaneID[pane.id],
+                let window = topology.windows.first(where: { $0.id == pane.windowID })
+            else {
+                return nil
+            }
+            return TerminalViewportSnapshot(
+                workspaceID: workspaceID,
+                serverName: serverName,
+                sessionName: sessionName,
+                windowID: identities.surfaceID(for: window.id),
+                windowName: window.name,
+                paneID: identities.surfaceID(for: pane.id),
+                text: text
+            )
+        }
+    }
+
     // MARK: Topology synthesis
 
     private static var emptyTopologySnapshot: GhosttyRuntimeSurfaceTopologySnapshot {

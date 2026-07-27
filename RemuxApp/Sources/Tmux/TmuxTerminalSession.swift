@@ -440,6 +440,12 @@ final class TmuxTerminalSession: ObservableObject {
         surfacesByPaneID[paneID]?.cancelPickerCaptureForPresentation()
     }
 
+    func visiblePaneTexts() -> [(paneID: TmuxPaneID, text: String)] {
+        surfacesByPaneID.compactMap { paneID, surface in
+            surface.visibleText().map { (paneID, $0) }
+        }
+    }
+
     private func presentActivePane(from snapshot: TmuxSessionController.TopologySnapshot) {
         guard !isShutDown, isAppActive, state == .ready,
               let paneID = activePaneID(in: snapshot)
