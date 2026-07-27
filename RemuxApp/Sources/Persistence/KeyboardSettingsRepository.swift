@@ -18,7 +18,7 @@ actor FileBackedKeyboardSettingsRepository: KeyboardSettingsRepository {
     }
 
     func saveSettings(_ settings: KeyboardSettings) async throws {
-        try settings.validated()
-        try await store.save([settings])
+        let validatedSettings = try settings.validated()
+        try await store.save([validatedSettings])
     }
 }
