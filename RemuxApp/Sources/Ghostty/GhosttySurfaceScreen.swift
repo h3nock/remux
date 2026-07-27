@@ -163,6 +163,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let terminalResponderFocusPolicy = GhosttyTerminalResponderFocusPolicy(
                 isSelected: isSelected,
                 keyboardMode: inputCoordinator.keyboardMode,
+                isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
                 isInputAvailable: interactionProjection.isInputAvailable,
                 isTransientInputOwnerPresented: isTransientInputOwnerPresented
             )

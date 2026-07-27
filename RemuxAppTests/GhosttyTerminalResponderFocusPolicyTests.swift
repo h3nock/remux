@@ -65,6 +65,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .system,
+            isPhysicalKeyboardConnected: false,
             isInputAvailable: true,
             isTransientInputOwnerPresented: false
         )
@@ -77,6 +78,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .system,
+            isPhysicalKeyboardConnected: false,
             isInputAvailable: true,
             isTransientInputOwnerPresented: true
         )
@@ -89,12 +91,26 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .hidden,
+            isPhysicalKeyboardConnected: false,
             isInputAvailable: true,
             isTransientInputOwnerPresented: false
         )
 
         XCTAssertTrue(policy.isResponderEnabled)
         XCTAssertFalse(policy.wantsFirstResponder)
+    }
+
+    func testPhysicalKeyboardRequestsResponderWhileSoftwareKeyboardIsHidden() {
+        let policy = GhosttyTerminalResponderFocusPolicy(
+            isSelected: true,
+            keyboardMode: .hidden,
+            isPhysicalKeyboardConnected: true,
+            isInputAvailable: true,
+            isTransientInputOwnerPresented: false
+        )
+
+        XCTAssertTrue(policy.isResponderEnabled)
+        XCTAssertTrue(policy.wantsFirstResponder)
     }
 
     func testCoveredPresentationOwnsInputOnlyUntilKeyboardRestorationBegins() {

@@ -3,6 +3,7 @@ import Foundation
 struct GhosttyTerminalResponderFocusPolicy: Equatable {
     let isSelected: Bool
     let keyboardMode: GhosttyKeyboardChromeMode
+    let isPhysicalKeyboardConnected: Bool
     let isInputAvailable: Bool
     let isTransientInputOwnerPresented: Bool
 
@@ -12,7 +13,7 @@ struct GhosttyTerminalResponderFocusPolicy: Equatable {
 
     var wantsFirstResponder: Bool {
         isSelected
-            && keyboardMode.enablesSystemKeyboard
+            && (keyboardMode.enablesSystemKeyboard || isPhysicalKeyboardConnected)
             && isResponderEnabled
     }
 }
