@@ -5,7 +5,7 @@ import GameController
 final class PhysicalKeyboardMonitor: ObservableObject {
     @Published private(set) var isConnected: Bool
     nonisolated(unsafe) private var notificationTokens: [NSObjectProtocol] = []
-    nonisolated(unsafe) private let notificationCenter: NotificationCenter
+    private let notificationCenter: NotificationCenter
 
     init(
         notificationCenter: NotificationCenter = .default,
