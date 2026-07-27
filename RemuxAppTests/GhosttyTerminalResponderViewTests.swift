@@ -31,6 +31,25 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testResponderPublishesAppCommandsWithoutAcceptingTerminalText() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+
+        view.update(
+            isEnabled: false,
+            areAppKeyboardCommandsEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            keyboardSettings: .default,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true }
+        )
+
+        XCTAssertFalse(view.hasText)
+        XCTAssertEqual(view.keyCommands?.count, AppKeyboardCommand.allCases.count)
+    }
+
+    @MainActor
     func testResponderReportsTextWhenEnabled() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 

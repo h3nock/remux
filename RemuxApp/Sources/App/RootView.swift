@@ -155,16 +155,16 @@ private struct RemuxWorkspaceShell: View {
             )
         }
         items += AppKeyboardCommand.allCases.compactMap { command in
-            guard command != .commandPalette,
-                  AppKeyboardCommandRouter.isAvailable(command, in: keyboardCommandContext)
-            else {
-                return nil
-            }
+            guard command != .commandPalette else { return nil }
             return CommandPaletteItem(
                 id: "command:\(command.rawValue)",
                 title: command.displayTitle,
                 subtitle: nil,
-                action: .appCommand(command)
+                action: .appCommand(command),
+                isEnabled: AppKeyboardCommandRouter.isAvailable(
+                    command,
+                    in: keyboardCommandContext
+                )
             )
         }
         return items

@@ -12,6 +12,21 @@ struct CommandPaletteItem: Identifiable, Equatable {
     let title: String
     let subtitle: String?
     let action: CommandPaletteAction
+    let isEnabled: Bool
+
+    init(
+        id: String,
+        title: String,
+        subtitle: String?,
+        action: CommandPaletteAction,
+        isEnabled: Bool = true
+    ) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.action = action
+        self.isEnabled = isEnabled
+    }
 }
 
 enum CommandPaletteSearch {
@@ -41,6 +56,7 @@ enum CommandPaletteSearch {
                             snapshot.serverName,
                             snapshot.sessionName,
                             snapshot.windowName,
+                            "Pane \(snapshot.paneIndex)",
                         ].joined(separator: " · "),
                         action: .viewport(snapshot)
                     )

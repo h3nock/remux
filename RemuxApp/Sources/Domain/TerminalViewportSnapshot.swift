@@ -7,5 +7,6 @@ struct TerminalViewportSnapshot: Equatable, Sendable {
     let windowID: UUID
     let windowName: String
     let paneID: UUID
+    let paneIndex: Int
     let text: String
 }

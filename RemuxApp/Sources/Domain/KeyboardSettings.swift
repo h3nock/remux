@@ -21,7 +21,9 @@ struct KeyboardKeyBinding: Codable, Equatable, Hashable, Sendable {
 
 struct KeyboardSettings: Codable, Equatable, Sendable {
     enum ValidationError: Error, Equatable {
+        case missingKey
         case missingModifier
+        case unsupportedModifiers
         case duplicateBinding(command: AppKeyboardCommand)
     }
 
@@ -72,44 +74,68 @@ struct KeyboardSettings: Codable, Equatable, Sendable {
         updating command: AppKeyboardCommand,
         to binding: KeyboardKeyBinding?
     ) throws -> KeyboardSettings {
-        if let binding {
-            guard !binding.modifiers.isEmpty else {
-                throw ValidationError.missingModifier
-            }
-            if let existingCommand = AppKeyboardCommand.allCases.first(where: {
-                $0 != command && bindings[$0] == binding
-            }) {
-                throw ValidationError.duplicateBinding(command: existingCommand)
-            }
-        }
-
         var updatedBindings = bindings
-        updatedBindings[command] = binding
-        let updated = KeyboardSettings(
+        if let binding {
+            let canonicalBinding = try Self.canonicalized(binding)
+            for existingCommand in AppKeyboardCommand.allCases where existingCommand != command {
+                guard let existingBinding = bindings[existingCommand] else { continue }
+                if try Self.canonicalized(existingBinding) == canonicalBinding {
+                    throw ValidationError.duplicateBinding(command: existingCommand)
+                }
+            }
+            updatedBindings[command] = canonicalBinding
+        } else {
+            updatedBindings[command] = nil
+        }
+        return try KeyboardSettings(
             bindings: updatedBindings,
             hideButtonBarWhenPhysicalKeyboardConnected:
                 hideButtonBarWhenPhysicalKeyboardConnected
-        )
-        try updated.validate()
-        return updated
+        ).validated()
     }
 
     func validated() throws -> KeyboardSettings {
-        try validate()
-        return self
-    }
-
-    private func validate() throws {
+        var canonicalBindings: [AppKeyboardCommand: KeyboardKeyBinding] = [:]
         var commandsByBinding: [KeyboardKeyBinding: AppKeyboardCommand] = [:]
         for command in AppKeyboardCommand.allCases {
             guard let binding = bindings[command] else { continue }
-            guard !binding.modifiers.isEmpty else {
-                throw ValidationError.missingModifier
-            }
-            if let existingCommand = commandsByBinding[binding] {
+            let canonicalBinding = try Self.canonicalized(binding)
+            if let existingCommand = commandsByBinding[canonicalBinding] {
                 throw ValidationError.duplicateBinding(command: existingCommand)
             }
-            commandsByBinding[binding] = command
+            commandsByBinding[canonicalBinding] = command
+            canonicalBindings[command] = canonicalBinding
         }
+        return KeyboardSettings(
+            bindings: canonicalBindings,
+            hideButtonBarWhenPhysicalKeyboardConnected:
+                hideButtonBarWhenPhysicalKeyboardConnected
+        )
+    }
+
+    private static func canonicalized(
+        _ binding: KeyboardKeyBinding
+    ) throws -> KeyboardKeyBinding {
+        guard !binding.input.isEmpty else {
+            throw ValidationError.missingKey
+        }
+        guard !binding.modifiers.isEmpty else {
+            throw ValidationError.missingModifier
+        }
+        let supportedModifiers: KeyboardKeyModifiers = [
+            .command,
+            .shift,
+            .option,
+            .control,
+        ]
+        guard binding.modifiers.subtracting(supportedModifiers).isEmpty else {
+            throw ValidationError.unsupportedModifiers
+        }
+        return KeyboardKeyBinding(
+            input: binding.input.count == 1
+                ? binding.input.lowercased()
+                : binding.input,
+            modifiers: binding.modifiers
+        )
     }
 }

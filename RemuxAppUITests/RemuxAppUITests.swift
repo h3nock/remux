@@ -111,6 +111,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(autoHide.waitForExistence(timeout: 2))
         XCTAssertEqual(autoHide.value as? String, "1")
         XCTAssertTrue(app.staticTexts["Command Palette"].waitForExistence(timeout: 2))
+        let homeBinding = app.staticTexts["⌘ H"]
+        XCTAssertTrue(homeBinding.waitForExistence(timeout: 2))
+        let homeTitle = app.staticTexts["Home"]
+        XCTAssertTrue(homeTitle.waitForExistence(timeout: 2))
+        XCTAssertEqual(homeBinding.frame.height, homeTitle.frame.height, accuracy: 2)
         XCTAssertTrue(app.buttons["Set"].firstMatch.waitForExistence(timeout: 2))
     }
 

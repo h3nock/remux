@@ -78,4 +78,53 @@ final class KeyboardSettingsTests: XCTestCase {
             )
         }
     }
+
+    func testValidationCanonicalizesPrintableKeysBeforeDuplicateDetection() {
+        XCTAssertThrowsError(
+            try KeyboardSettings.default.validated(
+                updating: .home,
+                to: KeyboardKeyBinding(input: "K", modifiers: [.command])
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? KeyboardSettings.ValidationError,
+                .duplicateBinding(command: .commandPalette)
+            )
+        }
+    }
+
+    func testValidationRejectsMissingKeyAndUnsupportedModifiers() {
+        XCTAssertThrowsError(
+            try KeyboardSettings.default.validated(
+                updating: .home,
+                to: KeyboardKeyBinding(input: "", modifiers: [.command])
+            )
+        ) { error in
+            XCTAssertEqual(error as? KeyboardSettings.ValidationError, .missingKey)
+        }
+        XCTAssertThrowsError(
+            try KeyboardSettings.default.validated(
+                updating: .home,
+                to: KeyboardKeyBinding(
+                    input: "g",
+                    modifiers: KeyboardKeyModifiers(rawValue: 1 << 8)
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? KeyboardSettings.ValidationError, .unsupportedModifiers)
+        }
+    }
+
+    func testBindingDescriptionSpacesEveryKeyToken() {
+        XCTAssertEqual(
+            KeyboardBindingDescription.text(
+                KeyboardKeyBinding(
+                    input: "g",
+                    modifiers: [.control, .option, .shift, .command]
+                )
+            ),
+            "⌃ ⌥ ⇧ ⌘ G"
+        )
+        XCTAssertEqual(KeyboardBindingDescription.text(nil), "Unassigned")
+    }
 }

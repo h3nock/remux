@@ -139,22 +139,26 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         let textByPaneID = Dictionary(
             uniqueKeysWithValues: session.visiblePaneTexts().map { ($0.paneID, $0.text) }
         )
-        return topology.panes.compactMap { pane in
-            guard
-                let text = textByPaneID[pane.id],
-                let window = topology.windows.first(where: { $0.id == pane.windowID })
-            else {
-                return nil
-            }
-            return TerminalViewportSnapshot(
-                workspaceID: workspaceID,
-                serverName: serverName,
-                sessionName: sessionName,
-                windowID: identities.surfaceID(for: window.id),
-                windowName: window.name,
-                paneID: identities.surfaceID(for: pane.id),
-                text: text
-            )
+        return topology.windows.enumerated().flatMap { windowIndex, window in
+            let windowName = window.name.isEmpty
+                ? "Window \(windowIndex + 1)"
+                : window.name
+            return topology.panes
+                .filter { $0.windowID == window.id }
+                .enumerated()
+                .compactMap { paneIndex, pane -> TerminalViewportSnapshot? in
+                    guard let text = textByPaneID[pane.id] else { return nil }
+                    return TerminalViewportSnapshot(
+                        workspaceID: workspaceID,
+                        serverName: serverName,
+                        sessionName: sessionName,
+                        windowID: identities.surfaceID(for: window.id),
+                        windowName: windowName,
+                        paneID: identities.surfaceID(for: pane.id),
+                        paneIndex: paneIndex + 1,
+                        text: text
+                    )
+                }
         }
     }
 

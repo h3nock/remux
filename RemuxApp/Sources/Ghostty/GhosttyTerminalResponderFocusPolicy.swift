@@ -11,9 +11,14 @@ struct GhosttyTerminalResponderFocusPolicy: Equatable {
         isInputAvailable && !isTransientInputOwnerPresented
     }
 
+    var areAppKeyboardCommandsEnabled: Bool {
+        !isTransientInputOwnerPresented
+            && (isInputAvailable || isPhysicalKeyboardConnected)
+    }
+
     var wantsFirstResponder: Bool {
         isSelected
             && (keyboardMode.enablesSystemKeyboard || isPhysicalKeyboardConnected)
-            && isResponderEnabled
+            && (isResponderEnabled || areAppKeyboardCommandsEnabled)
     }
 }

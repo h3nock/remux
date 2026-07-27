@@ -228,6 +228,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
                         GhosttyTerminalResponderRepresentable(
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
+                            areAppKeyboardCommandsEnabled:
+                                terminalResponderFocusPolicy.areAppKeyboardCommandsEnabled,
                             wantsFirstResponder: terminalResponderFocusPolicy.wantsFirstResponder,
                             activationToken: inputCoordinator.terminalActivationToken,
                             trackpadDriver: trackpadDriver,

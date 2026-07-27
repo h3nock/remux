@@ -28,13 +28,12 @@ struct KeyboardSettingsView: View {
             Section("Key Bindings") {
                 ForEach(AppKeyboardCommand.allCases) { command in
                     HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(command.displayTitle)
-                            Text(bindingDescription(settings.binding(for: command)))
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(command.displayTitle)
                         Spacer()
+                        Text(KeyboardBindingDescription.text(settings.binding(for: command)))
+                            .font(.body.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(maxHeight: .infinity, alignment: .center)
                         Button("Set") {
                             validationMessage = nil
                             capturingCommand = command
@@ -125,7 +124,10 @@ struct KeyboardSettingsView: View {
         }
     }
 
-    private func bindingDescription(_ binding: KeyboardKeyBinding?) -> String {
+}
+
+enum KeyboardBindingDescription {
+    static func text(_ binding: KeyboardKeyBinding?) -> String {
         guard let binding else { return "Unassigned" }
         var parts: [String] = []
         if binding.modifiers.contains(.control) { parts.append("⌃") }
@@ -133,10 +135,10 @@ struct KeyboardSettingsView: View {
         if binding.modifiers.contains(.shift) { parts.append("⇧") }
         if binding.modifiers.contains(.command) { parts.append("⌘") }
         parts.append(keyDescription(binding.input))
-        return parts.joined()
+        return parts.joined(separator: " ")
     }
 
-    private func keyDescription(_ input: String) -> String {
+    private static func keyDescription(_ input: String) -> String {
         switch input {
         case UIKeyCommand.inputLeftArrow:
             "←"

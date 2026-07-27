@@ -3,6 +3,7 @@ import UIKit
 
 struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let isEnabled: Bool
+    let areAppKeyboardCommandsEnabled: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
@@ -17,6 +18,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
 
     init(
         isEnabled: Bool,
+        areAppKeyboardCommandsEnabled: Bool,
         wantsFirstResponder: Bool,
         activationToken: Int,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
@@ -30,6 +32,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in }
     ) {
         self.isEnabled = isEnabled
+        self.areAppKeyboardCommandsEnabled = areAppKeyboardCommandsEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.activationToken = activationToken
         self.trackpadDriver = trackpadDriver
@@ -53,6 +56,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: GhosttyTerminalResponderUIView, context: Context) {
         uiView.update(
             isEnabled: isEnabled,
+            areAppKeyboardCommandsEnabled: areAppKeyboardCommandsEnabled,
             wantsFirstResponder: wantsFirstResponder,
             activationToken: activationToken,
             keyboardAppearance: keyboardAppearance,
@@ -81,7 +85,9 @@ enum GhosttyTerminalInputNormalizer {
 
 @MainActor
 final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTraits {
-    override var canBecomeFirstResponder: Bool { isInputEnabled }
+    override var canBecomeFirstResponder: Bool {
+        isInputEnabled || areAppKeyboardCommandsEnabled
+    }
 
     var hasText: Bool { isInputEnabled }
     var keyboardAppearance: UIKeyboardAppearance = .dark
@@ -96,6 +102,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     var enablesReturnKeyAutomatically = false
 
     private var isInputEnabled = false
+    private var areAppKeyboardCommandsEnabled = false
     private var wantsFirstResponder = false
     private var activationToken = -1
     private var pendingFirstResponderRequest = false
@@ -125,11 +132,12 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     override var keyCommands: [UIKeyCommand]? {
-        isInputEnabled ? appKeyCommands : nil
+        areAppKeyboardCommandsEnabled ? appKeyCommands : nil
     }
 
     func update(
         isEnabled: Bool,
+        areAppKeyboardCommandsEnabled: Bool? = nil,
         wantsFirstResponder: Bool,
         activationToken: Int,
         keyboardAppearance: UIKeyboardAppearance = .dark,
@@ -142,6 +150,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in }
     ) {
         let wasInputEnabled = self.isInputEnabled
+        let wasResponderEnabled = wasInputEnabled || self.areAppKeyboardCommandsEnabled
         let previouslyWantedFirstResponder = self.wantsFirstResponder
         let previousActivationToken = self.activationToken
         let previousKeyboardAppearance = self.keyboardAppearance
@@ -162,6 +171,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             ]
         )
         self.isInputEnabled = isEnabled
+        self.areAppKeyboardCommandsEnabled = areAppKeyboardCommandsEnabled ?? isEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.keyboardAppearance = keyboardAppearance
         self.sendTextHandler = sendText
@@ -178,6 +188,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
         if !isEnabled {
             cancelTrackpadGestureIfActive(reason: "disabled")
+        }
+
+        let isResponderEnabled = isInputEnabled || self.areAppKeyboardCommandsEnabled
+        if !isResponderEnabled {
             pendingFirstResponderRequest = false
             self.activationToken = activationToken
             scheduleResponderReconciliationIfNeeded(reason: "disabled")
@@ -192,7 +206,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         }
 
         let activationChanged = activationToken != self.activationToken
-        let enabledChanged = !wasInputEnabled
+        let enabledChanged = !wasResponderEnabled
         let wantsFirstResponderChanged = wantsFirstResponder != previouslyWantedFirstResponder
         let needsFirstResponderRecovery = !isFirstResponder && !pendingFirstResponderRequest
         guard activationChanged || enabledChanged || wantsFirstResponderChanged || needsFirstResponderRecovery else { return }

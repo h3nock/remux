@@ -50,6 +50,7 @@ struct CommandPaletteView: View {
                         }
                     }
                     .accessibilityIdentifier("command-palette.item.\(item.id)")
+                    .disabled(!item.isEnabled)
                 }
                 .listStyle(.plain)
             }

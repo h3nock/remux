@@ -10,6 +10,7 @@ final class CommandPaletteSearchTests: XCTestCase {
             windowID: UUID(),
             windowName: "logs",
             paneID: UUID(),
+            paneIndex: 2,
             text: "ready\nFATAL: disk full\nretrying"
         )
         let commands = [
@@ -35,7 +36,7 @@ final class CommandPaletteSearchTests: XCTestCase {
             snapshots: [snapshot]
         )
         XCTAssertEqual(textResult.map(\.title), ["FATAL: disk full"])
-        XCTAssertEqual(textResult.first?.subtitle, "Build Host · deploy · logs")
+        XCTAssertEqual(textResult.first?.subtitle, "Build Host · deploy · logs · Pane 2")
     }
 
     func testEmptyQueryReturnsOnlyCommands() {
@@ -49,6 +50,23 @@ final class CommandPaletteSearchTests: XCTestCase {
         XCTAssertEqual(
             CommandPaletteSearch.results(query: "", commands: [command], snapshots: []),
             [command]
+        )
+    }
+
+    func testEmptyQueryKeepsUnavailableCommandDisabled() {
+        let command = CommandPaletteItem(
+            id: "panes",
+            title: "Show Panes",
+            subtitle: nil,
+            action: .appCommand(.panes),
+            isEnabled: false
+        )
+
+        XCTAssertEqual(
+            CommandPaletteSearch.results(query: "", commands: [command], snapshots: [])
+                .first?
+                .isEnabled,
+            false
         )
     }
 }
