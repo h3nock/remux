@@ -24,27 +24,35 @@ The default bindings are:
 | Command-Right Arrow | Focus the next tmux window, matching the current swipe gesture |
 | Command-Shift-Left Arrow | Focus the previous active Remux session |
 | Command-Shift-Right Arrow | Focus the next active Remux session |
-| Command-H | Show Home |
+| Command-Shift-H | Show Home |
 | Command-O | Show the existing current-session window popup |
 | Command-P | Show the existing pane popup |
 | Command-A | Show the existing attachment menu |
 | Command-K | Show the Remux command palette |
+| Command-+ | Increase the app-global terminal font size by one point |
+| Command-- | Decrease the app-global terminal font size by one point |
 
 Window and session cycling wrap at both ends. Session cycling uses the same
 ordering as Home's Active Sessions section. Commands that require a selected
 terminal are unavailable outside an active terminal. Command-K is global and
-works from Home as well as a terminal.
+works from Home as well as a terminal. Font-size commands are also global and
+work from every route.
 
-Command-H conflicts with an iPadOS system shortcut. Remux will request priority
-over system behavior for configured app commands, but this behavior requires a
-physical-device acceptance check and will not be claimed from simulator tests
-alone.
+Each font-size command changes the persisted terminal font size by one point
+and immediately refreshes every active terminal. When automatic font sizing is
+active, the first adjustment starts from the current effective device font
+size. Adjustments clamp to the existing 8 through 24 point range.
+
+Command-H remains reserved for iPadOS Home and cannot be assigned as a custom
+binding.
 
 ## Persistence and Settings
 
 Keyboard settings use a separate repository and JSON file rather than changing
 the existing terminal-settings schema. This keeps existing terminal appearance
-data independent and avoids a migration.
+data independent. The font-size commands are part of the original keyboard
+settings defaults; no compatibility migration is required because keyboard
+settings have not been deployed.
 
 The keyboard settings screen is reachable from the existing settings flow and
 contains:
@@ -90,6 +98,9 @@ the current app state:
 
 - Root navigation handles Home, active-session cycling, and the global command
   palette.
+- Root routing applies app-global font-size adjustments through the existing
+  terminal-settings persistence path so all current and future sessions use
+  the same value.
 - The selected terminal screen handles adjacent tmux windows and the existing
   window, pane, and attachment presentations.
 - Unsupported actions are disabled and do not leak through to the remote
@@ -162,6 +173,7 @@ terminal state from the byte stream or issue network `capture-pane` requests.
 ## Failure Handling
 
 - Invalid or duplicate user bindings are not saved.
+- Bindings reserved by iPadOS, including Command-H, are not saved.
 - A configured command that cannot act in the current route is ignored and is
   shown disabled in the palette.
 - A disconnected session remains eligible for session navigation but has no
@@ -175,9 +187,12 @@ terminal state from the byte stream or issue network `capture-pane` requests.
 
 Focused tests cover:
 
-- default bindings, clearing, custom capture, and duplicate rejection;
+- default bindings, clearing, custom capture, duplicate rejection, and
+  system-reserved binding rejection;
 - repository round trips and missing-file defaults;
 - route-aware command availability and dispatch;
+- app-global font-size increments from explicit and automatic sizes, bounds,
+  persistence, and propagation to active sessions;
 - wrapping window and active-session navigation;
 - palette command filtering, search debouncing, cancellation, result metadata,
   selection routing, and immediate keyboard focus;
@@ -196,5 +211,5 @@ Acceptance evidence remains separated:
 2. the full Remux simulator test suite;
 3. rendered simulator checks proving the floating bar overlays rather than
    shrinks the terminal;
-4. a physical iPad keyboard check for connection detection, command delivery,
-   and the Command-H system-priority behavior.
+4. a physical iPad keyboard check for connection detection and command
+   delivery.
