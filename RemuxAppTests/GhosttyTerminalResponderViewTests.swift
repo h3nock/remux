@@ -4,6 +4,33 @@ import XCTest
 
 final class GhosttyTerminalResponderViewTests: XCTestCase {
     @MainActor
+    func testResponderPublishesPriorityAppKeyCommandsAndDispatchesSelection() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedCommands: [AppKeyboardCommand] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            keyboardSettings: .default,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onAppKeyboardCommand: {
+                receivedCommands.append($0)
+            }
+        )
+
+        let commands = view.keyCommands ?? []
+        XCTAssertEqual(commands.count, AppKeyboardCommand.allCases.count)
+        XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
+
+        let home = try! XCTUnwrap(commands.first { $0.input == "h" })
+        view.perform(home.action, with: home)
+        XCTAssertEqual(receivedCommands, [.home])
+    }
+
+    @MainActor
     func testResponderReportsTextWhenEnabled() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 

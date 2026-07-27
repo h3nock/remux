@@ -131,6 +131,7 @@ final class RemuxRootModel: ObservableObject {
     @Published private(set) var state: State = .loading
     @Published private(set) var library: ConnectionLibrarySnapshot = .empty
     @Published private(set) var terminalSettings: TerminalSettings = .default
+    @Published private(set) var keyboardSettings: KeyboardSettings = .default
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
 
     var activeTerminalScreenEntries: [ActiveTerminalScreenEntry] {
@@ -188,7 +189,10 @@ final class RemuxRootModel: ObservableObject {
             try await dependencies.seedDebugConnectionIfRequested()
 #endif
 
-            terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            async let loadedTerminalSettings = dependencies.settingsRepository.loadSettings()
+            async let loadedKeyboardSettings = dependencies.keyboardSettingsRepository.loadSettings()
+            terminalSettings = try await loadedTerminalSettings
+            keyboardSettings = try await loadedKeyboardSettings
             library = try await dependencies.profileRepository.loadSnapshot()
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
@@ -199,7 +203,10 @@ final class RemuxRootModel: ObservableObject {
 
     func showLibrary() async {
         do {
-            terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            async let loadedTerminalSettings = dependencies.settingsRepository.loadSettings()
+            async let loadedKeyboardSettings = dependencies.keyboardSettingsRepository.loadSettings()
+            terminalSettings = try await loadedTerminalSettings
+            keyboardSettings = try await loadedKeyboardSettings
             library = try await dependencies.profileRepository.loadSnapshot()
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
@@ -786,6 +793,15 @@ final class RemuxRootModel: ObservableObject {
             terminalSettings = updated
             try applyTerminalSettingsToActiveSessions(updated)
             try await dependencies.settingsRepository.saveSettings(updated)
+        } catch {
+            transitionToFailed(error)
+        }
+    }
+
+    func updateKeyboardSettings(_ settings: KeyboardSettings) async {
+        do {
+            keyboardSettings = try settings.validated()
+            try await dependencies.keyboardSettingsRepository.saveSettings(keyboardSettings)
         } catch {
             transitionToFailed(error)
         }

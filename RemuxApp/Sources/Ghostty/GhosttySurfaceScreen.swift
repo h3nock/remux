@@ -57,6 +57,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let isSelected: Bool
     private let isTerminalCovered: Bool
     private let shortcutStore: ShortcutStore
+    private let keyboardSettings: KeyboardSettings
+    private let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
@@ -102,6 +104,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isSelected: Bool,
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
+        keyboardSettings: KeyboardSettings = .default,
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in },
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)? = nil,
         onReconnect: @escaping () -> Void,
@@ -115,6 +119,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.isSelected = isSelected
         self.isTerminalCovered = isTerminalCovered
         self.shortcutStore = shortcutStore
+        self.keyboardSettings = keyboardSettings
+        self.onAppKeyboardCommand = onAppKeyboardCommand
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
         self.onPreviewSelection = onPreviewSelection
         self.onReconnect = onReconnect
@@ -215,11 +221,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             activationToken: inputCoordinator.terminalActivationToken,
                             trackpadDriver: trackpadDriver,
                             keyboardAppearance: presentation.terminalTheme.terminalKeyboardAppearance,
+                            keyboardSettings: keyboardSettings,
                             sendText: sendTerminalText,
                             sendPaste: sendTerminalPaste,
                             sendKeyEvent: sendTerminalKeyEvent,
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
-                            onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
+                            onFirstResponderChange: { isTerminalResponderFirstResponder = $0 },
+                            onAppKeyboardCommand: performAppKeyboardCommand
                         )
                         .frame(
                             width: terminalViewportSize.width,
@@ -649,6 +657,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             )
         }
         inputCoordinator.handleSelectionChange(isInputAvailable: isTerminalInputAvailable)
+    }
+
+    private func performAppKeyboardCommand(_ command: AppKeyboardCommand) {
+        switch command {
+        case .previousWindow:
+            handleWindowSwipe(.previous)
+        case .nextWindow:
+            handleWindowSwipe(.next)
+        case .windows:
+            showWindows()
+        case .panes:
+            showPanes()
+        case .attachments:
+            toggleAttachmentTray()
+        case .previousSession, .nextSession, .home, .commandPalette:
+            onAppKeyboardCommand(command)
+        }
     }
 
     private func toggleKeyboardChrome() {

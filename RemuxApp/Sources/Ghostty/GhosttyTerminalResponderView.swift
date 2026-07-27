@@ -7,11 +7,13 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let activationToken: Int
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let keyboardAppearance: UIKeyboardAppearance
+    let keyboardSettings: KeyboardSettings
     let sendText: (String) -> Bool
     let sendPaste: (String) -> Bool
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let onFirstResponderChange: (Bool) -> Void
+    let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
 
     init(
         isEnabled: Bool,
@@ -19,22 +21,26 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         activationToken: Int,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         keyboardAppearance: UIKeyboardAppearance = .dark,
+        keyboardSettings: KeyboardSettings = .default,
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
-        onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
+        onFirstResponderChange: @escaping (Bool) -> Void = { _ in },
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in }
     ) {
         self.isEnabled = isEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.activationToken = activationToken
         self.trackpadDriver = trackpadDriver
         self.keyboardAppearance = keyboardAppearance
+        self.keyboardSettings = keyboardSettings
         self.sendText = sendText
         self.sendPaste = sendPaste
         self.sendKeyEvent = sendKeyEvent
         self.onTrackpadFeedbackChange = onTrackpadFeedbackChange
         self.onFirstResponderChange = onFirstResponderChange
+        self.onAppKeyboardCommand = onAppKeyboardCommand
     }
 
     func makeUIView(context: Context) -> GhosttyTerminalResponderUIView {
@@ -50,11 +56,13 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             wantsFirstResponder: wantsFirstResponder,
             activationToken: activationToken,
             keyboardAppearance: keyboardAppearance,
+            keyboardSettings: keyboardSettings,
             sendText: { sendText(GhosttyTerminalInputNormalizer.normalize($0)) },
             sendPaste: sendPaste,
             sendKeyEvent: sendKeyEvent,
             onTrackpadFeedbackChange: onTrackpadFeedbackChange,
-            onFirstResponderChange: onFirstResponderChange
+            onFirstResponderChange: onFirstResponderChange,
+            onAppKeyboardCommand: onAppKeyboardCommand
         )
     }
 
@@ -95,6 +103,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var appKeyboardCommandHandler: ((AppKeyboardCommand) -> Void)?
+    private var appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: .default)
+    private var appKeyCommands: [UIKeyCommand] = []
     private var trackpadFeedbackHandler: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
     private var firstResponderStateHandler: ((Bool) -> Void)?
     private var lastReportedFirstResponderState: Bool?
@@ -113,16 +124,22 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         fatalError("init(coder:) is unavailable")
     }
 
+    override var keyCommands: [UIKeyCommand]? {
+        isInputEnabled ? appKeyCommands : nil
+    }
+
     func update(
         isEnabled: Bool,
         wantsFirstResponder: Bool,
         activationToken: Int,
         keyboardAppearance: UIKeyboardAppearance = .dark,
+        keyboardSettings: KeyboardSettings = .default,
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void = { _ in },
-        onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
+        onFirstResponderChange: @escaping (Bool) -> Void = { _ in },
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in }
     ) {
         let wasInputEnabled = self.isInputEnabled
         let previouslyWantedFirstResponder = self.wantsFirstResponder
@@ -150,8 +167,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.sendTextHandler = sendText
         self.sendPasteHandler = sendPaste
         self.sendKeyEventHandler = sendKeyEvent
+        self.appKeyboardCommandHandler = onAppKeyboardCommand
         self.trackpadFeedbackHandler = onTrackpadFeedbackChange
         self.firstResponderStateHandler = onFirstResponderChange
+        updateAppKeyCommands(settings: keyboardSettings)
 
         if isFirstResponder, previousKeyboardAppearance != keyboardAppearance {
             reloadInputViews()
@@ -366,6 +385,14 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
                 continue
             }
 
+            if let command = appKeyboardCommandResolver.command(
+                input: key.charactersIgnoringModifiers,
+                modifierFlags: key.modifierFlags
+            ) {
+                appKeyboardCommandHandler?(command)
+                continue
+            }
+
             guard let action = GhosttyTerminalHardwareCommandMapping.resolveHardwarePress(
                 keyCode: key.keyCode,
                 modifiers: key.modifierFlags,
@@ -407,6 +434,34 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         case .text(let text):
             _ = sendTextHandler?(text)
         }
+    }
+
+    private func updateAppKeyCommands(settings: KeyboardSettings) {
+        appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: settings)
+        appKeyCommands = AppKeyboardCommand.allCases.compactMap { command -> UIKeyCommand? in
+            guard let binding = settings.binding(for: command) else { return nil }
+            let keyCommand = UIKeyCommand(
+                title: command.displayTitle,
+                image: nil,
+                action: #selector(performAppKeyboardCommand(_:)),
+                input: binding.input,
+                modifierFlags: binding.modifiers.uiKeyModifierFlags,
+                propertyList: command.rawValue
+            )
+            keyCommand.wantsPriorityOverSystemBehavior = true
+            return keyCommand
+        }
+    }
+
+    @objc
+    private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
+        guard
+            let rawValue = sender.propertyList as? String,
+            let command = AppKeyboardCommand(rawValue: rawValue)
+        else {
+            return
+        }
+        appKeyboardCommandHandler?(command)
     }
 
     private func scheduleResponderReconciliationIfNeeded(reason: String) {

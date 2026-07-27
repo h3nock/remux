@@ -59,11 +59,19 @@ private struct RemuxWorkspaceShell: View {
     @ObservedObject var model: RemuxRootModel
     let shortcutStore: ShortcutStore
     @State private var retainedTerminalID: SavedWorkspace.ID?
+    @State private var isCommandPalettePresented = false
 
     var body: some View {
         ZStack {
             activeTerminalLayer
             routeLayer
+            AppKeyboardCommandResponder(
+                settings: model.keyboardSettings,
+                isEnabled: selectedTerminalID == nil,
+                onCommand: performKeyboardCommand
+            )
+            .frame(width: 1, height: 1)
+            .opacity(0.01)
         }
         .onAppear {
             model.handleAppLifecyclePhase(
@@ -105,6 +113,15 @@ private struct RemuxWorkspaceShell: View {
         selectedTerminalID ?? retainedTerminalID ?? model.activeTerminalScreenEntries.first?.id
     }
 
+    private var keyboardCommandContext: AppKeyboardCommandRouteContext {
+        AppKeyboardCommandRouteContext(
+            selectedSessionID: selectedTerminalID,
+            orderedActiveSessionIDs: model.activeSessions
+                .sorted { $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt }
+                .map(\.id)
+        )
+    }
+
     private var activeTerminalLayer: some View {
         ZStack {
             ForEach(model.activeTerminalScreenEntries) { entry in
@@ -114,6 +131,8 @@ private struct RemuxWorkspaceShell: View {
                     entry: entry,
                     isSelected: isSelected,
                     shortcutStore: shortcutStore,
+                    keyboardSettings: model.keyboardSettings,
+                    onAppKeyboardCommand: performKeyboardCommand,
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
                     },
@@ -251,6 +270,21 @@ private struct RemuxWorkspaceShell: View {
         "session.show.\(workspaceID.uuidString)"
     }
 
+    private func performKeyboardCommand(_ command: AppKeyboardCommand) {
+        switch AppKeyboardCommandRouter.route(command, in: keyboardCommandContext) {
+        case .terminal:
+            break
+        case .showHome:
+            dismissKeyboard()
+            Task { await model.showLibrary() }
+        case .showCommandPalette:
+            isCommandPalettePresented = true
+        case .showSession(let id):
+            model.showActiveSession(id)
+        case .unavailable:
+            break
+        }
+    }
 }
 
 struct RemuxAppLifecycleProjection: Equatable {
@@ -276,6 +310,8 @@ private struct ActiveTerminalSessionView: View {
     let entry: ActiveTerminalScreenEntry
     let isSelected: Bool
     let shortcutStore: ShortcutStore
+    let keyboardSettings: KeyboardSettings
+    let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
@@ -288,6 +324,8 @@ private struct ActiveTerminalSessionView: View {
         entry: ActiveTerminalScreenEntry,
         isSelected: Bool,
         shortcutStore: ShortcutStore,
+        keyboardSettings: KeyboardSettings,
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
@@ -297,6 +335,8 @@ private struct ActiveTerminalSessionView: View {
         self.entry = entry
         self.isSelected = isSelected
         self.shortcutStore = shortcutStore
+        self.keyboardSettings = keyboardSettings
+        self.onAppKeyboardCommand = onAppKeyboardCommand
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
@@ -318,6 +358,8 @@ private struct ActiveTerminalSessionView: View {
                 isSelected: isSelected,
                 isTerminalCovered: previewSession.isPresented,
                 shortcutStore: shortcutStore,
+                keyboardSettings: keyboardSettings,
+                onAppKeyboardCommand: onAppKeyboardCommand,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,
                 onReconnect: onReconnect,
