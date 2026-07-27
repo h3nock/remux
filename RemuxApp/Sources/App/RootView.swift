@@ -195,6 +195,7 @@ private struct RemuxWorkspaceShell: View {
                     shortcutStore: shortcutStore,
                     keyboardSettings: model.keyboardSettings,
                     isPhysicalKeyboardConnected: physicalKeyboardMonitor.isConnected,
+                    isAppInputOwnerPresented: isCommandPalettePresented,
                     onAppKeyboardCommand: performKeyboardCommand,
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
@@ -402,6 +403,7 @@ private struct ActiveTerminalSessionView: View {
     let shortcutStore: ShortcutStore
     let keyboardSettings: KeyboardSettings
     let isPhysicalKeyboardConnected: Bool
+    let isAppInputOwnerPresented: Bool
     let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
@@ -417,6 +419,7 @@ private struct ActiveTerminalSessionView: View {
         shortcutStore: ShortcutStore,
         keyboardSettings: KeyboardSettings,
         isPhysicalKeyboardConnected: Bool,
+        isAppInputOwnerPresented: Bool,
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
@@ -429,6 +432,7 @@ private struct ActiveTerminalSessionView: View {
         self.shortcutStore = shortcutStore
         self.keyboardSettings = keyboardSettings
         self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
+        self.isAppInputOwnerPresented = isAppInputOwnerPresented
         self.onAppKeyboardCommand = onAppKeyboardCommand
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
@@ -453,6 +457,7 @@ private struct ActiveTerminalSessionView: View {
                 shortcutStore: shortcutStore,
                 keyboardSettings: keyboardSettings,
                 isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
+                isAppInputOwnerPresented: isAppInputOwnerPresented,
                 onAppKeyboardCommand: onAppKeyboardCommand,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,
@@ -796,7 +801,7 @@ private struct ConnectionLibraryView: View {
     }
 }
 
-private enum LibraryHomePalette {
+enum LibraryHomePalette {
     static let background = Color(uiColor: .libraryHomeBackground)
     static let rowSurface = Color(uiColor: .libraryHomeRowSurface)
     static let separator = Color(uiColor: .libraryHomeSeparator)
@@ -1351,6 +1356,7 @@ private struct TerminalSettingsView: View {
                 }
                 .accessibilityIdentifier("settings.physical-keyboard")
             }
+            .libraryHomeListRowSurface()
 
             Section("Font") {
                 Toggle("Use default size", isOn: useDefaultFontBinding)

@@ -28,11 +28,15 @@ struct CommandPaletteView: View {
                 .buttonStyle(.plain)
             }
             .padding()
+            .background(LibraryHomePalette.rowSurface)
 
             Divider()
+                .overlay(LibraryHomePalette.separator)
 
             if results.isEmpty {
                 ContentUnavailableView.search(text: query)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(LibraryHomePalette.background)
             } else {
                 List(results) { item in
                     Button {
@@ -51,17 +55,30 @@ struct CommandPaletteView: View {
                     }
                     .accessibilityIdentifier("command-palette.item.\(item.id)")
                     .disabled(!item.isEnabled)
+                    .listRowBackground(LibraryHomePalette.rowSurface)
+                    .listRowSeparatorTint(LibraryHomePalette.separator)
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(LibraryHomePalette.background)
             }
         }
         .frame(maxWidth: 620, maxHeight: 520)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .background(
+            LibraryHomePalette.background,
+            in: RoundedRectangle(cornerRadius: 18)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(LibraryHomePalette.separator, lineWidth: 1)
+        }
         .shadow(radius: 30)
         .padding()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("command-palette")
-        .onAppear {
+        .task {
             results = commands
+            await Task.yield()
             isSearchFocused = true
         }
         .onChange(of: query) { _, value in

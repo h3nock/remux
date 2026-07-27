@@ -25,6 +25,18 @@ struct GhosttyAttachmentInputOwnerProjection: Equatable {
     }
 }
 
+struct GhosttyTerminalInputOwnerProjection: Equatable {
+    let isAppInputOwnerPresented: Bool
+    let isAttachmentInputOwnerPresented: Bool
+    let terminalCoverOwnsInput: Bool
+
+    var isTransientInputOwnerPresented: Bool {
+        isAppInputOwnerPresented
+            || isAttachmentInputOwnerPresented
+            || terminalCoverOwnsInput
+    }
+}
+
 struct GhosttyPendingAttachmentInteractionProjection: Equatable {
     let hasPreviewableAttachments: Bool
     let isTransferInProgress: Bool
@@ -59,6 +71,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let shortcutStore: ShortcutStore
     private let keyboardSettings: KeyboardSettings
     private let isPhysicalKeyboardConnected: Bool
+    private let isAppInputOwnerPresented: Bool
     private let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
@@ -108,6 +121,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         shortcutStore: ShortcutStore,
         keyboardSettings: KeyboardSettings = .default,
         isPhysicalKeyboardConnected: Bool = false,
+        isAppInputOwnerPresented: Bool = false,
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in },
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)? = nil,
@@ -124,6 +138,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.shortcutStore = shortcutStore
         self.keyboardSettings = keyboardSettings
         self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
+        self.isAppInputOwnerPresented = isAppInputOwnerPresented
         self.onAppKeyboardCommand = onAppKeyboardCommand
         _physicalKeyboardChromeState = State(
             initialValue: PhysicalKeyboardChromeState(
@@ -588,7 +603,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private var isTransientInputOwnerPresented: Bool {
-        isAttachmentInputOwnerPresented || terminalCoverPhase.ownsTerminalInput
+        GhosttyTerminalInputOwnerProjection(
+            isAppInputOwnerPresented: isAppInputOwnerPresented,
+            isAttachmentInputOwnerPresented: isAttachmentInputOwnerPresented,
+            terminalCoverOwnsInput: terminalCoverPhase.ownsTerminalInput
+        ).isTransientInputOwnerPresented
     }
 
     private var selectionSheetBinding: Binding<GhosttySurfaceSelectionSheet?> {

@@ -87,6 +87,26 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         XCTAssertFalse(policy.wantsFirstResponder)
     }
 
+    func testAppInputOwnerSuspendsTerminalResponder() {
+        let projection = GhosttyTerminalInputOwnerProjection(
+            isAppInputOwnerPresented: true,
+            isAttachmentInputOwnerPresented: false,
+            terminalCoverOwnsInput: false
+        )
+        let policy = GhosttyTerminalResponderFocusPolicy(
+            isSelected: true,
+            keyboardMode: .hidden,
+            isPhysicalKeyboardConnected: true,
+            isInputAvailable: true,
+            isTransientInputOwnerPresented:
+                projection.isTransientInputOwnerPresented
+        )
+
+        XCTAssertFalse(policy.isResponderEnabled)
+        XCTAssertFalse(policy.areAppKeyboardCommandsEnabled)
+        XCTAssertFalse(policy.wantsFirstResponder)
+    }
+
     func testHiddenKeyboardDoesNotRequestFirstResponder() {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,

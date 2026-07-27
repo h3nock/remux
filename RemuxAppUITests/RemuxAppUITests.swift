@@ -130,6 +130,11 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    func testCommandPaletteReceivesImmediateTyping() {
+        launchSimulatorApp()
+        openCommandPaletteAndAssertImmediateTyping()
+    }
+
     func testPhysicalKeyboardKeepsConnectionFormEditableAndStartsWithHiddenButtonBar() {
         app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
         launchSimulatorApp()
@@ -206,12 +211,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(optionalTerminalHomeButton(timeout: 2))
         XCTAssertEqual(terminal.frame, terminalFrame)
 
-        app.typeKey("k", modifierFlags: .command)
-
-        XCTAssertTrue(
-            app.descendants(matching: .any)["command-palette"]
-                .waitForExistence(timeout: 2)
-        )
+        openCommandPaletteAndAssertImmediateTyping()
     }
 
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
@@ -2632,6 +2632,22 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
         app.buttons["library.empty.add-server"].tap()
         XCTAssertTrue(app.textFields["connection.name"].waitForExistence(timeout: 2))
+    }
+
+    private func openCommandPaletteAndAssertImmediateTyping() {
+        app.typeKey("k", modifierFlags: .command)
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["command-palette"]
+                .waitForExistence(timeout: 2)
+        )
+
+        let searchField = app.descendants(matching: .any)["command-palette.search"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2))
+
+        app.typeText("palette focus")
+
+        XCTAssertEqual(searchField.value as? String, "palette focus")
     }
 
     private func fillConnectionForm() {
