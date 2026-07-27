@@ -2,6 +2,39 @@ import XCTest
 @testable import Remux
 
 final class PhysicalKeyboardChromeStateTests: XCTestCase {
+    func testUITestingIgnoresSimulatorKeyboardUnlessExplicitlyEnabled() {
+        XCTAssertFalse(
+            PhysicalKeyboardConnectionProjection.isConnected(
+                environment: ["REMUX_UI_TESTING": "1"],
+                isSystemKeyboardConnected: true
+            )
+        )
+        XCTAssertTrue(
+            PhysicalKeyboardConnectionProjection.isConnected(
+                environment: [
+                    "REMUX_UI_TESTING": "1",
+                    "REMUX_UI_TEST_PHYSICAL_KEYBOARD": "1",
+                ],
+                isSystemKeyboardConnected: false
+            )
+        )
+    }
+
+    func testProductionUsesSystemKeyboardConnection() {
+        XCTAssertTrue(
+            PhysicalKeyboardConnectionProjection.isConnected(
+                environment: [:],
+                isSystemKeyboardConnected: true
+            )
+        )
+        XCTAssertFalse(
+            PhysicalKeyboardConnectionProjection.isConnected(
+                environment: [:],
+                isSystemKeyboardConnected: false
+            )
+        )
+    }
+
     func testConnectedHideEnabledStartsFloatingAndHidden() {
         let state = PhysicalKeyboardChromeState(
             isPhysicalKeyboardConnected: true,

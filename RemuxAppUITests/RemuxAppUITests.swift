@@ -123,6 +123,10 @@ final class RemuxAppUITests: XCTestCase {
         )
         XCTAssertGreaterThan(setButtons.count, 0)
         setButtons.element(boundBy: setButtons.count - 1).tap()
+        XCTAssertTrue(
+            app.staticTexts["Press the shortcut for Command Palette"]
+                .waitForExistence(timeout: 2)
+        )
         app.typeKey("h", modifierFlags: .command)
         XCTAssertTrue(
             app.staticTexts["keyboard-settings.capture.validation"]
@@ -145,7 +149,6 @@ final class RemuxAppUITests: XCTestCase {
         let terminal = app.otherElements["terminal.screen"]
         XCTAssertTrue(terminal.waitForExistence(timeout: 5))
         XCTAssertNil(optionalTerminalHomeButton(timeout: 0.5))
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
     }
 
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
@@ -2687,9 +2690,19 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func waitForTerminalHomeButton(timeout: TimeInterval = 2) -> XCUIElement {
-        if let button = terminalHomeButton(timeout: timeout, allowMissing: false) {
+        if let button = optionalTerminalHomeButton(timeout: timeout) {
             return button
         }
+
+        let terminal = app.otherElements["terminal.screen"]
+        if terminal.exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+
+        if let button = optionalTerminalHomeButton(timeout: timeout) {
+            return button
+        }
+
         XCTFail("Missing terminal Home button.")
         return app.buttons["terminal.home"].firstMatch
     }

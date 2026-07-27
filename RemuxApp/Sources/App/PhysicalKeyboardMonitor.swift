@@ -1,6 +1,21 @@
 import Foundation
 import GameController
 
+struct PhysicalKeyboardConnectionProjection {
+    static func isConnected(
+        environment: [String: String],
+        isSystemKeyboardConnected: Bool
+    ) -> Bool {
+        if environment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] == "1" {
+            return true
+        }
+        if environment["REMUX_UI_TESTING"] == "1" {
+            return false
+        }
+        return isSystemKeyboardConnected
+    }
+}
+
 @MainActor
 final class PhysicalKeyboardMonitor: ObservableObject {
     @Published private(set) var isConnected: Bool
@@ -12,8 +27,10 @@ final class PhysicalKeyboardMonitor: ObservableObject {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.notificationCenter = notificationCenter
-        isConnected = environment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] == "1"
-            || GCKeyboard.coalesced != nil
+        isConnected = PhysicalKeyboardConnectionProjection.isConnected(
+            environment: environment,
+            isSystemKeyboardConnected: GCKeyboard.coalesced != nil
+        )
 
         for name in [NSNotification.Name.GCKeyboardDidConnect, .GCKeyboardDidDisconnect] {
             notificationTokens.append(
@@ -23,9 +40,10 @@ final class PhysicalKeyboardMonitor: ObservableObject {
                     queue: .main
                 ) { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.isConnected =
-                            environment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] == "1"
-                            || GCKeyboard.coalesced != nil
+                        self?.isConnected = PhysicalKeyboardConnectionProjection.isConnected(
+                            environment: environment,
+                            isSystemKeyboardConnected: GCKeyboard.coalesced != nil
+                        )
                     }
                 }
             )
