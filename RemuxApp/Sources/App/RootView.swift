@@ -58,6 +58,7 @@ private struct RemuxWorkspaceShell: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: RemuxRootModel
     let shortcutStore: ShortcutStore
+    @StateObject private var physicalKeyboardMonitor = PhysicalKeyboardMonitor()
     @State private var retainedTerminalID: SavedWorkspace.ID?
     @State private var isCommandPalettePresented = false
 
@@ -132,6 +133,7 @@ private struct RemuxWorkspaceShell: View {
                     isSelected: isSelected,
                     shortcutStore: shortcutStore,
                     keyboardSettings: model.keyboardSettings,
+                    isPhysicalKeyboardConnected: physicalKeyboardMonitor.isConnected,
                     onAppKeyboardCommand: performKeyboardCommand,
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
@@ -317,6 +319,7 @@ private struct ActiveTerminalSessionView: View {
     let isSelected: Bool
     let shortcutStore: ShortcutStore
     let keyboardSettings: KeyboardSettings
+    let isPhysicalKeyboardConnected: Bool
     let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
@@ -331,6 +334,7 @@ private struct ActiveTerminalSessionView: View {
         isSelected: Bool,
         shortcutStore: ShortcutStore,
         keyboardSettings: KeyboardSettings,
+        isPhysicalKeyboardConnected: Bool,
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
@@ -342,6 +346,7 @@ private struct ActiveTerminalSessionView: View {
         self.isSelected = isSelected
         self.shortcutStore = shortcutStore
         self.keyboardSettings = keyboardSettings
+        self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
         self.onAppKeyboardCommand = onAppKeyboardCommand
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
@@ -365,6 +370,7 @@ private struct ActiveTerminalSessionView: View {
                 isTerminalCovered: previewSession.isPresented,
                 shortcutStore: shortcutStore,
                 keyboardSettings: keyboardSettings,
+                isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
                 onAppKeyboardCommand: onAppKeyboardCommand,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,

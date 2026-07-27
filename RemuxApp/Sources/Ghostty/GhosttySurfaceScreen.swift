@@ -58,6 +58,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let isTerminalCovered: Bool
     private let shortcutStore: ShortcutStore
     private let keyboardSettings: KeyboardSettings
+    private let isPhysicalKeyboardConnected: Bool
     private let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
@@ -87,6 +88,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var attachmentTransferUploadCount = 0
     @State private var attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
+    @State private var physicalKeyboardChromeState: PhysicalKeyboardChromeState
 
     private let onReconnect: () -> Void
     private let onEditConnection: () -> Void
@@ -105,6 +107,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         keyboardSettings: KeyboardSettings = .default,
+        isPhysicalKeyboardConnected: Bool = false,
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in },
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)? = nil,
@@ -120,7 +123,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.isTerminalCovered = isTerminalCovered
         self.shortcutStore = shortcutStore
         self.keyboardSettings = keyboardSettings
+        self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
         self.onAppKeyboardCommand = onAppKeyboardCommand
+        _physicalKeyboardChromeState = State(
+            initialValue: PhysicalKeyboardChromeState(
+                isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
+                hidesChrome: keyboardSettings.hideButtonBarWhenPhysicalKeyboardConnected
+            )
+        )
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
         self.onPreviewSelection = onPreviewSelection
         self.onReconnect = onReconnect
@@ -344,38 +354,31 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
             }
+            .overlay(alignment: .bottom) {
+                if physicalKeyboardChromeState.usesFloatingChrome,
+                   physicalKeyboardChromeState.isChromeVisible {
+                    keyboardChrome(
+                        renderedKeyboardMode: renderedKeyboardMode,
+                        interactionProjection: interactionProjection,
+                        chrome: chrome
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                GhosttyKeyboardChrome(
-                    keyboardMode: renderedKeyboardMode,
-                    isEnabled: interactionProjection.isInputAvailable,
-                    isCompact: chrome.isCompact,
-                    isControlArmed: terminalInputController.isControlArmed,
-                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                    windowCount: interactionProjection.windowCount,
-                    selectedPaneIndex: interactionProjection.selectedPaneIndex,
-                    paneCount: interactionProjection.paneCount,
-                    isAttachmentControlActive: isAttachmentTrayPresented,
-                    isAttachmentControlEnabled: !hasPendingAttachments,
-                    pendingAttachmentCount: pendingAttachments.count,
-                    onShowHome: onEditConnection,
-                    onShowWindows: showWindows,
-                    onShowPanes: showPanes,
-                    onShowAttachments: toggleAttachmentTray,
-                    onToggleKeyboard: toggleKeyboardChrome,
-                    onToggleControl: toggleControlModifier,
-                    onShowShortcuts: showShortcutPalette,
-                    sendKey: sendTerminalKeyEvent
-                )
-                .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                .padding(.top, 4)
-                .padding(.bottom, chrome.bottomPadding)
-                .frame(maxWidth: .infinity, alignment: .bottom)
-                .background {
-                    GeometryReader { chromeProxy in
-                        Color.clear.preference(
-                            key: GhosttyBottomChromeHeightPreferenceKey.self,
-                            value: chromeProxy.size.height
-                        )
+                if !physicalKeyboardChromeState.usesFloatingChrome {
+                    keyboardChrome(
+                        renderedKeyboardMode: renderedKeyboardMode,
+                        interactionProjection: interactionProjection,
+                        chrome: chrome
+                    )
+                    .background {
+                        GeometryReader { chromeProxy in
+                            Color.clear.preference(
+                                key: GhosttyBottomChromeHeightPreferenceKey.self,
+                                value: chromeProxy.size.height
+                            )
+                        }
                     }
                 }
             }
@@ -386,6 +389,27 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     "viewport.bottomChrome old=\(bottomChromeHeight.traceLabel) new=\(normalizedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
                 )
                 bottomChromeHeight = normalizedHeight
+            }
+            .onChange(of: isPhysicalKeyboardConnected) { _, connected in
+                physicalKeyboardChromeState.keyboardConnectionChanged(
+                    isConnected: connected,
+                    hidesChrome: keyboardSettings.hideButtonBarWhenPhysicalKeyboardConnected
+                )
+                if connected {
+                    bottomChromeHeight = 0
+                }
+            }
+            .onChange(of: keyboardSettings.hideButtonBarWhenPhysicalKeyboardConnected) { _, hides in
+                physicalKeyboardChromeState.keyboardConnectionChanged(
+                    isConnected: isPhysicalKeyboardConnected,
+                    hidesChrome: hides
+                )
+            }
+            .task(id: physicalKeyboardChromeState.autoHideToken) {
+                guard let token = physicalKeyboardChromeState.autoHideToken else { return }
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                physicalKeyboardChromeState.autoHideElapsed(token: token)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 guard shouldHandleTerminalKeyboardNotification else { return }
@@ -627,6 +651,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ]
         )
         let isInputAvailable = isTerminalInputAvailable
+        if physicalKeyboardChromeState.usesFloatingChrome {
+            withAnimation(.easeOut(duration: 0.18)) {
+                physicalKeyboardChromeState.terminalTapped()
+            }
+            GhosttyRuntimeTrace.flowEvent(
+                "terminal.input",
+                event: "ui.tap.surface.end",
+                fields: ["activated": "\(isInputAvailable)"]
+            )
+            return
+        }
         showSystemKeyboard()
         GhosttyRuntimeTrace.flowEvent(
             "terminal.input",
@@ -674,6 +709,46 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         case .previousSession, .nextSession, .home, .commandPalette:
             onAppKeyboardCommand(command)
         }
+    }
+
+    private func keyboardChrome(
+        renderedKeyboardMode: GhosttyKeyboardChromeMode,
+        interactionProjection: GhosttyTerminalInteractionProjection,
+        chrome: GhosttyPhoneChromeLayout
+    ) -> some View {
+        GhosttyKeyboardChrome(
+            keyboardMode: renderedKeyboardMode,
+            isEnabled: interactionProjection.isInputAvailable,
+            isCompact: chrome.isCompact,
+            isControlArmed: terminalInputController.isControlArmed,
+            selectedWindowIndex: interactionProjection.selectedWindowIndex,
+            windowCount: interactionProjection.windowCount,
+            selectedPaneIndex: interactionProjection.selectedPaneIndex,
+            paneCount: interactionProjection.paneCount,
+            isAttachmentControlActive: isAttachmentTrayPresented,
+            isAttachmentControlEnabled: !hasPendingAttachments,
+            pendingAttachmentCount: pendingAttachments.count,
+            onShowHome: { performChromeInteraction(onEditConnection) },
+            onShowWindows: { performChromeInteraction(showWindows) },
+            onShowPanes: { performChromeInteraction(showPanes) },
+            onShowAttachments: { performChromeInteraction(toggleAttachmentTray) },
+            onToggleKeyboard: { performChromeInteraction(toggleKeyboardChrome) },
+            onToggleControl: { performChromeInteraction(toggleControlModifier) },
+            onShowShortcuts: { performChromeInteraction(showShortcutPalette) },
+            sendKey: { event in
+                physicalKeyboardChromeState.chromeInteracted()
+                return sendTerminalKeyEvent(event)
+            }
+        )
+        .padding(.horizontal, chrome.surfaceHorizontalPadding)
+        .padding(.top, 4)
+        .padding(.bottom, chrome.bottomPadding)
+        .frame(maxWidth: .infinity, alignment: .bottom)
+    }
+
+    private func performChromeInteraction(_ action: () -> Void) {
+        physicalKeyboardChromeState.chromeInteracted()
+        action()
     }
 
     private func toggleKeyboardChrome() {
