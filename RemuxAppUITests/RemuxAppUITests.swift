@@ -94,6 +94,26 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Catppuccin Mocha"].waitForExistence(timeout: 2))
     }
 
+    func testSettingsExposePhysicalKeyboardDefaults() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let physicalKeyboard = app.descendants(matching: .any)["settings.physical-keyboard"]
+        XCTAssertTrue(physicalKeyboard.waitForExistence(timeout: 2))
+        physicalKeyboard.tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["keyboard-settings.form"]
+                .waitForExistence(timeout: 2)
+        )
+        let autoHide = app.switches["keyboard-settings.hide-button-bar"]
+        XCTAssertTrue(autoHide.waitForExistence(timeout: 2))
+        XCTAssertEqual(autoHide.value as? String, "1")
+        XCTAssertTrue(app.staticTexts["Command Palette"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Set"].firstMatch.waitForExistence(timeout: 2))
+    }
+
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
         launchSimulatorApp()
         openConnectionSetup()
