@@ -204,6 +204,7 @@ private struct RemuxWorkspaceShell: View {
                 snapshot: model.library,
                 activeSessions: model.activeSessions,
                 terminalSettings: model.terminalSettings,
+                keyboardSettings: model.keyboardSettings,
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID in
                     Task { await model.beginNewWorkspace(for: serverID) }
@@ -238,6 +239,11 @@ private struct RemuxWorkspaceShell: View {
                         await model.updateTerminalSettings { current in
                             current = settings
                         }
+                    }
+                },
+                onKeyboardSettingsChange: { settings in
+                    Task {
+                        await model.updateKeyboardSettings(settings)
                     }
                 }
             )
@@ -407,6 +413,7 @@ private struct ConnectionLibraryView: View {
     let snapshot: ConnectionLibrarySnapshot
     let activeSessions: [ActiveTerminalSession]
     let terminalSettings: TerminalSettings
+    let keyboardSettings: KeyboardSettings
     let onAddServer: () -> Void
     let onAddWorkspace: (SavedServer.ID) -> Void
     let onEditServer: (SavedServer.ID) -> Void
@@ -417,6 +424,7 @@ private struct ConnectionLibraryView: View {
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let onSettingsChange: (TerminalSettings) -> Void
+    let onKeyboardSettingsChange: (KeyboardSettings) -> Void
 
     @State private var showsAllConnectedSessions = false
     @State private var showsAllRecentSessions = false
@@ -449,7 +457,9 @@ private struct ConnectionLibraryView: View {
                 NavigationLink {
                     TerminalSettingsView(
                         initialSettings: terminalSettings,
-                        onChange: onSettingsChange
+                        keyboardSettings: keyboardSettings,
+                        onChange: onSettingsChange,
+                        onKeyboardSettingsChange: onKeyboardSettingsChange
                     )
                 } label: {
                     Image(systemName: "gearshape")
@@ -1226,18 +1236,34 @@ private func serverSummary(
 
 private struct TerminalSettingsView: View {
     @State private var settings: TerminalSettings
+    let keyboardSettings: KeyboardSettings
     let onChange: (TerminalSettings) -> Void
+    let onKeyboardSettingsChange: (KeyboardSettings) -> Void
 
     init(
         initialSettings: TerminalSettings,
-        onChange: @escaping (TerminalSettings) -> Void
+        keyboardSettings: KeyboardSettings,
+        onChange: @escaping (TerminalSettings) -> Void,
+        onKeyboardSettingsChange: @escaping (KeyboardSettings) -> Void
     ) {
         _settings = State(initialValue: initialSettings)
+        self.keyboardSettings = keyboardSettings
         self.onChange = onChange
+        self.onKeyboardSettingsChange = onKeyboardSettingsChange
     }
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink("Physical Keyboard") {
+                    KeyboardSettingsView(
+                        initialSettings: keyboardSettings,
+                        onChange: onKeyboardSettingsChange
+                    )
+                }
+                .accessibilityIdentifier("settings.physical-keyboard")
+            }
+
             Section("Font") {
                 Toggle("Use default size", isOn: useDefaultFontBinding)
                     .tint(LibraryHomePalette.controlAccent)
