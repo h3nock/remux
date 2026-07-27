@@ -590,6 +590,36 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testCommandOnlyResponderBecomesFirstResponderWithoutAcceptingText() async {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        window.rootViewController = UIViewController()
+        window.rootViewController?.view.addSubview(view)
+        window.makeKeyAndVisible()
+        defer {
+            _ = view.resignFirstResponder()
+            view.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        view.update(
+            isEnabled: false,
+            areAppKeyboardCommandsEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 7,
+            keyboardSettings: .default,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true }
+        )
+
+        let becameFirstResponder = await waitUntil { view.isFirstResponder }
+        XCTAssertTrue(becameFirstResponder)
+        XCTAssertFalse(view.hasText)
+    }
+
+    @MainActor
     func testResponderDefersBecomeWhenWanted() async {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))

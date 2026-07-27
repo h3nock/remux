@@ -86,7 +86,7 @@ enum GhosttyTerminalInputNormalizer {
 @MainActor
 final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTraits {
     override var canBecomeFirstResponder: Bool {
-        isInputEnabled || areAppKeyboardCommandsEnabled
+        isResponderEnabled
     }
 
     var hasText: Bool { isInputEnabled }
@@ -190,7 +190,6 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             cancelTrackpadGestureIfActive(reason: "disabled")
         }
 
-        let isResponderEnabled = isInputEnabled || self.areAppKeyboardCommandsEnabled
         if !isResponderEnabled {
             pendingFirstResponderRequest = false
             self.activationToken = activationToken
@@ -499,16 +498,16 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     private var needsResponderReconciliation: Bool {
         if isFirstResponder {
-            return !isInputEnabled || !wantsFirstResponder || pendingFirstResponderRequest
+            return !isResponderEnabled || !wantsFirstResponder || pendingFirstResponderRequest
         }
 
-        return isInputEnabled && wantsFirstResponder && pendingFirstResponderRequest
+        return isResponderEnabled && wantsFirstResponder && pendingFirstResponderRequest
     }
 
     private func reconcileResponderState() {
         responderReconciliationScheduled = false
 
-        guard isInputEnabled else {
+        guard isResponderEnabled else {
             pendingFirstResponderRequest = false
             guard isFirstResponder else { return }
             GhosttyRuntimeTrace.diagnostics("responder.reconcile resign disabled token=\(activationToken)")
@@ -542,6 +541,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             ]
         )
         _ = attemptFirstResponderRequest(route: "reconcile")
+    }
+
+    private var isResponderEnabled: Bool {
+        isInputEnabled || areAppKeyboardCommandsEnabled
     }
 
     @discardableResult
