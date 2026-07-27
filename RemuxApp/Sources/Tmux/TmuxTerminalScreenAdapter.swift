@@ -143,8 +143,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             let windowName = window.name.isEmpty
                 ? "Window \(windowIndex + 1)"
                 : window.name
-            return topology.panes
-                .filter { $0.windowID == window.id }
+            return Self.orderedPanes(in: window.id, topology: topology)
                 .enumerated()
                 .compactMap { paneIndex, pane -> TerminalViewportSnapshot? in
                     guard let text = textByPaneID[pane.id] else { return nil }
@@ -160,6 +159,17 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                     )
                 }
         }
+    }
+
+    static func orderedPanes(
+        in windowID: TmuxWindowID,
+        topology: TmuxSessionController.TopologySnapshot
+    ) -> [TmuxSessionController.PaneInfo] {
+        topology.panes
+            .filter { $0.windowID == windowID }
+            .sorted { lhs, rhs in
+                (lhs.y, lhs.x, lhs.id) < (rhs.y, rhs.x, rhs.id)
+            }
     }
 
     // MARK: Topology synthesis
@@ -179,11 +189,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         }
 
         let topLevels = topology.windows.map { window in
-            let paneIDs = topology.panes
-                .filter { $0.windowID == window.id }
-                .sorted { lhs, rhs in
-                    (lhs.y, lhs.x, lhs.id) < (rhs.y, rhs.x, rhs.id)
-                }
+            let paneIDs = Self.orderedPanes(in: window.id, topology: topology)
                 .map { identities.surfaceID(for: $0.id) }
             return GhosttyTopLevelSurface(
                 id: identities.surfaceID(for: window.id),

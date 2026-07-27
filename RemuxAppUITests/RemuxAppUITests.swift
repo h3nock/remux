@@ -117,6 +117,17 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(homeTitle.waitForExistence(timeout: 2))
         XCTAssertEqual(homeBinding.frame.height, homeTitle.frame.height, accuracy: 2)
         XCTAssertTrue(app.buttons["Set"].firstMatch.waitForExistence(timeout: 2))
+
+        let setButtons = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Set")
+        )
+        XCTAssertGreaterThan(setButtons.count, 0)
+        setButtons.element(boundBy: setButtons.count - 1).tap()
+        app.typeKey("h", modifierFlags: .command)
+        XCTAssertTrue(
+            app.staticTexts["keyboard-settings.capture.validation"]
+                .waitForExistence(timeout: 2)
+        )
     }
 
     func testPhysicalKeyboardKeepsConnectionFormEditableAndStartsWithHiddenButtonBar() {

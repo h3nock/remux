@@ -3,6 +3,7 @@ import UIKit
 
 struct AppKeyboardCommandRouteContext: Equatable {
     var selectedSessionID: SavedWorkspace.ID?
+    var isSelectedTerminalReady: Bool
     var orderedActiveSessionIDs: [SavedWorkspace.ID]
 }
 
@@ -21,7 +22,12 @@ enum AppKeyboardCommandRouter {
     ) -> AppKeyboardCommandRoute {
         switch command {
         case .previousWindow, .nextWindow, .windows, .panes, .attachments:
-            guard context.selectedSessionID != nil else { return .unavailable }
+            guard
+                context.selectedSessionID != nil,
+                context.isSelectedTerminalReady
+            else {
+                return .unavailable
+            }
             return .terminal(command)
 
         case .home:

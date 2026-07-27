@@ -6,6 +6,7 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
     func testHomeRouteKeepsGlobalCommandsAndDisablesTerminalCommands() {
         let context = AppKeyboardCommandRouteContext(
             selectedSessionID: nil,
+            isSelectedTerminalReady: false,
             orderedActiveSessionIDs: []
         )
 
@@ -25,6 +26,7 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
         let selectedID = UUID()
         let context = AppKeyboardCommandRouteContext(
             selectedSessionID: selectedID,
+            isSelectedTerminalReady: true,
             orderedActiveSessionIDs: [selectedID]
         )
 
@@ -49,6 +51,7 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
                 .previousSession,
                 in: AppKeyboardCommandRouteContext(
                     selectedSessionID: first,
+                    isSelectedTerminalReady: true,
                     orderedActiveSessionIDs: ordered
                 )
             ),
@@ -59,6 +62,7 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
                 .nextSession,
                 in: AppKeyboardCommandRouteContext(
                     selectedSessionID: third,
+                    isSelectedTerminalReady: true,
                     orderedActiveSessionIDs: ordered
                 )
             ),
@@ -71,6 +75,7 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
         let last = UUID()
         let context = AppKeyboardCommandRouteContext(
             selectedSessionID: nil,
+            isSelectedTerminalReady: false,
             orderedActiveSessionIDs: [first, last]
         )
 
@@ -82,6 +87,20 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
             AppKeyboardCommandRouter.route(.previousSession, in: context),
             .showSession(last)
         )
+    }
+
+    func testDisconnectedSelectedTerminalDisablesTerminalCommands() {
+        let selectedID = UUID()
+        let context = AppKeyboardCommandRouteContext(
+            selectedSessionID: selectedID,
+            isSelectedTerminalReady: false,
+            orderedActiveSessionIDs: [selectedID]
+        )
+
+        XCTAssertEqual(AppKeyboardCommandRouter.route(.windows, in: context), .unavailable)
+        XCTAssertEqual(AppKeyboardCommandRouter.route(.panes, in: context), .unavailable)
+        XCTAssertEqual(AppKeyboardCommandRouter.route(.attachments, in: context), .unavailable)
+        XCTAssertEqual(AppKeyboardCommandRouter.route(.home, in: context), .showHome)
     }
 
     func testConfiguredChordResolverMatchesOnlyAssignedModifiedChord() throws {

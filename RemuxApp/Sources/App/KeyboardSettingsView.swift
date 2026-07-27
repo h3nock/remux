@@ -71,6 +71,13 @@ struct KeyboardSettingsView: View {
                     Text("Use at least one modifier key.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let validationMessage {
+                        Text(validationMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("keyboard-settings.capture.validation")
+                    }
                     KeyboardShortcutCaptureView { result in
                         switch result {
                         case .success(let binding):

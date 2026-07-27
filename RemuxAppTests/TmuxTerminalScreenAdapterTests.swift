@@ -61,16 +61,36 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
     private func pane(
         id: TmuxPaneID,
-        windowID: TmuxWindowID
+        windowID: TmuxWindowID,
+        x: UInt32 = 0,
+        y: UInt32 = 0
     ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
             windowID: windowID,
-            x: 0,
-            y: 0,
+            x: x,
+            y: y,
             width: 80,
             height: 24,
             phase: .live
+        )
+    }
+
+    func testPaneOrderingMatchesVisibleTopologyOrder() {
+        let topology = TmuxSessionController.TopologySnapshot(
+            sessionName: "pane-order",
+            windows: [window(id: 1, active: true, paneID: 30)],
+            panes: [
+                pane(id: 30, windowID: 1, x: 40, y: 12),
+                pane(id: 20, windowID: 1, x: 40, y: 0),
+                pane(id: 10, windowID: 1, x: 0, y: 0),
+            ],
+            activeWindowID: 1
+        )
+
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.orderedPanes(in: 1, topology: topology).map(\.id),
+            [10, 20, 30]
         )
     }
 

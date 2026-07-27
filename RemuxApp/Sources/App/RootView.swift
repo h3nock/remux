@@ -131,6 +131,10 @@ private struct RemuxWorkspaceShell: View {
     private var keyboardCommandContext: AppKeyboardCommandRouteContext {
         AppKeyboardCommandRouteContext(
             selectedSessionID: selectedTerminalID,
+            isSelectedTerminalReady: model.activeTerminalScreenEntries.first(where: {
+                $0.id == selectedTerminalID
+            })?.model.terminalScreenAdapter.terminalInteractionProjection
+                .isInputAvailable == true,
             orderedActiveSessionIDs: model.activeSessions
                 .sorted { $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt }
                 .map(\.id)
