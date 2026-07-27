@@ -2107,6 +2107,7 @@ final class RemuxRootModelTests: XCTestCase {
         let dependencies = RemuxAppDependencies(
             profileRepository: profileRepository,
             settingsRepository: settingsRepository,
+            keyboardSettingsRepository: FileBackedKeyboardSettingsRepository(rootURL: temporaryRoot()),
             shortcutRepository: shortcutRepository,
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,

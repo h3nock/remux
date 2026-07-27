@@ -13,6 +13,7 @@ private enum RemuxConnectionTimeouts {
 struct RemuxAppDependencies: Sendable {
     let profileRepository: any ConnectionProfileRepository
     let settingsRepository: any TerminalSettingsRepository
+    let keyboardSettingsRepository: any KeyboardSettingsRepository
     let shortcutRepository: any ShortcutRepository
     let credentialStore: any SSHCredentialStore
     let trustedHostStore: TrustedHostStore
@@ -40,6 +41,7 @@ struct RemuxAppDependencies: Sendable {
     init(
         profileRepository: any ConnectionProfileRepository,
         settingsRepository: any TerminalSettingsRepository,
+        keyboardSettingsRepository: any KeyboardSettingsRepository,
         shortcutRepository: any ShortcutRepository,
         credentialStore: any SSHCredentialStore,
         trustedHostStore: TrustedHostStore,
@@ -66,6 +68,7 @@ struct RemuxAppDependencies: Sendable {
     ) {
         self.profileRepository = profileRepository
         self.settingsRepository = settingsRepository
+        self.keyboardSettingsRepository = keyboardSettingsRepository
         self.shortcutRepository = shortcutRepository
         self.credentialStore = credentialStore
         self.trustedHostStore = trustedHostStore
@@ -111,6 +114,7 @@ struct RemuxAppDependencies: Sendable {
         return RemuxAppDependencies(
             profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
             settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
+            keyboardSettingsRepository: FileBackedKeyboardSettingsRepository(rootURL: root),
             shortcutRepository: FileBackedShortcutRepository(rootURL: root),
             credentialStore: credentialStore,
             trustedHostStore: TrustedHostStore(rootURL: root)
@@ -301,6 +305,7 @@ struct RemuxAppDependencies: Sendable {
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
             settingsRepository: InMemoryTerminalSettingsRepository(),
+            keyboardSettingsRepository: InMemoryKeyboardSettingsRepository(),
             shortcutRepository: InMemoryShortcutRepository(),
             credentialStore: InMemorySSHCredentialStore(),
             trustedHostStore: TrustedHostStore(rootURL: root),
@@ -423,6 +428,18 @@ private actor InMemoryTerminalSettingsRepository: TerminalSettingsRepository {
 
     func saveSettings(_ settings: TerminalSettings) async throws {
         self.settings = settings
+    }
+}
+
+private actor InMemoryKeyboardSettingsRepository: KeyboardSettingsRepository {
+    private var settings = KeyboardSettings.default
+
+    func loadSettings() async throws -> KeyboardSettings {
+        settings
+    }
+
+    func saveSettings(_ settings: KeyboardSettings) async throws {
+        self.settings = try settings.validated()
     }
 }
 
