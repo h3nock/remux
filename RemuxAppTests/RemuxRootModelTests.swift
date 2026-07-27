@@ -48,6 +48,38 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(saved.fontSize, 13)
     }
 
+    func testQueuedFontSizeAdjustmentsPreserveDeliveryOrderAtClampBoundary() async throws {
+        let initial = TerminalSettings(
+            fontSize: TerminalSettings.maximumFontSize,
+            theme: .remuxDark
+        )
+        let repository = BlockingFirstSaveTerminalSettingsRepository(settings: initial)
+        let harness = makeHarness(
+            settings: initial,
+            settingsRepository: repository
+        )
+        await harness.model.load()
+
+        harness.model.enqueueTerminalFontSizeAdjustment(
+            by: 1,
+            effectiveDefault: 10
+        )
+        await repository.waitForFirstSaveToStart()
+        harness.model.enqueueTerminalFontSizeAdjustment(
+            by: -1,
+            effectiveDefault: 10
+        )
+        let secondSaveStartedBeforeRelease =
+            await repository.waitForSecondSaveToStart()
+        await repository.releaseFirstSave()
+        await repository.waitForBothSavesToComplete()
+
+        XCTAssertFalse(secondSaveStartedBeforeRelease)
+        XCTAssertEqual(harness.model.terminalSettings.fontSize, 23)
+        let saved = try await repository.loadSettings()
+        XCTAssertEqual(saved.fontSize, 23)
+    }
+
     func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
         let settings = TerminalSettings(fontSize: 15, theme: .remuxDark)
         let harness = makeHarness(settings: settings)
@@ -2604,6 +2636,67 @@ private actor TestTerminalSettingsRepository: TerminalSettingsRepository {
 
     func saveSettings(_ settings: TerminalSettings) async throws {
         self.settings = settings
+    }
+}
+
+private actor BlockingFirstSaveTerminalSettingsRepository: TerminalSettingsRepository {
+    private var settings: TerminalSettings
+    private var saveCount = 0
+    private var completedSaveCount = 0
+    private var firstSaveStartedContinuation: CheckedContinuation<Void, Never>?
+    private var firstSaveReleaseContinuation: CheckedContinuation<Void, Never>?
+    private var bothSavesCompletedContinuation: CheckedContinuation<Void, Never>?
+
+    init(settings: TerminalSettings) {
+        self.settings = settings
+    }
+
+    func loadSettings() async throws -> TerminalSettings {
+        settings
+    }
+
+    func saveSettings(_ settings: TerminalSettings) async throws {
+        saveCount += 1
+        if saveCount == 1 {
+            firstSaveStartedContinuation?.resume()
+            firstSaveStartedContinuation = nil
+            await withCheckedContinuation { continuation in
+                firstSaveReleaseContinuation = continuation
+            }
+        }
+
+        self.settings = settings
+        completedSaveCount += 1
+        if completedSaveCount == 2 {
+            bothSavesCompletedContinuation?.resume()
+            bothSavesCompletedContinuation = nil
+        }
+    }
+
+    func waitForFirstSaveToStart() async {
+        guard saveCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            firstSaveStartedContinuation = continuation
+        }
+    }
+
+    func releaseFirstSave() {
+        firstSaveReleaseContinuation?.resume()
+        firstSaveReleaseContinuation = nil
+    }
+
+    func waitForSecondSaveToStart() async -> Bool {
+        for _ in 0..<100 where saveCount < 2 {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return saveCount == 2
+    }
+
+    func waitForBothSavesToComplete() async {
+        guard completedSaveCount < 2 else { return }
+        await withCheckedContinuation { continuation in
+            bothSavesCompletedContinuation = continuation
+        }
     }
 }
 

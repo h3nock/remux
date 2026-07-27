@@ -356,12 +356,10 @@ private struct RemuxWorkspaceShell: View {
                 GhosttyTerminalAppearancePolicy.currentDeviceFontSize(
                     settings: model.terminalSettings
                 ) ?? TerminalSettings.defaultExplicitFontSize
-            Task {
-                await model.adjustTerminalFontSize(
-                    by: delta,
-                    effectiveDefault: effectiveDefault
-                )
-            }
+            model.enqueueTerminalFontSizeAdjustment(
+                by: delta,
+                effectiveDefault: effectiveDefault
+            )
         case .unavailable:
             break
         }

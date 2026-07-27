@@ -154,6 +154,7 @@ final class RemuxRootModel: ObservableObject {
     private let terminalScreenModelFactory: TerminalScreenModelFactory
     private var terminalScreenModels: [TerminalRuntimeAttemptKey: TmuxScreenModel] = [:]
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
+    private var terminalFontSizeAdjustmentTask: Task<Void, Never>?
 
     init(
         dependencies: RemuxAppDependencies,
@@ -804,6 +805,21 @@ final class RemuxRootModel: ObservableObject {
     ) async {
         await updateTerminalSettings { settings in
             settings.adjustFontSize(
+                by: delta,
+                effectiveDefault: effectiveDefault
+            )
+        }
+    }
+
+    func enqueueTerminalFontSizeAdjustment(
+        by delta: Float32,
+        effectiveDefault: Float32
+    ) {
+        let precedingTask = terminalFontSizeAdjustmentTask
+        terminalFontSizeAdjustmentTask = Task { [weak self] in
+            await precedingTask?.value
+            guard let self else { return }
+            await adjustTerminalFontSize(
                 by: delta,
                 effectiveDefault: effectiveDefault
             )
