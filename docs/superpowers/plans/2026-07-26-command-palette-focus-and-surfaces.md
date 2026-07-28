@@ -69,15 +69,19 @@ private var isTransientInputOwnerPresented: Bool {
 }
 ```
 
-- [ ] **Step 4: Request search focus after responder reconciliation**
+- [ ] **Step 4: Establish results before requesting search focus**
 
-Replace the immediate `onAppear` focus request with a view task that seeds results, yields once on the main actor, and then focuses the search field:
+Initialize `CommandPaletteState` synchronously from `commands` so selection
+exists before the field can receive a key. Let `CommandPaletteTextField`
+request first responder only after it enters a window; do not populate results
+from an asynchronous view task:
 
 ```swift
-.task {
-    results = commands
-    await Task.yield()
-    isSearchFocused = true
+init(commands: [CommandPaletteItem], ...) {
+    self.commands = commands
+    _paletteState = State(
+        initialValue: CommandPaletteState(results: commands)
+    )
 }
 ```
 
@@ -105,15 +109,16 @@ git commit -m "Keep command palette keyboard focus"
 - Modify: `RemuxApp/Sources/App/CommandPaletteView.swift:14`
 
 **Interfaces:**
-- Consumes: the existing dynamic colors currently exposed privately by `LibraryHomePalette`
-- Produces: shared `RemuxAppPalette.background`, `RemuxAppPalette.rowSurface`, and `RemuxAppPalette.separator` colors
+- Consumes: the existing dynamic colors exposed by `LibraryHomePalette`
+- Produces: shared `LibraryHomePalette.background`, `LibraryHomePalette.rowSurface`, and `LibraryHomePalette.separator` colors
 
-- [ ] **Step 1: Expose the existing palette under an app-wide name**
+- [ ] **Step 1: Expose the existing semantic palette**
 
-Rename `LibraryHomePalette` to internal `RemuxAppPalette` and update its existing references without changing color values:
+Keep the established `LibraryHomePalette` symbol, make it internal rather than
+private, and preserve its color values:
 
 ```swift
-enum RemuxAppPalette {
+enum LibraryHomePalette {
     static let background = Color(uiColor: .libraryHomeBackground)
     static let rowSurface = Color(uiColor: .libraryHomeRowSurface)
     static let separator = Color(uiColor: .libraryHomeSeparator)
@@ -140,21 +145,21 @@ Section {
 
 - [ ] **Step 3: Replace the translucent palette material**
 
-Hide the `List` scroll background, apply `RemuxAppPalette.rowSurface` to result rows, use `RemuxAppPalette.background` for the panel, and draw a subtle separator-colored border:
+Hide the `List` scroll background, apply `LibraryHomePalette.rowSurface` to result rows, use `LibraryHomePalette.background` for the panel, and draw a subtle separator-colored border:
 
 ```swift
-.listRowBackground(RemuxAppPalette.rowSurface)
-.listRowSeparatorTint(RemuxAppPalette.separator)
+.listRowBackground(LibraryHomePalette.rowSurface)
+.listRowSeparatorTint(LibraryHomePalette.separator)
 ```
 
 ```swift
 .background(
-    RemuxAppPalette.background,
+    LibraryHomePalette.background,
     in: RoundedRectangle(cornerRadius: 18)
 )
 .overlay {
     RoundedRectangle(cornerRadius: 18)
-        .stroke(RemuxAppPalette.separator, lineWidth: 1)
+        .stroke(LibraryHomePalette.separator, lineWidth: 1)
 }
 ```
 

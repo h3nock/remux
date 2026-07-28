@@ -37,7 +37,11 @@
 
 - [ ] **Step 1: Write failing default, clearing, custom-chord, and duplicate tests**
 
-Create tests asserting all nine default chords, that `nil` clears a command, that a custom modified chord persists in the value, that a chord with no modifier is rejected, and that assigning a chord already used by another command throws `KeyboardSettings.ValidationError.duplicateBinding`.
+Create tests asserting the exact default chord for all twelve registry commands,
+that `nil` clears a command, that a custom modified chord persists in the
+value, that a chord with no modifier is rejected, and that assigning a chord
+already used by another command throws
+`KeyboardSettings.ValidationError.duplicateBinding`.
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
@@ -325,10 +329,16 @@ Run `TerminalViewportSnapshotTests`; expect missing snapshot API.
 Build with:
 
 ```bash
-GHOSTTY_SOURCE_DIR=/Users/jesse/Documents/remux-ghostty scripts/build_release_ghosttykit.sh
+GHOSTTY_SOURCE_DIR=../ghostty-remux-upstream-rebuild scripts/build_release_ghosttykit.sh
 ```
 
-Verify the generated header contains `ghostty_terminal_surface_read_viewport`, preserve a recoverable copy of the prior pinned framework, and replace the explicit framework at `/Users/jesse/Documents/ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework`.
+Verify the generated header contains
+`ghostty_terminal_surface_read_viewport`. After remux-ghostty PR #7 merges,
+publish an immutable GhosttyKit release containing that API, update
+`scripts/fetch_ghosttykit.sh` to its tag and verified checksum, and verify a
+clean checkout can fetch and build against the new pin. Until that release
+exists, the source build is local verification and the clean-checkout build
+remains externally dependent on PR #7 and its release asset.
 
 - [ ] **Step 4: Implement the Swift wrapper and retained-surface projection**
 
@@ -433,18 +443,25 @@ xcodebuild test -project Remux.xcodeproj -scheme Remux -destination 'platform=iO
 
 Read the complete result and do not infer full-suite success from focused tests.
 
-- [ ] **Step 4: Run release builds and Ghostty verification**
+- [ ] **Step 4: Run the full non-live UI suite**
+
+Temporarily move any live-SSH configuration out of its discovery path, run the
+entire `RemuxUITests` target, restore the configuration without reading or
+copying its contents into logs, and record passed and live-only skipped counts
+separately. Focused UI tests are not a substitute for this gate.
+
+- [ ] **Step 5: Run release builds and Ghostty verification**
 
 Run the Remux Release configuration build plus fresh `zig build test -Demit-macos-app=false` in the fork.
 
-- [ ] **Step 5: Capture rendered simulator evidence**
+- [ ] **Step 6: Capture rendered simulator evidence**
 
 Using the deterministic physical-keyboard override, capture Home palette, terminal palette, chrome hidden, and chrome revealed states. Verify from frames or accessibility geometry that the terminal viewport is identical between hidden and revealed floating-bar states.
 
-- [ ] **Step 6: Review every design requirement**
+- [ ] **Step 7: Review every design requirement**
 
 Check each design section against code, focused tests, full-suite output, and rendered evidence. State explicitly that physical keyboard connection delivery and Command-H priority still require an attached iPad unless performed on one.
 
-- [ ] **Step 7: Commit any final test/evidence-only corrections**
+- [ ] **Step 8: Commit any final test/evidence-only corrections**
 
 Run the relevant failing test before each correction, re-run full verification, then make a final detailed commit without staging the pre-existing `.worktrees`.

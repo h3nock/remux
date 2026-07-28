@@ -19,7 +19,7 @@ surface, separator, corner, and shadow styles.
 
 The card sizes to its content rather than filling most of the display:
 
-- its width is capped at 620 points with 16-point minimum screen margins;
+- its width is capped at 620 points with 20-point minimum screen margins;
 - the input occupies one intrinsic single-line control row and never expands
   vertically;
 - results size to their rows up to six visible items;
@@ -55,8 +55,8 @@ The action is terminal-scoped:
 - it creates one new tmux window in that existing remote session;
 - it does not create a Remux connection, a new Remux saved session, or a tmux
   pane;
-- outside a ready terminal it is unavailable and does not claim the key
-  sequence.
+- outside a ready terminal it is unavailable, falls through the responder
+  chain unclaimed by Remux, and sends no terminal bytes.
 
 Command-N calls the same tmux window-creation behavior used by the existing
 `New Window` button. The keyboard path and button path share the topology

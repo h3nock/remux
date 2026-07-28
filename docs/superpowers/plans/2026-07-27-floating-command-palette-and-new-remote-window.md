@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep the existing opaque Remux palette surfaces, separator, corner treatment, shadow, and dimming scrim.
-- Cap the floating card at 620 points wide with at least 16-point screen margins.
+- Cap the floating card at 620 points wide with at least 20-point screen margins.
 - Keep the search field to one intrinsic single-line row; it must never flex vertically.
 - Show at most six result rows before scrolling.
 - Establish the first enabled selection synchronously before the field can receive a key.
@@ -694,7 +694,8 @@ Remove `.frame(maxWidth: 620, maxHeight: 520)` and use:
 ```
 
 Keep the existing rounded opaque background, separator stroke, shadow, and
-outer `.padding(16)` so the card remains centered with required margins.
+outer `.padding(CommandPaletteLayout.screenMargin)` with a 20-point value so
+the card remains centered with the approved margins.
 
 - [ ] **Step 7: Publish priority arrow commands alongside Return and Escape**
 
