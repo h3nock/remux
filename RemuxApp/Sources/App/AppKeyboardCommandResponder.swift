@@ -48,6 +48,8 @@ final class AppKeyboardCommandCenter: ObservableObject {
     private var isShortcutCaptureActive = false
     private weak var commandPaletteOwner: AnyObject?
     private var commandPaletteHandlers: CommandPaletteHandlers?
+    private weak var selectedTerminalOwner: AnyObject?
+    private var selectedTerminalCommandHandler: ((AppKeyboardCommand) -> Void)?
 
     func update(
         settings: KeyboardSettings,
@@ -61,6 +63,33 @@ final class AppKeyboardCommandCenter: ObservableObject {
 
     func perform(_ command: AppKeyboardCommand) {
         commandHandler?(command)
+    }
+
+    func registerSelectedTerminal(
+        owner: AnyObject,
+        onCommand: @escaping (AppKeyboardCommand) -> Void
+    ) {
+        selectedTerminalOwner = owner
+        selectedTerminalCommandHandler = onCommand
+    }
+
+    func unregisterSelectedTerminal(owner: AnyObject) {
+        guard selectedTerminalOwner === owner else { return }
+        selectedTerminalOwner = nil
+        selectedTerminalCommandHandler = nil
+    }
+
+    @discardableResult
+    func performSelectedTerminal(_ command: AppKeyboardCommand) -> Bool {
+        guard
+            command.requiresTerminal,
+            selectedTerminalOwner != nil,
+            let selectedTerminalCommandHandler
+        else {
+            return false
+        }
+        selectedTerminalCommandHandler(command)
+        return true
     }
 
     func register(_ hostingController: AppKeyboardCommandHostingController) {
@@ -260,8 +289,8 @@ final class AppKeyboardCommandHostingController: UIViewController {
         keyboardSettings = settings
         appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
             settings: settings,
-            commands: AppKeyboardCommand.allCases.filter { !$0.requiresTerminal },
-            action: #selector(performGlobalAppKeyboardCommand(_:))
+            commands: AppKeyboardCommand.allCases,
+            action: #selector(performAppKeyboardCommand(_:))
         )
     }
 
@@ -276,8 +305,7 @@ final class AppKeyboardCommandHostingController: UIViewController {
         guard !isSuspended else { return false }
         guard
             let command = AppKeyboardCommandResolver(settings: keyboardSettings)
-                .command(input: input, modifierFlags: modifierFlags),
-            !command.requiresTerminal
+                .command(input: input, modifierFlags: modifierFlags)
         else {
             return false
         }
@@ -301,11 +329,10 @@ final class AppKeyboardCommandHostingController: UIViewController {
     }
 
     @objc
-    private func performGlobalAppKeyboardCommand(_ sender: UIKeyCommand) {
+    private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
         guard
             let rawValue = sender.propertyList as? String,
-            let command = AppKeyboardCommand(rawValue: rawValue),
-            !command.requiresTerminal
+            let command = AppKeyboardCommand(rawValue: rawValue)
         else {
             return
         }
@@ -321,5 +348,86 @@ final class AppKeyboardCommandHostingController: UIViewController {
             return
         }
         commandCenter?.perform(action)
+    }
+}
+
+struct SelectedTerminalKeyboardCommandRegistrationView: UIViewRepresentable {
+    let commandCenter: AppKeyboardCommandCenter?
+    let isSelected: Bool
+    let onCommand: (AppKeyboardCommand) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        context.coordinator.update(
+            commandCenter: commandCenter,
+            isSelected: isSelected,
+            onCommand: onCommand
+        )
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.update(
+            commandCenter: commandCenter,
+            isSelected: isSelected,
+            onCommand: onCommand
+        )
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.disconnect()
+    }
+
+    @MainActor
+    final class Coordinator {
+        private weak var commandCenter: AppKeyboardCommandCenter?
+        private var onCommand: (AppKeyboardCommand) -> Void = { _ in }
+        private var isRegistered = false
+
+        func update(
+            commandCenter: AppKeyboardCommandCenter?,
+            isSelected: Bool,
+            onCommand: @escaping (AppKeyboardCommand) -> Void
+        ) {
+            self.onCommand = onCommand
+
+            if self.commandCenter !== commandCenter {
+                if isRegistered {
+                    self.commandCenter?.unregisterSelectedTerminal(owner: self)
+                }
+                self.commandCenter = commandCenter
+                isRegistered = false
+            }
+
+            guard isSelected, let commandCenter else {
+                if isRegistered {
+                    self.commandCenter?.unregisterSelectedTerminal(owner: self)
+                    isRegistered = false
+                }
+                return
+            }
+
+            guard !isRegistered else { return }
+            commandCenter.registerSelectedTerminal(
+                owner: self,
+                onCommand: { [weak self] command in
+                    self?.onCommand(command)
+                }
+            )
+            isRegistered = true
+        }
+
+        func disconnect() {
+            if isRegistered {
+                commandCenter?.unregisterSelectedTerminal(owner: self)
+            }
+            commandCenter = nil
+            isRegistered = false
+        }
     }
 }

@@ -264,14 +264,19 @@ final class RemuxAppUITests: XCTestCase {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
         }
 
+        app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
         try launchLiveSSHAppIfConfigured(
             traceRuntime: true,
             sessionNameOverride: sessionName
         )
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
-        waitForLiveTerminalInputReady(timeout: 10)
 
+        app.typeKey("k", modifierFlags: .command)
+        let palette = app.otherElements["command-palette"]
+        XCTAssertTrue(palette.waitForExistence(timeout: 2))
+        app.buttons["xmark.circle.fill"].tap()
+        XCTAssertTrue(palette.waitForNonExistence(timeout: 2))
         app.typeKey("n", modifierFlags: .command)
         waitForLiveTerminalReady(timeout: 30)
 

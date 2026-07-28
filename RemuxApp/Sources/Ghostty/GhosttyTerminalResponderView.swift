@@ -112,7 +112,6 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
     private var appKeyboardCommandHandler: ((AppKeyboardCommand) -> Void)?
     private var appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: .default)
-    private var appKeyCommands: [UIKeyCommand] = []
     private var trackpadFeedbackHandler: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
     private var firstResponderStateHandler: ((Bool) -> Void)?
     private var lastReportedFirstResponderState: Bool?
@@ -132,7 +131,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     override var keyCommands: [UIKeyCommand]? {
-        areAppKeyboardCommandsEnabled ? appKeyCommands : nil
+        nil
     }
 
     func update(
@@ -180,7 +179,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.appKeyboardCommandHandler = onAppKeyboardCommand
         self.trackpadFeedbackHandler = onTrackpadFeedbackChange
         self.firstResponderStateHandler = onFirstResponderChange
-        updateAppKeyCommands(settings: keyboardSettings)
+        updateAppKeyboardCommandResolver(settings: keyboardSettings)
 
         if isFirstResponder, previousKeyboardAppearance != keyboardAppearance {
             reloadInputViews()
@@ -453,24 +452,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         }
     }
 
-    private func updateAppKeyCommands(settings: KeyboardSettings) {
+    private func updateAppKeyboardCommandResolver(settings: KeyboardSettings) {
         appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: settings)
-        appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
-            settings: settings,
-            commands: AppKeyboardCommand.allCases.filter(\.requiresTerminal),
-            action: #selector(performTerminalAppKeyboardCommand(_:))
-        )
-    }
-
-    @objc
-    private func performTerminalAppKeyboardCommand(_ sender: UIKeyCommand) {
-        guard
-            let rawValue = sender.propertyList as? String,
-            let command = AppKeyboardCommand(rawValue: rawValue)
-        else {
-            return
-        }
-        appKeyboardCommandHandler?(command)
     }
 
     private func scheduleResponderReconciliationIfNeeded(reason: String) {

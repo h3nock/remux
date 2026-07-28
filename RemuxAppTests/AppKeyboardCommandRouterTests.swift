@@ -158,7 +158,7 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
 
 final class AppKeyboardCommandResponderTests: XCTestCase {
     @MainActor
-    func testHostingControllerExposesGlobalCommands() throws {
+    func testHostingControllerExposesAllAppCommands() throws {
         let center = AppKeyboardCommandCenter()
         let controller = AppKeyboardCommandHostingController(
             rootView: AnyView(EmptyView()),
@@ -170,11 +170,7 @@ final class AppKeyboardCommandResponderTests: XCTestCase {
         let commands = try XCTUnwrap(controller.keyCommands)
         XCTAssertEqual(
             Set(commands.compactMap { $0.propertyList as? String }),
-            Set(
-                AppKeyboardCommand.allCases
-                    .filter { !$0.requiresTerminal }
-                    .map(\.rawValue)
-            )
+            Set(AppKeyboardCommand.allCases.map(\.rawValue))
         )
         XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
     }
@@ -277,7 +273,7 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
     }
 
     @MainActor
-    func testHandlesConfiguredRawGlobalChordAndIgnoresPlainText() {
+    func testHandlesConfiguredRawAppChordsAndIgnoresPlainText() {
         let center = AppKeyboardCommandCenter()
         var receivedCommands: [AppKeyboardCommand] = []
         center.update(settings: .default) {
@@ -298,7 +294,13 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
         XCTAssertFalse(
             controller.handleKeyPress(input: "h", modifierFlags: [])
         )
-        XCTAssertEqual(receivedCommands, [.home])
+        XCTAssertTrue(
+            controller.handleKeyPress(
+                input: "n",
+                modifierFlags: [.command]
+            )
+        )
+        XCTAssertEqual(receivedCommands, [.home, .newWindow])
     }
 
     @MainActor

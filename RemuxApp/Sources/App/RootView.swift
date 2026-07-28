@@ -340,8 +340,9 @@ private struct RemuxWorkspaceShell: View {
 
     private func performKeyboardCommand(_ command: AppKeyboardCommand) {
         switch AppKeyboardCommandRouter.route(command, in: keyboardCommandContext) {
-        case .terminal:
-            break
+        case .terminal(let command):
+            guard !isCommandPalettePresented else { return }
+            appKeyboardCommandCenter?.performSelectedTerminal(command)
         case .showHome:
             isCommandPalettePresented = false
             dismissKeyboard()

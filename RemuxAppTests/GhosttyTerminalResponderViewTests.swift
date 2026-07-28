@@ -66,9 +66,8 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testResponderPublishesPriorityTerminalKeyCommandsAndDispatchesSelection() {
+    func testResponderLeavesAppKeyCommandsToHostingController() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        var receivedCommands: [AppKeyboardCommand] = []
 
         view.update(
             isEnabled: true,
@@ -77,35 +76,14 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             keyboardSettings: .default,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onAppKeyboardCommand: {
-                receivedCommands.append($0)
-            }
+            sendKeyEvent: { _ in true }
         )
 
-        let commands = view.keyCommands ?? []
-        XCTAssertEqual(
-            Set(commands.compactMap { $0.propertyList as? String }),
-            Set(
-                AppKeyboardCommand.allCases
-                    .filter(\.requiresTerminal)
-                    .map(\.rawValue)
-            )
-        )
-        XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
-
-        let newWindow = try! XCTUnwrap(
-            commands.first {
-                $0.input == "n"
-                    && $0.modifierFlags == [.command]
-            }
-        )
-        view.perform(newWindow.action, with: newWindow)
-        XCTAssertEqual(receivedCommands, [.newWindow])
+        XCTAssertTrue((view.keyCommands ?? []).isEmpty)
     }
 
     @MainActor
-    func testResponderPublishesTerminalCommandsWithoutAcceptingTerminalText() {
+    func testResponderDoesNotPublishAppCommandsWithoutAcceptingTerminalText() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 
         view.update(
@@ -120,14 +98,11 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         )
 
         XCTAssertFalse(view.hasText)
-        XCTAssertEqual(
-            view.keyCommands?.count,
-            AppKeyboardCommand.allCases.filter(\.requiresTerminal).count
-        )
+        XCTAssertTrue((view.keyCommands ?? []).isEmpty)
     }
 
     @MainActor
-    func testResponderLeavesGlobalCommandsToHostingController() throws {
+    func testFocusedTerminalResponderChainReachesAppCommandTarget() throws {
         let center = AppKeyboardCommandCenter()
         let controller = AppKeyboardCommandHostingController(
             rootView: AnyView(EmptyView()),
@@ -151,18 +126,10 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendKeyEvent: { _ in true }
         )
 
-        let terminalCommands = try XCTUnwrap(view.keyCommands)
-        XCTAssertFalse(
-            terminalCommands.contains {
-                $0.propertyList as? String
-                    == AppKeyboardCommand.commandPalette.rawValue
-            }
-        )
-
         let command = try XCTUnwrap(
             controller.keyCommands?.first {
                 $0.propertyList as? String
-                    == AppKeyboardCommand.commandPalette.rawValue
+                    == AppKeyboardCommand.newWindow.rawValue
             }
         )
         let action = try XCTUnwrap(command.action)

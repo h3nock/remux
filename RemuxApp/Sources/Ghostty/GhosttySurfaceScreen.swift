@@ -98,6 +98,7 @@ enum GhosttySurfaceKeyboardCommandRouter {
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.appKeyboardCommandCenter) private var appKeyboardCommandCenter
     @ObservedObject private var model: Model
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
@@ -598,6 +599,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
             }
 #endif
+        }
+        .background {
+            SelectedTerminalKeyboardCommandRegistrationView(
+                commandCenter: appKeyboardCommandCenter,
+                isSelected: isSelected,
+                onCommand: performAppKeyboardCommand
+            )
+            .frame(width: 0, height: 0)
         }
         .preferredColorScheme(presentation.terminalTheme.terminalChromeColorScheme)
         .environment(\.ghosttyTerminalChromeStyle, presentation.terminalTheme.terminalChromeStyle)
