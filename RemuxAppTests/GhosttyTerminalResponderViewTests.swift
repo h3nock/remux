@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 import XCTest
 @testable import Remux
@@ -65,7 +66,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testResponderPublishesPriorityAppKeyCommandsAndDispatchesSelection() {
+    func testResponderPublishesPriorityTerminalKeyCommandsAndDispatchesSelection() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedCommands: [AppKeyboardCommand] = []
 
@@ -83,16 +84,15 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         )
 
         let commands = view.keyCommands ?? []
-        XCTAssertEqual(commands.count, AppKeyboardCommand.allCases.count)
-        XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
-
-        let home = try! XCTUnwrap(
-            commands.first {
-                $0.input == "h"
-                    && $0.modifierFlags == [.command, .shift]
-            }
+        XCTAssertEqual(
+            Set(commands.compactMap { $0.propertyList as? String }),
+            Set(
+                AppKeyboardCommand.allCases
+                    .filter(\.requiresTerminal)
+                    .map(\.rawValue)
+            )
         )
-        view.perform(home.action, with: home)
+        XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
 
         let newWindow = try! XCTUnwrap(
             commands.first {
@@ -101,11 +101,11 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             }
         )
         view.perform(newWindow.action, with: newWindow)
-        XCTAssertEqual(receivedCommands, [.home, .newWindow])
+        XCTAssertEqual(receivedCommands, [.newWindow])
     }
 
     @MainActor
-    func testResponderPublishesAppCommandsWithoutAcceptingTerminalText() {
+    func testResponderPublishesTerminalCommandsWithoutAcceptingTerminalText() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 
         view.update(
@@ -120,7 +120,57 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         )
 
         XCTAssertFalse(view.hasText)
-        XCTAssertEqual(view.keyCommands?.count, AppKeyboardCommand.allCases.count)
+        XCTAssertEqual(
+            view.keyCommands?.count,
+            AppKeyboardCommand.allCases.filter(\.requiresTerminal).count
+        )
+    }
+
+    @MainActor
+    func testResponderLeavesGlobalCommandsToHostingController() throws {
+        let center = AppKeyboardCommandCenter()
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+        controller.update(settings: .default, commandCenter: center)
+        controller.loadViewIfNeeded()
+
+        let contentController = try XCTUnwrap(controller.children.first)
+        let view = GhosttyTerminalResponderUIView(
+            trackpadDriver: GhosttyKeyboardCursorTrackpadDriver()
+        )
+        contentController.view.addSubview(view)
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            keyboardSettings: .default,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true }
+        )
+
+        let terminalCommands = try XCTUnwrap(view.keyCommands)
+        XCTAssertFalse(
+            terminalCommands.contains {
+                $0.propertyList as? String
+                    == AppKeyboardCommand.commandPalette.rawValue
+            }
+        )
+
+        let command = try XCTUnwrap(
+            controller.keyCommands?.first {
+                $0.propertyList as? String
+                    == AppKeyboardCommand.commandPalette.rawValue
+            }
+        )
+        let action = try XCTUnwrap(command.action)
+        let target = view.target(
+            forAction: action,
+            withSender: command
+        ) as? AppKeyboardCommandHostingController
+        XCTAssertTrue(target === controller)
     }
 
     @MainActor

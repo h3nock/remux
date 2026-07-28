@@ -261,7 +261,7 @@ final class AppKeyboardCommandHostingController: UIViewController {
         appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
             settings: settings,
             commands: AppKeyboardCommand.allCases.filter { !$0.requiresTerminal },
-            action: #selector(performAppKeyboardCommand(_:))
+            action: #selector(performGlobalAppKeyboardCommand(_:))
         )
     }
 
@@ -301,7 +301,7 @@ final class AppKeyboardCommandHostingController: UIViewController {
     }
 
     @objc
-    private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
+    private func performGlobalAppKeyboardCommand(_ sender: UIKeyCommand) {
         guard
             let rawValue = sender.propertyList as? String,
             let command = AppKeyboardCommand(rawValue: rawValue),

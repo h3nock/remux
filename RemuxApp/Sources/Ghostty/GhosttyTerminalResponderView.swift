@@ -457,13 +457,13 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: settings)
         appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
             settings: settings,
-            commands: AppKeyboardCommand.allCases,
-            action: #selector(performAppKeyboardCommand(_:))
+            commands: AppKeyboardCommand.allCases.filter(\.requiresTerminal),
+            action: #selector(performTerminalAppKeyboardCommand(_:))
         )
     }
 
     @objc
-    private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
+    private func performTerminalAppKeyboardCommand(_ sender: UIKeyCommand) {
         guard
             let rawValue = sender.propertyList as? String,
             let command = AppKeyboardCommand(rawValue: rawValue)
