@@ -18,6 +18,33 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertNil(TerminalSettings(fontSize: .nan, theme: .ghosttyDefault).fontSize)
     }
 
+    func testFontSizeAdjustmentStartsFromEffectiveDefaultAndThenUsesExplicitSize() {
+        var settings = TerminalSettings(fontSize: nil, theme: .remuxDark)
+
+        settings.adjustFontSize(by: 1, effectiveDefault: 12)
+        XCTAssertEqual(settings.fontSize, 13)
+
+        settings.adjustFontSize(by: -1, effectiveDefault: 20)
+        XCTAssertEqual(settings.fontSize, 12)
+    }
+
+    func testFontSizeAdjustmentClampsToSupportedRange() {
+        var maximum = TerminalSettings(
+            fontSize: TerminalSettings.maximumFontSize,
+            theme: .remuxDark
+        )
+        var minimum = TerminalSettings(
+            fontSize: TerminalSettings.minimumFontSize,
+            theme: .remuxDark
+        )
+
+        maximum.adjustFontSize(by: 1, effectiveDefault: 10)
+        minimum.adjustFontSize(by: -1, effectiveDefault: 10)
+
+        XCTAssertEqual(maximum.fontSize, TerminalSettings.maximumFontSize)
+        XCTAssertEqual(minimum.fontSize, TerminalSettings.minimumFontSize)
+    }
+
     func testGhosttyConfigIncludesOfficialCatppuccinMochaThemeAndFont() {
         let settings = TerminalSettings(fontSize: 13, theme: .remuxDark)
 

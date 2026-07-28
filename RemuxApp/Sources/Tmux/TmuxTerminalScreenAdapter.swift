@@ -130,6 +130,63 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         return paneID
     }
 
+    func viewportSnapshots(
+        workspaceID: SavedWorkspace.ID,
+        serverName: String,
+        sessionName: String
+    ) -> [TerminalViewportSnapshot] {
+        guard let session else { return [] }
+        return viewportSnapshots(
+            workspaceID: workspaceID,
+            serverName: serverName,
+            sessionName: sessionName,
+            visiblePaneTexts: session.visiblePaneTexts()
+        )
+    }
+
+    func viewportSnapshots(
+        workspaceID: SavedWorkspace.ID,
+        serverName: String,
+        sessionName: String,
+        visiblePaneTexts: [(paneID: TmuxPaneID, text: String)]
+    ) -> [TerminalViewportSnapshot] {
+        guard let topology = latestTopology else { return [] }
+        let textByPaneID = Dictionary(
+            uniqueKeysWithValues: visiblePaneTexts.map { ($0.paneID, $0.text) }
+        )
+        return topology.windows.enumerated().flatMap { windowIndex, window in
+            let windowName = window.name.isEmpty
+                ? "Window \(windowIndex + 1)"
+                : window.name
+            return Self.orderedPanes(in: window.id, topology: topology)
+                .enumerated()
+                .compactMap { paneIndex, pane -> TerminalViewportSnapshot? in
+                    guard let text = textByPaneID[pane.id] else { return nil }
+                    return TerminalViewportSnapshot(
+                        workspaceID: workspaceID,
+                        serverName: serverName,
+                        sessionName: sessionName,
+                        windowID: identities.surfaceID(for: window.id),
+                        windowName: windowName,
+                        paneID: identities.surfaceID(for: pane.id),
+                        paneIndex: paneIndex + 1,
+                        text: text
+                    )
+                }
+        }
+    }
+
+    static func orderedPanes(
+        in windowID: TmuxWindowID,
+        topology: TmuxSessionController.TopologySnapshot
+    ) -> [TmuxSessionController.PaneInfo] {
+        topology.panes
+            .filter { $0.windowID == windowID }
+            .sorted { lhs, rhs in
+                (lhs.y, lhs.x, lhs.id) < (rhs.y, rhs.x, rhs.id)
+            }
+    }
+
     // MARK: Topology synthesis
 
     private static var emptyTopologySnapshot: GhosttyRuntimeSurfaceTopologySnapshot {
@@ -147,11 +204,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         }
 
         let topLevels = topology.windows.map { window in
-            let paneIDs = topology.panes
-                .filter { $0.windowID == window.id }
-                .sorted { lhs, rhs in
-                    (lhs.y, lhs.x, lhs.id) < (rhs.y, rhs.x, rhs.id)
-                }
+            let paneIDs = Self.orderedPanes(in: window.id, topology: topology)
                 .map { identities.surfaceID(for: $0.id) }
             return GhosttyTopLevelSurface(
                 id: identities.surfaceID(for: window.id),

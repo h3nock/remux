@@ -61,17 +61,164 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
     private func pane(
         id: TmuxPaneID,
-        windowID: TmuxWindowID
+        windowID: TmuxWindowID,
+        x: UInt32 = 0,
+        y: UInt32 = 0
     ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
             windowID: windowID,
-            x: 0,
-            y: 0,
+            x: x,
+            y: y,
             width: 80,
             height: 24,
             phase: .live
         )
+    }
+
+    func testPaneOrderingMatchesVisibleTopologyOrder() {
+        let topology = TmuxSessionController.TopologySnapshot(
+            sessionName: "pane-order",
+            windows: [window(id: 1, active: true, paneID: 30)],
+            panes: [
+                pane(id: 30, windowID: 1, x: 40, y: 12),
+                pane(id: 20, windowID: 1, x: 40, y: 0),
+                pane(id: 10, windowID: 1, x: 0, y: 0),
+            ],
+            activeWindowID: 1
+        )
+
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.orderedPanes(in: 1, topology: topology).map(\.id),
+            [10, 20, 30]
+        )
+    }
+
+    func testViewportSnapshotsJoinMetadataAndOmitUnavailablePaneText() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            clientSizeHandler: { _ in },
+            viewportStabilityHandler: { _ in }
+        )
+        session.handleTopology(
+            TmuxSessionController.TopologySnapshot(
+                sessionName: "adapter-fixture",
+                windows: [
+                    window(id: 1, active: true, paneID: 10, name: "editor"),
+                    window(id: 2, active: false, paneID: 30),
+                ],
+                panes: [
+                    pane(id: 20, windowID: 1, x: 40),
+                    pane(id: 10, windowID: 1),
+                    pane(id: 30, windowID: 2),
+                ],
+                activeWindowID: 1
+            )
+        )
+        let workspaceID = UUID()
+
+        let snapshots = adapter.viewportSnapshots(
+            workspaceID: workspaceID,
+            serverName: "Build Host",
+            sessionName: "deploy",
+            visiblePaneTexts: [
+                (paneID: 10, text: "editor text"),
+                (paneID: 30, text: "logs text"),
+            ]
+        )
+
+        XCTAssertEqual(snapshots.map(\.workspaceID), [workspaceID, workspaceID])
+        XCTAssertEqual(snapshots.map(\.serverName), ["Build Host", "Build Host"])
+        XCTAssertEqual(snapshots.map(\.sessionName), ["deploy", "deploy"])
+        XCTAssertEqual(snapshots.map(\.windowName), ["editor", "Window 2"])
+        XCTAssertEqual(snapshots.map(\.paneIndex), [1, 1])
+        XCTAssertEqual(snapshots.map(\.text), ["editor text", "logs text"])
+        XCTAssertEqual(snapshots.map { adapter.tmuxPaneID(for: $0.paneID) }, [10, 30])
+        XCTAssertEqual(adapter.focusTmuxTopLevel(snapshots[0].windowID), .queued)
+        XCTAssertEqual(adapter.focusTmuxTopLevel(snapshots[1].windowID), .queued)
+
+        await session.shutdown()
+    }
+
+    func testPaletteSearchUsesEveryActiveAdapterAndRoutesExactSelectedResult() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let firstSession = makeSession(runtime: runtime)
+        let secondSession = makeSession(runtime: runtime)
+        let firstAdapter = TmuxTerminalScreenAdapter()
+        let secondAdapter = TmuxTerminalScreenAdapter()
+        for (adapter, session) in [
+            (firstAdapter, firstSession),
+            (secondAdapter, secondSession),
+        ] {
+            adapter.activate(
+                session: session,
+                initialViewportHandler: { _, _ in },
+                clientSizeHandler: { _ in },
+                viewportStabilityHandler: { _ in }
+            )
+        }
+        firstSession.handleTopology(
+            TmuxSessionController.TopologySnapshot(
+                sessionName: "first",
+                windows: [window(id: 1, active: true, paneID: 10, name: "editor")],
+                panes: [pane(id: 10, windowID: 1)],
+                activeWindowID: 1
+            )
+        )
+        secondSession.handleTopology(
+            TmuxSessionController.TopologySnapshot(
+                sessionName: "second",
+                windows: [window(id: 2, active: true, paneID: 20, name: "logs")],
+                panes: [pane(id: 20, windowID: 2)],
+                activeWindowID: 2
+            )
+        )
+        let firstWorkspaceID = UUID()
+        let secondWorkspaceID = UUID()
+        let allSnapshots = firstAdapter.viewportSnapshots(
+            workspaceID: firstWorkspaceID,
+            serverName: "First Host",
+            sessionName: "one",
+            visiblePaneTexts: [(paneID: 10, text: "needle first")]
+        ) + secondAdapter.viewportSnapshots(
+            workspaceID: secondWorkspaceID,
+            serverName: "Second Host",
+            sessionName: "two",
+            visiblePaneTexts: [(paneID: 20, text: "needle second")]
+        )
+
+        let results = CommandPaletteSearch.results(
+            query: "needle",
+            commands: [],
+            snapshots: allSnapshots
+        )
+
+        XCTAssertEqual(results.map(\.title), ["needle first", "needle second"])
+        XCTAssertEqual(
+            results.map(\.subtitle),
+            [
+                "First Host · one · editor · Pane 1",
+                "Second Host · two · logs · Pane 1",
+            ]
+        )
+        guard case .viewport(let selectedSnapshot) = results[1].action else {
+            return XCTFail("Expected a viewport search result")
+        }
+        XCTAssertEqual(selectedSnapshot.workspaceID, secondWorkspaceID)
+        XCTAssertEqual(secondAdapter.tmuxPaneID(for: selectedSnapshot.paneID), 20)
+        XCTAssertEqual(
+            secondAdapter.focusTmuxTopLevel(selectedSnapshot.windowID),
+            .queued
+        )
+        XCTAssertEqual(secondAdapter.focusTmuxPane(selectedSnapshot.paneID), .queued)
+        XCTAssertEqual(firstAdapter.tmuxPaneID(for: selectedSnapshot.paneID), nil)
+
+        await firstSession.shutdown()
+        await secondSession.shutdown()
     }
 
     func testWindowProjectionReflectsEmittedTopologyImmediately() async throws {

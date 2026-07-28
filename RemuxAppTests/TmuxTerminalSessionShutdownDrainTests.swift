@@ -64,6 +64,33 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testViewportSearchRequiresReadySession() {
+        XCTAssertFalse(
+            TmuxTerminalSession.isViewportSearchAvailable(
+                state: .detached(.transportClosed),
+                isShutDown: false
+            )
+        )
+        XCTAssertFalse(
+            TmuxTerminalSession.isViewportSearchAvailable(
+                state: .closed(.unsupportedVersion("old")),
+                isShutDown: false
+            )
+        )
+        XCTAssertFalse(
+            TmuxTerminalSession.isViewportSearchAvailable(
+                state: .ready,
+                isShutDown: true
+            )
+        )
+        XCTAssertTrue(
+            TmuxTerminalSession.isViewportSearchAvailable(
+                state: .ready,
+                isShutDown: false
+            )
+        )
+    }
+
     func testSameWindowSelectionSuppressesDuplicateZoomForIntermediateTopology() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)

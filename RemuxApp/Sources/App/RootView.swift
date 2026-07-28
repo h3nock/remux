@@ -56,16 +56,35 @@ private struct RemuxRootContentView: View {
 
 private struct RemuxWorkspaceShell: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.appKeyboardCommandCenter) private var appKeyboardCommandCenter
     @ObservedObject var model: RemuxRootModel
     let shortcutStore: ShortcutStore
+    @StateObject private var physicalKeyboardMonitor = PhysicalKeyboardMonitor()
     @State private var retainedTerminalID: SavedWorkspace.ID?
+    @State private var isCommandPalettePresented = false
+    @State private var terminalKeyboardReadiness = TerminalKeyboardReadiness()
 
     var body: some View {
         ZStack {
             activeTerminalLayer
             routeLayer
+
+            if isCommandPalettePresented {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture { isCommandPalettePresented = false }
+                    .zIndex(20)
+                CommandPaletteView(
+                    commands: commandPaletteItems,
+                    snapshots: viewportSnapshots,
+                    onSelect: selectCommandPaletteAction,
+                    onDismiss: { isCommandPalettePresented = false }
+                )
+                .zIndex(21)
+            }
         }
         .onAppear {
+            updateAppKeyboardCommandCenter()
             model.handleAppLifecyclePhase(
                 RemuxAppLifecycleProjection(scenePhase: scenePhase).appLifecyclePhase
             )
@@ -79,6 +98,12 @@ private struct RemuxWorkspaceShell: View {
             guard let newValue else { return }
             retainedTerminalID = newValue
         }
+        .onChange(of: model.keyboardSettings) { _, _ in
+            updateAppKeyboardCommandCenter()
+        }
+        .onChange(of: keyboardCommandContext) { _, _ in
+            updateAppKeyboardCommandCenter()
+        }
         .onChange(of: model.activeTerminalScreenEntries.map(\.id)) { _, ids in
             guard !ids.isEmpty else {
                 retainedTerminalID = nil
@@ -90,6 +115,11 @@ private struct RemuxWorkspaceShell: View {
             }
 
             retainedTerminalID = ids[0]
+        }
+        .onChange(
+            of: model.activeTerminalScreenEntries.map(\.runtimeAttemptKey)
+        ) { _, attempts in
+            terminalKeyboardReadiness.retain(attempts)
         }
     }
 
@@ -105,6 +135,64 @@ private struct RemuxWorkspaceShell: View {
         selectedTerminalID ?? retainedTerminalID ?? model.activeTerminalScreenEntries.first?.id
     }
 
+    private var keyboardCommandContext: AppKeyboardCommandRouteContext {
+        let selectedAttempt = model.activeTerminalScreenEntries.first(where: {
+            $0.id == selectedTerminalID
+        })?.runtimeAttemptKey
+        return AppKeyboardCommandRouteContext(
+            selectedSessionID: selectedTerminalID,
+            isSelectedTerminalReady: terminalKeyboardReadiness.isReady(
+                for: selectedAttempt
+            ),
+            orderedActiveSessionIDs: model.activeSessions
+                .sorted { $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt }
+                .map(\.id)
+        )
+    }
+
+    private var commandPaletteItems: [CommandPaletteItem] {
+        var items = [
+            CommandPaletteItem(
+                id: "add-connection",
+                title: "Add Connection",
+                subtitle: nil,
+                action: .addConnection
+            ),
+        ]
+        items += model.library.servers.map { server in
+            CommandPaletteItem(
+                id: "new-session:\(server.id)",
+                title: "New Session on \(server.displayName)",
+                subtitle: server.host,
+                action: .newSession(server.id)
+            )
+        }
+        items += AppKeyboardCommand.allCases.compactMap { command in
+            guard command != .commandPalette else { return nil }
+            return CommandPaletteItem(
+                id: "command:\(command.rawValue)",
+                title: command.displayTitle,
+                subtitle: nil,
+                action: .appCommand(command),
+                isEnabled: AppKeyboardCommandRouter.isAvailable(
+                    command,
+                    in: keyboardCommandContext
+                )
+            )
+        }
+        return items
+    }
+
+    private func viewportSnapshots() -> [TerminalViewportSnapshot] {
+        model.activeTerminalScreenEntries.flatMap { entry in
+            entry.model.terminalScreenAdapter.viewportSnapshots(
+                workspaceID: entry.id,
+                serverName: entry.model.target.server.displayName,
+                sessionName: entry.presentation.sessionName
+            )
+        }
+    }
+
     private var activeTerminalLayer: some View {
         ZStack {
             ForEach(model.activeTerminalScreenEntries) { entry in
@@ -114,6 +202,16 @@ private struct RemuxWorkspaceShell: View {
                     entry: entry,
                     isSelected: isSelected,
                     shortcutStore: shortcutStore,
+                    keyboardSettings: model.keyboardSettings,
+                    isPhysicalKeyboardConnected: physicalKeyboardMonitor.isConnected,
+                    isAppInputOwnerPresented: isCommandPalettePresented,
+                    onAppKeyboardCommand: performKeyboardCommand,
+                    onTerminalInputAvailabilityChange: { isReady in
+                        terminalKeyboardReadiness.update(
+                            isReady: isReady,
+                            for: entry.runtimeAttemptKey
+                        )
+                    },
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
                     },
@@ -185,6 +283,7 @@ private struct RemuxWorkspaceShell: View {
                 snapshot: model.library,
                 activeSessions: model.activeSessions,
                 terminalSettings: model.terminalSettings,
+                keyboardSettings: model.keyboardSettings,
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID in
                     Task { await model.beginNewWorkspace(for: serverID) }
@@ -220,6 +319,11 @@ private struct RemuxWorkspaceShell: View {
                             current = settings
                         }
                     }
+                },
+                onKeyboardSettingsChange: { settings in
+                    Task {
+                        await model.updateKeyboardSettings(settings)
+                    }
                 }
             )
         }
@@ -251,6 +355,64 @@ private struct RemuxWorkspaceShell: View {
         "session.show.\(workspaceID.uuidString)"
     }
 
+    private func performKeyboardCommand(_ command: AppKeyboardCommand) {
+        switch AppKeyboardCommandRouter.route(command, in: keyboardCommandContext) {
+        case .terminal(let command):
+            guard !isCommandPalettePresented else { return }
+            appKeyboardCommandCenter?.performSelectedTerminal(command)
+        case .showHome:
+            isCommandPalettePresented = false
+            dismissKeyboard()
+            Task { await model.showLibrary() }
+        case .showCommandPalette:
+            isCommandPalettePresented = true
+        case .showSession(let id):
+            isCommandPalettePresented = false
+            model.showActiveSession(id)
+        case .adjustFontSize(let delta):
+            let effectiveDefault =
+                GhosttyTerminalAppearancePolicy.currentDeviceFontSize(
+                    settings: model.terminalSettings
+                ) ?? TerminalSettings.defaultExplicitFontSize
+            model.enqueueTerminalFontSizeAdjustment(
+                by: delta,
+                effectiveDefault: effectiveDefault
+            )
+        case .unavailable:
+            break
+        }
+    }
+
+    private func updateAppKeyboardCommandCenter() {
+        appKeyboardCommandCenter?.update(
+            settings: model.keyboardSettings,
+            availableCommands: AppKeyboardCommandRouter.availableCommands(
+                in: keyboardCommandContext
+            ),
+            onCommand: performKeyboardCommand
+        )
+    }
+
+    private func selectCommandPaletteAction(_ action: CommandPaletteAction) {
+        isCommandPalettePresented = false
+        switch action {
+        case .addConnection:
+            model.beginNewServer()
+        case .newSession(let serverID):
+            Task { await model.beginNewWorkspace(for: serverID) }
+        case .appCommand(let command):
+            performKeyboardCommand(command)
+        case .viewport(let snapshot):
+            model.showActiveSession(snapshot.workspaceID)
+            guard let entry = model.activeTerminalScreenEntries.first(where: {
+                $0.id == snapshot.workspaceID
+            }) else {
+                return
+            }
+            _ = entry.model.terminalScreenAdapter.focusTmuxTopLevel(snapshot.windowID)
+            _ = entry.model.terminalScreenAdapter.focusTmuxPane(snapshot.paneID)
+        }
+    }
 }
 
 struct RemuxAppLifecycleProjection: Equatable {
@@ -276,6 +438,11 @@ private struct ActiveTerminalSessionView: View {
     let entry: ActiveTerminalScreenEntry
     let isSelected: Bool
     let shortcutStore: ShortcutStore
+    let keyboardSettings: KeyboardSettings
+    let isPhysicalKeyboardConnected: Bool
+    let isAppInputOwnerPresented: Bool
+    let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
+    let onTerminalInputAvailabilityChange: (Bool) -> Void
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
@@ -288,6 +455,11 @@ private struct ActiveTerminalSessionView: View {
         entry: ActiveTerminalScreenEntry,
         isSelected: Bool,
         shortcutStore: ShortcutStore,
+        keyboardSettings: KeyboardSettings,
+        isPhysicalKeyboardConnected: Bool,
+        isAppInputOwnerPresented: Bool,
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void,
+        onTerminalInputAvailabilityChange: @escaping (Bool) -> Void,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
@@ -297,6 +469,11 @@ private struct ActiveTerminalSessionView: View {
         self.entry = entry
         self.isSelected = isSelected
         self.shortcutStore = shortcutStore
+        self.keyboardSettings = keyboardSettings
+        self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
+        self.isAppInputOwnerPresented = isAppInputOwnerPresented
+        self.onAppKeyboardCommand = onAppKeyboardCommand
+        self.onTerminalInputAvailabilityChange = onTerminalInputAvailabilityChange
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
@@ -318,6 +495,11 @@ private struct ActiveTerminalSessionView: View {
                 isSelected: isSelected,
                 isTerminalCovered: previewSession.isPresented,
                 shortcutStore: shortcutStore,
+                keyboardSettings: keyboardSettings,
+                isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
+                isAppInputOwnerPresented: isAppInputOwnerPresented,
+                onAppKeyboardCommand: onAppKeyboardCommand,
+                onTerminalInputAvailabilityChange: onTerminalInputAvailabilityChange,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,
                 onReconnect: onReconnect,
@@ -365,6 +547,7 @@ private struct ConnectionLibraryView: View {
     let snapshot: ConnectionLibrarySnapshot
     let activeSessions: [ActiveTerminalSession]
     let terminalSettings: TerminalSettings
+    let keyboardSettings: KeyboardSettings
     let onAddServer: () -> Void
     let onAddWorkspace: (SavedServer.ID) -> Void
     let onEditServer: (SavedServer.ID) -> Void
@@ -375,6 +558,7 @@ private struct ConnectionLibraryView: View {
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let onSettingsChange: (TerminalSettings) -> Void
+    let onKeyboardSettingsChange: (KeyboardSettings) -> Void
 
     @State private var showsAllConnectedSessions = false
     @State private var showsAllRecentSessions = false
@@ -407,7 +591,9 @@ private struct ConnectionLibraryView: View {
                 NavigationLink {
                     TerminalSettingsView(
                         initialSettings: terminalSettings,
-                        onChange: onSettingsChange
+                        keyboardSettings: keyboardSettings,
+                        onChange: onSettingsChange,
+                        onKeyboardSettingsChange: onKeyboardSettingsChange
                     )
                 } label: {
                     Image(systemName: "gearshape")
@@ -656,7 +842,7 @@ private struct ConnectionLibraryView: View {
     }
 }
 
-private enum LibraryHomePalette {
+enum LibraryHomePalette {
     static let background = Color(uiColor: .libraryHomeBackground)
     static let rowSurface = Color(uiColor: .libraryHomeRowSurface)
     static let separator = Color(uiColor: .libraryHomeSeparator)
@@ -1184,18 +1370,35 @@ private func serverSummary(
 
 private struct TerminalSettingsView: View {
     @State private var settings: TerminalSettings
+    let keyboardSettings: KeyboardSettings
     let onChange: (TerminalSettings) -> Void
+    let onKeyboardSettingsChange: (KeyboardSettings) -> Void
 
     init(
         initialSettings: TerminalSettings,
-        onChange: @escaping (TerminalSettings) -> Void
+        keyboardSettings: KeyboardSettings,
+        onChange: @escaping (TerminalSettings) -> Void,
+        onKeyboardSettingsChange: @escaping (KeyboardSettings) -> Void
     ) {
         _settings = State(initialValue: initialSettings)
+        self.keyboardSettings = keyboardSettings
         self.onChange = onChange
+        self.onKeyboardSettingsChange = onKeyboardSettingsChange
     }
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink("Physical Keyboard") {
+                    KeyboardSettingsView(
+                        initialSettings: keyboardSettings,
+                        onChange: onKeyboardSettingsChange
+                    )
+                }
+                .accessibilityIdentifier("settings.physical-keyboard")
+            }
+            .libraryHomeListRowSurface()
+
             Section("Font") {
                 Toggle("Use default size", isOn: useDefaultFontBinding)
                     .tint(LibraryHomePalette.controlAccent)

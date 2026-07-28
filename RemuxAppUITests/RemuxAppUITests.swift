@@ -94,6 +94,146 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Catppuccin Mocha"].waitForExistence(timeout: 2))
     }
 
+    func testSettingsExposePhysicalKeyboardDefaults() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let physicalKeyboard = app.descendants(matching: .any)["settings.physical-keyboard"]
+        XCTAssertTrue(physicalKeyboard.waitForExistence(timeout: 2))
+        physicalKeyboard.tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["keyboard-settings.form"]
+                .waitForExistence(timeout: 2)
+        )
+        let autoHide = app.switches["keyboard-settings.hide-button-bar"]
+        XCTAssertTrue(autoHide.waitForExistence(timeout: 2))
+        XCTAssertEqual(autoHide.value as? String, "1")
+        XCTAssertTrue(app.staticTexts["Command Palette"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Increase Font Size"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Decrease Font Size"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["⌘ +"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["⌘ -"].waitForExistence(timeout: 2))
+        let homeBinding = app.staticTexts["⇧ ⌘ H"]
+        XCTAssertTrue(homeBinding.waitForExistence(timeout: 2))
+        let homeTitle = app.staticTexts["Home"]
+        XCTAssertTrue(homeTitle.waitForExistence(timeout: 2))
+        XCTAssertEqual(homeBinding.frame.height, homeTitle.frame.height, accuracy: 2)
+        let setCommandPalette = app.buttons[
+            "keyboard-settings.set.commandPalette"
+        ]
+        XCTAssertTrue(setCommandPalette.waitForExistence(timeout: 2))
+        setCommandPalette.tap()
+        XCTAssertTrue(
+            app.staticTexts["Press the shortcut for Command Palette"]
+                .waitForExistence(timeout: 2)
+        )
+        app.typeKey("h", modifierFlags: [])
+        XCTAssertTrue(
+            app.staticTexts["keyboard-settings.capture.validation"]
+                .waitForExistence(timeout: 2)
+        )
+    }
+
+    func testSettingsClearRemovesBinding() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let physicalKeyboard = app.descendants(matching: .any)["settings.physical-keyboard"]
+        XCTAssertTrue(physicalKeyboard.waitForExistence(timeout: 2))
+        physicalKeyboard.tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["keyboard-settings.form"]
+                .waitForExistence(timeout: 2)
+        )
+        let clearHome = app.buttons["keyboard-settings.clear.home"]
+        XCTAssertTrue(clearHome.waitForExistence(timeout: 2))
+
+        clearHome.tap()
+
+        XCTAssertTrue(app.staticTexts["Unassigned"].waitForExistence(timeout: 2))
+        XCTAssertTrue(clearHome.waitForNonExistence(timeout: 2))
+    }
+
+    func testCommandPaletteReceivesImmediateTyping() {
+        launchSimulatorApp()
+        XCTAssertTrue(
+            app.buttons["library.empty.add-server"].waitForExistence(timeout: 5)
+        )
+        openCommandPaletteAndAssertImmediateTyping()
+    }
+
+    func testCommandPaletteSupportsKeyboardSelectionAndDismissal() {
+        launchSimulatorApp()
+        XCTAssertTrue(
+            app.buttons["library.empty.add-server"].waitForExistence(timeout: 5)
+        )
+        app.typeKey("k", modifierFlags: .command)
+
+        let palette = app.descendants(matching: .any)["command-palette"]
+        XCTAssertTrue(palette.waitForExistence(timeout: 2))
+
+        let appFrame = app.frame
+        let minimumScreenMargin: CGFloat = 19.5
+        XCTAssertGreaterThanOrEqual(
+            palette.frame.minX - appFrame.minX,
+            minimumScreenMargin
+        )
+        XCTAssertGreaterThanOrEqual(
+            appFrame.maxX - palette.frame.maxX,
+            minimumScreenMargin
+        )
+        XCTAssertGreaterThanOrEqual(
+            palette.frame.minY - appFrame.minY,
+            minimumScreenMargin
+        )
+        XCTAssertGreaterThanOrEqual(
+            appFrame.maxY - palette.frame.maxY,
+            minimumScreenMargin
+        )
+
+        let search = app.textFields["command-palette.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        XCTAssertLessThanOrEqual(search.frame.height, 44.5)
+        XCTAssertLessThanOrEqual(
+            palette.frame.height,
+            430,
+            "The chooser should remain a compact floating card with six visible rows."
+        )
+
+        let addConnection = app.buttons["command-palette.item.add-connection"]
+        XCTAssertTrue(addConnection.waitForExistence(timeout: 2))
+        XCTAssertTrue(addConnection.isSelected)
+
+        app.typeKey(.downArrow, modifierFlags: [])
+        let home = app.buttons["command-palette.item.command:home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 2))
+        XCTAssertTrue(home.isSelected)
+
+        app.typeText("\n")
+        XCTAssertTrue(palette.waitForNonExistence(timeout: 2))
+
+        app.typeKey("k", modifierFlags: .command)
+        XCTAssertTrue(palette.waitForExistence(timeout: 2))
+        app.buttons["xmark.circle.fill"].tap()
+        XCTAssertTrue(palette.waitForNonExistence(timeout: 2))
+    }
+
+    func testPhysicalKeyboardKeepsConnectionFormEditableAndStartsWithHiddenButtonBar() {
+        app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        XCTAssertNil(optionalTerminalHomeButton(timeout: 0.5))
+    }
+
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
         launchSimulatorApp()
         openConnectionSetup()
@@ -132,6 +272,82 @@ final class RemuxAppUITests: XCTestCase {
             "yes 'REMUX_RENDER_CHECK ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' | head -120"
         )
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
+    }
+
+    func testLivePhysicalKeyboardRevealsFloatingButtonBarAndOpensCommandPaletteWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("physical-keyboard")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+
+        waitForLiveTerminalReady(timeout: 60)
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        let terminalFrame = terminal.frame
+        XCTAssertNil(optionalTerminalHomeButton(timeout: 0.5))
+
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        XCTAssertNotNil(optionalTerminalHomeButton(timeout: 2))
+        XCTAssertEqual(terminal.frame, terminalFrame)
+
+        openCommandPaletteAndAssertImmediateTyping()
+    }
+
+    func testLiveSSHCommandNCreatesRemoteWindowWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("command-n")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        app.launchEnvironment["REMUX_UI_TEST_PHYSICAL_KEYBOARD"] = "1"
+        try launchLiveSSHAppIfConfigured(
+            traceRuntime: true,
+            sessionNameOverride: sessionName
+        )
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        app.typeKey("k", modifierFlags: .command)
+        let palette = app.otherElements["command-palette"]
+        XCTAssertTrue(palette.waitForExistence(timeout: 2))
+        app.buttons["xmark.circle.fill"].tap()
+        XCTAssertTrue(palette.waitForNonExistence(timeout: 2))
+        app.typeKey("n", modifierFlags: .command)
+        waitForLiveTerminalReady(timeout: 30)
+
+        app.typeKey("o", modifierFlags: .command)
+        XCTAssertTrue(
+            waitForAnyPickerElement(
+                [
+                    elementWithIdentifier("terminal.windows.sheet"),
+                    app.buttons["terminal.window.new"],
+                    app.buttons["New Window"],
+                ],
+                timeout: 8
+            ),
+            "Command-O should present the current session's window sheet."
+        )
+        XCTAssertTrue(
+            app.buttons["terminal.window.tile.1"].waitForExistence(timeout: 10)
+        )
+        XCTAssertTrue(
+            app.buttons["terminal.window.tile.2"].waitForExistence(timeout: 10)
+        )
+        XCTAssertFalse(
+            app.buttons["terminal.window.tile.3"].waitForExistence(timeout: 2),
+            "Command-N should create exactly one remote tmux window."
+        )
+        recordLiveTmuxWindowCountExpectation(
+            sessionName: sessionName,
+            expectedCount: 2
+        )
     }
 
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
@@ -2554,6 +2770,22 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.textFields["connection.name"].waitForExistence(timeout: 2))
     }
 
+    private func openCommandPaletteAndAssertImmediateTyping() {
+        app.typeKey("k", modifierFlags: .command)
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["command-palette"]
+                .waitForExistence(timeout: 2)
+        )
+
+        let searchField = app.descendants(matching: .any)["command-palette.search"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2))
+
+        app.typeText("palette focus")
+
+        XCTAssertEqual(searchField.value as? String, "palette focus")
+    }
+
     private func fillConnectionForm() {
         app.textFields["connection.name"].tap()
         app.textFields["connection.name"].typeText("Example Server")
@@ -2566,6 +2798,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let password = app.secureTextFields["connection.password"]
         XCTAssertTrue(password.waitForExistence(timeout: 2))
+        password.tap()
         password.typeText("demo-password")
 
         app.swipeUp()
@@ -2591,9 +2824,21 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func waitForTerminalHomeButton(timeout: TimeInterval = 2) -> XCUIElement {
-        if let button = terminalHomeButton(timeout: timeout, allowMissing: false) {
+        if let button = optionalTerminalHomeButton(timeout: timeout) {
             return button
         }
+
+        let terminal = app.otherElements["terminal.screen"]
+        if terminal.exists {
+            terminal.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
+            ).tap()
+        }
+
+        if let button = optionalTerminalHomeButton(timeout: timeout) {
+            return button
+        }
+
         XCTFail("Missing terminal Home button.")
         return app.buttons["terminal.home"].firstMatch
     }
@@ -3189,6 +3434,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let pwd = app.secureTextFields["connection.password"]
         XCTAssertTrue(pwd.waitForExistence(timeout: 2))
+        pwd.tap()
         pwd.typeText("demo-password")
         sleep(1)
         attach(name: "13-connection-setup-filled")

@@ -88,6 +88,14 @@ final class ShortcutPaletteUITests: XCTestCase {
         XCTAssertTrue(session.waitForExistence(timeout: 5))
         session.tap()
 
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        if !app.buttons["terminal.ctrl"].waitForExistence(timeout: 0.5) {
+            terminal.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
+            ).tap()
+        }
+
         XCTAssertTrue(app.buttons["terminal.ctrl"].waitForExistence(timeout: 5))
     }
 

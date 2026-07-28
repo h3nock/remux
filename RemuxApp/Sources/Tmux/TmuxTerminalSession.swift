@@ -440,6 +440,26 @@ final class TmuxTerminalSession: ObservableObject {
         surfacesByPaneID[paneID]?.cancelPickerCaptureForPresentation()
     }
 
+    func visiblePaneTexts() -> [(paneID: TmuxPaneID, text: String)] {
+        guard Self.isViewportSearchAvailable(state: state, isShutDown: isShutDown) else {
+            return []
+        }
+        return surfacesByPaneID.compactMap { paneID, surface -> (
+            paneID: TmuxPaneID,
+            text: String
+        )? in
+            guard livePaneIDs.contains(paneID), !surface.isClosing else { return nil }
+            return surface.visibleText().map { (paneID, $0) }
+        }
+    }
+
+    static func isViewportSearchAvailable(
+        state: TmuxSessionController.SessionState,
+        isShutDown: Bool
+    ) -> Bool {
+        !isShutDown && state == .ready
+    }
+
     private func presentActivePane(from snapshot: TmuxSessionController.TopologySnapshot) {
         guard !isShutDown, isAppActive, state == .ready,
               let paneID = activePaneID(in: snapshot)

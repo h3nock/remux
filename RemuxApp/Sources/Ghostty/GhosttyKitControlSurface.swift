@@ -204,6 +204,25 @@ final class GhosttyKitControlSurface {
 
     var isInvalidated: Bool { invalidated }
 
+    func visibleText() -> String? {
+        guard !invalidated else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_terminal_surface_read_viewport(handle, &text)
+            == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT
+        else {
+            return nil
+        }
+        defer { _ = ghostty_terminal_surface_free_text(handle, &text) }
+        guard let bytes = text.text else { return "" }
+        return String(
+            decoding: UnsafeBufferPointer(
+                start: UnsafeRawPointer(bytes).assumingMemoryBound(to: UInt8.self),
+                count: Int(text.text_len)
+            ),
+            as: UTF8.self
+        )
+    }
+
     func invalidate() {
         invalidated = true
     }
