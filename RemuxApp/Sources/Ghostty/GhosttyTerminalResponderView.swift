@@ -14,7 +14,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let onFirstResponderChange: (Bool) -> Void
-    let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
+    let onAppKeyboardCommand: (AppKeyboardCommand) -> Bool
 
     init(
         isEnabled: Bool,
@@ -29,7 +29,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in },
-        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in }
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Bool = { _ in false }
     ) {
         self.isEnabled = isEnabled
         self.areAppKeyboardCommandsEnabled = areAppKeyboardCommandsEnabled
@@ -83,6 +83,12 @@ enum GhosttyTerminalInputNormalizer {
     }
 }
 
+enum GhosttyTerminalAppKeyboardCommandResult: Equatable {
+    case notConfigured
+    case deferred
+    case handled
+}
+
 @MainActor
 final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTraits {
     override var canBecomeFirstResponder: Bool {
@@ -110,7 +116,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
-    private var appKeyboardCommandHandler: ((AppKeyboardCommand) -> Void)?
+    private var appKeyboardCommandHandler: ((AppKeyboardCommand) -> Bool)?
     private var appKeyboardCommandResolver = AppKeyboardCommandResolver(settings: .default)
     private var trackpadFeedbackHandler: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
     private var firstResponderStateHandler: ((Bool) -> Void)?
@@ -146,7 +152,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void = { _ in },
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in },
-        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in }
+        onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Bool = { _ in false }
     ) {
         let wasInputEnabled = self.isInputEnabled
         let wasResponderEnabled = wasInputEnabled || self.areAppKeyboardCommandsEnabled
@@ -401,12 +407,17 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
                 continue
             }
 
-            if let command = appKeyboardCommandResolver.command(
+            switch routeAppKeyboardCommand(
                 input: key.charactersIgnoringModifiers,
                 modifierFlags: key.modifierFlags
             ) {
-                appKeyboardCommandHandler?(command)
+            case .handled:
                 continue
+            case .deferred:
+                unhandledPresses.insert(press)
+                continue
+            case .notConfigured:
+                break
             }
 
             guard let action = GhosttyTerminalHardwareCommandMapping.resolveHardwarePress(
@@ -441,6 +452,29 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             )
             super.pressesBegan(unhandledPresses, with: event)
         }
+    }
+
+    func routeAppKeyboardCommand(
+        input: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> GhosttyTerminalAppKeyboardCommandResult {
+        guard
+            let command = appKeyboardCommandResolver.command(
+                input: input,
+                modifierFlags: modifierFlags
+            )
+        else {
+            return .notConfigured
+        }
+        guard
+            isInputEnabled,
+            areAppKeyboardCommandsEnabled,
+            wantsFirstResponder,
+            appKeyboardCommandHandler?(command) == true
+        else {
+            return .deferred
+        }
+        return .handled
     }
 
     private func handleHardwareCommandAction(_ action: GhosttyTerminalHardwareCommandAction) {

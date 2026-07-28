@@ -3,6 +3,20 @@ import UIKit
 import XCTest
 @testable import Remux
 
+private struct AppKeyboardCommandHostContentProbe: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        return label
+    }
+
+    func updateUIView(_ uiView: UILabel, context: Context) {
+        uiView.text = text
+    }
+}
+
 final class AppKeyboardCommandRouterTests: XCTestCase {
     func testHomeRouteKeepsGlobalCommandsAndDisablesTerminalCommands() {
         let context = AppKeyboardCommandRouteContext(
@@ -203,6 +217,39 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
 
 final class AppKeyboardCommandResponderTests: XCTestCase {
     @MainActor
+    func testHostingControllerUpdatesRenderedContent() async throws {
+        let center = AppKeyboardCommandCenter()
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(AppKeyboardCommandHostContentProbe(text: "Initial")),
+            commandCenter: center
+        )
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        let contentController = try XCTUnwrap(controller.children.first)
+        let renderedLabel = await waitForSubview(
+            of: UILabel.self,
+            in: contentController.view
+        )
+        let label = try XCTUnwrap(renderedLabel)
+        XCTAssertEqual(label.text, "Initial")
+
+        controller.updateContent(
+            AnyView(AppKeyboardCommandHostContentProbe(text: "Updated"))
+        )
+
+        let didRenderUpdate = await waitUntil {
+            label.text == "Updated"
+        }
+        XCTAssertTrue(didRenderUpdate)
+    }
+
+    @MainActor
     func testHostingControllerExposesOnlyAvailableAppCommands() throws {
         let center = AppKeyboardCommandCenter()
         let controller = AppKeyboardCommandHostingController(
@@ -289,6 +336,50 @@ final class AppKeyboardCommandResponderTests: XCTestCase {
         center.setShortcutCaptureActive(false)
         XCTAssertFalse((controller.keyCommands ?? []).isEmpty)
     }
+
+    @MainActor
+    private func firstSubview<View: UIView>(
+        of type: View.Type,
+        in rootView: UIView
+    ) -> View? {
+        if let rootView = rootView as? View {
+            return rootView
+        }
+        for subview in rootView.subviews {
+            if let match = firstSubview(of: type, in: subview) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    @MainActor
+    private func waitForSubview<View: UIView>(
+        of type: View.Type,
+        in rootView: UIView,
+        timeout: TimeInterval = 1
+    ) async -> View? {
+        var match: View?
+        _ = await waitUntil(timeout: timeout) {
+            rootView.layoutIfNeeded()
+            match = self.firstSubview(of: type, in: rootView)
+            return match != nil
+        }
+        return match
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: TimeInterval = 1,
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
 }
 
 final class AppKeyboardCommandCenterTests: XCTestCase {
@@ -306,6 +397,26 @@ final class AppKeyboardCommandCenterTests: XCTestCase {
         center.perform(.commandPalette)
 
         XCTAssertEqual(receivedCommands, [.commandPalette])
+    }
+
+    @MainActor
+    func testPerformsOnlyCurrentlyAvailableCommands() {
+        let center = AppKeyboardCommandCenter()
+        var receivedCommands: [AppKeyboardCommand] = []
+
+        center.update(
+            settings: .default,
+            availableCommands: [.home]
+        ) {
+            receivedCommands.append($0)
+        }
+
+        XCTAssertFalse(center.performIfAvailable(.newWindow))
+        XCTAssertTrue(center.performIfAvailable(.home))
+
+        center.setShortcutCaptureActive(true)
+        XCTAssertFalse(center.performIfAvailable(.home))
+        XCTAssertEqual(receivedCommands, [.home])
     }
 }
 

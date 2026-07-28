@@ -293,7 +293,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendKeyEvent: sendTerminalKeyEvent,
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             onFirstResponderChange: { isTerminalResponderFirstResponder = $0 },
-                            onAppKeyboardCommand: performAppKeyboardCommand
+                            onAppKeyboardCommand: {
+                                appKeyboardCommandCenter?
+                                    .performIfAvailable($0) ?? false
+                            }
                         )
                         .frame(
                             width: terminalViewportSize.width,

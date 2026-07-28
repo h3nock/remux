@@ -70,6 +70,19 @@ final class AppKeyboardCommandCenter: ObservableObject {
         commandHandler?(command)
     }
 
+    @discardableResult
+    func performIfAvailable(_ command: AppKeyboardCommand) -> Bool {
+        guard
+            !isShortcutCaptureActive,
+            availableCommands.contains(command),
+            let commandHandler
+        else {
+            return false
+        }
+        commandHandler(command)
+        return true
+    }
+
     func registerSelectedTerminal(
         owner: AnyObject,
         onCommand: @escaping (AppKeyboardCommand) -> Void
@@ -193,6 +206,7 @@ struct AppKeyboardCommandHost<Content: View>: UIViewControllerRepresentable {
         _ controller: AppKeyboardCommandHostingController,
         context: Context
     ) {
+        controller.updateContent(AnyView(content))
         controller.update(
             settings: center.settings,
             availableCommands: center.availableCommands,
@@ -293,6 +307,10 @@ final class AppKeyboardCommandHostingController: UIViewController {
         if !unhandledPresses.isEmpty {
             super.pressesBegan(unhandledPresses, with: event)
         }
+    }
+
+    func updateContent(_ rootView: AnyView) {
+        contentController.rootView = rootView
     }
 
     func update(
