@@ -145,6 +145,72 @@ final class CommandPaletteSearchTests: XCTestCase {
         XCTAssertEqual(state.selectedResultID, replacement.id)
     }
 
+    func testStateRefreshesReadyCommandToDisconnectedWhileKeepingQueryFiltering() {
+        let available = CommandPaletteItem(
+            id: "panes",
+            title: "Show Panes",
+            subtitle: nil,
+            action: .appCommand(.panes)
+        )
+        let unrelated = item(id: "unrelated")
+        var state = CommandPaletteState(results: [available])
+
+        state.refresh(
+            query: "panes",
+            commands: [
+                CommandPaletteItem(
+                    id: available.id,
+                    title: available.title,
+                    subtitle: available.subtitle,
+                    action: available.action,
+                    isEnabled: false
+                ),
+                unrelated,
+            ],
+            snapshots: []
+        )
+
+        XCTAssertEqual(state.results.map(\.id), [available.id])
+        XCTAssertFalse(state.results[0].isEnabled)
+        XCTAssertNil(state.selectedResultID)
+    }
+
+    func testStateRefreshesDisconnectedCommandToReadyWithoutReplacingValidSelection() {
+        let newlyAvailable = CommandPaletteItem(
+            id: "first",
+            title: "Target First",
+            subtitle: nil,
+            action: .appCommand(.panes),
+            isEnabled: false
+        )
+        let selected = CommandPaletteItem(
+            id: "second",
+            title: "Target Second",
+            subtitle: nil,
+            action: .appCommand(.home)
+        )
+        var state = CommandPaletteState(results: [newlyAvailable, selected])
+
+        state.refresh(
+            query: "target",
+            commands: [
+                CommandPaletteItem(
+                    id: newlyAvailable.id,
+                    title: newlyAvailable.title,
+                    subtitle: newlyAvailable.subtitle,
+                    action: newlyAvailable.action
+                ),
+                selected,
+                item(id: "unrelated"),
+            ],
+            snapshots: []
+        )
+
+        XCTAssertEqual(state.results.map(\.id), ["first", "second"])
+        XCTAssertTrue(state.results[0].isEnabled)
+        XCTAssertEqual(state.selectedResultID, selected.id)
+    }
+
     func testFloatingLayoutCapsAtSixRowsAndKeepsEmptyStateCompact() {
         XCTAssertEqual(CommandPaletteLayout.inputRowHeight, 44)
         XCTAssertEqual(CommandPaletteLayout.resultAreaHeight(for: 0), 120)

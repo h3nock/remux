@@ -19,10 +19,6 @@ enum KeyboardShortcutCapture {
             modifiers: modifiers
         )
     }
-
-    static func clearedBinding() -> KeyboardKeyBinding? {
-        nil
-    }
 }
 
 struct KeyboardShortcutCaptureView: UIViewRepresentable {

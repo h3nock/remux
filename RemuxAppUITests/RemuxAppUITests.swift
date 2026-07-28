@@ -138,6 +138,31 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    func testSettingsClearRemovesBinding() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let physicalKeyboard = app.descendants(matching: .any)["settings.physical-keyboard"]
+        XCTAssertTrue(physicalKeyboard.waitForExistence(timeout: 2))
+        physicalKeyboard.tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["keyboard-settings.form"]
+                .waitForExistence(timeout: 2)
+        )
+        let clearHome = app.buttons
+            .matching(identifier: "keyboard-settings.binding.home")
+            .matching(NSPredicate(format: "label == %@", "Clear"))
+            .firstMatch
+        XCTAssertTrue(clearHome.waitForExistence(timeout: 2))
+
+        clearHome.tap()
+
+        XCTAssertTrue(app.staticTexts["Unassigned"].waitForExistence(timeout: 2))
+        XCTAssertTrue(clearHome.waitForNonExistence(timeout: 2))
+    }
+
     func testCommandPaletteReceivesImmediateTyping() {
         launchSimulatorApp()
         XCTAssertTrue(

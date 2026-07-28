@@ -37,8 +37,4 @@ final class KeyboardShortcutCaptureTests: XCTestCase {
             try KeyboardShortcutCapture.binding(input: "", modifierFlags: [.command])
         )
     }
-
-    func testClearProducesUnassignedBinding() {
-        XCTAssertNil(KeyboardShortcutCapture.clearedBinding())
-    }
 }

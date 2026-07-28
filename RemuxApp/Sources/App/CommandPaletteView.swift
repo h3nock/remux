@@ -162,22 +162,24 @@ struct CommandPaletteView: View {
                     try? await Task.sleep(for: .milliseconds(120))
                 }
                 guard !Task.isCancelled else { return }
-                updateResults(
-                    CommandPaletteSearch.results(
-                        query: value,
-                        commands: commands,
-                        snapshots: snapshots()
-                    )
+                paletteState.refresh(
+                    query: value,
+                    commands: commands,
+                    snapshots: snapshots()
                 )
             }
+        }
+        .onChange(of: commands) { _, updatedCommands in
+            searchTask?.cancel()
+            paletteState.refresh(
+                query: query,
+                commands: updatedCommands,
+                snapshots: snapshots()
+            )
         }
         .onDisappear {
             searchTask?.cancel()
         }
-    }
-
-    private func updateResults(_ newResults: [CommandPaletteItem]) {
-        paletteState.replaceResults(newResults)
     }
 
     private func moveSelection(_ direction: CommandPaletteSelectionDirection) {

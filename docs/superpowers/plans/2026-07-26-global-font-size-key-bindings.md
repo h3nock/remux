@@ -352,4 +352,3 @@ git add \
   RemuxAppUITests/RemuxAppUITests.swift
 git commit -m "Add global font size key bindings"
 ```
-
