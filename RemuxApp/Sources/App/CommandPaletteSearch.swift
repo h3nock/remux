@@ -76,23 +76,16 @@ struct CommandPaletteState: Equatable {
     }
 
     mutating func replaceResults(_ newResults: [CommandPaletteItem]) {
-        let currentSelection = selectedResultID
         results = newResults
-        if let currentSelection,
-           newResults.contains(where: {
-               $0.id == currentSelection && $0.isEnabled
-           }) {
-            selectedResultID = currentSelection
-        } else {
-            selectedResultID = CommandPaletteSelection.initialID(in: newResults)
-        }
+        selectedResultID = CommandPaletteSelection.initialID(in: newResults)
     }
 
-    mutating func refresh(
+    mutating func refreshAvailability(
         query: String,
         commands: [CommandPaletteItem],
         snapshots: [TerminalViewportSnapshot]
     ) {
+        let currentSelection = selectedResultID
         replaceResults(
             CommandPaletteSearch.results(
                 query: query,
@@ -100,6 +93,12 @@ struct CommandPaletteState: Equatable {
                 snapshots: snapshots
             )
         )
+        if let currentSelection,
+           results.contains(where: {
+               $0.id == currentSelection && $0.isEnabled
+           }) {
+            selectedResultID = currentSelection
+        }
     }
 
     mutating func moveSelection(

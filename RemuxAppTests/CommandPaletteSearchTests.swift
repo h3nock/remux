@@ -140,9 +140,8 @@ final class CommandPaletteSearchTests: XCTestCase {
         state.moveSelection(.next)
         XCTAssertEqual(state.selectedResultID, second.id)
 
-        let replacement = item(id: "replacement")
-        state.replaceResults([replacement])
-        XCTAssertEqual(state.selectedResultID, replacement.id)
+        state.replaceResults([first, second])
+        XCTAssertEqual(state.selectedResultID, first.id)
     }
 
     func testStateRefreshesReadyCommandToDisconnectedWhileKeepingQueryFiltering() {
@@ -155,7 +154,7 @@ final class CommandPaletteSearchTests: XCTestCase {
         let unrelated = item(id: "unrelated")
         var state = CommandPaletteState(results: [available])
 
-        state.refresh(
+        state.refreshAvailability(
             query: "panes",
             commands: [
                 CommandPaletteItem(
@@ -191,7 +190,7 @@ final class CommandPaletteSearchTests: XCTestCase {
         )
         var state = CommandPaletteState(results: [newlyAvailable, selected])
 
-        state.refresh(
+        state.refreshAvailability(
             query: "target",
             commands: [
                 CommandPaletteItem(
