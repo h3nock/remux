@@ -258,6 +258,51 @@ final class RemuxAppUITests: XCTestCase {
         openCommandPaletteAndAssertImmediateTyping()
     }
 
+    func testLiveSSHCommandNCreatesRemoteWindowWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("command-n")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(
+            traceRuntime: true,
+            sessionNameOverride: sessionName
+        )
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        app.typeKey("n", modifierFlags: .command)
+        waitForLiveTerminalReady(timeout: 30)
+
+        app.typeKey("o", modifierFlags: .command)
+        XCTAssertTrue(
+            waitForAnyPickerElement(
+                [
+                    elementWithIdentifier("terminal.windows.sheet"),
+                    app.buttons["terminal.window.new"],
+                    app.buttons["New Window"],
+                ],
+                timeout: 8
+            ),
+            "Command-O should present the current session's window sheet."
+        )
+        XCTAssertTrue(
+            app.buttons["terminal.window.tile.1"].waitForExistence(timeout: 10)
+        )
+        XCTAssertTrue(
+            app.buttons["terminal.window.tile.2"].waitForExistence(timeout: 10)
+        )
+        XCTAssertFalse(
+            app.buttons["terminal.window.tile.3"].waitForExistence(timeout: 2),
+            "Command-N should create exactly one remote tmux window."
+        )
+        recordLiveTmuxWindowCountExpectation(
+            sessionName: sessionName,
+            expectedCount: 2
+        )
+    }
+
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("keyboard")
         defer {
