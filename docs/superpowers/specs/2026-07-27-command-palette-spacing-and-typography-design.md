@@ -34,10 +34,11 @@ The outer card retains Remux's existing opaque background, 18-point corner
 radius, border, and shadow. It provides the 10-point inset around one inner
 rounded group containing the search row, separator, results, and empty state.
 
-The inner group clips its row backgrounds and separators to its own rounded
-outline. This keeps list surfaces away from the outer card edge without
-introducing new colors or a nested shadow. Search and result surfaces continue
-to use the established Remux background, row, selection, and separator colors.
+The inner group clips its row backgrounds and separators to a 12-point
+continuous rounded rectangle, matching Remux's existing grouped surfaces. This
+keeps list surfaces away from the outer card edge without introducing new
+colors or a nested shadow. Search and result surfaces continue to use the
+established Remux background, row, selection, and separator colors.
 
 The card continues sizing to its content. Up to six results are visible;
 additional results scroll inside the existing result area. The inset must not
@@ -72,9 +73,9 @@ margin and 10-point card inset, the existing 44-point and 56-point row heights,
 and the UIKit search field's semantic font style and Dynamic Type behavior.
 
 A UI geometry assertion verifies that the rendered card remains at least
-20 points from the available screen edges. Existing focused UI tests continue
-to verify first-responder ownership, keyboard selection, activation, dismissal,
-and compact single-line input geometry.
+20 points from every edge of its presentation container. Existing focused UI
+tests continue to verify first-responder ownership, keyboard selection,
+activation, dismissal, and compact single-line input geometry.
 
 Visual acceptance checks the default content size on Jesse's iPhone:
 
