@@ -180,6 +180,7 @@ struct CommandPaletteView: View {
 }
 
 private struct CommandPaletteSearchField: UIViewRepresentable {
+    @Environment(\.appKeyboardCommandCenter) private var commandCenter
     @Binding var text: String
     let onMoveSelection: (CommandPaletteSelectionDirection) -> Void
     let onActivateSelection: () -> Void
@@ -215,6 +216,14 @@ private struct CommandPaletteSearchField: UIViewRepresentable {
         field.onMoveSelection = onMoveSelection
         field.onActivateSelection = onActivateSelection
         field.onDismiss = onDismiss
+        field.setCommandCenter(commandCenter)
+    }
+
+    static func dismantleUIView(
+        _ field: CommandPaletteTextField,
+        coordinator: ()
+    ) {
+        field.unregisterCommandPalette()
     }
 }
 
@@ -223,6 +232,7 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
     var onMoveSelection: ((CommandPaletteSelectionDirection) -> Void)?
     var onActivateSelection: (() -> Void)?
     var onDismiss: (() -> Void)?
+    private weak var commandCenter: AppKeyboardCommandCenter?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -235,29 +245,13 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
         fatalError("init(coder:) is unavailable")
     }
 
-    override var keyCommands: [UIKeyCommand]? {
-        [
-            priorityKeyCommand(
-                input: UIKeyCommand.inputUpArrow,
-                action: #selector(selectPreviousResult)
-            ),
-            priorityKeyCommand(
-                input: UIKeyCommand.inputDownArrow,
-                action: #selector(selectNextResult)
-            ),
-            priorityKeyCommand(
-                input: "\r",
-                action: #selector(activateSelection)
-            ),
-            priorityKeyCommand(
-                input: UIKeyCommand.inputEscape,
-                action: #selector(dismissPalette)
-            ),
-        ]
-    }
-
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        if window == nil {
+            unregisterCommandPalette()
+            return
+        }
+        registerCommandPalette()
         focusWhenAttached()
     }
 
@@ -327,37 +321,32 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
         return false
     }
 
-    private func priorityKeyCommand(
-        input: String,
-        action: Selector
-    ) -> UIKeyCommand {
-        let command = UIKeyCommand(
-            input: input,
-            modifierFlags: [],
-            action: action
+    func setCommandCenter(_ commandCenter: AppKeyboardCommandCenter?) {
+        if self.commandCenter !== commandCenter {
+            unregisterCommandPalette()
+            self.commandCenter = commandCenter
+        }
+        registerCommandPalette()
+    }
+
+    func unregisterCommandPalette() {
+        commandCenter?.unregisterCommandPalette(owner: self)
+    }
+
+    private func registerCommandPalette() {
+        guard window != nil else { return }
+        commandCenter?.registerCommandPalette(
+            owner: self,
+            onMoveSelection: { [weak self] direction in
+                self?.onMoveSelection?(direction)
+            },
+            onActivateSelection: { [weak self] in
+                self?.onActivateSelection?()
+            },
+            onDismiss: { [weak self] in
+                self?.onDismiss?()
+            }
         )
-        command.wantsPriorityOverSystemBehavior = true
-        return command
-    }
-
-    @objc
-    private func selectPreviousResult() {
-        onMoveSelection?(.previous)
-    }
-
-    @objc
-    private func selectNextResult() {
-        onMoveSelection?(.next)
-    }
-
-    @objc
-    private func activateSelection() {
-        onActivateSelection?()
-    }
-
-    @objc
-    private func dismissPalette() {
-        onDismiss?()
     }
 
     @objc

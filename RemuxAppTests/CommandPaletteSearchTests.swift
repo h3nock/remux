@@ -199,56 +199,6 @@ final class CommandPaletteSearchTests: XCTestCase {
         )
         XCTAssertFalse(field.handleKeyPress(input: "a", modifierFlags: []))
         XCTAssertEqual(actions, ["previous", "next", "activate", "dismiss"])
-        XCTAssertEqual(
-            field.keyCommands?.compactMap(\.input),
-            [
-                UIKeyCommand.inputUpArrow,
-                UIKeyCommand.inputDownArrow,
-                "\r",
-                UIKeyCommand.inputEscape,
-            ]
-        )
-        XCTAssertTrue(
-            field.keyCommands?.allSatisfy(\.wantsPriorityOverSystemBehavior)
-                == true
-        )
-    }
-
-    @MainActor
-    func testPriorityKeyCommandsMoveActivateAndDismiss() throws {
-        let field = CommandPaletteTextField()
-        var actions: [String] = []
-        field.onMoveSelection = {
-            switch $0 {
-            case .previous:
-                actions.append("previous")
-            case .next:
-                actions.append("next")
-            }
-        }
-        field.onActivateSelection = {
-            actions.append("activate")
-        }
-        field.onDismiss = {
-            actions.append("dismiss")
-        }
-
-        for input in [
-            UIKeyCommand.inputUpArrow,
-            UIKeyCommand.inputDownArrow,
-            "\r",
-            UIKeyCommand.inputEscape,
-        ] {
-            let command = try XCTUnwrap(
-                field.keyCommands?.first(where: { $0.input == input })
-            )
-            field.perform(command.action, with: command)
-        }
-
-        XCTAssertEqual(
-            actions,
-            ["previous", "next", "activate", "dismiss"]
-        )
     }
 
     private func item(

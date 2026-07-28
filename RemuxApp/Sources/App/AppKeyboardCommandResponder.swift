@@ -1,12 +1,53 @@
 import SwiftUI
 import UIKit
 
+enum CommandPaletteKeyboardAction: String, CaseIterable {
+    case previousResult
+    case nextResult
+    case activateSelection
+    case dismiss
+
+    var input: String {
+        switch self {
+        case .previousResult:
+            UIKeyCommand.inputUpArrow
+        case .nextResult:
+            UIKeyCommand.inputDownArrow
+        case .activateSelection:
+            "\r"
+        case .dismiss:
+            UIKeyCommand.inputEscape
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .previousResult:
+            "Previous Result"
+        case .nextResult:
+            "Next Result"
+        case .activateSelection:
+            "Choose Result"
+        case .dismiss:
+            "Close Command Palette"
+        }
+    }
+}
+
 @MainActor
 final class AppKeyboardCommandCenter: ObservableObject {
+    private struct CommandPaletteHandlers {
+        let onMoveSelection: (CommandPaletteSelectionDirection) -> Void
+        let onActivateSelection: () -> Void
+        let onDismiss: () -> Void
+    }
+
     @Published private(set) var settings: KeyboardSettings = .default
     private var commandHandler: ((AppKeyboardCommand) -> Void)?
     private weak var hostingController: AppKeyboardCommandHostingController?
     private var isShortcutCaptureActive = false
+    private weak var commandPaletteOwner: AnyObject?
+    private var commandPaletteHandlers: CommandPaletteHandlers?
 
     func update(
         settings: KeyboardSettings,
@@ -30,6 +71,50 @@ final class AppKeyboardCommandCenter: ObservableObject {
     func setShortcutCaptureActive(_ isActive: Bool) {
         isShortcutCaptureActive = isActive
         hostingController?.setSuspended(isActive)
+    }
+
+    func registerCommandPalette(
+        owner: AnyObject,
+        onMoveSelection: @escaping (CommandPaletteSelectionDirection) -> Void,
+        onActivateSelection: @escaping () -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        commandPaletteOwner = owner
+        commandPaletteHandlers = CommandPaletteHandlers(
+            onMoveSelection: onMoveSelection,
+            onActivateSelection: onActivateSelection,
+            onDismiss: onDismiss
+        )
+    }
+
+    func unregisterCommandPalette(owner: AnyObject) {
+        guard commandPaletteOwner === owner else { return }
+        commandPaletteOwner = nil
+        commandPaletteHandlers = nil
+    }
+
+    var hasRegisteredCommandPalette: Bool {
+        commandPaletteOwner != nil && commandPaletteHandlers != nil
+    }
+
+    func perform(_ action: CommandPaletteKeyboardAction) {
+        guard
+            commandPaletteOwner != nil,
+            let commandPaletteHandlers
+        else {
+            return
+        }
+
+        switch action {
+        case .previousResult:
+            commandPaletteHandlers.onMoveSelection(.previous)
+        case .nextResult:
+            commandPaletteHandlers.onMoveSelection(.next)
+        case .activateSelection:
+            commandPaletteHandlers.onActivateSelection()
+        case .dismiss:
+            commandPaletteHandlers.onDismiss()
+        }
     }
 }
 
@@ -137,7 +222,11 @@ final class AppKeyboardCommandHostingController: UIViewController {
     }
 
     override var keyCommands: [UIKeyCommand]? {
-        return isSuspended ? [] : appKeyCommands
+        guard !isSuspended else { return [] }
+        guard commandCenter?.hasRegisteredCommandPalette == true else {
+            return appKeyCommands
+        }
+        return appKeyCommands + commandPaletteKeyCommands
     }
 
     override var canBecomeFirstResponder: Bool {
@@ -196,6 +285,21 @@ final class AppKeyboardCommandHostingController: UIViewController {
         return true
     }
 
+    private var commandPaletteKeyCommands: [UIKeyCommand] {
+        CommandPaletteKeyboardAction.allCases.map { action in
+            let command = UIKeyCommand(
+                title: action.displayTitle,
+                image: nil,
+                action: #selector(performCommandPaletteKeyboardAction(_:)),
+                input: action.input,
+                modifierFlags: [],
+                propertyList: action.rawValue
+            )
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+    }
+
     @objc
     private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
         guard
@@ -206,5 +310,16 @@ final class AppKeyboardCommandHostingController: UIViewController {
             return
         }
         commandCenter?.perform(command)
+    }
+
+    @objc
+    private func performCommandPaletteKeyboardAction(_ sender: UIKeyCommand) {
+        guard
+            let rawValue = sender.propertyList as? String,
+            let action = CommandPaletteKeyboardAction(rawValue: rawValue)
+        else {
+            return
+        }
+        commandCenter?.perform(action)
     }
 }

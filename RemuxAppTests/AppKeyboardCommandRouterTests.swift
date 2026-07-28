@@ -300,4 +300,82 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
         )
         XCTAssertEqual(receivedCommands, [.home])
     }
+
+    @MainActor
+    func testPaletteCommandsDispatchThroughGlobalResponderWhileTextOwnsFocus() throws {
+        let center = AppKeyboardCommandCenter()
+        let controller = AppKeyboardCommandHostingController(
+            rootView: AnyView(EmptyView()),
+            commandCenter: center
+        )
+        controller.update(settings: .default, commandCenter: center)
+        center.register(controller)
+        controller.loadViewIfNeeded()
+        let contentController = try XCTUnwrap(controller.children.first)
+        let textField = UITextField()
+        contentController.view.addSubview(textField)
+
+        let owner = NSObject()
+        var actions: [String] = []
+        center.registerCommandPalette(
+            owner: owner,
+            onMoveSelection: {
+                switch $0 {
+                case .previous:
+                    actions.append("previous")
+                case .next:
+                    actions.append("next")
+                }
+            },
+            onActivateSelection: {
+                actions.append("activate")
+            },
+            onDismiss: {
+                actions.append("dismiss")
+            }
+        )
+
+        let expectedInputs = [
+            UIKeyCommand.inputUpArrow,
+            UIKeyCommand.inputDownArrow,
+            "\r",
+            UIKeyCommand.inputEscape,
+        ]
+        let commands = try XCTUnwrap(controller.keyCommands)
+        for input in expectedInputs {
+            let command = try XCTUnwrap(
+                commands.first {
+                    $0.input == input && $0.modifierFlags.isEmpty
+                }
+            )
+            XCTAssertTrue(command.wantsPriorityOverSystemBehavior)
+            let action = try XCTUnwrap(command.action)
+            let target = textField.target(
+                forAction: action,
+                withSender: command
+            ) as? AppKeyboardCommandHostingController
+            XCTAssertTrue(target === controller)
+            XCTAssertTrue(
+                UIApplication.shared.sendAction(
+                    action,
+                    to: controller,
+                    from: command,
+                    for: nil
+                )
+            )
+        }
+
+        XCTAssertEqual(
+            actions,
+            ["previous", "next", "activate", "dismiss"]
+        )
+
+        center.unregisterCommandPalette(owner: owner)
+        XCTAssertFalse(
+            (controller.keyCommands ?? []).contains {
+                expectedInputs.contains($0.input ?? "")
+                    && $0.modifierFlags.isEmpty
+            }
+        )
+    }
 }
