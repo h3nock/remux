@@ -19,6 +19,6 @@ struct GhosttyTerminalResponderFocusPolicy: Equatable {
     var wantsFirstResponder: Bool {
         isSelected
             && (keyboardMode.enablesSystemKeyboard || isPhysicalKeyboardConnected)
-            && (isResponderEnabled || areAppKeyboardCommandsEnabled)
+            && areAppKeyboardCommandsEnabled
     }
 }

@@ -120,13 +120,11 @@ final class RemuxAppUITests: XCTestCase {
         let homeTitle = app.staticTexts["Home"]
         XCTAssertTrue(homeTitle.waitForExistence(timeout: 2))
         XCTAssertEqual(homeBinding.frame.height, homeTitle.frame.height, accuracy: 2)
-        XCTAssertTrue(app.buttons["Set"].firstMatch.waitForExistence(timeout: 2))
-
-        let setButtons = app.buttons.matching(
-            NSPredicate(format: "label == %@", "Set")
-        )
-        XCTAssertGreaterThan(setButtons.count, 0)
-        setButtons.element(boundBy: setButtons.count - 1).tap()
+        let setCommandPalette = app.buttons[
+            "keyboard-settings.set.commandPalette"
+        ]
+        XCTAssertTrue(setCommandPalette.waitForExistence(timeout: 2))
+        setCommandPalette.tap()
         XCTAssertTrue(
             app.staticTexts["Press the shortcut for Command Palette"]
                 .waitForExistence(timeout: 2)
@@ -151,10 +149,7 @@ final class RemuxAppUITests: XCTestCase {
             app.descendants(matching: .any)["keyboard-settings.form"]
                 .waitForExistence(timeout: 2)
         )
-        let clearHome = app.buttons
-            .matching(identifier: "keyboard-settings.binding.home")
-            .matching(NSPredicate(format: "label == %@", "Clear"))
-            .firstMatch
+        let clearHome = app.buttons["keyboard-settings.clear.home"]
         XCTAssertTrue(clearHome.waitForExistence(timeout: 2))
 
         clearHome.tap()
@@ -2835,7 +2830,9 @@ final class RemuxAppUITests: XCTestCase {
 
         let terminal = app.otherElements["terminal.screen"]
         if terminal.exists {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            terminal.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
+            ).tap()
         }
 
         if let button = optionalTerminalHomeButton(timeout: timeout) {
@@ -3437,6 +3434,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let pwd = app.secureTextFields["connection.password"]
         XCTAssertTrue(pwd.waitForExistence(timeout: 2))
+        pwd.tap()
         pwd.typeText("demo-password")
         sleep(1)
         attach(name: "13-connection-setup-filled")

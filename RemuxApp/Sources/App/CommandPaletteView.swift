@@ -306,7 +306,7 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
             .alternate,
             .control,
         ]
-        guard modifierFlags.intersection(actionModifiers).isEmpty else {
+        guard modifierFlags.isDisjoint(with: actionModifiers) else {
             return false
         }
 

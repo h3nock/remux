@@ -46,7 +46,6 @@ struct KeyboardSettingsView: View {
                             .accessibilityIdentifier("keyboard-settings.clear.\(command.rawValue)")
                         }
                     }
-                    .accessibilityIdentifier("keyboard-settings.binding.\(command.rawValue)")
                 }
             }
 

@@ -75,9 +75,10 @@ final class RemuxRootModelTests: XCTestCase {
         await repository.waitForBothSavesToComplete()
 
         XCTAssertFalse(secondSaveStartedBeforeRelease)
-        XCTAssertEqual(harness.model.terminalSettings.fontSize, 23)
+        let expectedFontSize = TerminalSettings.maximumFontSize - 1
+        XCTAssertEqual(harness.model.terminalSettings.fontSize, expectedFontSize)
         let saved = try await repository.loadSettings()
-        XCTAssertEqual(saved.fontSize, 23)
+        XCTAssertEqual(saved.fontSize, expectedFontSize)
     }
 
     func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
