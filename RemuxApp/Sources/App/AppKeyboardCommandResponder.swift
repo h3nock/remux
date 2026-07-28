@@ -43,6 +43,7 @@ final class AppKeyboardCommandCenter: ObservableObject {
     }
 
     @Published private(set) var settings: KeyboardSettings = .default
+    @Published private(set) var availableCommands: [AppKeyboardCommand] = []
     private var commandHandler: ((AppKeyboardCommand) -> Void)?
     private weak var hostingController: AppKeyboardCommandHostingController?
     private var isShortcutCaptureActive = false
@@ -53,11 +54,15 @@ final class AppKeyboardCommandCenter: ObservableObject {
 
     func update(
         settings: KeyboardSettings,
+        availableCommands: [AppKeyboardCommand],
         onCommand: @escaping (AppKeyboardCommand) -> Void
     ) {
         commandHandler = onCommand
         if self.settings != settings {
             self.settings = settings
+        }
+        if self.availableCommands != availableCommands {
+            self.availableCommands = availableCommands
         }
     }
 
@@ -175,7 +180,11 @@ struct AppKeyboardCommandHost<Content: View>: UIViewControllerRepresentable {
             rootView: AnyView(content),
             commandCenter: center
         )
-        controller.update(settings: center.settings, commandCenter: center)
+        controller.update(
+            settings: center.settings,
+            availableCommands: center.availableCommands,
+            commandCenter: center
+        )
         center.register(controller)
         return controller
     }
@@ -184,7 +193,11 @@ struct AppKeyboardCommandHost<Content: View>: UIViewControllerRepresentable {
         _ controller: AppKeyboardCommandHostingController,
         context: Context
     ) {
-        controller.update(settings: center.settings, commandCenter: center)
+        controller.update(
+            settings: center.settings,
+            availableCommands: center.availableCommands,
+            commandCenter: center
+        )
         center.register(controller)
     }
 }
@@ -217,6 +230,7 @@ final class AppKeyboardCommandHostingController: UIViewController {
     private weak var commandCenter: AppKeyboardCommandCenter?
     private var appKeyCommands: [UIKeyCommand] = []
     private var keyboardSettings: KeyboardSettings = .default
+    private var availableCommands: [AppKeyboardCommand] = []
     private var isSuspended = false
 
     init(rootView: AnyView, commandCenter: AppKeyboardCommandCenter) {
@@ -283,13 +297,15 @@ final class AppKeyboardCommandHostingController: UIViewController {
 
     func update(
         settings: KeyboardSettings,
+        availableCommands: [AppKeyboardCommand],
         commandCenter: AppKeyboardCommandCenter
     ) {
         self.commandCenter = commandCenter
         keyboardSettings = settings
+        self.availableCommands = availableCommands
         appKeyCommands = AppKeyboardKeyCommandBuilder.commands(
             settings: settings,
-            commands: AppKeyboardCommand.allCases,
+            commands: availableCommands,
             action: #selector(performAppKeyboardCommand(_:))
         )
     }
@@ -305,7 +321,8 @@ final class AppKeyboardCommandHostingController: UIViewController {
         guard !isSuspended else { return false }
         guard
             let command = AppKeyboardCommandResolver(settings: keyboardSettings)
-                .command(input: input, modifierFlags: modifierFlags)
+                .command(input: input, modifierFlags: modifierFlags),
+            availableCommands.contains(command)
         else {
             return false
         }
@@ -332,7 +349,8 @@ final class AppKeyboardCommandHostingController: UIViewController {
     private func performAppKeyboardCommand(_ sender: UIKeyCommand) {
         guard
             let rawValue = sender.propertyList as? String,
-            let command = AppKeyboardCommand(rawValue: rawValue)
+            let command = AppKeyboardCommand(rawValue: rawValue),
+            availableCommands.contains(command)
         else {
             return
         }

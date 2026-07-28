@@ -17,6 +17,12 @@ enum AppKeyboardCommandRoute: Equatable {
 }
 
 enum AppKeyboardCommandRouter {
+    static func availableCommands(
+        in context: AppKeyboardCommandRouteContext
+    ) -> [AppKeyboardCommand] {
+        AppKeyboardCommand.allCases.filter { isAvailable($0, in: context) }
+    }
+
     static func route(
         _ command: AppKeyboardCommand,
         in context: AppKeyboardCommandRouteContext

@@ -100,6 +100,9 @@ private struct RemuxWorkspaceShell: View {
         .onChange(of: model.keyboardSettings) { _, _ in
             updateAppKeyboardCommandCenter()
         }
+        .onChange(of: keyboardCommandContext) { _, _ in
+            updateAppKeyboardCommandCenter()
+        }
         .onChange(of: model.activeTerminalScreenEntries.map(\.id)) { _, ids in
             guard !ids.isEmpty else {
                 retainedTerminalID = nil
@@ -369,6 +372,9 @@ private struct RemuxWorkspaceShell: View {
     private func updateAppKeyboardCommandCenter() {
         appKeyboardCommandCenter?.update(
             settings: model.keyboardSettings,
+            availableCommands: AppKeyboardCommandRouter.availableCommands(
+                in: keyboardCommandContext
+            ),
             onCommand: performKeyboardCommand
         )
     }

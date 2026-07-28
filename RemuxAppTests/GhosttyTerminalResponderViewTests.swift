@@ -108,7 +108,11 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases,
+            commandCenter: center
+        )
         controller.loadViewIfNeeded()
 
         let contentController = try XCTUnwrap(controller.children.first)

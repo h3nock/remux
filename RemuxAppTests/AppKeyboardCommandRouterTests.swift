@@ -158,19 +158,36 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
 
 final class AppKeyboardCommandResponderTests: XCTestCase {
     @MainActor
-    func testHostingControllerExposesAllAppCommands() throws {
+    func testHostingControllerExposesOnlyAvailableAppCommands() throws {
         let center = AppKeyboardCommandCenter()
         let controller = AppKeyboardCommandHostingController(
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
+        let availableCommands = AppKeyboardCommandRouter.availableCommands(
+            in: AppKeyboardCommandRouteContext(
+                selectedSessionID: nil,
+                isSelectedTerminalReady: false,
+                orderedActiveSessionIDs: []
+            )
+        )
+        XCTAssertEqual(availableCommands, [
+            .home,
+            .increaseFontSize,
+            .decreaseFontSize,
+            .commandPalette,
+        ])
 
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: availableCommands,
+            commandCenter: center
+        )
 
         let commands = try XCTUnwrap(controller.keyCommands)
         XCTAssertEqual(
             Set(commands.compactMap { $0.propertyList as? String }),
-            Set(AppKeyboardCommand.allCases.map(\.rawValue))
+            Set(availableCommands.map(\.rawValue))
         )
         XCTAssertTrue(commands.allSatisfy(\.wantsPriorityOverSystemBehavior))
     }
@@ -182,7 +199,11 @@ final class AppKeyboardCommandResponderTests: XCTestCase {
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases,
+            commandCenter: center
+        )
         controller.loadViewIfNeeded()
 
         let contentController = try XCTUnwrap(controller.children.first)
@@ -210,7 +231,11 @@ final class AppKeyboardCommandResponderTests: XCTestCase {
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases,
+            commandCenter: center
+        )
         center.register(controller)
 
         center.setShortcutCaptureActive(true)
@@ -227,7 +252,10 @@ final class AppKeyboardCommandCenterTests: XCTestCase {
         let center = AppKeyboardCommandCenter()
         var receivedCommands: [AppKeyboardCommand] = []
 
-        center.update(settings: .default) {
+        center.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases
+        ) {
             receivedCommands.append($0)
         }
         center.perform(.commandPalette)
@@ -241,7 +269,10 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
     func testDispatchesRegisteredCommandThroughCurrentCenter() throws {
         let center = AppKeyboardCommandCenter()
         var receivedCommands: [AppKeyboardCommand] = []
-        center.update(settings: .default) {
+        center.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases
+        ) {
             receivedCommands.append($0)
         }
 
@@ -249,7 +280,11 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases,
+            commandCenter: center
+        )
         let registeredCommand = try XCTUnwrap(
             controller.keyCommands?.first(where: {
                 $0.propertyList as? String == AppKeyboardCommand.commandPalette.rawValue
@@ -276,14 +311,21 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
     func testHandlesConfiguredRawAppChordsAndIgnoresPlainText() {
         let center = AppKeyboardCommandCenter()
         var receivedCommands: [AppKeyboardCommand] = []
-        center.update(settings: .default) {
+        center.update(
+            settings: .default,
+            availableCommands: [.home]
+        ) {
             receivedCommands.append($0)
         }
         let controller = AppKeyboardCommandHostingController(
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: [.home],
+            commandCenter: center
+        )
 
         XCTAssertTrue(
             controller.handleKeyPress(
@@ -294,13 +336,13 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
         XCTAssertFalse(
             controller.handleKeyPress(input: "h", modifierFlags: [])
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             controller.handleKeyPress(
                 input: "n",
                 modifierFlags: [.command]
             )
         )
-        XCTAssertEqual(receivedCommands, [.home, .newWindow])
+        XCTAssertEqual(receivedCommands, [.home])
     }
 
     @MainActor
@@ -310,7 +352,11 @@ final class AppKeyboardCommandResponderActionTests: XCTestCase {
             rootView: AnyView(EmptyView()),
             commandCenter: center
         )
-        controller.update(settings: .default, commandCenter: center)
+        controller.update(
+            settings: .default,
+            availableCommands: AppKeyboardCommand.allCases,
+            commandCenter: center
+        )
         center.register(controller)
         controller.loadViewIfNeeded()
         let contentController = try XCTUnwrap(controller.children.first)
