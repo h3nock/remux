@@ -122,6 +122,37 @@ final class CommandPaletteSearchTests: XCTestCase {
         )
     }
 
+    func testStateStartsWithCommandsAndFirstEnabledSelection() {
+        let disabled = item(id: "disabled", isEnabled: false)
+        let first = item(id: "first")
+        let state = CommandPaletteState(results: [disabled, first])
+
+        XCTAssertEqual(state.results, [disabled, first])
+        XCTAssertEqual(state.selectedResultID, first.id)
+        XCTAssertEqual(state.selectedResult, first)
+    }
+
+    func testStateCanMoveBeforeAQueryAndResetsWhenResultsChange() {
+        let first = item(id: "first")
+        let second = item(id: "second")
+        var state = CommandPaletteState(results: [first, second])
+
+        state.moveSelection(.next)
+        XCTAssertEqual(state.selectedResultID, second.id)
+
+        let replacement = item(id: "replacement")
+        state.replaceResults([replacement])
+        XCTAssertEqual(state.selectedResultID, replacement.id)
+    }
+
+    func testFloatingLayoutCapsAtSixRowsAndKeepsEmptyStateCompact() {
+        XCTAssertEqual(CommandPaletteLayout.inputRowHeight, 44)
+        XCTAssertEqual(CommandPaletteLayout.resultAreaHeight(for: 0), 120)
+        XCTAssertEqual(CommandPaletteLayout.resultAreaHeight(for: 1), 56)
+        XCTAssertEqual(CommandPaletteLayout.resultAreaHeight(for: 6), 336)
+        XCTAssertEqual(CommandPaletteLayout.resultAreaHeight(for: 9), 336)
+    }
+
     @MainActor
     func testSearchFieldRoutesNavigationAndActivationKeysWithoutModifiers() {
         let field = CommandPaletteTextField()
@@ -170,11 +201,53 @@ final class CommandPaletteSearchTests: XCTestCase {
         XCTAssertEqual(actions, ["previous", "next", "activate", "dismiss"])
         XCTAssertEqual(
             field.keyCommands?.compactMap(\.input),
-            ["\r", UIKeyCommand.inputEscape]
+            [
+                UIKeyCommand.inputUpArrow,
+                UIKeyCommand.inputDownArrow,
+                "\r",
+                UIKeyCommand.inputEscape,
+            ]
         )
         XCTAssertTrue(
             field.keyCommands?.allSatisfy(\.wantsPriorityOverSystemBehavior)
                 == true
+        )
+    }
+
+    @MainActor
+    func testPriorityKeyCommandsMoveActivateAndDismiss() throws {
+        let field = CommandPaletteTextField()
+        var actions: [String] = []
+        field.onMoveSelection = {
+            switch $0 {
+            case .previous:
+                actions.append("previous")
+            case .next:
+                actions.append("next")
+            }
+        }
+        field.onActivateSelection = {
+            actions.append("activate")
+        }
+        field.onDismiss = {
+            actions.append("dismiss")
+        }
+
+        for input in [
+            UIKeyCommand.inputUpArrow,
+            UIKeyCommand.inputDownArrow,
+            "\r",
+            UIKeyCommand.inputEscape,
+        ] {
+            let command = try XCTUnwrap(
+                field.keyCommands?.first(where: { $0.input == input })
+            )
+            field.perform(command.action, with: command)
+        }
+
+        XCTAssertEqual(
+            actions,
+            ["previous", "next", "activate", "dismiss"]
         )
     }
 

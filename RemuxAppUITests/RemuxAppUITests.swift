@@ -153,6 +153,15 @@ final class RemuxAppUITests: XCTestCase {
         let palette = app.descendants(matching: .any)["command-palette"]
         XCTAssertTrue(palette.waitForExistence(timeout: 2))
 
+        let search = app.textFields["command-palette.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        XCTAssertLessThanOrEqual(search.frame.height, 44.5)
+        XCTAssertLessThanOrEqual(
+            palette.frame.height,
+            430,
+            "The chooser should remain a compact floating card with six visible rows."
+        )
+
         let addConnection = app.buttons["command-palette.item.add-connection"]
         XCTAssertTrue(addConnection.waitForExistence(timeout: 2))
         XCTAssertTrue(addConnection.isSelected)

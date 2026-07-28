@@ -59,6 +59,38 @@ enum CommandPaletteSelection {
     }
 }
 
+struct CommandPaletteState: Equatable {
+    private(set) var results: [CommandPaletteItem]
+    private(set) var selectedResultID: CommandPaletteItem.ID?
+
+    init(results: [CommandPaletteItem]) {
+        self.results = results
+        selectedResultID = CommandPaletteSelection.initialID(in: results)
+    }
+
+    var selectedResult: CommandPaletteItem? {
+        guard let selectedResultID else { return nil }
+        return results.first {
+            $0.id == selectedResultID && $0.isEnabled
+        }
+    }
+
+    mutating func replaceResults(_ newResults: [CommandPaletteItem]) {
+        results = newResults
+        selectedResultID = CommandPaletteSelection.initialID(in: newResults)
+    }
+
+    mutating func moveSelection(
+        _ direction: CommandPaletteSelectionDirection
+    ) {
+        selectedResultID = CommandPaletteSelection.moving(
+            from: selectedResultID,
+            direction: direction,
+            in: results
+        )
+    }
+}
+
 enum CommandPaletteSearch {
     static func results(
         query: String,

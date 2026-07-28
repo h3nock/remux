@@ -1,6 +1,19 @@
 import SwiftUI
 import UIKit
 
+enum CommandPaletteLayout {
+    static let maximumVisibleResultCount = 6
+    static let inputRowHeight: CGFloat = 44
+    static let resultRowHeight: CGFloat = 56
+    static let emptyResultHeight: CGFloat = 120
+
+    static func resultAreaHeight(for resultCount: Int) -> CGFloat {
+        guard resultCount > 0 else { return emptyResultHeight }
+        return CGFloat(min(resultCount, maximumVisibleResultCount))
+            * resultRowHeight
+    }
+}
+
 struct CommandPaletteView: View {
     let commands: [CommandPaletteItem]
     let snapshots: () -> [TerminalViewportSnapshot]
@@ -8,9 +21,23 @@ struct CommandPaletteView: View {
     let onDismiss: () -> Void
 
     @State private var query = ""
-    @State private var results: [CommandPaletteItem] = []
-    @State private var selectedResultID: CommandPaletteItem.ID?
+    @State private var paletteState: CommandPaletteState
     @State private var searchTask: Task<Void, Never>?
+
+    init(
+        commands: [CommandPaletteItem],
+        snapshots: @escaping () -> [TerminalViewportSnapshot],
+        onSelect: @escaping (CommandPaletteAction) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.commands = commands
+        self.snapshots = snapshots
+        self.onSelect = onSelect
+        self.onDismiss = onDismiss
+        _paletteState = State(
+            initialValue: CommandPaletteState(results: commands)
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,19 +56,21 @@ struct CommandPaletteView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding()
+            .padding(.horizontal, 12)
+            .frame(height: CommandPaletteLayout.inputRowHeight)
             .background(LibraryHomePalette.rowSurface)
 
             Divider()
                 .overlay(LibraryHomePalette.separator)
 
-            if results.isEmpty {
+            if paletteState.results.isEmpty {
                 ContentUnavailableView.search(text: query)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: CommandPaletteLayout.emptyResultHeight)
                     .background(LibraryHomePalette.background)
             } else {
                 ScrollViewReader { proxy in
-                    List(results) { item in
+                    List(paletteState.results) { item in
                         Button {
                             onSelect(item.action)
                         } label: {
@@ -55,14 +84,29 @@ struct CommandPaletteView: View {
                                         .lineLimit(1)
                                 }
                             }
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: CommandPaletteLayout.resultRowHeight,
+                                alignment: .leading
+                            )
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         .accessibilityIdentifier("command-palette.item.\(item.id)")
                         .accessibilityAddTraits(
-                            item.id == selectedResultID ? .isSelected : []
+                            item.id == paletteState.selectedResultID ? .isSelected : []
                         )
                         .disabled(!item.isEnabled)
+                        .listRowInsets(
+                            EdgeInsets(
+                                top: 0,
+                                leading: 16,
+                                bottom: 0,
+                                trailing: 16
+                            )
+                        )
                         .listRowBackground(
-                            item.id == selectedResultID
+                            item.id == paletteState.selectedResultID
                                 ? LibraryHomePalette.controlAccent.opacity(0.22)
                                 : LibraryHomePalette.rowSurface
                         )
@@ -72,7 +116,12 @@ struct CommandPaletteView: View {
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
                     .background(LibraryHomePalette.background)
-                    .onChange(of: selectedResultID) { _, id in
+                    .frame(
+                        height: CommandPaletteLayout.resultAreaHeight(
+                            for: paletteState.results.count
+                        )
+                    )
+                    .onChange(of: paletteState.selectedResultID) { _, id in
                         guard let id else { return }
                         withAnimation {
                             proxy.scrollTo(id, anchor: .center)
@@ -81,7 +130,8 @@ struct CommandPaletteView: View {
                 }
             }
         }
-        .frame(maxWidth: 620, maxHeight: 520)
+        .frame(maxWidth: 620)
+        .fixedSize(horizontal: false, vertical: true)
         .background(
             LibraryHomePalette.background,
             in: RoundedRectangle(cornerRadius: 18)
@@ -91,12 +141,9 @@ struct CommandPaletteView: View {
                 .stroke(LibraryHomePalette.separator, lineWidth: 1)
         }
         .shadow(radius: 30)
-        .padding()
+        .padding(16)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("command-palette")
-        .task {
-            updateResults(commands)
-        }
         .onChange(of: query) { _, value in
             searchTask?.cancel()
             searchTask = Task { @MainActor in
@@ -119,27 +166,15 @@ struct CommandPaletteView: View {
     }
 
     private func updateResults(_ newResults: [CommandPaletteItem]) {
-        results = newResults
-        selectedResultID = CommandPaletteSelection.initialID(in: newResults)
+        paletteState.replaceResults(newResults)
     }
 
     private func moveSelection(_ direction: CommandPaletteSelectionDirection) {
-        selectedResultID = CommandPaletteSelection.moving(
-            from: selectedResultID,
-            direction: direction,
-            in: results
-        )
+        paletteState.moveSelection(direction)
     }
 
     private func activateSelectedResult() {
-        guard
-            let selectedResultID,
-            let result = results.first(where: {
-                $0.id == selectedResultID && $0.isEnabled
-            })
-        else {
-            return
-        }
+        guard let result = paletteState.selectedResult else { return }
         onSelect(result.action)
     }
 }
@@ -202,6 +237,14 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
 
     override var keyCommands: [UIKeyCommand]? {
         [
+            priorityKeyCommand(
+                input: UIKeyCommand.inputUpArrow,
+                action: #selector(selectPreviousResult)
+            ),
+            priorityKeyCommand(
+                input: UIKeyCommand.inputDownArrow,
+                action: #selector(selectNextResult)
+            ),
             priorityKeyCommand(
                 input: "\r",
                 action: #selector(activateSelection)
@@ -295,6 +338,16 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
         )
         command.wantsPriorityOverSystemBehavior = true
         return command
+    }
+
+    @objc
+    private func selectPreviousResult() {
+        onMoveSelection?(.previous)
+    }
+
+    @objc
+    private func selectNextResult() {
+        onMoveSelection?(.next)
     }
 
     @objc
