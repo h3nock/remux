@@ -62,10 +62,15 @@ enum CommandPaletteSelection {
 struct CommandPaletteState: Equatable {
     private(set) var results: [CommandPaletteItem]
     private(set) var selectedResultID: CommandPaletteItem.ID?
+    private(set) var appliedQuery: String
 
-    init(results: [CommandPaletteItem]) {
+    init(
+        results: [CommandPaletteItem],
+        appliedQuery: String = ""
+    ) {
         self.results = results
         selectedResultID = CommandPaletteSelection.initialID(in: results)
+        self.appliedQuery = appliedQuery
     }
 
     var selectedResult: CommandPaletteItem? {
@@ -80,18 +85,27 @@ struct CommandPaletteState: Equatable {
         selectedResultID = CommandPaletteSelection.initialID(in: newResults)
     }
 
+    mutating func replaceResults(
+        _ newResults: [CommandPaletteItem],
+        for query: String
+    ) {
+        appliedQuery = query
+        replaceResults(newResults)
+    }
+
     mutating func refreshAvailability(
         query: String,
         commands: [CommandPaletteItem],
         snapshots: [TerminalViewportSnapshot]
     ) {
-        let currentSelection = selectedResultID
+        let currentSelection = query == appliedQuery ? selectedResultID : nil
         replaceResults(
             CommandPaletteSearch.results(
                 query: query,
                 commands: commands,
                 snapshots: snapshots
-            )
+            ),
+            for: query
         )
         if let currentSelection,
            results.contains(where: {

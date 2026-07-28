@@ -167,7 +167,8 @@ struct CommandPaletteView: View {
                         query: value,
                         commands: commands,
                         snapshots: snapshots()
-                    )
+                    ),
+                    for: value
                 )
             }
         }

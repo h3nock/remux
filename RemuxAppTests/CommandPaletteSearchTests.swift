@@ -132,7 +132,7 @@ final class CommandPaletteSearchTests: XCTestCase {
         XCTAssertEqual(state.selectedResult, first)
     }
 
-    func testStateCanMoveBeforeAQueryAndResetsWhenResultsChange() {
+    func testQueryResultReplacementResetsSelectionToFirstEnabled() {
         let first = item(id: "first")
         let second = item(id: "second")
         var state = CommandPaletteState(results: [first, second])
@@ -144,6 +144,31 @@ final class CommandPaletteSearchTests: XCTestCase {
         XCTAssertEqual(state.selectedResultID, first.id)
     }
 
+    func testAvailabilityRefreshResetsSelectionWhenQueryReplacementIsPending() {
+        let first = CommandPaletteItem(
+            id: "first",
+            title: "Target First",
+            subtitle: nil,
+            action: .appCommand(.panes)
+        )
+        let second = CommandPaletteItem(
+            id: "second",
+            title: "Target Second",
+            subtitle: nil,
+            action: .appCommand(.home)
+        )
+        var state = CommandPaletteState(results: [first, second])
+        state.moveSelection(.next)
+
+        state.refreshAvailability(
+            query: "target",
+            commands: [first, second],
+            snapshots: []
+        )
+
+        XCTAssertEqual(state.selectedResultID, first.id)
+    }
+
     func testStateRefreshesReadyCommandToDisconnectedWhileKeepingQueryFiltering() {
         let available = CommandPaletteItem(
             id: "panes",
@@ -152,7 +177,10 @@ final class CommandPaletteSearchTests: XCTestCase {
             action: .appCommand(.panes)
         )
         let unrelated = item(id: "unrelated")
-        var state = CommandPaletteState(results: [available])
+        var state = CommandPaletteState(
+            results: [available],
+            appliedQuery: "panes"
+        )
 
         state.refreshAvailability(
             query: "panes",
@@ -188,7 +216,10 @@ final class CommandPaletteSearchTests: XCTestCase {
             subtitle: nil,
             action: .appCommand(.home)
         )
-        var state = CommandPaletteState(results: [newlyAvailable, selected])
+        var state = CommandPaletteState(
+            results: [newlyAvailable, selected],
+            appliedQuery: "target"
+        )
 
         state.refreshAvailability(
             query: "target",
