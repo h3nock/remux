@@ -108,6 +108,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let isPhysicalKeyboardConnected: Bool
     private let isAppInputOwnerPresented: Bool
     private let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
+    private let onTerminalInputAvailabilityChange: (Bool) -> Void
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
@@ -158,6 +159,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isPhysicalKeyboardConnected: Bool = false,
         isAppInputOwnerPresented: Bool = false,
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void = { _ in },
+        onTerminalInputAvailabilityChange: @escaping (Bool) -> Void = { _ in },
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)? = nil,
         onReconnect: @escaping () -> Void,
@@ -175,6 +177,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
         self.isAppInputOwnerPresented = isAppInputOwnerPresented
         self.onAppKeyboardCommand = onAppKeyboardCommand
+        self.onTerminalInputAvailabilityChange = onTerminalInputAvailabilityChange
         _physicalKeyboardChromeState = State(
             initialValue: PhysicalKeyboardChromeState(
                 isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
@@ -570,6 +573,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 handleActiveLeafChange(activeLeafID)
             }
             .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
+                onTerminalInputAvailabilityChange(isInputAvailable)
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
             }
             .onChange(of: inputCoordinator.keyboardMode) { _, mode in
@@ -611,6 +615,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         .preferredColorScheme(presentation.terminalTheme.terminalChromeColorScheme)
         .environment(\.ghosttyTerminalChromeStyle, presentation.terminalTheme.terminalChromeStyle)
         .onAppear {
+            onTerminalInputAvailabilityChange(
+                model.terminalInteractionProjection.isInputAvailable
+            )
             GhosttyRuntimeTrace.flowEvent(
                 sessionOpenFlowID,
                 event: "ui.terminalScreen.appear",

@@ -126,6 +126,51 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
         XCTAssertEqual(AppKeyboardCommandRouter.route(.home, in: context), .showHome)
     }
 
+    func testTerminalReadinessTransitionsDriveCommandAvailability() {
+        let workspaceID = UUID()
+        let attempt = TerminalRuntimeAttemptKey(
+            workspaceID: workspaceID,
+            instanceID: UUID()
+        )
+        var readiness = TerminalKeyboardReadiness()
+
+        func availableCommands() -> [AppKeyboardCommand] {
+            AppKeyboardCommandRouter.availableCommands(
+                in: AppKeyboardCommandRouteContext(
+                    selectedSessionID: workspaceID,
+                    isSelectedTerminalReady: readiness.isReady(for: attempt),
+                    orderedActiveSessionIDs: [workspaceID]
+                )
+            )
+        }
+
+        XCTAssertFalse(availableCommands().contains(.newWindow))
+
+        readiness.update(isReady: true, for: attempt)
+        XCTAssertTrue(availableCommands().contains(.newWindow))
+
+        readiness.update(isReady: false, for: attempt)
+        XCTAssertFalse(availableCommands().contains(.newWindow))
+    }
+
+    func testTerminalReadinessDoesNotCarryAcrossReconnectAttempt() {
+        let workspaceID = UUID()
+        let oldAttempt = TerminalRuntimeAttemptKey(
+            workspaceID: workspaceID,
+            instanceID: UUID()
+        )
+        let replacementAttempt = TerminalRuntimeAttemptKey(
+            workspaceID: workspaceID,
+            instanceID: UUID()
+        )
+        var readiness = TerminalKeyboardReadiness()
+
+        readiness.update(isReady: true, for: oldAttempt)
+
+        XCTAssertTrue(readiness.isReady(for: oldAttempt))
+        XCTAssertFalse(readiness.isReady(for: replacementAttempt))
+    }
+
     func testTerminalSurfaceMapsNewWindowToTopologyCreation() {
         XCTAssertEqual(
             GhosttySurfaceKeyboardCommandRouter.route(.newWindow),

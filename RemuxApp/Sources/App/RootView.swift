@@ -62,6 +62,7 @@ private struct RemuxWorkspaceShell: View {
     @StateObject private var physicalKeyboardMonitor = PhysicalKeyboardMonitor()
     @State private var retainedTerminalID: SavedWorkspace.ID?
     @State private var isCommandPalettePresented = false
+    @State private var terminalKeyboardReadiness = TerminalKeyboardReadiness()
 
     var body: some View {
         ZStack {
@@ -115,6 +116,11 @@ private struct RemuxWorkspaceShell: View {
 
             retainedTerminalID = ids[0]
         }
+        .onChange(
+            of: model.activeTerminalScreenEntries.map(\.runtimeAttemptKey)
+        ) { _, attempts in
+            terminalKeyboardReadiness.retain(attempts)
+        }
     }
 
     private var selectedTerminalID: SavedWorkspace.ID? {
@@ -130,12 +136,14 @@ private struct RemuxWorkspaceShell: View {
     }
 
     private var keyboardCommandContext: AppKeyboardCommandRouteContext {
-        AppKeyboardCommandRouteContext(
+        let selectedAttempt = model.activeTerminalScreenEntries.first(where: {
+            $0.id == selectedTerminalID
+        })?.runtimeAttemptKey
+        return AppKeyboardCommandRouteContext(
             selectedSessionID: selectedTerminalID,
-            isSelectedTerminalReady: model.activeTerminalScreenEntries.first(where: {
-                $0.id == selectedTerminalID
-            })?.model.terminalScreenAdapter.terminalInteractionProjection
-                .isInputAvailable == true,
+            isSelectedTerminalReady: terminalKeyboardReadiness.isReady(
+                for: selectedAttempt
+            ),
             orderedActiveSessionIDs: model.activeSessions
                 .sorted { $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt }
                 .map(\.id)
@@ -198,6 +206,12 @@ private struct RemuxWorkspaceShell: View {
                     isPhysicalKeyboardConnected: physicalKeyboardMonitor.isConnected,
                     isAppInputOwnerPresented: isCommandPalettePresented,
                     onAppKeyboardCommand: performKeyboardCommand,
+                    onTerminalInputAvailabilityChange: { isReady in
+                        terminalKeyboardReadiness.update(
+                            isReady: isReady,
+                            for: entry.runtimeAttemptKey
+                        )
+                    },
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
                     },
@@ -428,6 +442,7 @@ private struct ActiveTerminalSessionView: View {
     let isPhysicalKeyboardConnected: Bool
     let isAppInputOwnerPresented: Bool
     let onAppKeyboardCommand: (AppKeyboardCommand) -> Void
+    let onTerminalInputAvailabilityChange: (Bool) -> Void
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
@@ -444,6 +459,7 @@ private struct ActiveTerminalSessionView: View {
         isPhysicalKeyboardConnected: Bool,
         isAppInputOwnerPresented: Bool,
         onAppKeyboardCommand: @escaping (AppKeyboardCommand) -> Void,
+        onTerminalInputAvailabilityChange: @escaping (Bool) -> Void,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
@@ -457,6 +473,7 @@ private struct ActiveTerminalSessionView: View {
         self.isPhysicalKeyboardConnected = isPhysicalKeyboardConnected
         self.isAppInputOwnerPresented = isAppInputOwnerPresented
         self.onAppKeyboardCommand = onAppKeyboardCommand
+        self.onTerminalInputAvailabilityChange = onTerminalInputAvailabilityChange
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
@@ -482,6 +499,7 @@ private struct ActiveTerminalSessionView: View {
                 isPhysicalKeyboardConnected: isPhysicalKeyboardConnected,
                 isAppInputOwnerPresented: isAppInputOwnerPresented,
                 onAppKeyboardCommand: onAppKeyboardCommand,
+                onTerminalInputAvailabilityChange: onTerminalInputAvailabilityChange,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,
                 onReconnect: onReconnect,

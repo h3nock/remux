@@ -7,6 +7,30 @@ struct AppKeyboardCommandRouteContext: Equatable {
     var orderedActiveSessionIDs: [SavedWorkspace.ID]
 }
 
+struct TerminalKeyboardReadiness: Equatable {
+    private var readyAttempts: Set<TerminalRuntimeAttemptKey> = []
+
+    mutating func update(
+        isReady: Bool,
+        for attempt: TerminalRuntimeAttemptKey
+    ) {
+        if isReady {
+            readyAttempts.insert(attempt)
+        } else {
+            readyAttempts.remove(attempt)
+        }
+    }
+
+    mutating func retain(_ attempts: [TerminalRuntimeAttemptKey]) {
+        readyAttempts.formIntersection(attempts)
+    }
+
+    func isReady(for attempt: TerminalRuntimeAttemptKey?) -> Bool {
+        guard let attempt else { return false }
+        return readyAttempts.contains(attempt)
+    }
+}
+
 enum AppKeyboardCommandRoute: Equatable {
     case terminal(AppKeyboardCommand)
     case showHome
