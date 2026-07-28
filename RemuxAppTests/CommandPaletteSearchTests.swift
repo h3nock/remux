@@ -153,6 +153,25 @@ final class CommandPaletteSearchTests: XCTestCase {
         XCTAssertEqual(CommandPaletteLayout.resultAreaHeight(for: 9), 336)
     }
 
+    func testFloatingLayoutUsesBalancedSpacing() {
+        XCTAssertEqual(CommandPaletteLayout.screenMargin, 20)
+        XCTAssertEqual(CommandPaletteLayout.cardInset, 10)
+        XCTAssertEqual(CommandPaletteLayout.innerCornerRadius, 12)
+    }
+
+    @MainActor
+    func testSearchFieldUsesCompactDynamicTypeFont() {
+        let field = CommandPaletteTextField()
+        let expected = UIFont.preferredFont(forTextStyle: .footnote)
+
+        XCTAssertEqual(field.font?.pointSize, expected.pointSize)
+        XCTAssertEqual(
+            field.font?.fontDescriptor.object(forKey: .textStyle) as? String,
+            UIFont.TextStyle.footnote.rawValue
+        )
+        XCTAssertTrue(field.adjustsFontForContentSizeCategory)
+    }
+
     @MainActor
     func testSearchFieldRoutesNavigationAndActivationKeysWithoutModifiers() {
         let field = CommandPaletteTextField()

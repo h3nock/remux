@@ -140,6 +140,9 @@ final class RemuxAppUITests: XCTestCase {
 
     func testCommandPaletteReceivesImmediateTyping() {
         launchSimulatorApp()
+        XCTAssertTrue(
+            app.buttons["library.empty.add-server"].waitForExistence(timeout: 5)
+        )
         openCommandPaletteAndAssertImmediateTyping()
     }
 
@@ -152,6 +155,25 @@ final class RemuxAppUITests: XCTestCase {
 
         let palette = app.descendants(matching: .any)["command-palette"]
         XCTAssertTrue(palette.waitForExistence(timeout: 2))
+
+        let appFrame = app.frame
+        let minimumScreenMargin: CGFloat = 19.5
+        XCTAssertGreaterThanOrEqual(
+            palette.frame.minX - appFrame.minX,
+            minimumScreenMargin
+        )
+        XCTAssertGreaterThanOrEqual(
+            appFrame.maxX - palette.frame.maxX,
+            minimumScreenMargin
+        )
+        XCTAssertGreaterThanOrEqual(
+            palette.frame.minY - appFrame.minY,
+            minimumScreenMargin
+        )
+        XCTAssertGreaterThanOrEqual(
+            appFrame.maxY - palette.frame.maxY,
+            minimumScreenMargin
+        )
 
         let search = app.textFields["command-palette.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 2))

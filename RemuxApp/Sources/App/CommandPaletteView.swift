@@ -6,6 +6,9 @@ enum CommandPaletteLayout {
     static let inputRowHeight: CGFloat = 44
     static let resultRowHeight: CGFloat = 56
     static let emptyResultHeight: CGFloat = 120
+    static let screenMargin: CGFloat = 20
+    static let cardInset: CGFloat = 10
+    static let innerCornerRadius: CGFloat = 12
 
     static func resultAreaHeight(for resultCount: Int) -> CGFloat {
         guard resultCount > 0 else { return emptyResultHeight }
@@ -76,6 +79,7 @@ struct CommandPaletteView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(item.title)
+                                    .font(.subheadline)
                                     .lineLimit(1)
                                 if let subtitle = item.subtitle {
                                     Text(subtitle)
@@ -130,6 +134,13 @@ struct CommandPaletteView: View {
                 }
             }
         }
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: CommandPaletteLayout.innerCornerRadius,
+                style: .continuous
+            )
+        )
+        .padding(CommandPaletteLayout.cardInset)
         .frame(maxWidth: 620)
         .fixedSize(horizontal: false, vertical: true)
         .background(
@@ -140,10 +151,10 @@ struct CommandPaletteView: View {
             RoundedRectangle(cornerRadius: 18)
                 .stroke(LibraryHomePalette.separator, lineWidth: 1)
         }
-        .shadow(radius: 30)
-        .padding(16)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("command-palette")
+        .shadow(radius: 30)
+        .padding(CommandPaletteLayout.screenMargin)
         .onChange(of: query) { _, value in
             searchTask?.cancel()
             searchTask = Task { @MainActor in
@@ -198,6 +209,10 @@ private struct CommandPaletteSearchField: UIViewRepresentable {
         field.tintColor = .label
         field.accessibilityIdentifier = "command-palette.search"
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(
+            .defaultLow,
+            for: .horizontal
+        )
         configure(field)
         return field
     }
@@ -236,6 +251,8 @@ final class CommandPaletteTextField: UITextField, UITextFieldDelegate {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        font = UIFont.preferredFont(forTextStyle: .footnote)
+        adjustsFontForContentSizeCategory = true
         delegate = self
         addTarget(self, action: #selector(textDidChange), for: .editingChanged)
     }
