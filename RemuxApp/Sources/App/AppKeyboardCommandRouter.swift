@@ -22,7 +22,7 @@ enum AppKeyboardCommandRouter {
         in context: AppKeyboardCommandRouteContext
     ) -> AppKeyboardCommandRoute {
         switch command {
-        case .previousWindow, .nextWindow, .windows, .panes, .attachments:
+        case .previousWindow, .nextWindow, .windows, .newWindow, .panes, .attachments:
             guard
                 context.selectedSessionID != nil,
                 context.isSelectedTerminalReady

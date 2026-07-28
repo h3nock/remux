@@ -7,6 +7,7 @@ enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable, Sendable {
     case nextSession
     case home
     case windows
+    case newWindow
     case panes
     case attachments
     case increaseFontSize
@@ -29,6 +30,8 @@ enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable, Sendable {
             "Home"
         case .windows:
             "Session Windows"
+        case .newWindow:
+            "New Window"
         case .panes:
             "Panes"
         case .attachments:
@@ -44,7 +47,7 @@ enum AppKeyboardCommand: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var requiresTerminal: Bool {
         switch self {
-        case .previousWindow, .nextWindow, .windows, .panes, .attachments:
+        case .previousWindow, .nextWindow, .windows, .newWindow, .panes, .attachments:
             true
         case .previousSession, .nextSession, .home, .commandPalette,
              .increaseFontSize, .decreaseFontSize:

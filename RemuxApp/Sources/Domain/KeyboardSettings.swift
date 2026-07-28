@@ -48,6 +48,7 @@ struct KeyboardSettings: Codable, Equatable, Sendable {
             ),
             .home: KeyboardKeyBinding(input: "h", modifiers: [.command, .shift]),
             .windows: KeyboardKeyBinding(input: "o", modifiers: [.command]),
+            .newWindow: KeyboardKeyBinding(input: "n", modifiers: [.command]),
             .panes: KeyboardKeyBinding(input: "p", modifiers: [.command]),
             .attachments: KeyboardKeyBinding(input: "a", modifiers: [.command]),
             .commandPalette: KeyboardKeyBinding(input: "k", modifiers: [.command]),

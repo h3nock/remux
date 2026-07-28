@@ -93,7 +93,15 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             }
         )
         view.perform(home.action, with: home)
-        XCTAssertEqual(receivedCommands, [.home])
+
+        let newWindow = try! XCTUnwrap(
+            commands.first {
+                $0.input == "n"
+                    && $0.modifierFlags == [.command]
+            }
+        )
+        view.perform(newWindow.action, with: newWindow)
+        XCTAssertEqual(receivedCommands, [.home, .newWindow])
     }
 
     @MainActor

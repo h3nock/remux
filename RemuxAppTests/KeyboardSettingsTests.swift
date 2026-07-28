@@ -31,6 +31,10 @@ final class KeyboardSettingsTests: XCTestCase {
             KeyboardKeyBinding(input: "o", modifiers: [.command])
         )
         XCTAssertEqual(
+            settings.binding(for: .newWindow),
+            KeyboardKeyBinding(input: "n", modifiers: [.command])
+        )
+        XCTAssertEqual(
             settings.binding(for: .panes),
             KeyboardKeyBinding(input: "p", modifiers: [.command])
         )

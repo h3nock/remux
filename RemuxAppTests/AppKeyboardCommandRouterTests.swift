@@ -56,6 +56,10 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
             AppKeyboardCommandRouter.route(.windows, in: context),
             .terminal(.windows)
         )
+        XCTAssertEqual(
+            AppKeyboardCommandRouter.route(.newWindow, in: context),
+            .terminal(.newWindow)
+        )
     }
 
     func testSessionNavigationWrapsInSuppliedHomeOrder() {
@@ -116,9 +120,21 @@ final class AppKeyboardCommandRouterTests: XCTestCase {
         )
 
         XCTAssertEqual(AppKeyboardCommandRouter.route(.windows, in: context), .unavailable)
+        XCTAssertEqual(AppKeyboardCommandRouter.route(.newWindow, in: context), .unavailable)
         XCTAssertEqual(AppKeyboardCommandRouter.route(.panes, in: context), .unavailable)
         XCTAssertEqual(AppKeyboardCommandRouter.route(.attachments, in: context), .unavailable)
         XCTAssertEqual(AppKeyboardCommandRouter.route(.home, in: context), .showHome)
+    }
+
+    func testTerminalSurfaceMapsNewWindowToTopologyCreation() {
+        XCTAssertEqual(
+            GhosttySurfaceKeyboardCommandRouter.route(.newWindow),
+            .createWindow
+        )
+        XCTAssertEqual(
+            GhosttySurfaceKeyboardCommandRouter.route(.commandPalette),
+            .forward(.commandPalette)
+        )
     }
 
     func testConfiguredChordResolverMatchesOnlyAssignedModifiedChord() throws {

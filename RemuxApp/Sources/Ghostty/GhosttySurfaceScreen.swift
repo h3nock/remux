@@ -61,6 +61,40 @@ enum GhosttyTerminalCoverPhase: Equatable {
     }
 }
 
+enum GhosttySurfaceKeyboardCommandRoute: Equatable {
+    case previousWindow
+    case nextWindow
+    case showWindows
+    case createWindow
+    case showPanes
+    case toggleAttachments
+    case forward(AppKeyboardCommand)
+}
+
+enum GhosttySurfaceKeyboardCommandRouter {
+    static func route(
+        _ command: AppKeyboardCommand
+    ) -> GhosttySurfaceKeyboardCommandRoute {
+        switch command {
+        case .previousWindow:
+            .previousWindow
+        case .nextWindow:
+            .nextWindow
+        case .windows:
+            .showWindows
+        case .newWindow:
+            .createWindow
+        case .panes:
+            .showPanes
+        case .attachments:
+            .toggleAttachments
+        case .previousSession, .nextSession, .home, .commandPalette,
+             .increaseFontSize, .decreaseFontSize:
+            .forward(command)
+        }
+    }
+}
+
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
@@ -717,19 +751,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func performAppKeyboardCommand(_ command: AppKeyboardCommand) {
-        switch command {
+        switch GhosttySurfaceKeyboardCommandRouter.route(command) {
         case .previousWindow:
             handleWindowSwipe(.previous)
         case .nextWindow:
             handleWindowSwipe(.next)
-        case .windows:
+        case .showWindows:
             showWindows()
-        case .panes:
+        case .createWindow:
+            createTmuxWindow(event: "ui.keyCommand.newWindow")
+        case .showPanes:
             showPanes()
-        case .attachments:
+        case .toggleAttachments:
             toggleAttachmentTray()
-        case .previousSession, .nextSession, .home, .commandPalette,
-             .increaseFontSize, .decreaseFontSize:
+        case .forward(let command):
             onAppKeyboardCommand(command)
         }
     }
@@ -2117,10 +2152,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return fields
     }
 
-    private func createTmuxWindowFromSelectionSheet() {
+    private func createTmuxWindow(event: String) {
         GhosttyRuntimeTrace.flowBegin(
             "tmux.newWindow",
-            event: "ui.tap.newWindow",
+            event: event,
             fields: [
                 "topLevelsBefore": "\(model.terminalInteractionProjection.windowCount)",
                 "workspaceID": presentation.workspaceID.uuidString,
@@ -2130,6 +2165,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         performTopologyActionInteraction(effect) {
             model.createTmuxWindow()
         }
+    }
+
+    private func createTmuxWindowFromSelectionSheet() {
+        createTmuxWindow(event: "ui.tap.newWindow")
     }
 
     private func selectTmuxWindowFromSelectionSheet(_ id: UUID) {
