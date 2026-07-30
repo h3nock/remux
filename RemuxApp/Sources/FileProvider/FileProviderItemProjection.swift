@@ -21,7 +21,7 @@ struct FileProviderItemProjection: @unchecked Sendable {
         self.contentType = Self.contentType(for: remoteItem)
         self.documentSize = remoteItem.size.map(NSNumber.init(value:))
         self.contentModificationDate = remoteItem.modificationDate
-        self.capabilities = [.allowsReading]
+        self.capabilities = Self.capabilities(for: remoteItem)
         self.itemVersion = NSFileProviderItemVersion(
             contentVersion: remoteItem.contentVersion,
             metadataVersion: remoteItem.metadataVersion
@@ -39,6 +39,25 @@ struct FileProviderItemProjection: @unchecked Sendable {
             .symbolicLink
         case .other:
             .data
+        }
+    }
+
+    private static func capabilities(
+        for item: FileProviderRemoteItem
+    ) -> NSFileProviderItemCapabilities {
+        switch item.type {
+        case .directory where item.path == .root:
+            [.allowsReading, .allowsWriting, .allowsContentEnumerating, .allowsAddingSubItems]
+        case .directory:
+            [
+                .allowsReading, .allowsWriting, .allowsContentEnumerating,
+                .allowsAddingSubItems, .allowsRenaming, .allowsReparenting,
+                .allowsDeleting,
+            ]
+        case .regular:
+            [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        case .symbolicLink, .other:
+            [.allowsReading]
         }
     }
 

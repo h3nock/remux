@@ -91,6 +91,26 @@ enum FileProviderErrorMapper {
         NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)
     }
 
+    static func filenameCollision(existingItem: FileProviderSDKItem) -> NSError {
+        NSError.fileProviderErrorForCollision(with: existingItem)
+    }
+
+    static func deletionRejected(updatedItem: FileProviderSDKItem) -> NSError {
+        NSError.fileProviderErrorForRejectedDeletion(of: updatedItem)
+    }
+
+    static var directoryNotEmpty: NSError {
+        fileProviderError(.directoryNotEmpty)
+    }
+
+    static var cannotSynchronize: NSError {
+        fileProviderError(.cannotSynchronize)
+    }
+
+    static var localVersionConflictingWithServer: NSError {
+        NSError(domain: NSFileProviderErrorDomain, code: -2015)
+    }
+
     private static func fileProviderError(_ code: NSFileProviderError.Code) -> NSError {
         NSError(domain: NSFileProviderErrorDomain, code: code.rawValue)
     }

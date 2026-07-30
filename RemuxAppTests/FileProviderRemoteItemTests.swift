@@ -183,6 +183,55 @@ final class FileProviderRemoteItemTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(FileProviderRemoteItem.self, from: unsafePayload))
     }
 
+    func testCapabilitiesMatchWritableTypePolicy() throws {
+        XCTAssertEqual(
+            try projection(path: .root, type: .directory).capabilities,
+            [.allowsReading, .allowsWriting, .allowsContentEnumerating, .allowsAddingSubItems]
+        )
+        XCTAssertEqual(
+            try projection(path: "folder", type: .directory).capabilities,
+            [
+                .allowsReading, .allowsWriting, .allowsContentEnumerating,
+                .allowsAddingSubItems, .allowsRenaming, .allowsReparenting,
+                .allowsDeleting,
+            ]
+        )
+        XCTAssertEqual(
+            try projection(path: "file.txt", type: .regular).capabilities,
+            [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        )
+        XCTAssertEqual(
+            try projection(path: "link", type: .symbolicLink).capabilities,
+            [.allowsReading]
+        )
+        XCTAssertEqual(
+            try projection(path: "socket", type: .other).capabilities,
+            [.allowsReading]
+        )
+    }
+
+    private func projection(
+        path: String,
+        type: RemuxSFTPFileType
+    ) throws -> FileProviderItemProjection {
+        try projection(path: FileProviderRemotePath(relative: path), type: type)
+    }
+
+    private func projection(
+        path: FileProviderRemotePath,
+        type: RemuxSFTPFileType
+    ) throws -> FileProviderItemProjection {
+        let remote = try item(path: path, type: type)
+        return FileProviderItemProjection(
+            item: FileProviderIdentifiedItem(
+                identity: path == .root ? .root : .item(UUID()),
+                parentIdentity: .root,
+                remoteItem: remote
+            ),
+            rootDisplayName: "Fixture"
+        )
+    }
+
     private func item(
         path: FileProviderRemotePath? = nil,
         type: RemuxSFTPFileType = .regular,
