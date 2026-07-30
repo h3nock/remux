@@ -107,6 +107,7 @@
 		7586AAB0E733735D89B19DC6 /* GhosttyAttachmentPasteboardSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CCA4A17BA5BEB5643174E99 /* GhosttyAttachmentPasteboardSnapshot.swift */; };
 		7726730DFA9B5E99BF5686EA /* GhosttyKeyboardChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96F24A0810E927B327E82D59 /* GhosttyKeyboardChrome.swift */; };
 		77F42C4A7D6B2327955411D4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 693A617C3861CAF780D14828 /* Assets.xcassets */; };
+		7BA64A5EF27BE1C503CAC3B8 /* FileProviderSharedStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEAB20D60BA0EDED606847A /* FileProviderSharedStorageTests.swift */; };
 		7C99EDFDCE3B0927D26C1029 /* GhosttyAttachmentPasteboardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84DD89E37AC083383B988185 /* GhosttyAttachmentPasteboardSnapshotTests.swift */; };
 		7D737693581BDF76436D61D9 /* GhosttyTerminalDisconnectReasonClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99082CEC90EA6D04B5BE5874 /* GhosttyTerminalDisconnectReasonClassifier.swift */; };
 		7FB696D68436C55D304387E4 /* TmuxTerminalScreenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D507C4F64535720BC9A3F665 /* TmuxTerminalScreenAdapter.swift */; };
@@ -242,7 +243,7 @@
 		0CB12DC1EC78CE1C1286BA4E /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyKit.xcframework; path = "../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework"; sourceTree = "<group>"; };
 		0CBF1D7B0CCEAA8D032C1DDC /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		0DA264E3527C3F2FC33AF435 /* GhosttyTerminalInputCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalInputCoordinatorTests.swift; sourceTree = "<group>"; };
-		0F0F72BD893CB5432182C6A6 /* Remux.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Remux.icon; sourceTree = "<group>"; };
+		0F0F72BD893CB5432182C6A6 /* Remux.icon */ = {isa = PBXFileReference; path = Remux.icon; sourceTree = "<group>"; };
 		12398BF9373F42BEB01C099E /* TmuxIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxIdentity.swift; sourceTree = "<group>"; };
 		1643BC65F62CA9668005EEF8 /* GhosttyTerminalResponderFocusPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalResponderFocusPolicy.swift; sourceTree = "<group>"; };
 		1970DDCD2CEF7C163B953BAC /* SSHAuthResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHAuthResolver.swift; sourceTree = "<group>"; };
@@ -314,6 +315,7 @@
 		6AA39774D73AE5B6A77D824C /* TerminalSettingsRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSettingsRepository.swift; sourceTree = "<group>"; };
 		6B19046A43739DE9328A3612 /* TmuxScreenModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxScreenModel.swift; sourceTree = "<group>"; };
 		6B657FFBCF25A6A1A77FD231 /* GhosttyAttachmentImagePreviewDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyAttachmentImagePreviewDataTests.swift; sourceTree = "<group>"; };
+		6BEAB20D60BA0EDED606847A /* FileProviderSharedStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSharedStorageTests.swift; sourceTree = "<group>"; };
 		6DF29AE5BA0A3DD1E7A9E9C5 /* ActiveSessionSwitcherProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveSessionSwitcherProjectionTests.swift; sourceTree = "<group>"; };
 		6DFE39E14E057AACAB31247A /* GhosttyComposerDictationControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyComposerDictationControllerTests.swift; sourceTree = "<group>"; };
 		7001FC8A87E77C3617046DA7 /* GhosttyRuntimeTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyRuntimeTrace.swift; sourceTree = "<group>"; };
@@ -511,6 +513,7 @@
 				6DF29AE5BA0A3DD1E7A9E9C5 /* ActiveSessionSwitcherProjectionTests.swift */,
 				28EE543D2B247AE6C6A8C472 /* ConnectionProfileRepositoryTests.swift */,
 				DFD9AF0371D15A892B000530 /* DebugConnectionProfileSeederTests.swift */,
+				6BEAB20D60BA0EDED606847A /* FileProviderSharedStorageTests.swift */,
 				2A1CB6877AF169792137FA56 /* GhosttyAttachmentImageMarkupRendererTests.swift */,
 				6B657FFBCF25A6A1A77FD231 /* GhosttyAttachmentImagePreviewDataTests.swift */,
 				84DD89E37AC083383B988185 /* GhosttyAttachmentPasteboardSnapshotTests.swift */,
@@ -854,6 +857,7 @@
 				};
 			};
 			buildConfigurationList = F118F8E44563891091219E31 /* Build configuration list for PBXProject "Remux" */;
+			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -866,7 +870,6 @@
 				63D5E4632C8CA0BBCE0D90A0 /* XCRemoteSwiftPackageReference "Citadel" */,
 			);
 			preferredProjectObjectVersion = 77;
-			productRefGroup = F94500072A3763A6590AF480 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -1060,6 +1063,7 @@
 				00D89A7D58890CC2E420D6E6 /* ActiveSessionSwitcherProjectionTests.swift in Sources */,
 				8F75231F2CF7E597F4D0347F /* ConnectionProfileRepositoryTests.swift in Sources */,
 				434C420D221F1CAF2A633602 /* DebugConnectionProfileSeederTests.swift in Sources */,
+				7BA64A5EF27BE1C503CAC3B8 /* FileProviderSharedStorageTests.swift in Sources */,
 				EE488E8B043F3160004A3C20 /* GhosttyAttachmentImageMarkupRendererTests.swift in Sources */,
 				BCFDD04E99F80E73053BE38A /* GhosttyAttachmentImagePreviewDataTests.swift in Sources */,
 				7C99EDFDCE3B0927D26C1029 /* GhosttyAttachmentPasteboardSnapshotTests.swift in Sources */,
@@ -1355,6 +1359,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = Remux;
+				CODE_SIGN_ENTITLEMENTS = RemuxApp/Remux.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1396,6 +1401,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = Remux;
+				CODE_SIGN_ENTITLEMENTS = RemuxApp/Remux.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
