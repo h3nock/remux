@@ -30,21 +30,30 @@ final class FileProviderRemoteItemTests: XCTestCase {
         )
     }
 
-    func testIdentifierRoundTripsUnicodeAndRoot() throws {
-        let path = try FileProviderRemotePath(relative: "資料/a b.txt")
-        let identifier = codec.identifier(for: path)
+    func testOpaqueIdentifierRoundTripsIdentityWithoutExposingPath() throws {
+        let identity = FileProviderItemIdentity.item(
+            UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        )
 
-        XCTAssertEqual(identifier.rawValue, "p:6LOH5paZL2EgYi50eHQ")
-        XCTAssertEqual(try codec.path(for: identifier), path)
+        let identifier = codec.identifier(for: identity)
+
+        XCTAssertEqual(identifier.rawValue, "i:11111111-2222-3333-4444-555555555555")
+        XCTAssertEqual(try codec.identity(for: identifier), identity)
+        XCTAssertFalse(identifier.rawValue.contains("report"))
         XCTAssertEqual(codec.identifier(for: .root), .rootContainer)
-        XCTAssertEqual(try codec.path(for: .rootContainer), .root)
     }
 
-    func testIdentifierRejectsMalformedAndReservedRepresentations() throws {
-        XCTAssertThrowsError(try codec.path(for: NSFileProviderItemIdentifier(rawValue: "docs/readme")))
-        XCTAssertThrowsError(try codec.path(for: NSFileProviderItemIdentifier(rawValue: "p:not base64")))
-        XCTAssertThrowsError(try codec.path(for: NSFileProviderItemIdentifier(rawValue: "p:Li4vZXNjYXBl")))
-        XCTAssertThrowsError(try codec.path(for: NSFileProviderItemIdentifier(rawValue: "p:")))
+    func testOpaqueIdentifierRejectsPathAndMalformedRepresentations() {
+        XCTAssertThrowsError(
+            try codec.identity(
+                for: NSFileProviderItemIdentifier(rawValue: "p:cmVwb3J0LnR4dA")
+            )
+        )
+        XCTAssertThrowsError(
+            try codec.identity(
+                for: NSFileProviderItemIdentifier(rawValue: "i:not-a-uuid")
+            )
+        )
     }
 
     func testItemDerivesRootAndNestedParents() throws {
