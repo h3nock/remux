@@ -50,6 +50,7 @@ targets:
       - framework: ../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework
         embed: false
       - package: Citadel
+      - sdk: FileProvider.framework
     info:
       path: RemuxApp/Info.plist
       properties:
