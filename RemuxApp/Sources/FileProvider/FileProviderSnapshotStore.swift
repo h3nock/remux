@@ -14,7 +14,7 @@ enum FileProviderSnapshotStoreError: Error, Equatable, Sendable {
 }
 
 actor FileProviderSnapshotStore {
-    private static let stateFilename = "snapshot-generations-v2.json"
+    private static let stateFilename = "snapshot-generations-v3.json"
     private static let namespaceByteCount = 16
     private static let generationByteCount = MemoryLayout<UInt64>.size
 
@@ -46,11 +46,7 @@ actor FileProviderSnapshotStore {
     func record(
         directory: FileProviderRemotePath,
         items: [FileProviderRemoteItem]
-    ) throws -> (
-        anchor: NSFileProviderSyncAnchor,
-        items: [FileProviderIdentifiedItem],
-        delta: FileProviderSnapshotDelta
-    ) {
+    ) throws -> [FileProviderIdentifiedItem] {
         try Task.checkCancellation()
         var state = try loadState()
         try Task.checkCancellation()
@@ -59,12 +55,8 @@ actor FileProviderSnapshotStore {
         let previousItems = state.generations.last?.items(for: directory) ?? []
         let previousRemoteItems = previousItems.map(\.remoteItem)
 
-        if let latest = state.generations.last, items == previousRemoteItems {
-            return (
-                anchor: makeAnchor(namespace: state.namespace, generation: latest.generation),
-                items: previousItems,
-                delta: .init(updated: [], deleted: [])
-            )
+        if state.generations.last != nil, items == previousRemoteItems {
+            return previousItems
         }
 
         let hadPreviousGeneration = state.generations.last != nil
@@ -99,54 +91,128 @@ actor FileProviderSnapshotStore {
             currentItems: items
         )
         directories.sort { $0.path.relative < $1.path.relative }
+        let currentItems = try workingSetItems(in: directories)
+        pruneCreateAliases(in: &state, currentItems: currentItems)
 
-        let latest = PersistedGeneration(generation: nextGeneration, directories: directories)
+        let latest = PersistedGeneration(
+            generation: nextGeneration,
+            directories: directories
+        )
         state.generations.append(latest)
         state.generations = Array(state.generations.suffix(retainedGenerationCount))
-        let delta = makeDelta(from: previousItems, to: identifiedItems)
-        if hadPreviousGeneration,
-           !delta.updated.isEmpty || !delta.deleted.isEmpty
-        {
-            state.pendingSignals.removeAll {
-                $0.directory == directory
-            }
-            state.pendingSignals.append(
-                PersistedPendingSignal(
-                    directory: directory,
-                    generation: nextGeneration
-                )
-            )
-            state.pendingSignals.sort {
-                $0.directory.relative < $1.directory.relative
-            }
+        if hadPreviousGeneration {
+            state.pendingWorkingSetSignalGeneration = nextGeneration
         }
         try Task.checkCancellation()
         try save(state)
 
-        return (
-            anchor: makeAnchor(namespace: state.namespace, generation: nextGeneration),
-            items: identifiedItems,
-            delta: delta
+        return identifiedItems
+    }
+
+    func commit(
+        localMutation: FileProviderSnapshotLocalMutation
+    ) throws {
+        try Task.checkCancellation()
+        var state = try loadState()
+        try Task.checkCancellation()
+        var directories = state.generations.last?.directories ?? []
+        pruneDeletedIdentities(
+            localMutation.deletedIdentities,
+            from: &directories
         )
+        try apply(
+            localMutation.relocations,
+            to: &directories
+        )
+        _ = try workingSetItems(in: directories)
+        try validateIdentityReservations(
+            localMutation.identityReservations,
+            in: directories
+        )
+
+        var identitiesByPath = Dictionary(
+            uniqueKeysWithValues: directories
+                .flatMap(\.items)
+                .map { ($0.remoteItem.path, $0.identity) }
+        )
+        for reservation in localMutation.identityReservations {
+            identitiesByPath[reservation.path] = reservation.identity
+        }
+
+        for refresh in localMutation.refreshedDirectories {
+            try validateUniquePaths(in: refresh.items)
+            let previousDirectoryItems = directories
+                .first(where: { $0.path == refresh.directory })?
+                .items
+                .map(\.remoteItem) ?? []
+            let identifiedItems = try refresh.items
+                .sorted { $0.path.relative < $1.path.relative }
+                .map { remote in
+                    FileProviderIdentifiedItem(
+                        identity: identitiesByPath[remote.path] ?? .item(identityGenerator()),
+                        parentIdentity: try parentIdentity(
+                            for: remote,
+                            identitiesByPath: identitiesByPath
+                        ),
+                        remoteItem: remote
+                    )
+                }
+            if let index = directories.firstIndex(where: { $0.path == refresh.directory }) {
+                directories[index] = PersistedDirectory(
+                    path: refresh.directory,
+                    items: identifiedItems
+                )
+            } else {
+                directories.append(PersistedDirectory(
+                    path: refresh.directory,
+                    items: identifiedItems
+                ))
+            }
+            pruneTrackedSubtrees(
+                from: &directories,
+                previousItems: previousDirectoryItems,
+                currentItems: refresh.items
+            )
+            for item in identifiedItems {
+                identitiesByPath[item.remoteItem.path] = item.identity
+            }
+        }
+
+        directories.sort { $0.path.relative < $1.path.relative }
+        let items = try workingSetItems(in: directories)
+        if let createAlias = localMutation.createAlias {
+            state.createAliases[createAlias.templateIdentifier] = createAlias.identity
+        }
+        pruneCreateAliases(in: &state, currentItems: items)
+        let nextGeneration = try generation(after: state.generations.last?.generation)
+        let latest = PersistedGeneration(
+            generation: nextGeneration,
+            directories: directories
+        )
+        state.generations.append(latest)
+        state.generations = Array(state.generations.suffix(retainedGenerationCount))
+        if localMutation.queuesWorkingSetSignal {
+            state.pendingWorkingSetSignalGeneration = nextGeneration
+        }
+        try Task.checkCancellation()
+        try save(state)
+
     }
 
     func pendingWorkingSetSignalGeneration() throws -> UInt64? {
-        try loadState().pendingSignals
-            .map(\.generation)
-            .max()
+        try loadState().pendingWorkingSetSignalGeneration
     }
 
     func acknowledgeWorkingSetSignal(
         generation: UInt64
     ) throws {
         var state = try loadState()
-        let remainingSignals = state.pendingSignals.filter {
-            $0.generation > generation
-        }
-        guard remainingSignals.count != state.pendingSignals.count else {
+        guard let pending = state.pendingWorkingSetSignalGeneration,
+              pending <= generation
+        else {
             return
         }
-        state.pendingSignals = remainingSignals
+        state.pendingWorkingSetSignalGeneration = nil
         try save(state)
     }
 
@@ -163,6 +229,7 @@ actor FileProviderSnapshotStore {
     nonisolated func pathSynchronously(
         for identifier: NSFileProviderItemIdentifier
     ) throws -> FileProviderRemotePath {
+        guard identifier != .rootContainer else { return .root }
         let stateURL = stateURL
         let decoder = JSONDecoder()
         guard FileManager.default.fileExists(atPath: stateURL.path) else {
@@ -180,6 +247,17 @@ actor FileProviderSnapshotStore {
         guard identity != .root else { return nil }
         return state.generations.last?.directories
             .flatMap(\.items)
+            .first(where: { $0.identity == identity })
+    }
+
+    func item(
+        forCreateTemplateIdentifier identifier: String
+    ) throws -> FileProviderIdentifiedItem? {
+        let state = try loadState()
+        guard let identity = state.createAliases[identifier] else {
+            return nil
+        }
+        return try state.generations.last?.workingSetItems()
             .first(where: { $0.identity == identity })
     }
 
@@ -206,8 +284,16 @@ actor FileProviderSnapshotStore {
             )
         }
 
-        let initial = try record(directory: .root, items: [])
-        return (anchor: initial.anchor, items: [])
+        let items = try record(directory: .root, items: [])
+        let initializedState = try loadState()
+        let latest = initializedState.generations.last!
+        return (
+            anchor: makeAnchor(
+                namespace: initializedState.namespace,
+                generation: latest.generation
+            ),
+            items: items
+        )
     }
 
     func delta(
@@ -263,7 +349,8 @@ actor FileProviderSnapshotStore {
             return PersistedState(
                 namespace: UUID(),
                 generations: [],
-                pendingSignals: []
+                createAliases: [:],
+                pendingWorkingSetSignalGeneration: nil
             )
         }
         let state = try decoder.decode(PersistedState.self, from: Data(contentsOf: stateURL))
@@ -369,6 +456,149 @@ actor FileProviderSnapshotStore {
         }
     }
 
+    private func apply(
+        _ relocations: [FileProviderSnapshotLocalMutation.IdentityRelocation],
+        to directories: inout [PersistedDirectory]
+    ) throws {
+        for relocation in relocations {
+            guard let movedItem = directories
+                .flatMap(\.items)
+                .first(where: { $0.identity == relocation.identity }),
+                  movedItem.remoteItem.path == relocation.from
+            else {
+                throw FileProviderSnapshotStoreError.itemIdentityNotFound
+            }
+            directories = try directories.map { directory in
+                PersistedDirectory(
+                    path: try relocatedPath(
+                        directory.path,
+                        from: relocation.from,
+                        to: relocation.to
+                    ),
+                    items: try directory.items.map { item in
+                        FileProviderIdentifiedItem(
+                            identity: item.identity,
+                            parentIdentity: item.parentIdentity,
+                            remoteItem: try relocatedRemoteItem(
+                                item.remoteItem,
+                                from: relocation.from,
+                                to: relocation.to
+                            )
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    private func validateIdentityReservations(
+        _ reservations: [FileProviderSnapshotLocalMutation.IdentityReservation],
+        in directories: [PersistedDirectory]
+    ) throws {
+        let items = try workingSetItems(in: directories)
+        guard Set(reservations.map(\.identity)).count == reservations.count,
+              Set(reservations.map(\.path)).count == reservations.count
+        else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+        let identitiesByPath = Dictionary(
+            uniqueKeysWithValues: items.map { ($0.remoteItem.path, $0.identity) }
+        )
+        let pathsByIdentity = Dictionary(
+            uniqueKeysWithValues: items.map { ($0.identity, $0.remoteItem.path) }
+        )
+        for reservation in reservations {
+            guard identitiesByPath[reservation.path] == nil
+                    || identitiesByPath[reservation.path] == reservation.identity,
+                  pathsByIdentity[reservation.identity] == nil
+                    || pathsByIdentity[reservation.identity] == reservation.path
+            else {
+                throw FileProviderSnapshotStoreError.duplicatePath
+            }
+        }
+    }
+
+    private func workingSetItems(
+        in directories: [PersistedDirectory]
+    ) throws -> [FileProviderIdentifiedItem] {
+        let items = directories
+            .flatMap(\.items)
+            .sorted { $0.remoteItem.path.relative < $1.remoteItem.path.relative }
+        guard Set(items.map(\.remoteItem.path)).count == items.count,
+              Set(items.map(\.identity)).count == items.count
+        else {
+            throw FileProviderSnapshotStoreError.duplicatePath
+        }
+        return items
+    }
+
+    private func pruneDeletedIdentities(
+        _ deletedIdentities: Set<FileProviderItemIdentity>,
+        from directories: inout [PersistedDirectory]
+    ) {
+        let deletedPaths = directories
+            .flatMap(\.items)
+            .filter { deletedIdentities.contains($0.identity) }
+            .map(\.remoteItem.path)
+        directories.removeAll { directory in
+            deletedPaths.contains { path in
+                directory.path == path
+                    || directory.path.relative.hasPrefix(path.relative + "/")
+            }
+        }
+        directories = directories.compactMap { directory in
+            let items = directory.items.filter { item in
+                !deletedPaths.contains { path in
+                    item.remoteItem.path == path
+                        || item.remoteItem.path.relative.hasPrefix(path.relative + "/")
+                }
+            }
+            return PersistedDirectory(path: directory.path, items: items)
+        }
+    }
+
+    private func pruneCreateAliases(
+        in state: inout PersistedState,
+        currentItems: [FileProviderIdentifiedItem]
+    ) {
+        let currentIdentities = Set(currentItems.map(\.identity))
+        state.createAliases = state.createAliases.filter {
+            currentIdentities.contains($0.value)
+        }
+    }
+
+    private func relocatedPath(
+        _ path: FileProviderRemotePath,
+        from: FileProviderRemotePath,
+        to: FileProviderRemotePath
+    ) throws -> FileProviderRemotePath {
+        guard from != .root else { return path }
+        guard path == from || path.relative.hasPrefix(from.relative + "/") else {
+            return path
+        }
+        let suffix = String(path.relative.dropFirst(from.relative.count))
+        return try FileProviderRemotePath(relative: to.relative + suffix)
+    }
+
+    private func relocatedRemoteItem(
+        _ item: FileProviderRemoteItem,
+        from: FileProviderRemotePath,
+        to: FileProviderRemotePath
+    ) throws -> FileProviderRemoteItem {
+        let path = try relocatedPath(item.path, from: from, to: to)
+        guard path != item.path else { return item }
+        return try FileProviderRemoteItem(
+            path: path,
+            metadata: RemuxSFTPFileMetadata(
+                size: item.size,
+                permissions: item.permissions,
+                modificationDate: item.modificationDate,
+                type: item.type
+            ),
+            symlinkTargetRelativePath: item.symlinkTargetRelativePath
+        )
+    }
+
     private func makeDelta(
         from previousItems: [FileProviderIdentifiedItem],
         to currentItems: [FileProviderIdentifiedItem]
@@ -422,12 +652,8 @@ actor FileProviderSnapshotStore {
 private struct PersistedState: Codable {
     let namespace: UUID
     var generations: [PersistedGeneration]
-    var pendingSignals: [PersistedPendingSignal]
-}
-
-private struct PersistedPendingSignal: Codable {
-    let directory: FileProviderRemotePath
-    let generation: UInt64
+    var createAliases: [String: FileProviderItemIdentity]
+    var pendingWorkingSetSignalGeneration: UInt64?
 }
 
 private struct PersistedGeneration: Codable {
