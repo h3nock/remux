@@ -210,12 +210,24 @@ private struct PreviewSFTPClient: RemuxSFTPReadOnlyClient {
     var delayFromOffset: UInt64? = nil
     var maximumReturnedChunkLength: Int? = nil
 
+    func realPath(atPath path: String) async throws -> String {
+        path
+    }
+
+    func listDirectory(atPath path: String) async throws -> [RemuxSFTPDirectoryEntry] {
+        []
+    }
+
     func metadata(atPath path: String) async throws -> RemuxSFTPFileMetadata {
         RemuxSFTPFileMetadata(
             size: declaredSize,
             permissions: nil,
             modificationDate: nil
         )
+    }
+
+    func linkMetadata(atPath path: String) async throws -> RemuxSFTPFileMetadata {
+        try await metadata(atPath: path)
     }
 
     func withFile<ReturnValue: Sendable>(
