@@ -33,4 +33,22 @@ final class FileProviderSharedStorageTests: XCTestCase {
             "TEAM.dev.remux.shared"
         )
     }
+
+    func testLiveCredentialStoresKeepApplicationSourceSeparateFromSharedDestination() async throws {
+        let service = "dev.remux.tests.\(UUID().uuidString)"
+        let stores = try RemuxAppDependencies.fileProviderCredentialStores(service: service)
+        let identityID = UUID()
+
+        try await stores.application.saveCredential(.password("application"), identityID: identityID)
+        try await stores.shared.saveCredential(.password("shared"), identityID: identityID)
+
+        let applicationCredential = try await stores.application.loadCredential(identityID: identityID)
+        let sharedCredential = try await stores.shared.loadCredential(identityID: identityID)
+
+        XCTAssertEqual(applicationCredential, .password("application"))
+        XCTAssertEqual(sharedCredential, .password("shared"))
+
+        try await stores.application.deleteCredential(identityID: identityID)
+        try await stores.shared.deleteCredential(identityID: identityID)
+    }
 }
