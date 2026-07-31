@@ -3,8 +3,9 @@ options:
   bundleIdPrefix: dev.remux
   deploymentTarget:
     iOS: "18.0"
-  postGenCommand: >-
+  postGenCommand: |
     /usr/bin/perl -0pi -e 's/lastKnownFileType = wrapper\.icon;/lastKnownFileType = folder.iconcomposer.icon;/g' Remux.xcodeproj/project.pbxproj
+    /usr/bin/perl -0pi -e 's/Embed Foundation Extensions/Embed App Extensions/g' Remux.xcodeproj/project.pbxproj
 settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: dev.remux.app
@@ -51,6 +52,8 @@ targets:
         embed: false
       - package: Citadel
       - sdk: FileProvider.framework
+      - target: RemuxFileProvider
+        embed: true
     info:
       path: RemuxApp/Info.plist
       properties:

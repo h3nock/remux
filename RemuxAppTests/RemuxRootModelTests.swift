@@ -893,6 +893,185 @@ final class RemuxRootModelTests: XCTestCase {
         )
     }
 
+    func testLoadMigratesBeforeDebugSeedAndSharedLibraryReadThenReconciles() async {
+        let lifecycle = RecordingFileProviderLifecycle()
+        let harness = makeHarness(
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle,
+            lifecycleRecorder: lifecycle,
+            debugConnectionSeeder: { _, _ in
+                await lifecycle.record(.seedDebugConnection)
+                return false
+            }
+        )
+
+        await harness.model.load()
+        let events = await lifecycle.recordedEvents()
+
+        XCTAssertEqual(
+            events,
+            [.migrate, .seedDebugConnection, .loadSnapshot, .reconcile]
+        )
+        XCTAssertEqual(harness.model.state, .library)
+    }
+
+    func testMigrationFailurePreventsSharedLibraryRead() async {
+        let lifecycle = RecordingFileProviderLifecycle(failsMigration: true)
+        let harness = makeHarness(
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle,
+            lifecycleRecorder: lifecycle
+        )
+
+        await harness.model.load()
+        let events = await lifecycle.recordedEvents()
+
+        XCTAssertEqual(events, [.migrate])
+        guard case .failed = harness.model.state else {
+            XCTFail("expected migration failure to fail loading")
+            return
+        }
+    }
+
+    func testReconciliationFailureDoesNotHideLoadedLibrary() async {
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder"
+        )
+        let lifecycle = RecordingFileProviderLifecycle(failsReconciliation: true)
+        let harness = makeHarness(
+            servers: [server],
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle,
+            lifecycleRecorder: lifecycle
+        )
+
+        await harness.model.load()
+        let events = await lifecycle.recordedEvents()
+
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(harness.model.library.servers, [server])
+        XCTAssertEqual(
+            events,
+            [.migrate, .loadSnapshot, .reconcile]
+        )
+    }
+
+    func testSavingNewServerReconcilesFileProviderDomains() async {
+        let lifecycle = RecordingFileProviderLifecycle()
+        let harness = makeHarness(
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle
+        )
+        await harness.model.load()
+        await lifecycle.resetReconciliations()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+            draft.sessionName = "base"
+        }
+
+        await harness.model.saveAndConnect()
+        let reconciliationCount = await lifecycle.reconciliationCallCount()
+
+        XCTAssertEqual(reconciliationCount, 1)
+    }
+
+    func testEditingServerAndCredentialReconcilesFileProviderDomains() async throws {
+        let pair = makePasswordBackedServer()
+        let lifecycle = RecordingFileProviderLifecycle()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("old-password"),
+            identityID: pair.identity.id
+        )
+        await harness.model.load()
+        await lifecycle.resetReconciliations()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        harness.model.updateDraft { draft in
+            draft.host = "new-build.example.test"
+            draft.password = "new-password"
+        }
+
+        await harness.model.saveAndConnect()
+        let reconciliationCount = await lifecycle.reconciliationCallCount()
+
+        XCTAssertEqual(reconciliationCount, 1)
+    }
+
+    func testDeletingServerReconcilesFileProviderDomains() async throws {
+        let pair = makePasswordBackedServer()
+        let lifecycle = RecordingFileProviderLifecycle()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("secret"),
+            identityID: pair.identity.id
+        )
+        await harness.model.load()
+        await lifecycle.resetReconciliations()
+
+        await harness.model.deleteServer(pair.server.id)
+        let reconciliationCount = await lifecycle.reconciliationCallCount()
+
+        XCTAssertEqual(reconciliationCount, 1)
+    }
+
+    func testWorkspaceOnlyMutationsDoNotReconcileFileProviderDomains() async throws {
+        let pair = makePasswordBackedServer()
+        let base = SavedWorkspace(serverID: pair.server.id, sessionName: "base")
+        let lifecycle = RecordingFileProviderLifecycle()
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [base],
+            identities: [pair.identity],
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("secret"),
+            identityID: pair.identity.id
+        )
+        await harness.model.load()
+        await lifecycle.resetReconciliations()
+
+        await harness.model.beginNewWorkspace(for: pair.server.id)
+        harness.model.updateDraft { draft in
+            draft.sessionName = "scratch"
+        }
+        await harness.model.saveAndConnect()
+
+        let scratch = try XCTUnwrap(
+            harness.model.library.workspaces.first { $0.sessionName == "scratch" }
+        )
+        await harness.model.beginEditWorkspace(
+            serverID: pair.server.id,
+            workspaceID: scratch.id
+        )
+        harness.model.updateDraft { draft in
+            draft.sessionName = "renamed"
+        }
+        await harness.model.saveAndConnect()
+        await harness.model.deleteWorkspace(scratch.id)
+        let reconciliationCount = await lifecycle.reconciliationCallCount()
+
+        XCTAssertEqual(reconciliationCount, 0)
+    }
+
     func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
         let settings = TerminalSettings(fontSize: 15, theme: .remuxDark)
         let harness = makeHarness(settings: settings)
@@ -2596,10 +2775,13 @@ final class RemuxRootModelTests: XCTestCase {
         let pair = makePasswordBackedServer()
         let server = pair.server
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let lifecycle = RecordingFileProviderLifecycle()
         let harness = makeHarness(
             servers: [server],
             workspaces: [workspace],
-            identities: [pair.identity]
+            identities: [pair.identity],
+            fileProviderStorageMigrator: lifecycle,
+            fileProviderDomainReconciler: lifecycle
         )
         try await harness.credentialHelper.savePassword("secret", for: server.id)
         try saveTrustedHostIdentity(
@@ -2638,8 +2820,10 @@ final class RemuxRootModelTests: XCTestCase {
                 source: .runtime
             )
         )
+        await lifecycle.resetReconciliations()
 
         harness.model.trustHostKeyAndReconnect(workspace.id)
+        await lifecycle.waitForReconciliationCallCount(1)
 
         let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
         XCTAssertEqual(identities.count, 1)
@@ -2651,6 +2835,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotEqual(session.instanceID, oldSession.instanceID)
         XCTAssertEqual(session.runtimeState, .reconnecting(.manualButton))
         XCTAssertEqual(harness.model.state, .terminal(workspace.id))
+        let reconciliationCount = await lifecycle.reconciliationCallCount()
+        XCTAssertEqual(reconciliationCount, 1)
     }
 
     func testAutomaticTransportReconnectIsBoundedUntilManualReconnect() async throws {
@@ -3050,12 +3236,20 @@ final class RemuxRootModelTests: XCTestCase {
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
         publicKeyInstaller: SSHPublicKeyInstaller? = nil,
+        fileProviderStorageMigrator: any FileProviderSharedStorageMigrating = NoOpFileProviderSharedStorageMigrator(),
+        fileProviderDomainReconciler: any FileProviderDomainReconciling = NoOpFileProviderDomainReconciler(),
+        lifecycleRecorder: RecordingFileProviderLifecycle? = nil,
+        debugConnectionSeeder: (@Sendable (
+            any ConnectionProfileRepository,
+            any SSHCredentialStore
+        ) async throws -> Bool)? = nil,
         terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
     ) -> RemuxRootModelHarness {
         let profileRepository = TestConnectionProfileRepository(
             servers: servers,
             workspaces: workspaces,
-            identities: identities
+            identities: identities,
+            lifecycleRecorder: lifecycleRecorder
         )
         let settingsRepository = settingsRepository ?? TestTerminalSettingsRepository(settings: settings)
         let shortcutRepository = FileBackedShortcutRepository(rootURL: temporaryRoot())
@@ -3084,10 +3278,12 @@ final class RemuxRootModelTests: XCTestCase {
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,
             publicKeyInstaller: resolvedPublicKeyInstaller,
+            fileProviderStorageMigrator: fileProviderStorageMigrator,
+            fileProviderDomainReconciler: fileProviderDomainReconciler,
             transportFactory: resolvedTransportFactory,
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
-            debugConnectionSeeder: { _, _ in false }
+            debugConnectionSeeder: debugConnectionSeeder ?? { _, _ in false }
         )
 
         return RemuxRootModelHarness(
@@ -3595,11 +3791,13 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     private var suspendedLoadError: Error?
     private var suspendedLoadContinuation: CheckedContinuation<Void, Never>?
     private var suspendedLoadWaiters: [CheckedContinuation<Void, Never>] = []
+    private let lifecycleRecorder: RecordingFileProviderLifecycle?
 
     init(
         servers: [SavedServer] = [],
         workspaces: [SavedWorkspace] = [],
-        identities: [SSHIdentity] = []
+        identities: [SSHIdentity] = [],
+        lifecycleRecorder: RecordingFileProviderLifecycle? = nil
     ) {
         self.servers = servers
         self.workspaces = workspaces
@@ -3612,6 +3810,7 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
                 authenticationKind: .password
             )
         }
+        self.lifecycleRecorder = lifecycleRecorder
     }
 
     func loadSnapshot() async throws -> ConnectionLibrarySnapshot {
@@ -3627,6 +3826,7 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
             }
             throw suspendedLoadError
         }
+        await lifecycleRecorder?.record(.loadSnapshot)
         let serverIDs = Set(servers.map(\.id))
         return ConnectionLibrarySnapshot(
             servers: servers.sorted {
@@ -3716,6 +3916,91 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
             elements[index] = element
         } else {
             elements.append(element)
+        }
+    }
+}
+
+private enum FileProviderLifecycleEvent: Equatable, Sendable {
+    case migrate
+    case seedDebugConnection
+    case loadSnapshot
+    case reconcile
+}
+
+private enum FileProviderLifecycleTestFailure: Error {
+    case migration
+    case reconciliation
+}
+
+private actor RecordingFileProviderLifecycle:
+    FileProviderSharedStorageMigrating,
+    FileProviderDomainReconciling
+{
+    private let failsMigration: Bool
+    private let failsReconciliation: Bool
+    private var events: [FileProviderLifecycleEvent] = []
+    private var reconciliationCount = 0
+    private var reconciliationWaiters: [
+        (target: Int, continuation: CheckedContinuation<Void, Never>)
+    ] = []
+
+    init(
+        failsMigration: Bool = false,
+        failsReconciliation: Bool = false
+    ) {
+        self.failsMigration = failsMigration
+        self.failsReconciliation = failsReconciliation
+    }
+
+    func migrateIfNeeded() async throws {
+        events.append(.migrate)
+        if failsMigration {
+            throw FileProviderLifecycleTestFailure.migration
+        }
+    }
+
+    func reconcile() async throws {
+        events.append(.reconcile)
+        reconciliationCount += 1
+        resumeSatisfiedWaiters()
+        if failsReconciliation {
+            throw FileProviderLifecycleTestFailure.reconciliation
+        }
+    }
+
+    func record(_ event: FileProviderLifecycleEvent) {
+        events.append(event)
+    }
+
+    func recordedEvents() -> [FileProviderLifecycleEvent] {
+        events
+    }
+
+    func reconciliationCallCount() -> Int {
+        reconciliationCount
+    }
+
+    func resetReconciliations() {
+        reconciliationCount = 0
+    }
+
+    func waitForReconciliationCallCount(_ target: Int) async {
+        guard reconciliationCount < target else { return }
+
+        await withCheckedContinuation { continuation in
+            reconciliationWaiters.append((target, continuation))
+        }
+    }
+
+    private func resumeSatisfiedWaiters() {
+        let satisfied = reconciliationWaiters.filter {
+            reconciliationCount >= $0.target
+        }
+        reconciliationWaiters.removeAll {
+            reconciliationCount >= $0.target
+        }
+        for waiter in satisfied {
+            waiter.continuation.resume()
         }
     }
 }

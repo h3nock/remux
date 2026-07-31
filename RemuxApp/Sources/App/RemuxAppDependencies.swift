@@ -21,6 +21,14 @@ private extension ResolvedSSHAuth {
     }
 }
 
+struct NoOpFileProviderSharedStorageMigrator: FileProviderSharedStorageMigrating {
+    func migrateIfNeeded() async throws {}
+}
+
+struct NoOpFileProviderDomainReconciler: FileProviderDomainReconciling {
+    func reconcile() async throws {}
+}
+
 struct RemuxAppDependencies: Sendable {
     let profileRepository: any ConnectionProfileRepository
     let settingsRepository: any TerminalSettingsRepository
@@ -28,6 +36,8 @@ struct RemuxAppDependencies: Sendable {
     let credentialStore: any SSHCredentialStore
     let trustedHostStore: TrustedHostStore
     let publicKeyInstaller: SSHPublicKeyInstaller
+    let fileProviderStorageMigrator: any FileProviderSharedStorageMigrating
+    let fileProviderDomainReconciler: any FileProviderDomainReconciling
     private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
         _ target: TmuxConnectionTarget,
@@ -56,6 +66,8 @@ struct RemuxAppDependencies: Sendable {
         credentialStore: any SSHCredentialStore,
         trustedHostStore: TrustedHostStore,
         publicKeyInstaller: SSHPublicKeyInstaller,
+        fileProviderStorageMigrator: any FileProviderSharedStorageMigrating = NoOpFileProviderSharedStorageMigrator(),
+        fileProviderDomainReconciler: any FileProviderDomainReconciling = NoOpFileProviderDomainReconciler(),
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
@@ -83,6 +95,8 @@ struct RemuxAppDependencies: Sendable {
         self.credentialStore = credentialStore
         self.trustedHostStore = trustedHostStore
         self.publicKeyInstaller = publicKeyInstaller
+        self.fileProviderStorageMigrator = fileProviderStorageMigrator
+        self.fileProviderDomainReconciler = fileProviderDomainReconciler
         self.sshRootService = sshRootService
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
@@ -105,33 +119,64 @@ struct RemuxAppDependencies: Sendable {
 #if DEBUG || REMUX_LIVE_UI_TESTING
         let environment = ProcessInfo.processInfo.environment
         let usesEphemeralDebugStorage = environment[DebugLiveEnvironmentKey.ephemeralStorage] == "1"
-        let root: URL
-        let credentialStore: any SSHCredentialStore
         if usesEphemeralDebugStorage {
-            root = try ApplicationStorage.remuxRoot(
+            let root = try ApplicationStorage.remuxRoot(
                 overridePath: FileManager.default.temporaryDirectory
                     .appendingPathComponent("RemuxLiveDebug-\(UUID().uuidString)", isDirectory: true)
                     .path
             )
-            credentialStore = InMemorySSHCredentialStore()
-        } else {
-            root = try ApplicationStorage.remuxRoot()
-            credentialStore = KeychainSSHCredentialStore()
-        }
-#else
-        let root = try ApplicationStorage.remuxRoot()
-        let credentialStore: any SSHCredentialStore = KeychainSSHCredentialStore()
-#endif
-        let trustedHostStore = TrustedHostStore(rootURL: root)
-        return RemuxAppDependencies(
-            profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
-            settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
-            shortcutRepository: FileBackedShortcutRepository(rootURL: root),
-            credentialStore: credentialStore,
-            trustedHostStore: trustedHostStore,
-            publicKeyInstaller: try SSHPublicKeyInstaller(
-                trustedHostStore: trustedHostStore
+            let trustedHostStore = TrustedHostStore(rootURL: root)
+            return RemuxAppDependencies(
+                profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
+                settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
+                shortcutRepository: FileBackedShortcutRepository(rootURL: root),
+                credentialStore: InMemorySSHCredentialStore(),
+                trustedHostStore: trustedHostStore,
+                publicKeyInstaller: try SSHPublicKeyInstaller(
+                    trustedHostStore: trustedHostStore
+                )
             )
+        }
+#endif
+
+        let legacyRoot = try ApplicationStorage.remuxRoot()
+        let sharedRoot = try ApplicationStorage.sharedRemuxRoot()
+        let legacyProfiles = FileBackedConnectionProfileRepository(rootURL: legacyRoot)
+        let credentialStores = try fileProviderCredentialStores()
+        let legacyCredentials = credentialStores.application
+        let legacyTrustedHosts = TrustedHostStore(rootURL: legacyRoot)
+        let sharedProfiles = FileBackedConnectionProfileRepository(rootURL: sharedRoot)
+        let sharedCredentials = credentialStores.shared
+        let sharedTrustedHosts = TrustedHostStore(rootURL: sharedRoot)
+        let migrator = FileProviderSharedStorageMigrator(
+            legacyProfiles: legacyProfiles,
+            legacyCredentials: legacyCredentials,
+            legacyTrust: legacyTrustedHosts,
+            sharedProfiles: sharedProfiles,
+            sharedCredentials: sharedCredentials,
+            sharedTrust: sharedTrustedHosts,
+            markerURL: sharedRoot.appendingPathComponent(
+                "file-provider-shared-storage-migration-v1"
+            )
+        )
+        let reconciler = FileProviderDomainReconciler(
+            profiles: sharedProfiles,
+            credentials: sharedCredentials,
+            trust: sharedTrustedHosts,
+            registry: NSFileProviderDomainRegistry()
+        )
+
+        return RemuxAppDependencies(
+            profileRepository: sharedProfiles,
+            settingsRepository: FileBackedTerminalSettingsRepository(rootURL: legacyRoot),
+            shortcutRepository: FileBackedShortcutRepository(rootURL: legacyRoot),
+            credentialStore: sharedCredentials,
+            trustedHostStore: sharedTrustedHosts,
+            publicKeyInstaller: try SSHPublicKeyInstaller(
+                trustedHostStore: sharedTrustedHosts
+            ),
+            fileProviderStorageMigrator: migrator,
+            fileProviderDomainReconciler: reconciler
         )
     }
 
