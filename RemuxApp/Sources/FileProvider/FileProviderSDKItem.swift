@@ -35,3 +35,60 @@ final class FileProviderSDKItem: NSObject, NSFileProviderItem {
         )
     }
 }
+
+enum FileProviderSDKRequestAdapter {
+    static func createRequest(
+        itemTemplate: NSFileProviderItem,
+        fields: NSFileProviderItemFields,
+        contentsURL: URL?,
+        options: NSFileProviderCreateItemOptions
+    ) throws -> FileProviderCreateRequest {
+        FileProviderCreateRequest(
+            templateIdentifier: itemTemplate.itemIdentifier,
+            parentIdentifier: itemTemplate.parentItemIdentifier,
+            filename: itemTemplate.filename,
+            type: try fileType(for: itemTemplate.contentType ?? .data),
+            fields: fields,
+            contentsURL: contentsURL,
+            options: options
+        )
+    }
+
+    static func modifyRequest(
+        item: NSFileProviderItem,
+        baseVersion: NSFileProviderItemVersion,
+        changedFields: NSFileProviderItemFields,
+        contentsURL: URL?,
+        options: NSFileProviderModifyItemOptions
+    ) -> FileProviderModifyRequest {
+        FileProviderModifyRequest(
+            identifier: item.itemIdentifier,
+            parentIdentifier: item.parentItemIdentifier,
+            filename: item.filename,
+            baseVersion: baseVersion,
+            changedFields: changedFields,
+            contentsURL: contentsURL,
+            options: options
+        )
+    }
+
+    static func deleteRequest(
+        identifier: NSFileProviderItemIdentifier,
+        baseVersion: NSFileProviderItemVersion
+    ) -> FileProviderDeleteRequest {
+        FileProviderDeleteRequest(
+            identifier: identifier,
+            baseVersion: baseVersion
+        )
+    }
+
+    private static func fileType(for contentType: UTType) throws -> RemuxSFTPFileType {
+        if contentType == .folder {
+            return .directory
+        }
+        if contentType == .symbolicLink {
+            throw FileProviderMutationValidationError.symbolicLinkMutation
+        }
+        return .regular
+    }
+}

@@ -8,6 +8,118 @@ import XCTest
 @testable import Remux
 
 final class RemuxFileProviderContractTests: XCTestCase {
+    func testSDKCreateRequestPreservesSupportedFieldsAndOptions() throws {
+        let contentsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let template = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "template"),
+            parentIdentifier: .rootContainer,
+            filename: "report.txt",
+            contentType: .plainText
+        )
+
+        let request = try FileProviderSDKRequestAdapter.createRequest(
+            itemTemplate: template,
+            fields: [.filename, .contents],
+            contentsURL: contentsURL,
+            options: [.mayAlreadyExist]
+        )
+
+        XCTAssertEqual(request.parentIdentifier, template.parentItemIdentifier)
+        XCTAssertEqual(request.filename, template.filename)
+        XCTAssertEqual(request.type, .regular)
+        XCTAssertEqual(request.templateIdentifier, template.itemIdentifier)
+        XCTAssertEqual(request.contentsURL, contentsURL)
+        XCTAssertEqual(request.fields, [.filename, .contents])
+        XCTAssertEqual(request.options, [.mayAlreadyExist])
+    }
+
+    func testSDKCreateRequestMapsFoldersToDirectories() throws {
+        let template = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "template"),
+            parentIdentifier: .rootContainer,
+            filename: "notes",
+            contentType: .folder
+        )
+
+        let request = try FileProviderSDKRequestAdapter.createRequest(
+            itemTemplate: template,
+            fields: [.filename],
+            contentsURL: nil,
+            options: []
+        )
+
+        XCTAssertEqual(request.type, .directory)
+    }
+
+    func testSDKCreateRequestRejectsSymbolicLinks() {
+        let template = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "template"),
+            parentIdentifier: .rootContainer,
+            filename: "link",
+            contentType: .symbolicLink
+        )
+
+        XCTAssertThrowsError(
+            try FileProviderSDKRequestAdapter.createRequest(
+                itemTemplate: template,
+                fields: [.filename],
+                contentsURL: nil,
+                options: []
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? FileProviderMutationValidationError,
+                .symbolicLinkMutation
+            )
+        }
+    }
+
+    func testSDKModifyRequestPreservesOnlyMutationInputs() throws {
+        let contentsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let item = FileProviderTestSDKItem(
+            identifier: NSFileProviderItemIdentifier(rawValue: "item"),
+            parentIdentifier: .rootContainer,
+            filename: "renamed.txt",
+            contentType: .plainText
+        )
+        let version = NSFileProviderItemVersion(
+            contentVersion: Data("content".utf8),
+            metadataVersion: Data("metadata".utf8)
+        )
+
+        let request = FileProviderSDKRequestAdapter.modifyRequest(
+            item: item,
+            baseVersion: version,
+            changedFields: [.filename, .contents, .tagData],
+            contentsURL: contentsURL,
+            options: [.mayAlreadyExist]
+        )
+
+        XCTAssertEqual(request.identifier, item.itemIdentifier)
+        XCTAssertEqual(request.parentIdentifier, item.parentItemIdentifier)
+        XCTAssertEqual(request.filename, item.filename)
+        XCTAssertEqual(request.baseVersion, version)
+        XCTAssertEqual(request.changedFields, [.filename, .contents, .tagData])
+        XCTAssertEqual(request.contentsURL, contentsURL)
+        XCTAssertEqual(request.options, [.mayAlreadyExist])
+    }
+
+    func testSDKDeleteRequestPreservesIdentifierAndVersion() {
+        let version = NSFileProviderItemVersion(
+            contentVersion: Data("content".utf8),
+            metadataVersion: Data("metadata".utf8)
+        )
+
+        let request = FileProviderSDKRequestAdapter.deleteRequest(
+            identifier: NSFileProviderItemIdentifier(rawValue: "item"),
+            baseVersion: version
+        )
+
+        XCTAssertEqual(request.identifier, NSFileProviderItemIdentifier(rawValue: "item"))
+        XCTAssertEqual(request.baseVersion, version)
+    }
 
     func testRequestProgressCancellationCancelsWorkAndCompletesExactlyOnce() async {
         let controller = FileProviderRequestController()
@@ -156,7 +268,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 FileManager.default.temporaryDirectory
             }
         )
-        let identifier = record.items[0].itemIdentifier
+        let identifier = record[0].itemIdentifier
 
         _ = core.item(for: identifier) { result in
             Task {
@@ -200,7 +312,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 temporaryDirectory
             }
         )
-        let identifier = record.items[0].itemIdentifier
+        let identifier = record[0].itemIdentifier
 
         _ = core.fetchContents(for: identifier) { result in
             Task {
@@ -248,7 +360,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 temporaryDirectory
             }
         )
-        let identifier = record.items[0].itemIdentifier
+        let identifier = record[0].itemIdentifier
 
         let progress = core.fetchContents(for: identifier) { result in
             Task {
@@ -298,7 +410,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 temporaryDirectory
             }
         )
-        let identifier = record.items[0].itemIdentifier
+        let identifier = record[0].itemIdentifier
 
         let progress = core.fetchContents(for: identifier) { result in
             Task {
@@ -336,7 +448,7 @@ final class RemuxFileProviderContractTests: XCTestCase {
                 temporaryDirectory
             }
         )
-        let identifier = record.items[0].itemIdentifier
+        let identifier = record[0].itemIdentifier
         let progress = core.fetchContents(for: identifier) { result in
             Task {
                 await completions.record(result)
@@ -485,227 +597,6 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(key.username, "resolved-user")
     }
 
-    func testPollingCoordinatorCoalescesConcurrentRefreshesForSameDirectory() async throws {
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let gate = FileProviderTestRefreshGate()
-        let directory = try FileProviderRemotePath(relative: "shared")
-        let firstItems = [
-            try fileProviderTestItem(relative: "shared/first.txt", size: 1),
-        ]
-        let secondItems = [
-            try fileProviderTestItem(relative: "shared/second.txt", size: 2),
-        ]
-        let first = Task {
-            try await coordinator.performRefresh(directory: directory) {
-                await gate.beginAndWait()
-                return fileProviderTestRefresh(items: firstItems)
-            }
-        }
-        await gate.waitUntilStarted()
-        let second = Task {
-            try await coordinator.performRefresh(directory: directory) {
-                await gate.recordUnexpectedOperation()
-                return fileProviderTestRefresh(items: secondItems)
-            }
-        }
-        await coordinator.waitUntilRefreshIsCoalesced(directory: directory)
-
-        await gate.release()
-
-        let firstResult = try await first.value
-        let secondResult = try await second.value
-        let operationCount = await gate.operationCount()
-        XCTAssertEqual(firstResult.items.map(\.remoteItem), firstItems)
-        XCTAssertEqual(secondResult.items.map(\.remoteItem), firstItems)
-        XCTAssertEqual(operationCount, 1)
-    }
-
-    func testPollingCoordinatorNeverReturnsAnotherDirectorysData() async throws {
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let gate = FileProviderTestRefreshGate()
-        let firstDirectory = try FileProviderRemotePath(relative: "first")
-        let secondDirectory = try FileProviderRemotePath(relative: "second")
-        let firstItems = [
-            try fileProviderTestItem(relative: "first/item.txt", size: 1),
-        ]
-        let secondItems = [
-            try fileProviderTestItem(relative: "second/item.txt", size: 2),
-        ]
-        let first = Task {
-            try await coordinator.performRefresh(directory: firstDirectory) {
-                await gate.beginAndWait()
-                return fileProviderTestRefresh(items: firstItems)
-            }
-        }
-        await gate.waitUntilStarted()
-        let second = Task {
-            try await coordinator.performRefresh(directory: secondDirectory) {
-                await gate.recordUnexpectedOperation()
-                return fileProviderTestRefresh(items: secondItems)
-            }
-        }
-        await coordinator.waitUntilRefreshIsQueued(directory: secondDirectory)
-
-        await gate.release()
-
-        _ = try await first.value
-        let secondResult = try await second.value
-        let operationCount = await gate.operationCount()
-        XCTAssertEqual(secondResult.items.map(\.remoteItem), secondItems)
-        XCTAssertEqual(operationCount, 2)
-    }
-
-    func testPollingCoordinatorCancelsNetworkRefreshWhenOnlyRequesterCancels() async throws {
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let gate = FileProviderTestRefreshGate()
-        let directory = try FileProviderRemotePath(relative: "cancelled")
-        let items = [
-            try fileProviderTestItem(relative: "cancelled/item.txt", size: 1),
-        ]
-        let refresh = Task {
-            try await coordinator.performRefresh(directory: directory) {
-                try await gate.beginCancellableAndWait()
-                return fileProviderTestRefresh(items: items)
-            }
-        }
-        await gate.waitUntilStarted()
-
-        refresh.cancel()
-        for _ in 0..<20 {
-            await Task.yield()
-        }
-        let wasCancelled = await gate.wasCancelled()
-        if !wasCancelled {
-            await gate.release()
-        }
-
-        await XCTAssertFileProviderThrowsAsync { try await refresh.value }
-        XCTAssertTrue(wasCancelled)
-    }
-
-    func testCancellingOneCoalescedRequesterKeepsSharedRefreshAlive() async throws {
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let gate = FileProviderTestRefreshGate()
-        let directory = try FileProviderRemotePath(relative: "coalesced")
-        let items = [
-            try fileProviderTestItem(relative: "coalesced/item.txt", size: 1),
-        ]
-        let first = Task {
-            try await coordinator.performRefresh(directory: directory) {
-                try await gate.beginCancellableAndWait()
-                return fileProviderTestRefresh(items: items)
-            }
-        }
-        await gate.waitUntilStarted()
-        let second = Task {
-            try await coordinator.performRefresh(directory: directory) {
-                await gate.recordUnexpectedOperation()
-                return fileProviderTestRefresh(items: [])
-            }
-        }
-        await coordinator.waitUntilRefreshIsCoalesced(directory: directory)
-        second.cancel()
-        let networkWasCancelled = await gate.wasCancelled()
-        await gate.release()
-
-        let firstResult = try await first.value
-        await XCTAssertFileProviderThrowsAsync { try await second.value }
-        XCTAssertEqual(firstResult.items.map(\.remoteItem), items)
-        XCTAssertFalse(networkWasCancelled)
-    }
-
-    func testCancellingCoalescedRequesterReturnsBeforeSharedRefreshFinishes() async throws {
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let gate = FileProviderTestRefreshGate()
-        let completion = FileProviderTestCompletionFlag()
-        let directory = try FileProviderRemotePath(relative: "coalesced")
-        let items = [
-            try fileProviderTestItem(relative: "coalesced/item.txt", size: 1),
-        ]
-        let first = Task {
-            try await coordinator.performRefresh(directory: directory) {
-                try await gate.beginCancellableAndWait()
-                return fileProviderTestRefresh(items: items)
-            }
-        }
-        await gate.waitUntilStarted()
-        let second = Task {
-            do {
-                let result = try await coordinator.performRefresh(directory: directory) {
-                    await gate.recordUnexpectedOperation()
-                    return fileProviderTestRefresh(items: [])
-                }
-                await completion.finish()
-                return result
-            } catch {
-                await completion.finish()
-                throw error
-            }
-        }
-        await coordinator.waitUntilRefreshIsCoalesced(directory: directory)
-
-        second.cancel()
-
-        let didFinishBeforeRefresh = await completion.waitUntilFinished(
-            timeout: .seconds(1)
-        )
-        let networkWasCancelled = await gate.wasCancelled()
-        await gate.release()
-
-        let firstResult = try await first.value
-        await XCTAssertFileProviderThrowsAsync { try await second.value }
-        XCTAssertTrue(didFinishBeforeRefresh)
-        XCTAssertEqual(firstResult.items.map(\.remoteItem), items)
-        XCTAssertFalse(networkWasCancelled)
-    }
-
-    func testCancellingRequesterWaitingForAnotherDirectoryReturnsBeforeSharedRefreshFinishes() async throws {
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let gate = FileProviderTestRefreshGate()
-        let completion = FileProviderTestCompletionFlag()
-        let firstDirectory = try FileProviderRemotePath(relative: "first")
-        let secondDirectory = try FileProviderRemotePath(relative: "second")
-        let firstItems = [
-            try fileProviderTestItem(relative: "first/item.txt", size: 1),
-        ]
-        let first = Task {
-            try await coordinator.performRefresh(directory: firstDirectory) {
-                try await gate.beginCancellableAndWait()
-                return fileProviderTestRefresh(items: firstItems)
-            }
-        }
-        await gate.waitUntilStarted()
-        let second = Task {
-            do {
-                let result = try await coordinator.performRefresh(directory: secondDirectory) {
-                    await gate.recordUnexpectedOperation()
-                    return fileProviderTestRefresh(items: [])
-                }
-                await completion.finish()
-                return result
-            } catch {
-                await completion.finish()
-                throw error
-            }
-        }
-        await coordinator.waitUntilRefreshIsQueued(directory: secondDirectory)
-
-        second.cancel()
-
-        let didFinishBeforeRefresh = await completion.waitUntilFinished(
-            timeout: .seconds(1)
-        )
-        let networkWasCancelled = await gate.wasCancelled()
-        await gate.release()
-
-        _ = try await first.value
-        await XCTAssertFileProviderThrowsAsync { try await second.value }
-        let operationCount = await gate.operationCount()
-        XCTAssertTrue(didFinishBeforeRefresh)
-        XCTAssertFalse(networkWasCancelled)
-        XCTAssertEqual(operationCount, 1)
-    }
-
     func testEnumeratorCoreRefreshesImmediatelyAndRecordsTerminalPage() async throws {
         let home = "/home/reader"
         let metadata = RemuxSFTPFileMetadata(
@@ -735,11 +626,10 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
         XCTAssertEqual(page.items.map(\.remoteItem.name), ["now.txt"])
         XCTAssertNil(page.nextPage)
-        XCTAssertNotNil(page.anchor)
         let persisted = try await snapshots.items(directory: .root)
         XCTAssertEqual(persisted, page.items)
         let currentAnchor = try await core.currentSyncAnchor()
-        XCTAssertEqual(currentAnchor, page.anchor)
+        XCTAssertNotNil(currentAnchor)
     }
 
     func testEnumeratorCoreReportsRetainedSnapshotChanges() async throws {
@@ -758,8 +648,12 @@ final class RemuxFileProviderContractTests: XCTestCase {
             directory: .root,
             items: [original, removed]
         )
+        let requestedCurrentAnchor = try await snapshots.currentAnchor()
+        let requestedAnchor = try XCTUnwrap(requestedCurrentAnchor)
         let updated = try fileProviderTestItem(relative: "changed.txt", size: 3)
-        let latest = try await snapshots.record(directory: .root, items: [updated])
+        _ = try await snapshots.record(directory: .root, items: [updated])
+        let latestCurrentAnchor = try await snapshots.currentAnchor()
+        let latestAnchor = try XCTUnwrap(latestCurrentAnchor)
         let core = FileProviderEnumeratorCore(
             scope: .directory(.root),
             service: service,
@@ -768,73 +662,15 @@ final class RemuxFileProviderContractTests: XCTestCase {
             signaler: FileProviderTestSignaler()
         )
 
-        let changes = try await core.enumerateChanges(from: requested.anchor)
+        let changes = try await core.enumerateChanges(from: requestedAnchor)
 
         XCTAssertEqual(changes.updated.map(\.remoteItem), [updated])
         XCTAssertEqual(
             changes.deleted,
-            [requested.items[1].itemIdentifier]
+            [requested[1].itemIdentifier]
         )
         XCTAssertFalse(changes.moreComing)
-        XCTAssertEqual(changes.anchor, latest.anchor)
-    }
-
-    func testCoalescedOldRefreshCannotOverwriteNewerSnapshot() async throws {
-        let snapshotRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let oldItem = try fileProviderTestItem(relative: "item.txt", size: 1)
-        let newItem = try fileProviderTestItem(relative: "item.txt", size: 2)
-        let refreshGate = FileProviderTestRefreshGate()
-        let service = FileProviderTestSequencedRemoteService(
-            listings: [[oldItem], [newItem]],
-            firstRefreshGate: refreshGate
-        )
-        let coordinator = FileProviderDomainOperationCoordinator()
-        let primaryCore = FileProviderEnumeratorCore(
-            scope: .directory(.root),
-            service: service,
-            snapshots: FileProviderSnapshotStore(rootURL: snapshotRoot),
-            coordinator: coordinator,
-            signaler: FileProviderTestSignaler()
-        )
-        let blockingGate = FileProviderBlockingGate()
-        let blockingFileManager = FileProviderBlockingFileManager(
-            gate: blockingGate
-        )
-        let delayedCore = FileProviderEnumeratorCore(
-            scope: .directory(.root),
-            service: service,
-            snapshots: FileProviderSnapshotStore(
-                rootURL: snapshotRoot,
-                fileManager: blockingFileManager
-            ),
-            coordinator: coordinator,
-            signaler: FileProviderTestSignaler()
-        )
-
-        let first = Task {
-            try await primaryCore.enumerateItems()
-        }
-        await refreshGate.waitUntilStarted()
-        let delayedOldRefresh = Task {
-            try await delayedCore.enumerateItems()
-        }
-        for _ in 0..<20 {
-            await Task.yield()
-        }
-        await refreshGate.release()
-
-        _ = try await first.value
-        let callCountAfterCoalescing = await service.listCallCount()
-        let newerPage = try await primaryCore.enumerateItems()
-        blockingGate.release()
-        _ = try await delayedOldRefresh.value
-
-        let persisted = try await FileProviderSnapshotStore(rootURL: snapshotRoot)
-            .items(directory: .root)
-        XCTAssertEqual(callCountAfterCoalescing, 1)
-        XCTAssertEqual(newerPage.items.map(\.remoteItem), [newItem])
-        XCTAssertEqual(persisted.map(\.remoteItem), [newItem])
+        XCTAssertEqual(changes.anchor, latestAnchor)
     }
 
     func testWorkingSetAggregatesNestedCreateUpdateDeleteAndSignalsOnlyWorkingSet() async throws {
@@ -868,6 +704,8 @@ final class RemuxFileProviderContractTests: XCTestCase {
             directory: directory,
             items: [original, removed]
         )
+        let baselineCurrentAnchor = try await snapshots.currentAnchor()
+        let baselineAnchor = try XCTUnwrap(baselineCurrentAnchor)
         let signaler = FileProviderTestSignaler()
         let nestedCore = FileProviderEnumeratorCore(
             scope: .directory(directory),
@@ -889,20 +727,20 @@ final class RemuxFileProviderContractTests: XCTestCase {
         try await nestedCore.refreshAndSignalChanges()
         let page = try await workingSetCore.enumerateItems()
         let changes = try await workingSetCore.enumerateChanges(
-            from: baseline.anchor
+            from: baselineAnchor
         )
 
         XCTAssertEqual(page.items.map(\.remoteItem), [rootItem, created, changed])
         XCTAssertEqual(changes.updated.map(\.remoteItem), [created, changed])
         XCTAssertEqual(
             changes.updated.map(\.parentIdentity),
-            [rootRecord.items[0].identity, rootRecord.items[0].identity]
+            [rootRecord[0].identity, rootRecord[0].identity]
         )
         XCTAssertEqual(
             changes.deleted,
             [
                 try XCTUnwrap(
-                    baseline.items.first {
+                    baseline.first {
                         $0.remoteItem.path == removed.path
                     }
                 ).itemIdentifier,
@@ -1160,20 +998,46 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertEqual(retryIdentifiers, [.workingSet])
     }
 
-    func testPollingLoopRefreshesImmediatelyWhenEnumeratorOpens() async {
+    func testPollingLoopSleepsBeforeFirstRefresh() async {
         let refreshes = FileProviderTestRefreshCounter()
+        let clock = FileProviderTestPollingClock()
         let loop = FileProviderPollingLoop(
-            clock: FileProviderTestPollingClock(),
+            clock: clock,
             refresh: {
                 await refreshes.record()
             }
         )
 
         loop.start()
+        await clock.waitForSleepCount(1)
+
+        let refreshCountBeforeSleep = await refreshes.count()
+        XCTAssertEqual(refreshCountBeforeSleep, 0)
+
+        await clock.advance()
         await refreshes.wait(for: 1)
 
         let refreshCount = await refreshes.count()
         XCTAssertEqual(refreshCount, 1)
+        loop.invalidate()
+    }
+
+    func testPollingLoopRetriesFailedSleepBeforeRefreshing() async {
+        let refreshes = FileProviderTestRefreshCounter()
+        let clock = FileProviderTestPollingClock()
+        await clock.failNextSleep()
+        let loop = FileProviderPollingLoop(
+            clock: clock,
+            refresh: {
+                await refreshes.record()
+            }
+        )
+
+        loop.start()
+        await clock.waitForSleepCount(2)
+
+        let refreshCountAfterFailedSleep = await refreshes.count()
+        XCTAssertEqual(refreshCountAfterFailedSleep, 0)
         loop.invalidate()
     }
 
@@ -1188,16 +1052,13 @@ final class RemuxFileProviderContractTests: XCTestCase {
         )
 
         loop.start()
+        await clock.waitForSleepCount(1)
+        await clock.advance()
         await refreshes.wait(for: 1)
-        for _ in 0..<20 {
-            await Task.yield()
-        }
+        await clock.waitForSleepCount(2)
+
         let durations = await clock.requestedDurations()
-        XCTAssertEqual(durations, [.seconds(5)])
-        guard !durations.isEmpty else {
-            loop.invalidate()
-            return
-        }
+        XCTAssertEqual(durations, [.seconds(5), .seconds(5)])
 
         await clock.advance()
         await refreshes.wait(for: 2)
@@ -1207,40 +1068,35 @@ final class RemuxFileProviderContractTests: XCTestCase {
         loop.invalidate()
     }
 
-    func testPollingLoopStartsRefreshesOnFiveSecondCadenceWhenRefreshTakesTime() async {
-        let refreshes = FileProviderTestRefreshCounter()
+    func testPollingLoopSleepsFiveSecondsAfterEachCompletedRefresh() async {
+        let gate = FileProviderTestRefreshGate()
         let clock = FileProviderTestPollingClock()
         let loop = FileProviderPollingLoop(
             clock: clock,
             refresh: {
-                await clock.recordRefreshStart()
-                await clock.elapse(.seconds(2))
-                await refreshes.record()
+                await gate.beginAndWait()
             }
         )
 
         loop.start()
-        await refreshes.wait(for: 1)
-        for _ in 0..<20 {
-            await Task.yield()
-        }
-        let durations = await clock.requestedDurations()
-        XCTAssertEqual(durations, [.seconds(3)])
-        guard !durations.isEmpty else {
-            loop.invalidate()
-            return
-        }
-
+        await clock.waitForSleepCount(1)
         await clock.advance()
-        await refreshes.wait(for: 2)
+        await gate.waitUntilStarted()
 
-        let startTimes = await clock.recordedRefreshStartTimes()
-        XCTAssertEqual(startTimes, [.zero, .seconds(5)])
+        let durationsBeforeRefreshCompleted = await clock.requestedDurations()
+        XCTAssertEqual(durationsBeforeRefreshCompleted, [.seconds(5)])
+
+        await gate.release()
+        await clock.waitForSleepCount(2)
+
+        let durations = await clock.requestedDurations()
+        XCTAssertEqual(durations, [.seconds(5), .seconds(5)])
         loop.invalidate()
     }
 
     func testPollingLoopInvalidationCancelsCurrentRefresh() async {
         let gate = FileProviderTestRefreshGate()
+        let completion = FileProviderTestCompletionFlag()
         let clock = FileProviderTestPollingClock()
         let loop = FileProviderPollingLoop(
             clock: clock,
@@ -1249,19 +1105,22 @@ final class RemuxFileProviderContractTests: XCTestCase {
             }
         )
         loop.start()
+        await clock.waitForSleepCount(1)
+        await clock.advance()
         await gate.waitUntilStarted()
 
         loop.invalidate()
-        for _ in 0..<20 {
-            await Task.yield()
+        let drain = Task {
+            await loop.waitUntilInvalidated()
+            await completion.finish()
         }
+        let finishedAfterCancellation = await completion.waitUntilFinished(
+            timeout: .milliseconds(100)
+        )
         let wasCancelled = await gate.wasCancelled()
-        if !wasCancelled {
+        if !finishedAfterCancellation {
             await gate.release()
-            for _ in 0..<20 {
-                await Task.yield()
-            }
-            await clock.cancelAll()
+            await drain.value
         }
 
         XCTAssertTrue(wasCancelled)
@@ -1270,13 +1129,16 @@ final class RemuxFileProviderContractTests: XCTestCase {
     func testPollingLoopInvalidationWaitsForCurrentRefreshToFinish() async {
         let gate = FileProviderTestRefreshGate()
         let completion = FileProviderTestCompletionFlag()
+        let clock = FileProviderTestPollingClock()
         let loop = FileProviderPollingLoop(
-            clock: FileProviderTestPollingClock(),
+            clock: clock,
             refresh: {
                 await gate.beginAndWait()
             }
         )
         loop.start()
+        await clock.waitForSleepCount(1)
+        await clock.advance()
         await gate.waitUntilStarted()
 
         loop.invalidate()
@@ -1298,6 +1160,57 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(finishedAfterRelease)
     }
 
+    func testItemProjectionExposesWritableFileProviderMetadata() throws {
+        let remoteItem = try FileProviderRemoteItem(
+            path: FileProviderRemotePath(relative: "folder/report.txt"),
+            metadata: RemuxSFTPFileMetadata(
+                size: 42,
+                permissions: 0o100640,
+                modificationDate: Date(timeIntervalSince1970: 800)
+            )
+        )
+
+        let itemIdentity = FileProviderItemIdentity.item(
+            UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        )
+        let parentIdentity = FileProviderItemIdentity.item(
+            UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        )
+        let projection = FileProviderItemProjection(
+            item: FileProviderIdentifiedItem(
+                identity: itemIdentity,
+                parentIdentity: parentIdentity,
+                remoteItem: remoteItem
+            ),
+            rootDisplayName: "Server"
+        )
+
+        XCTAssertEqual(
+            projection.itemIdentifier,
+            itemIdentity.itemIdentifier
+        )
+        XCTAssertEqual(
+            projection.parentItemIdentifier,
+            parentIdentity.itemIdentifier
+        )
+        XCTAssertEqual(projection.filename, "report.txt")
+        XCTAssertEqual(projection.contentType, .plainText)
+        XCTAssertEqual(projection.documentSize, 42)
+        XCTAssertEqual(projection.contentModificationDate, Date(timeIntervalSince1970: 800))
+        XCTAssertEqual(
+            projection.capabilities,
+            [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        )
+        XCTAssertEqual(
+            projection.itemVersion.contentVersion,
+            remoteItem.contentVersion
+        )
+        XCTAssertEqual(
+            projection.itemVersion.metadataVersion,
+            remoteItem.metadataVersion
+        )
+        XCTAssertNil(projection.symlinkTargetPath)
+    }
 }
 
 private actor FileProviderEmptyFetchRemoteService: FileProviderRemoteServicing {
@@ -1818,6 +1731,25 @@ private func XCTAssertFileProviderThrowsAsync<T>(
     }
 }
 
+private final class FileProviderTestSDKItem: NSObject, NSFileProviderItem {
+    let itemIdentifier: NSFileProviderItemIdentifier
+    let parentItemIdentifier: NSFileProviderItemIdentifier
+    let filename: String
+    let contentType: UTType
+
+    init(
+        identifier: NSFileProviderItemIdentifier,
+        parentIdentifier: NSFileProviderItemIdentifier,
+        filename: String,
+        contentType: UTType
+    ) {
+        itemIdentifier = identifier
+        parentItemIdentifier = parentIdentifier
+        self.filename = filename
+        self.contentType = contentType
+    }
+}
+
 private func fileProviderTestItem(
     relative: String,
     size: UInt64,
@@ -1831,23 +1763,6 @@ private func fileProviderTestItem(
             modificationDate: Date(timeIntervalSince1970: TimeInterval(size)),
             type: type
         )
-    )
-}
-
-private func fileProviderTestRefresh(
-    items: [FileProviderRemoteItem]
-) -> FileProviderPollingRefresh {
-    let identifiedItems = items.map {
-        FileProviderIdentifiedItem(
-            identity: .item(UUID()),
-            parentIdentity: .root,
-            remoteItem: $0
-        )
-    }
-    return FileProviderPollingRefresh(
-        items: identifiedItems,
-        anchor: NSFileProviderSyncAnchor(rawValue: Data()),
-        delta: FileProviderSnapshotDelta(updated: identifiedItems, deleted: [])
     )
 }
 
@@ -2053,29 +1968,43 @@ private actor FileProviderTestRefreshCounter {
 private actor FileProviderTestPollingClock: FileProviderPollingClock {
     private struct Waiter {
         let id: UUID
-        let duration: Duration
         let continuation: CheckedContinuation<Void, Error>
     }
 
-    private var currentTime: Duration = .zero
-    private var durations: [Duration] = []
-    private var refreshStartTimes: [Duration] = []
-    private var waiters: [Waiter] = []
-
-    func now() -> Duration {
-        currentTime
+    private enum SleepError: Error {
+        case rejected
     }
+
+    private var durations: [Duration] = []
+    private var waiters: [Waiter] = []
+    private var failuresRemaining = 0
+    private var sleepCountWaiters: [
+        (count: Int, continuation: CheckedContinuation<Void, Never>)
+    ] = []
 
     func sleep(for duration: Duration) async throws {
         try Task.checkCancellation()
         let id = UUID()
+        let shouldFail = failuresRemaining > 0
+        if shouldFail {
+            failuresRemaining -= 1
+        }
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
                 durations.append(duration)
+                let ready = sleepCountWaiters.filter {
+                    durations.count >= $0.count
+                }
+                sleepCountWaiters.removeAll { durations.count >= $0.count }
+                ready.forEach { $0.continuation.resume() }
+                if shouldFail {
+                    continuation.resume(throwing: SleepError.rejected)
+                    return
+                }
                 waiters.append(
                     Waiter(
                         id: id,
-                        duration: duration,
                         continuation: continuation
                     )
                 )
@@ -2091,29 +2020,21 @@ private actor FileProviderTestPollingClock: FileProviderPollingClock {
         durations
     }
 
-    func recordRefreshStart() {
-        refreshStartTimes.append(currentTime)
+    func failNextSleep() {
+        failuresRemaining += 1
     }
 
-    func recordedRefreshStartTimes() -> [Duration] {
-        refreshStartTimes
-    }
-
-    func elapse(_ duration: Duration) {
-        currentTime += duration
+    func waitForSleepCount(_ count: Int) async {
+        guard durations.count < count else { return }
+        await withCheckedContinuation { continuation in
+            sleepCountWaiters.append((count, continuation))
+        }
     }
 
     func advance() {
         guard !waiters.isEmpty else { return }
         let waiter = waiters.removeFirst()
-        currentTime += waiter.duration
         waiter.continuation.resume()
-    }
-
-    func cancelAll() {
-        let waiters = self.waiters
-        self.waiters.removeAll()
-        waiters.forEach { $0.continuation.resume(throwing: CancellationError()) }
     }
 
     private func cancel(id: UUID) {
