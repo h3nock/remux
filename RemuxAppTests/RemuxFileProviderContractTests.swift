@@ -916,6 +916,7 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     private let listings: [[FileProviderRemoteItem]]
     private let firstRefreshGate: FileProviderTestRefreshGate?
     private var nextListingIndex = 0
+    private var mutationAccessCallCount = 0
 
     init(
         listings: [[FileProviderRemoteItem]],
@@ -947,6 +948,13 @@ private actor FileProviderTestSequencedRemoteService: FileProviderRemoteServicin
     }
 
     func invalidate() {
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
     }
 
     func listCallCount() -> Int {
@@ -1187,7 +1195,7 @@ private actor FileProviderFailingOnceSignaler:
     }
 }
 
-private actor FileProviderSequencedSFTPClient: RemuxSFTPReadOnlyClient {
+private actor FileProviderSequencedSFTPClient: RemuxSFTPFileProviderClient {
     private let home: String
     private let listings: [[RemuxSFTPDirectoryEntry]]
     private var listingIndex = 0
@@ -1229,6 +1237,30 @@ private actor FileProviderSequencedSFTPClient: RemuxSFTPReadOnlyClient {
         atPath path: String,
         _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
     ) async throws -> ReturnValue {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func createDirectory(atPath path: String) async throws {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func uploadFile(
+        from localURL: URL,
+        to remotePath: String,
+        progress: @escaping RemuxSFTPFileUploadProgressHandler
+    ) async throws {
+        throw RemuxSFTPClientError.noSuchFile(remotePath)
+    }
+
+    func renameItem(from sourcePath: String, to destinationPath: String) async throws {
+        throw RemuxSFTPClientError.noSuchFile(sourcePath)
+    }
+
+    func removeFile(atPath path: String) async throws {
+        throw RemuxSFTPClientError.noSuchFile(path)
+    }
+
+    func removeEmptyDirectory(atPath path: String) async throws {
         throw RemuxSFTPClientError.noSuchFile(path)
     }
 }

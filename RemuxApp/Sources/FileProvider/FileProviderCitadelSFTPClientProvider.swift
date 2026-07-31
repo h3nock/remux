@@ -22,7 +22,7 @@ struct FileProviderCitadelSFTPClientProvider: FileProviderSFTPClientProviding {
     func withClient<Value: Sendable>(
         server: SavedServer,
         authentication: ResolvedSSHAuth,
-        operation: @Sendable (any RemuxSFTPReadOnlyClient) async throws -> Value
+        operation: @Sendable (any RemuxSFTPFileProviderClient) async throws -> Value
     ) async throws -> Value {
         let credential: SSHCredential
         switch authentication.credential {
