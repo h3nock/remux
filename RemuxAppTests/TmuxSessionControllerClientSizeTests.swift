@@ -625,6 +625,27 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(write.components(separatedBy: "capture-pane").count - 1, 4)
     }
 
+    func testClientSizeRefreshesAcrossPortraitLandscapeRoundTrip() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+
+        harness.controller.setClientSize(cols: 120, rows: 32)
+        await drain(harness.controller)
+        XCTAssertTrue(
+            try XCTUnwrap(harness.recorder.takeStrings().first)
+                .hasPrefix("refresh-client -C 120x32\n")
+        )
+
+        harness.controller.setClientSize(cols: 44, rows: 83)
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["refresh-client -C 44x83\n"]
+        )
+    }
+
     func testInFlightGridRefreshFollowsViewportRevertExactlyOnce() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
