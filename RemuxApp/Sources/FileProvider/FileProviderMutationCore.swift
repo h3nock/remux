@@ -7,6 +7,11 @@ struct FileProviderMutationResult: Sendable {
     let shouldFetchContent: Bool
 }
 
+enum FileProviderCreateMutationResult: Sendable {
+    case item(FileProviderMutationResult)
+    case unableToMatchReimport
+}
+
 enum FileProviderCreateMutationError: Error, Sendable {
     case collision(existing: FileProviderIdentifiedItem)
 }
@@ -46,17 +51,22 @@ actor FileProviderMutationCore {
     func create(
         request: FileProviderCreateRequest,
         progress: @escaping @Sendable (Int64) async -> Void
-    ) async throws -> FileProviderMutationResult {
-        let key = FileProviderMutationReplayKey.create(
-            templateIdentifier: request.templateIdentifier.rawValue
-        )
-        if let receipt = try await snapshots.receipt(for: key) {
-            return try Self.replayedResult(from: receipt)
+    ) async throws -> FileProviderCreateMutationResult {
+        let templateIdentifier = request.templateIdentifier.rawValue
+        if let item = try await snapshots.item(
+            forCreateTemplateIdentifier: templateIdentifier
+        ) {
+            return Self.replayedCreateResult(for: item)
         }
 
-        return try await coordinator.performMutation { [remote, snapshots, validator, nonce, identity] in
-            if let receipt = try await snapshots.receipt(for: key) {
-                return try Self.replayedResult(from: receipt)
+        return try await coordinator.perform { [remote, snapshots, validator, nonce, identity] in
+            if let item = try await snapshots.item(
+                forCreateTemplateIdentifier: templateIdentifier
+            ) {
+                return Self.replayedCreateResult(for: item)
+            }
+            if request.options.contains(.mayAlreadyExist), request.contentsURL == nil {
+                return .unableToMatchReimport
             }
             try validator.validateMutation(of: request.type)
             try validator.validateChildName(request.filename)
@@ -120,12 +130,13 @@ actor FileProviderMutationCore {
                         try Task.checkCancellation()
                         try await access.createDirectory(at: destination)
                     case .regular:
-                        let localURL = try request.contentsURL ?? emptyFileURL()
-                        try await access.uploadFile(
-                            from: localURL,
-                            to: temporary,
-                            progress: progress
-                        )
+                        try await withUploadSource(contentsURL: request.contentsURL) { localURL in
+                            try await access.uploadFile(
+                                from: localURL,
+                                to: temporary,
+                                progress: progress
+                            )
+                        }
                         try Task.checkCancellation()
                         try await access.renameItem(from: temporary, to: destination)
                         renamed = true
@@ -147,7 +158,7 @@ actor FileProviderMutationCore {
                         parentIdentity: parentIdentity,
                         remoteItem: item
                     )
-                    _ = try await snapshots.commit(
+                    try await snapshots.commit(
                         localMutation: FileProviderSnapshotLocalMutation(
                             refreshedDirectories: [
                                 .init(directory: parentPath, items: parentItems),
@@ -155,18 +166,22 @@ actor FileProviderMutationCore {
                             identityReservations: [
                                 .init(identity: reservedIdentity, path: destination),
                             ],
-                            receipt: .item(key: key, item: identified),
-                            queuesWorkingSetSignal: true
+                            createAlias: FileProviderCreateAlias(
+                                templateIdentifier: templateIdentifier,
+                                identity: reservedIdentity
+                            )
                         )
                     )
-                    return FileProviderMutationResult(
-                        item: identified,
-                        stillPendingFields: request.fields.subtracting([
-                            .contents,
-                            .filename,
-                            .parentItemIdentifier,
-                        ]),
-                        shouldFetchContent: false
+                    return FileProviderCreateMutationResult.item(
+                        FileProviderMutationResult(
+                            item: identified,
+                            stillPendingFields: request.fields.subtracting([
+                                .contents,
+                                .filename,
+                                .parentItemIdentifier,
+                            ]),
+                            shouldFetchContent: false
+                        )
                     )
                 }
             }
@@ -179,35 +194,15 @@ actor FileProviderMutationCore {
     ) async throws -> FileProviderMutationResult {
         let sourceIdentity = try FileProviderItemIdentifierCodec().identity(for: request.identifier)
         try validator.validateMutablePath(try await snapshots.path(for: request.identifier))
-        let key = FileProviderMutationReplayKey.modify(
-            identity: sourceIdentity,
-            contentVersion: request.baseVersion.contentVersion,
-            metadataVersion: request.baseVersion.metadataVersion,
-            changedFields: UInt(request.changedFields.rawValue),
-            parentIdentifier: request.parentIdentifier.rawValue,
-            filename: request.filename
-        )
-        if let receipt = try await snapshots.receipt(for: key) {
-            return try Self.replayedResult(from: receipt)
-        }
 
-        return try await coordinator.performMutation { [remote, snapshots, validator, nonce, identity] in
-            if let receipt = try await snapshots.receipt(for: key) {
-                return try Self.replayedResult(from: receipt)
-            }
-
-            let partition = FileProviderMutationFieldPartition(
-                changedFields: request.changedFields
-            )
-            let supportedMetadataFields = partition.supported.intersection([
+        return try await coordinator.perform { [remote, snapshots, validator, nonce, identity] in
+            let supportedFields = request.changedFields.intersection([
+                .contents,
                 .filename,
                 .parentItemIdentifier,
             ])
-            let changesContents = request.changedFields.contains(.contents)
-            let supportedFields = changesContents
-                ? supportedMetadataFields.union([.contents])
-                : supportedMetadataFields
             let stillPendingFields = request.changedFields.subtracting(supportedFields)
+            let changesContents = supportedFields.contains(.contents)
             let sourcePath = try await snapshots.path(for: request.identifier)
             let sourceSnapshot = try await snapshots.item(for: request.identifier)
 
@@ -231,7 +226,14 @@ actor FileProviderMutationCore {
                     requested: request.baseVersion,
                     current: current
                 ) {
-                    throw FileProviderModifyMutationError.conflict(current: current)
+                    if Self.shouldFailOnConflict(request.options) {
+                        throw FileProviderModifyMutationError.conflict(current: current)
+                    }
+                    return FileProviderMutationResult(
+                        item: current,
+                        stillPendingFields: stillPendingFields,
+                        shouldFetchContent: changesContents
+                    )
                 }
                 guard !supportedFields.isEmpty else {
                     return FileProviderMutationResult(
@@ -295,11 +297,13 @@ actor FileProviderMutationCore {
                         occupiedPaths: newParentItems.map(\.path)
                     )
                     do {
-                        try await access.uploadFile(
-                            from: try request.contentsURL ?? emptyFileURL(),
-                            to: temporary,
-                            progress: progress
-                        )
+                        try await withUploadSource(contentsURL: request.contentsURL) { localURL in
+                            try await access.uploadFile(
+                                from: localURL,
+                                to: temporary,
+                                progress: progress
+                            )
+                        }
                         try Task.checkCancellation()
                         try await access.renameItem(from: temporary, to: destination)
                         committed = true
@@ -345,7 +349,7 @@ actor FileProviderMutationCore {
                         parentIdentity: newParentIdentity,
                         remoteItem: movedRemote
                     )
-                    _ = try await snapshots.commit(
+                    try await snapshots.commit(
                         localMutation: FileProviderSnapshotLocalMutation(
                             refreshedDirectories: refreshedDirectories,
                             identityReservations: sourceRemovalFailed
@@ -354,7 +358,6 @@ actor FileProviderMutationCore {
                             relocations: [
                                 .init(identity: sourceIdentity, from: sourcePath, to: destination),
                             ],
-                            receipt: .item(key: key, item: moved),
                             queuesWorkingSetSignal: sourceRemovalFailed
                         )
                     )
@@ -373,27 +376,15 @@ actor FileProviderMutationCore {
         if sourceIdentity == .root {
             throw FileProviderMutationValidationError.rootMutation
         }
-        let key = FileProviderMutationReplayKey.delete(
-            identity: sourceIdentity,
-            contentVersion: request.baseVersion.contentVersion,
-            metadataVersion: request.baseVersion.metadataVersion
-        )
-        if try await snapshots.receipt(for: key) != nil {
-            return
-        }
 
-        try validator.validateMutablePath(try await snapshots.path(for: request.identifier))
-
-        try await coordinator.performMutation { [remote, snapshots, validator] in
-            if try await snapshots.receipt(for: key) != nil {
+        try await coordinator.perform { [remote, snapshots, validator] in
+            guard let sourceSnapshot = try await snapshots.item(
+                for: request.identifier
+            ) else {
                 return
             }
-
-            let sourcePath = try await snapshots.path(for: request.identifier)
+            let sourcePath = sourceSnapshot.remoteItem.path
             try validator.validateMutablePath(sourcePath)
-            guard let sourceSnapshot = try await snapshots.item(for: request.identifier) else {
-                throw FileProviderSnapshotStoreError.itemIdentityNotFound
-            }
             let parentPath = sourceSnapshot.remoteItem.parent
 
             return try await remote.withMutationAccess { access in
@@ -403,14 +394,12 @@ actor FileProviderMutationCore {
                 } catch RemuxSFTPClientError.noSuchFile {
                     return try await finishCommittedMutation {
                         let parentItems = try await access.list(directory: parentPath)
-                        _ = try await snapshots.commit(
+                        try await snapshots.commit(
                             localMutation: FileProviderSnapshotLocalMutation(
                                 refreshedDirectories: [
                                     .init(directory: parentPath, items: parentItems),
                                 ],
-                                deletedIdentities: [sourceIdentity],
-                                receipt: .deleted(key: key),
-                                queuesWorkingSetSignal: true
+                                deletedIdentities: [sourceIdentity]
                             )
                         )
                     }
@@ -441,14 +430,12 @@ actor FileProviderMutationCore {
 
                 return try await finishCommittedMutation {
                     let parentItems = try await access.list(directory: parentPath)
-                    _ = try await snapshots.commit(
+                    try await snapshots.commit(
                         localMutation: FileProviderSnapshotLocalMutation(
                             refreshedDirectories: [
                                 .init(directory: parentPath, items: parentItems),
                             ],
-                            deletedIdentities: [sourceIdentity],
-                            receipt: .deleted(key: key),
-                            queuesWorkingSetSignal: true
+                            deletedIdentities: [sourceIdentity]
                         )
                     )
                 }
@@ -456,25 +443,23 @@ actor FileProviderMutationCore {
         }
     }
 
-    private static func replayedResult(
-        from receipt: FileProviderMutationReceipt
-    ) throws -> FileProviderMutationResult {
-        guard case .item(let key, let item) = receipt else {
-            throw FileProviderSnapshotStoreError.itemIdentityNotFound
-        }
-        let stillPendingFields: NSFileProviderItemFields
-        switch key {
-        case .modify(_, _, _, let changedFields, _, _):
-            stillPendingFields = NSFileProviderItemFields(rawValue: changedFields)
-                .subtracting([.filename, .parentItemIdentifier])
-        case .create, .delete:
-            stillPendingFields = []
-        }
-        return FileProviderMutationResult(
-            item: item,
-            stillPendingFields: stillPendingFields,
-            shouldFetchContent: false
+    private static func replayedCreateResult(
+        for item: FileProviderIdentifiedItem
+    ) -> FileProviderCreateMutationResult {
+        .item(
+            FileProviderMutationResult(
+                item: item,
+                stillPendingFields: [],
+                shouldFetchContent: false
+            )
         )
+    }
+
+    private static func shouldFailOnConflict(
+        _ options: NSFileProviderModifyItemOptions
+    ) -> Bool {
+        guard #available(iOS 26.0, *) else { return false }
+        return options.contains(.failOnConflict)
     }
 }
 
@@ -491,6 +476,21 @@ private func cleanupTemporaryFile(
     _ = try? await Task.detached {
         try await access.removeFile(at: temporary)
     }.value
+}
+
+private func withUploadSource<Value: Sendable>(
+    contentsURL: URL?,
+    operation: (URL) async throws -> Value
+) async throws -> Value {
+    if let contentsURL {
+        return try await operation(contentsURL)
+    }
+
+    let temporaryURL = try emptyFileURL()
+    defer {
+        try? FileManager.default.removeItem(at: temporaryURL)
+    }
+    return try await operation(temporaryURL)
 }
 
 private func emptyFileURL() throws -> URL {
