@@ -9,6 +9,140 @@ import XCTest
 
 final class RemuxFileProviderContractTests: XCTestCase {
 
+    func testRequestProgressCancellationCancelsWorkAndCompletesExactlyOnce() async {
+        let controller = FileProviderRequestController()
+        let state = FileProviderTestRequestState()
+        let completions = FileProviderTestCompletionRecorder<Int>()
+
+        let progress = controller.perform(
+            operation: {
+                try await state.run()
+            },
+            completion: { result in
+                Task {
+                    await completions.record(result)
+                }
+            }
+        )
+        await state.waitUntilStarted()
+
+        progress.cancel()
+        await completions.waitForFirst()
+
+        let wasCancelled = await state.wasCancelled()
+        let results = await completions.results()
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected cancellation to fail the request")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+    }
+
+    func testRequestControllerInvalidationCancelsWorkAndCompletesExactlyOnce() async {
+        let controller = FileProviderRequestController()
+        let state = FileProviderTestRequestState()
+        let completions = FileProviderTestCompletionRecorder<Int>()
+
+        _ = controller.perform(
+            operation: {
+                try await state.run()
+            },
+            completion: { result in
+                Task {
+                    await completions.record(result)
+                }
+            }
+        )
+        await state.waitUntilStarted()
+
+        controller.invalidate()
+        await completions.waitForFirst()
+
+        let wasCancelled = await state.wasCancelled()
+        let results = await completions.results()
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected invalidation to fail the request")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+    }
+
+    func testRequestControllerInvalidationWaitsForCancelledWorkToFinish() async {
+        let controller = FileProviderRequestController()
+        let gate = FileProviderTestRefreshGate()
+        let completion = FileProviderTestCompletionFlag()
+        _ = controller.perform(
+            operation: {
+                await gate.beginAndWait()
+                return 1
+            },
+            completion: { _ in }
+        )
+        await gate.waitUntilStarted()
+
+        controller.invalidate()
+        let drain = Task {
+            await controller.waitUntilInvalidated()
+            await completion.finish()
+        }
+        let finishedBeforeRelease = await completion.waitUntilFinished(
+            timeout: .milliseconds(100)
+        )
+        XCTAssertFalse(finishedBeforeRelease)
+
+        await gate.release()
+        await drain.value
+
+        let finishedAfterRelease = await completion.waitUntilFinished(
+            timeout: .seconds(1)
+        )
+        XCTAssertTrue(finishedAfterRelease)
+    }
+
+    func testRequestStartedAfterInvalidationIsRejectedWithoutRunningOperation() async {
+        let controller = FileProviderRequestController()
+        let invocations = FileProviderTestInvocationCounter()
+        let completions = FileProviderTestCompletionRecorder<Int>()
+        let drained = FileProviderTestCompletionFlag()
+        controller.invalidate {
+            await drained.finish()
+        }
+
+        let progress = controller.perform(
+            operation: {
+                await invocations.record()
+            },
+            completion: { result in
+                Task {
+                    await completions.record(result)
+                }
+            }
+        )
+
+        await completions.waitForFirst()
+        let didDrain = await drained.waitUntilFinished(timeout: .seconds(1))
+        let invocationCount = await invocations.count()
+        let results = await completions.results()
+        XCTAssertEqual(invocationCount, 0)
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected invalidation to reject the request")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+        XCTAssertEqual(progress.totalUnitCount, 1)
+        XCTAssertEqual(progress.completedUnitCount, 1)
+        XCTAssertTrue(didDrain)
+    }
+
+
     func testSharedAuthenticationFactoryPreservesPasswordCredentials() throws {
         let authentication = ResolvedSSHAuth.password(
             username: "reader",
@@ -882,6 +1016,74 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(finishedAfterRelease)
     }
 
+}
+
+private actor FileProviderTestRequestState {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancellationObserved = false
+
+    func run() async throws -> Int {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        do {
+            try await Task.sleep(for: .seconds(60))
+            return 1
+        } catch is CancellationError {
+            cancellationObserved = true
+            throw CancellationError()
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func wasCancelled() -> Bool {
+        cancellationObserved
+    }
+}
+
+private actor FileProviderTestInvocationCounter {
+    private var invocationCount = 0
+
+    func record() -> Int {
+        invocationCount += 1
+        return invocationCount
+    }
+
+    func count() -> Int {
+        invocationCount
+    }
+}
+
+private actor FileProviderTestCompletionRecorder<Value: Sendable> {
+    private var recordedResults: [Result<Value, NSError>] = []
+    private var firstWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func record(_ result: Result<Value, NSError>) {
+        recordedResults.append(result)
+        let waiters = firstWaiters
+        firstWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitForFirst() async {
+        guard recordedResults.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstWaiters.append(continuation)
+        }
+    }
+
+    func results() -> [Result<Value, NSError>] {
+        recordedResults
+    }
 }
 
 private actor FileProviderTestCompletionFlag {
