@@ -68,6 +68,55 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+  RemuxFileProvider:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: RemuxFileProvider/Sources
+      - path: RemuxApp/Sources/Domain/TmuxConnectionTarget.swift
+      - path: RemuxApp/Sources/Domain/SSHPrivateKeyInspector.swift
+      - path: RemuxApp/Sources/Domain/TerminalSettings.swift
+      - path: RemuxApp/Sources/Persistence/ApplicationStorage.swift
+      - path: RemuxApp/Sources/Persistence/ConnectionProfileRepository.swift
+      - path: RemuxApp/Sources/Persistence/JSONFileStore.swift
+      - path: RemuxApp/Sources/Persistence/SSHCredentialStore.swift
+      - path: RemuxApp/Sources/Persistence/TrustedHostStore.swift
+      - path: RemuxApp/Sources/App/SSHAuthResolver.swift
+      - path: RemuxApp/Sources/SSH/RemuxSFTPClient.swift
+      - path: RemuxApp/Sources/SSH/RemuxCitadelSFTPClient.swift
+      - path: RemuxApp/Sources/SSH/RemuxSSHRootService.swift
+      - path: RemuxApp/Sources/SSH/SSHAuthenticationMethodFactory.swift
+      - path: RemuxApp/Sources/SSH/RemuxTransportStartupTrace.swift
+      - path: RemuxApp/Sources/FileProvider
+    dependencies:
+      - package: Citadel
+      - sdk: FileProvider.framework
+      - sdk: UniformTypeIdentifiers.framework
+      - sdk: Security.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.remux.app.file-provider
+        PRODUCT_NAME: RemuxFileProvider
+        PRODUCT_MODULE_NAME: RemuxFileProvider
+        CODE_SIGN_ENTITLEMENTS: RemuxFileProvider/RemuxFileProvider.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) REMUX_FILE_PROVIDER_EXTENSION
+    info:
+      path: RemuxFileProvider/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        RemuxSharedKeychainAccessGroup: $(AppIdentifierPrefix)dev.remux.shared
+        NSExtension:
+          NSExtensionFileProviderDocumentGroup: group.dev.remux
+          NSExtensionFileProviderDownloadPipelineDepth: 1
+          NSExtensionFileProviderUploadPipelineDepth: 1
+          NSExtensionFileProviderMetadataOnlyUploadPipelineDepth: 1
+          NSExtensionFileProviderSupportsEnumeration: true
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).RemuxFileProviderExtension
   RemuxTests:
     type: bundle.unit-test
     platform: iOS
@@ -111,6 +160,7 @@ schemes:
     build:
       targets:
         Remux: all
+        RemuxFileProvider: all
         RemuxTests: [test]
     test:
       targets:
