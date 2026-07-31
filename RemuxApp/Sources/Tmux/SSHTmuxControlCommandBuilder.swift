@@ -37,6 +37,17 @@ enum SSHTmuxRemotePlatformDetector {
     }
 }
 
+enum SSHTmuxControlCommandBuilderError: LocalizedError, Equatable {
+    case unsupportedWindowsArgument
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedWindowsArgument:
+            "Windows tmux executable and session names cannot contain a percent sign."
+        }
+    }
+}
+
 enum SSHTmuxControlCommandBuilder {
     static let tmuxNotFoundMarker = "remux: tmux executable not found"
     static let tmuxNotExecutableMarker = "remux: tmux executable cannot be executed"
@@ -48,7 +59,7 @@ enum SSHTmuxControlCommandBuilder {
         tmuxExecutable: String,
         sessionName: String,
         initialViewport: TmuxControlViewport
-    ) -> String {
+    ) throws -> String {
         switch platform {
         case .posix:
             posixAttachOrCreateControlSessionCommand(
@@ -57,7 +68,7 @@ enum SSHTmuxControlCommandBuilder {
                 initialViewport: initialViewport
             )
         case .windows:
-            windowsAttachOrCreateControlSessionCommand(
+            try windowsAttachOrCreateControlSessionCommand(
                 tmuxExecutable: tmuxExecutable,
                 sessionName: sessionName,
                 initialViewport: initialViewport
@@ -85,7 +96,11 @@ enum SSHTmuxControlCommandBuilder {
         tmuxExecutable: String,
         sessionName: String,
         initialViewport: TmuxControlViewport
-    ) -> String {
+    ) throws -> String {
+        guard !tmuxExecutable.contains("%"), !sessionName.contains("%") else {
+            throw SSHTmuxControlCommandBuilderError.unsupportedWindowsArgument
+        }
+
         // Windows resolves a bare `tmux` executable as `tmux.exe`. Keep the
         // command behind cmd.exe so an OpenSSH server configured with
         // PowerShell does not try to interpret the POSIX launcher.

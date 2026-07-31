@@ -301,7 +301,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             establishedConnection = try await SSHTmuxControlBootstrap.openControlSession(
                 using: claimedConnection,
                 viewport: startupViewport,
-                command: tmuxAttachCommand(
+                command: try tmuxAttachCommand(
                     platform: remotePlatform,
                     viewport: startupViewport
                 ),
@@ -534,8 +534,8 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
     private func tmuxAttachCommand(
         platform: SSHTmuxRemotePlatform,
         viewport: TmuxControlViewport
-    ) -> String {
-        SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+    ) throws -> String {
+        try SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             platform: platform,
             tmuxExecutable: configuration.tmuxExecutable,
             sessionName: configuration.sessionName,
@@ -655,7 +655,7 @@ final class SSHTmuxControlStartupOutputAdapter: @unchecked Sendable {
 
         return lock.withLock {
             if startupResolved {
-                return isDCSWrapped ? removingDCSClosers(from: data) : data
+                return isDCSWrapped ? removingDCSCloser(from: data) : data
             }
 
             bufferedPrefix.append(data)
@@ -674,11 +674,11 @@ final class SSHTmuxControlStartupOutputAdapter: @unchecked Sendable {
             isDCSWrapped = true
             let output = Data(bufferedPrefix.dropFirst(Self.dcsOpener.count))
             bufferedPrefix.removeAll(keepingCapacity: false)
-            return removingDCSClosers(from: output)
+            return removingDCSCloser(from: output)
         }
     }
 
-    private func removingDCSClosers(from data: Data) -> Data? {
+    private func removingDCSCloser(from data: Data) -> Data? {
         var output = Data()
         output.reserveCapacity(data.count + (hasPendingEscape ? 1 : 0))
         var iterator = data.makeIterator()
@@ -692,6 +692,12 @@ final class SSHTmuxControlStartupOutputAdapter: @unchecked Sendable {
             if first != UInt8(ascii: "\\") {
                 output.append(UInt8(ascii: "\u{1b}"))
                 output.append(first)
+            } else {
+                isDCSWrapped = false
+                while let byte = iterator.next() {
+                    output.append(byte)
+                }
+                return output.isEmpty ? nil : output
             }
         }
 
@@ -704,7 +710,13 @@ final class SSHTmuxControlStartupOutputAdapter: @unchecked Sendable {
                 hasPendingEscape = true
                 break
             }
-            if next != UInt8(ascii: "\\") {
+            if next == UInt8(ascii: "\\") {
+                isDCSWrapped = false
+                while let remainingByte = iterator.next() {
+                    output.append(remainingByte)
+                }
+                break
+            } else {
                 output.append(byte)
                 output.append(next)
             }

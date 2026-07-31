@@ -1204,6 +1204,20 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             Data("%begin 1 1 0\n%exit\n".utf8)
         )
         XCTAssertNil(adapter.adapt(Data("\\".utf8)))
+        XCTAssertEqual(
+            adapter.adapt(Data("%exit\n\u{1b}\\".utf8)),
+            Data("%exit\n\u{1b}\\".utf8)
+        )
+    }
+
+    func testWindowsStartupOutputAdapterPreservesUnwrappedOutput() {
+        let adapter = SSHTmuxControlStartupOutputAdapter(platform: .windows)
+
+        XCTAssertEqual(adapter.adapt(Data("%beg".utf8)), Data("%beg".utf8))
+        XCTAssertEqual(
+            adapter.adapt(Data("in 1 1 0\n\u{1b}\\".utf8)),
+            Data("in 1 1 0\n\u{1b}\\".utf8)
+        )
     }
 
     func testStartupOutputAdapterPreservesPOSIXOutput() {
@@ -1393,7 +1407,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testControlSessionCommandDelegatesStartupToPOSIXShell() {
-        let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+        let command = try! SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             tmuxExecutable: "tmux",
             sessionName: "base",
             initialViewport: TmuxControlViewport(
@@ -1413,7 +1427,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     func testControlSessionCommandKeepsValuesOutOfLoginShellSyntax() {
         let tmuxExecutable = "/home/owner's tools/tmux"
         let sessionName = "owner's bäse! back\\slash"
-        let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+        let command = try! SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             tmuxExecutable: tmuxExecutable,
             sessionName: sessionName,
             initialViewport: TmuxControlViewport(
@@ -1478,8 +1492,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
     }
 
-    func testWindowsControlSessionCommandUsesCmdAndBareTmuxName() {
-        let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+    func testWindowsControlSessionCommandUsesCmdAndBareTmuxName() throws {
+        let command = try SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             platform: .windows,
             tmuxExecutable: "tmux",
             sessionName: "base",
@@ -1496,6 +1510,25 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertTrue(command.hasSuffix("-x 120 -y 40\""))
         XCTAssertFalse(command.contains("/bin/sh"))
         XCTAssertFalse(command.contains("tmux.exe"))
+    }
+
+    func testWindowsControlSessionCommandRejectsPercentExpansion() {
+        for (tmuxExecutable, sessionName) in [("%TMUX%", "base"), ("tmux", "%SESSION%")]
+        {
+            XCTAssertThrowsError(
+                try SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+                    platform: .windows,
+                    tmuxExecutable: tmuxExecutable,
+                    sessionName: sessionName,
+                    initialViewport: .default
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? SSHTmuxControlCommandBuilderError,
+                    .unsupportedWindowsArgument
+                )
+            }
+        }
     }
 
     func testSendAfterCloseFailsInsteadOfQueueingBytes() async {
