@@ -1120,6 +1120,115 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(tracker.pendingCount, 0)
     }
 
+    func testWindowsInputAdapterTranslatesGhosttyInput() throws {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+
+        XCTAssertEqual(
+            try adapter.adapt(Data("send-keys -H -t %7 64 69 72 0d\n".utf8)),
+            Data("send-keys -t %7 0x64 0x69 0x72 0xd\n".utf8)
+        )
+    }
+
+    func testWindowsInputAdapterBuffersSplitCommands() throws {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+
+        XCTAssertNil(try adapter.adapt(Data("send-keys -H -t %7 64 ".utf8)))
+        XCTAssertEqual(
+            try adapter.adapt(Data("69 72 0d\n".utf8)),
+            Data("send-keys -t %7 0x64 0x69 0x72 0xd\n".utf8)
+        )
+    }
+
+    func testWindowsInputAdapterTranslatesControlClientResize() throws {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+
+        XCTAssertEqual(
+            try adapter.adapt(Data("refresh-client -C 83x44\n".utf8)),
+            Data("refresh-client -C 83,44\n".utf8)
+        )
+    }
+
+    func testWindowsInputAdapterBuffersSplitControlClientResize() throws {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+
+        XCTAssertNil(try adapter.adapt(Data("refresh-client -C 83x".utf8)))
+        XCTAssertEqual(
+            try adapter.adapt(Data("44\n".utf8)),
+            Data("refresh-client -C 83,44\n".utf8)
+        )
+    }
+
+    func testWindowsInputAdapterTranslatesResizeAndInputInOneWrite() throws {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+
+        XCTAssertEqual(
+            try adapter.adapt(
+                Data("refresh-client -C 83x44\nsend-keys -H -t %7 64 69 72 0d\n".utf8)
+            ),
+            Data("refresh-client -C 83,44\nsend-keys -t %7 0x64 0x69 0x72 0xd\n".utf8)
+        )
+    }
+
+    func testWindowsInputAdapterPreservesMalformedControlClientResize() throws {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+        let command = Data("refresh-client -C 83xwide\n".utf8)
+
+        XCTAssertEqual(try adapter.adapt(command), command)
+    }
+
+    func testWindowsInputAdapterRejectsInvalidUTF8() {
+        let adapter = SSHTmuxControlInputAdapter(platform: .windows)
+
+        XCTAssertThrowsError(
+            try adapter.adapt(Data("send-keys -H -t %7 ff\n".utf8))
+        ) { error in
+            XCTAssertEqual(error as? SSHTmuxControlInputAdapterError, .invalidUTF8)
+        }
+    }
+
+    func testInputAdapterPreservesPOSIXCommands() throws {
+        let command = Data("send-keys -H -t %7 ff\n".utf8)
+
+        XCTAssertEqual(
+            try SSHTmuxControlInputAdapter(platform: .posix).adapt(command),
+            command
+        )
+    }
+
+    func testWindowsStartupOutputAdapterRemovesSplitDCSEnvelope() {
+        let adapter = SSHTmuxControlStartupOutputAdapter(platform: .windows)
+
+        XCTAssertNil(adapter.adapt(Data([0x1b, 0x50, 0x31])))
+        XCTAssertEqual(
+            adapter.adapt(Data("000p%begin 1 1 0\n%exit\n\u{1b}".utf8)),
+            Data("%begin 1 1 0\n%exit\n".utf8)
+        )
+        XCTAssertNil(adapter.adapt(Data("\\".utf8)))
+        XCTAssertEqual(
+            adapter.adapt(Data("%exit\n\u{1b}\\".utf8)),
+            Data("%exit\n\u{1b}\\".utf8)
+        )
+    }
+
+    func testWindowsStartupOutputAdapterPreservesUnwrappedOutput() {
+        let adapter = SSHTmuxControlStartupOutputAdapter(platform: .windows)
+
+        XCTAssertEqual(adapter.adapt(Data("%beg".utf8)), Data("%beg".utf8))
+        XCTAssertEqual(
+            adapter.adapt(Data("in 1 1 0\n\u{1b}\\".utf8)),
+            Data("in 1 1 0\n\u{1b}\\".utf8)
+        )
+    }
+
+    func testStartupOutputAdapterPreservesPOSIXOutput() {
+        let output = Data("\u{1b}P1000p%begin 1 1 0\n".utf8)
+
+        XCTAssertEqual(
+            SSHTmuxControlStartupOutputAdapter(platform: .posix).adapt(output),
+            output
+        )
+    }
+
     func testChannelRequestReplyTrackerReportsUnknownFailureWithoutPendingReply() {
         var tracker = SSHTmuxControlChannelRequestReplyTracker()
 
@@ -1298,7 +1407,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testControlSessionCommandDelegatesStartupToPOSIXShell() {
-        let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+        let command = try! SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             tmuxExecutable: "tmux",
             sessionName: "base",
             initialViewport: TmuxControlViewport(
@@ -1318,7 +1427,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     func testControlSessionCommandKeepsValuesOutOfLoginShellSyntax() {
         let tmuxExecutable = "/home/owner's tools/tmux"
         let sessionName = "owner's bäse! back\\slash"
-        let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+        let command = try! SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             tmuxExecutable: tmuxExecutable,
             sessionName: sessionName,
             initialViewport: TmuxControlViewport(
@@ -1334,6 +1443,92 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertFalse(command.contains("\n"))
         XCTAssertFalse(command.contains("!"))
         XCTAssertTrue(command.hasSuffix(" 120 40"))
+    }
+
+    func testRemotePlatformDetectorRecognizesWindowsCmdMarker() {
+        XCTAssertEqual(
+            try SSHTmuxRemotePlatformDetector.platform(
+                exitStatus: 0,
+                stdout: Data("REMUX_WINDOWS_Windows_NT\r\n".utf8)
+            ),
+            .windows
+        )
+    }
+
+    func testRemotePlatformDetectorRecognizesNegativeCmdResultAsPOSIX() {
+        for status in [1, 127] {
+            XCTAssertEqual(
+                try SSHTmuxRemotePlatformDetector.platform(
+                    exitStatus: status,
+                    stdout: Data()
+                ),
+                .posix
+            )
+        }
+    }
+
+    func testRemotePlatformDetectorRejectsInconclusiveProbeResults() {
+        XCTAssertThrowsError(
+            try SSHTmuxRemotePlatformDetector.platform(
+                exitStatus: nil,
+                stdout: Data("REMUX_WINDOWS_Windows_NT".utf8)
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SSHTmuxRemotePlatformDetectionError,
+                .missingExitStatus
+            )
+        }
+        XCTAssertThrowsError(
+            try SSHTmuxRemotePlatformDetector.platform(
+                exitStatus: 0,
+                stdout: Data("unexpected output".utf8)
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SSHTmuxRemotePlatformDetectionError,
+                .unexpectedSuccessfulOutput
+            )
+        }
+    }
+
+    func testWindowsControlSessionCommandUsesCmdAndBareTmuxName() throws {
+        let command = try SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+            platform: .windows,
+            tmuxExecutable: "tmux",
+            sessionName: "base",
+            initialViewport: TmuxControlViewport(
+                columns: 120,
+                rows: 40,
+                pixelWidth: 0,
+                pixelHeight: 0
+            )
+        )
+
+        XCTAssertTrue(command.hasPrefix("cmd.exe /d /s /c "))
+        XCTAssertTrue(command.contains(#""tmux" -u -CC new-session -A -s "base""#))
+        XCTAssertTrue(command.hasSuffix("-x 120 -y 40\""))
+        XCTAssertFalse(command.contains("/bin/sh"))
+        XCTAssertFalse(command.contains("tmux.exe"))
+    }
+
+    func testWindowsControlSessionCommandRejectsPercentExpansion() {
+        for (tmuxExecutable, sessionName) in [("%TMUX%", "base"), ("tmux", "%SESSION%")]
+        {
+            XCTAssertThrowsError(
+                try SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+                    platform: .windows,
+                    tmuxExecutable: tmuxExecutable,
+                    sessionName: sessionName,
+                    initialViewport: .default
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? SSHTmuxControlCommandBuilderError,
+                    .unsupportedWindowsArgument
+                )
+            }
+        }
     }
 
     func testSendAfterCloseFailsInsteadOfQueueingBytes() async {

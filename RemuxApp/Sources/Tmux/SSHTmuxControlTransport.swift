@@ -207,6 +207,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
     private let sessionSFTPScope: RemuxSessionSFTPChildScope
 
     private var pendingWrites: [Data] = []
+    private var inputAdapter: SSHTmuxControlInputAdapter?
     private var preparedRoot: RemuxSSHPreparedRoot?
     private var connection: SSHTmuxControlConnection?
     private var sessionSFTPDrainTask: Task<RemuxSFTPChildDrain, Never>?
@@ -259,6 +260,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         let startupTrace = preparedRoot.trace
         var startedConnection: SSHTmuxControlConnection?
         let establishedConnection: SSHTmuxControlConnection
+        let establishedInputAdapter: SSHTmuxControlInputAdapter
         do {
             let sshRoot = try await startupTrace.stage("sshRoot.ready") {
                 try await preparedRoot.sshRoot()
@@ -277,14 +279,38 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
                 await claimedConnection.release(.reusable)
                 throw SSHTmuxControlTransportError.closed
             }
+            let remotePlatform: SSHTmuxRemotePlatform
+            do {
+                remotePlatform = try await SSHTmuxControlBootstrap.detectRemotePlatform(
+                    using: claimedConnection.sshRoot,
+                    trace: startupTrace
+                )
+            } catch {
+                await claimedConnection.release(.reusable)
+                throw error
+            }
+            guard !isClosed else {
+                await claimedConnection.release(.reusable)
+                throw SSHTmuxControlTransportError.closed
+            }
+            let startupOutputAdapter = SSHTmuxControlStartupOutputAdapter(
+                platform: remotePlatform
+            )
+            let inputAdapter = SSHTmuxControlInputAdapter(platform: remotePlatform)
+            establishedInputAdapter = inputAdapter
             establishedConnection = try await SSHTmuxControlBootstrap.openControlSession(
                 using: claimedConnection,
                 viewport: startupViewport,
-                command: tmuxAttachCommand(viewport: startupViewport),
+                command: try tmuxAttachCommand(
+                    platform: remotePlatform,
+                    viewport: startupViewport
+                ),
                 controlNoResponseTimeout: configuration.controlNoResponseTimeout,
                 trace: startupTrace,
-                onOutput: { [inboundStream] data in
-                    inboundStream.yield(data)
+                onOutput: { [inboundStream, startupOutputAdapter] data in
+                    if let adapted = startupOutputAdapter.adapt(data) {
+                        inboundStream.yield(adapted)
+                    }
                 },
                 onFinish: { [inboundStream] error in
                     inboundStream.finish(error)
@@ -308,6 +334,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
                 }
             )
             guard !isClosed else { throw SSHTmuxControlTransportError.closed }
+            self.inputAdapter = inputAdapter
             connection = establishedConnection
             startedConnection = nil
         } catch {
@@ -338,7 +365,9 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         )
         do {
             for data in queuedWrites {
-                try await establishedConnection.write(data)
+                if let adapted = try establishedInputAdapter.adapt(data) {
+                    try await establishedConnection.write(adapted)
+                }
             }
         } catch {
             connection = nil
@@ -378,9 +407,21 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         GhosttyRuntimeTrace.latency(
             "transport.send begin bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
         )
-        try await connection.write(data)
+        let adapted: Data?
+        if let inputAdapter {
+            adapted = try inputAdapter.adapt(data)
+        } else {
+            adapted = data
+        }
+        guard let adapted else {
+            GhosttyRuntimeTrace.latency(
+                "transport.send buffered bytes=\(data.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+            )
+            return
+        }
+        try await connection.write(adapted)
         GhosttyRuntimeTrace.latency(
-            "transport.send end bytes=\(data.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+            "transport.send end bytes=\(adapted.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
         )
     }
 
@@ -393,6 +434,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         let activeConnection = connection
         let pendingPreparedRoot = preparedRoot
         connection = nil
+        inputAdapter = nil
         preparedRoot = nil
         isClosed = true
         let childDrain = await drainSessionSFTPChildren()
@@ -489,12 +531,198 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         )
     }
 
-    private func tmuxAttachCommand(viewport: TmuxControlViewport) -> String {
-        SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+    private func tmuxAttachCommand(
+        platform: SSHTmuxRemotePlatform,
+        viewport: TmuxControlViewport
+    ) throws -> String {
+        try SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
+            platform: platform,
             tmuxExecutable: configuration.tmuxExecutable,
             sessionName: configuration.sessionName,
             initialViewport: viewport
         )
+    }
+}
+
+enum SSHTmuxControlInputAdapterError: Error, Equatable {
+    case invalidUTF8
+}
+
+/// Adapt the small subset of upstream tmux control commands whose syntax is
+/// different in Windows tmux.exe. Commands are newline-delimited and may be
+/// split across SSH writes.
+final class SSHTmuxControlInputAdapter: @unchecked Sendable {
+    private let platform: SSHTmuxRemotePlatform
+    private let lock = NIOLock()
+    private var bufferedCommand = Data()
+
+    init(platform: SSHTmuxRemotePlatform) {
+        self.platform = platform
+    }
+
+    func adapt(_ data: Data) throws -> Data? {
+        guard !data.isEmpty else { return nil }
+        guard platform == .windows else { return data }
+
+        return try lock.withLock {
+            bufferedCommand.append(data)
+            var output = Data()
+
+            while let newline = bufferedCommand.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = Data(bufferedCommand[..<newline])
+                output.append(try adaptCommand(line))
+                output.append(UInt8(ascii: "\n"))
+                bufferedCommand.removeSubrange(...newline)
+            }
+
+            return output.isEmpty ? nil : output
+        }
+    }
+
+    private func adaptCommand(_ data: Data) throws -> Data {
+        guard let command = String(data: data, encoding: .utf8) else { return data }
+        if let resized = Self.adaptRefreshClientSize(command) {
+            return Data(resized.utf8)
+        }
+        let tokens = command.split(separator: " ", omittingEmptySubsequences: true)
+        guard tokens.count >= 5,
+              tokens[0] == "send-keys",
+              tokens[1] == "-H",
+              tokens[2] == "-t",
+              tokens[3].first == "%",
+              tokens[3].count > 1,
+              tokens[3].dropFirst().allSatisfy(\.isNumber),
+              tokens[4...].allSatisfy(Self.isHexByte)
+        else {
+            return data
+        }
+
+        var input = Data()
+        for token in tokens[4...] {
+            guard let byte = UInt8(token, radix: 16) else { return data }
+            input.append(byte)
+        }
+        guard let text = String(data: input, encoding: .utf8) else {
+            throw SSHTmuxControlInputAdapterError.invalidUTF8
+        }
+        let scalars = text.unicodeScalars
+            .map { "0x" + String($0.value, radix: 16) }
+            .joined(separator: " ")
+        return Data("send-keys -t \(tokens[3]) \(scalars)".utf8)
+    }
+
+    /// Upstream tmux accepts both `COLSxROWS` and `COLS,ROWS`, while psmux's
+    /// control-client resize parser currently accepts only the comma form.
+    private static func adaptRefreshClientSize(_ command: String) -> String? {
+        let prefix = "refresh-client -C "
+        guard command.hasPrefix(prefix) else { return nil }
+
+        let size = command.dropFirst(prefix.count)
+        let components = size.split(separator: "x", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) })
+        else {
+            return nil
+        }
+        return prefix + components.joined(separator: ",")
+    }
+
+    private static func isHexByte(_ token: Substring) -> Bool {
+        token.count == 2 && token.allSatisfy(\.isHexDigit)
+    }
+}
+
+/// Windows tmux.exe's `-CC` stream is wrapped in DCS 1000p. Ghostty expects a
+/// plain control stream, so remove only that envelope on positively detected
+/// Windows hosts.
+final class SSHTmuxControlStartupOutputAdapter: @unchecked Sendable {
+    private static let dcsOpener = Data([0x1b, 0x50, 0x31, 0x30, 0x30, 0x30, 0x70])
+
+    private let platform: SSHTmuxRemotePlatform
+    private let lock = NIOLock()
+    private var bufferedPrefix = Data()
+    private var startupResolved = false
+    private var isDCSWrapped = false
+    private var hasPendingEscape = false
+
+    init(platform: SSHTmuxRemotePlatform) {
+        self.platform = platform
+    }
+
+    func adapt(_ data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+        guard platform == .windows else { return data }
+
+        return lock.withLock {
+            if startupResolved {
+                return isDCSWrapped ? removingDCSCloser(from: data) : data
+            }
+
+            bufferedPrefix.append(data)
+            let comparedCount = min(bufferedPrefix.count, Self.dcsOpener.count)
+            guard bufferedPrefix.prefix(comparedCount)
+                    == Self.dcsOpener.prefix(comparedCount)
+            else {
+                startupResolved = true
+                defer { bufferedPrefix.removeAll(keepingCapacity: false) }
+                return bufferedPrefix
+            }
+
+            guard bufferedPrefix.count >= Self.dcsOpener.count else { return nil }
+
+            startupResolved = true
+            isDCSWrapped = true
+            let output = Data(bufferedPrefix.dropFirst(Self.dcsOpener.count))
+            bufferedPrefix.removeAll(keepingCapacity: false)
+            return removingDCSCloser(from: output)
+        }
+    }
+
+    private func removingDCSCloser(from data: Data) -> Data? {
+        var output = Data()
+        output.reserveCapacity(data.count + (hasPendingEscape ? 1 : 0))
+        var iterator = data.makeIterator()
+
+        if hasPendingEscape {
+            hasPendingEscape = false
+            guard let first = iterator.next() else {
+                hasPendingEscape = true
+                return nil
+            }
+            if first != UInt8(ascii: "\\") {
+                output.append(UInt8(ascii: "\u{1b}"))
+                output.append(first)
+            } else {
+                isDCSWrapped = false
+                while let byte = iterator.next() {
+                    output.append(byte)
+                }
+                return output.isEmpty ? nil : output
+            }
+        }
+
+        while let byte = iterator.next() {
+            guard byte == UInt8(ascii: "\u{1b}") else {
+                output.append(byte)
+                continue
+            }
+            guard let next = iterator.next() else {
+                hasPendingEscape = true
+                break
+            }
+            if next == UInt8(ascii: "\\") {
+                isDCSWrapped = false
+                while let remainingByte = iterator.next() {
+                    output.append(remainingByte)
+                }
+                break
+            } else {
+                output.append(byte)
+                output.append(next)
+            }
+        }
+
+        return output.isEmpty ? nil : output
     }
 }
 
@@ -665,7 +893,124 @@ private final class SSHTmuxPreparedControlSession: @unchecked Sendable {
     }
 }
 
+private struct SSHTmuxRemoteCommandResult: Sendable {
+    let exitStatus: Int?
+    let stdout: Data
+}
+
+private struct SSHTmuxRemoteCommandTimedOut: Error {}
+
+private enum SSHTmuxRemoteCommandRunner {
+    static func run(
+        command: String,
+        using sshRoot: RemuxSSHRoot,
+        timeout: TimeAmount,
+        trace: RemuxTransportStartupTrace
+    ) async throws -> SSHTmuxRemoteCommandResult {
+        let channel = try await sshRoot.openSessionChannel(trace: trace)
+        let promise = channel.eventLoop.makePromise(of: SSHTmuxRemoteCommandResult.self)
+        let handler = SSHTmuxRemoteCommandHandler(promise: promise)
+
+        do {
+            try await channel.pipeline.addHandler(handler).get()
+            let timeoutTask = channel.eventLoop.scheduleTask(deadline: .now() + timeout) {
+                handler.fail(SSHTmuxRemoteCommandTimedOut())
+            }
+            defer { timeoutTask.cancel() }
+
+            try await channel.triggerUserOutboundEvent(
+                SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true)
+            )
+            let result = try await promise.futureResult.get()
+            try? await channel.close()
+            return result
+        } catch {
+            try? await channel.close()
+            throw error
+        }
+    }
+}
+
+private final class SSHTmuxRemoteCommandHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = SSHChannelData
+
+    private let promise: EventLoopPromise<SSHTmuxRemoteCommandResult>
+    private var stdout = Data()
+    private var exitStatus: Int?
+    private var didComplete = false
+
+    init(promise: EventLoopPromise<SSHTmuxRemoteCommandResult>) {
+        self.promise = promise
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let channelData = unwrapInboundIn(data)
+        guard channelData.type == .channel,
+              case .byteBuffer(var buffer) = channelData.data,
+              let bytes = buffer.readBytes(length: buffer.readableBytes)
+        else {
+            return
+        }
+        stdout.append(contentsOf: bytes)
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        switch event {
+        case let status as SSHChannelRequestEvent.ExitStatus:
+            exitStatus = Int(status.exitStatus)
+        case is NIOSSH.ChannelFailureEvent:
+            fail(SSHTmuxControlTransportError.channelRequestFailed(.exec))
+        default:
+            context.fireUserInboundEventTriggered(event)
+        }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        complete()
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        fail(error)
+        context.close(promise: nil)
+    }
+
+    func fail(_ error: Error) {
+        guard !didComplete else { return }
+        didComplete = true
+        promise.fail(error)
+    }
+
+    private func complete() {
+        guard !didComplete else { return }
+        didComplete = true
+        promise.succeed(
+            SSHTmuxRemoteCommandResult(exitStatus: exitStatus, stdout: stdout)
+        )
+    }
+}
+
 private enum SSHTmuxControlBootstrap {
+    static func detectRemotePlatform(
+        using sshRoot: RemuxSSHRoot,
+        trace: RemuxTransportStartupTrace
+    ) async throws -> SSHTmuxRemotePlatform {
+        let result = try await trace.stage("remotePlatform.detect") {
+            try await SSHTmuxRemoteCommandRunner.run(
+                command: SSHTmuxRemotePlatformDetector.windowsProbeCommand,
+                using: sshRoot,
+                timeout: .seconds(3),
+                trace: trace
+            )
+        }
+        let platform = try SSHTmuxRemotePlatformDetector.platform(
+            exitStatus: result.exitStatus,
+            stdout: result.stdout
+        )
+        trace.event("remotePlatform.detected", fields: ["platform": platform.description])
+        return platform
+    }
+
     static func openSessionChannel(
         using sshRoot: RemuxSSHRoot,
         trace: RemuxTransportStartupTrace
@@ -722,12 +1067,12 @@ private enum SSHTmuxControlBootstrap {
 
         // Deliberately NO pseudo-terminal: the control-mode protocol is a
         // plain byte stream pumped straight into Ghostty's session parser. A PTY
-        // would force `tmux -CC` (which demands a tty and wraps the stream
+        // would force POSIX `tmux -CC` (which demands a tty and wraps the stream
         // in a DCS 1000p envelope Ghostty's parser must not see) and adds
         // echo and CRLF line-discipline hazards. `tmux -C` over a bare exec
-        // channel emits exactly the verified wire contract; TERM is exported
-        // by the remote command line and the client size is owned by the
-        // session's refresh-client reporting.
+        // channel emits exactly the verified wire contract. Windows tmux.exe
+        // uses pipe-capable `-CC`; its DCS envelope is removed before Ghostty
+        // sees it. TERM is exported by the POSIX command line.
         try await trace.stage(
             "exec.request",
             fields: ["commandBytes": "\(command.lengthOfBytes(using: .utf8))"]
