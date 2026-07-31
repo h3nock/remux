@@ -153,6 +153,31 @@ final class FileProviderMutationCoreTests: XCTestCase {
         XCTAssertFalse(exists)
     }
 
+    func testCreateRejectsPreexistingTemporarySiblingWithoutOverwritingOrRemovingIt() async throws {
+        let fixture = try MutationFixture()
+        let temporary = ".remux-upload-\(fixture.nonce)"
+        let sentinel = Data("sentinel".utf8)
+        await fixture.remote.seed(path: temporary, type: .regular, contents: sentinel)
+        await fixture.remote.failNextUpload(afterCreatingTemporaryFile: true)
+
+        await assertThrows {
+            try await fixture.core.create(
+                request: fixture.createRequest(
+                    template: "temporary-collision",
+                    parent: .rootContainer,
+                    filename: "report.txt",
+                    type: .regular,
+                    contentsURL: fixture.localFile(contents: Data("new".utf8))
+                )
+            ) { _ in }
+        }
+
+        let mutations = await fixture.remote.mutations()
+        let contents = await fixture.remote.contents(path: "/home/me/\(temporary)")
+        XCTAssertTrue(mutations.isEmpty)
+        XCTAssertEqual(contents, sentinel)
+    }
+
     func testCreateRenameFailureRemovesTemporarySiblingAndLeavesDestination() async throws {
         let fixture = try MutationFixture()
         await fixture.remote.failNextRename()
@@ -247,6 +272,291 @@ final class FileProviderMutationCoreTests: XCTestCase {
         ])
         let listedDirectories = await fixture.remote.listedDirectories()
         XCTAssertEqual(listedDirectories, [.root, .root])
+    }
+
+    func testMetadataOnlyRenameIgnoresPreexistingTemporarySibling() async throws {
+        let fixture = try MutationFixture()
+        await fixture.remote.seed(path: "old.txt", type: .regular, contents: Data("old".utf8))
+        await fixture.remote.seed(
+            path: ".remux-upload-\(fixture.nonce)",
+            type: .regular,
+            contents: Data("sentinel".utf8)
+        )
+        try await fixture.recordRoot()
+        let original = try await fixture.identifiedItem(path: "old.txt")
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(item: original, filename: "new.txt", changedFields: [.filename])
+        ) { _ in }
+
+        XCTAssertEqual(result.item.remoteItem.path.relative, "new.txt")
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations, [.rename("/home/me/old.txt", "/home/me/new.txt")])
+    }
+
+    func testModifyContentsUploadsTemporaryFileThenReplacesDestination() async throws {
+        let fixture = try await MutationFixture.withFile(
+            path: "report.txt",
+            contents: Data("old".utf8)
+        )
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        let localURL = fixture.localFile(contents: Data("new".utf8))
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                contentsURL: localURL,
+                changedFields: [.contents]
+            )
+        ) { bytes in
+            await fixture.progress.record(bytes)
+        }
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations, [
+            .upload(localURL, "/home/me/.remux-upload-\(fixture.nonce)"),
+            .rename("/home/me/.remux-upload-\(fixture.nonce)", "/home/me/report.txt"),
+        ])
+        XCTAssertEqual(result.item.identity, original.identity)
+        let contents = await fixture.remote.contents(path: "/home/me/report.txt")
+        XCTAssertEqual(contents, Data("new".utf8))
+    }
+
+    func testModifyContentsAndFilenameCommitsReplacementAtNewPath() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                filename: "report.md",
+                contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                changedFields: [.contents, .filename]
+            )
+        ) { _ in }
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(mutations.map { $0.kind }, [.upload, .rename, .removeFile])
+        XCTAssertEqual(result.item.identity, original.identity)
+        XCTAssertEqual(result.item.remoteItem.path.relative, "report.md")
+        let contents = await fixture.remote.contents(path: "/home/me/report.md")
+        let oldPathExists = await fixture.remote.exists("/home/me/report.txt")
+        XCTAssertEqual(contents, Data("new".utf8))
+        XCTAssertFalse(oldPathExists)
+    }
+
+    func testModifyDirectoryContentsDoesNotUpload() async throws {
+        let fixture = try await MutationFixture.withEmptyDirectory(path: "folder")
+        let original = try await fixture.identifiedItem(path: "folder")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(
+                    item: original,
+                    contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                    changedFields: [.contents]
+                )
+            ) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? FileProviderMutationValidationError, .directoryContents)
+        }
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyContentsRejectsChangedRemoteBaseVersionWithoutUpload() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.changeMetadata(path: "report.txt")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(
+                    item: original,
+                    contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                    changedFields: [.contents]
+                )
+            ) { _ in }
+        }) { error in
+            guard case .conflict = error as? FileProviderModifyMutationError else {
+                return XCTFail("Expected content-version conflict")
+            }
+        }
+
+        let mutations = await fixture.remote.mutations()
+        let contents = await fixture.remote.contents(path: "/home/me/report.txt")
+        XCTAssertTrue(mutations.isEmpty)
+        XCTAssertEqual(contents, Data("old".utf8))
+    }
+
+    func testModifyContentsKeepsCommittedDestinationWhenOldSourceRemovalFails() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        await fixture.remote.failNextRemoval()
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                filename: "report.md",
+                contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                changedFields: [.contents, .filename]
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.item.identity, original.identity)
+        XCTAssertEqual(result.item.remoteItem.path.relative, "report.md")
+        let retainedSource = try await fixture.identifiedItem(path: "report.txt")
+        let signalGeneration = try await fixture.snapshots.pendingWorkingSetSignalGeneration()
+        XCTAssertNotEqual(retainedSource.identity, original.identity)
+        XCTAssertNotNil(signalGeneration)
+        let destinationContents = await fixture.remote.contents(path: "/home/me/report.md")
+        let sourceContents = await fixture.remote.contents(path: "/home/me/report.txt")
+        XCTAssertEqual(destinationContents, Data("new".utf8))
+        XCTAssertEqual(sourceContents, Data("old".utf8))
+    }
+
+    func testModifyContentsCancellationAfterUploadRemovesTemporaryFileWithoutCommitting() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        let localURL = fixture.localFile(contents: Data("new".utf8))
+        await fixture.remote.blockRename()
+        let cancellationDelivery = MutationCancellationDeliveryLatch()
+        let task = Task {
+            try await withTaskCancellationHandler {
+                try await fixture.core.modify(
+                    request: fixture.modifyRequest(
+                        item: original,
+                        contentsURL: localURL,
+                        changedFields: [.contents]
+                    )
+                ) { _ in }
+            } onCancel: {
+                Task { await cancellationDelivery.record() }
+            }
+        }
+
+        await fixture.remote.waitUntilRenameBlocked()
+        task.cancel()
+        await cancellationDelivery.wait()
+        await fixture.mutationCancellationAcknowledgement.wait()
+        await fixture.remote.releaseRename()
+        await assertThrows { try await task.value }
+
+        let temporary = "/home/me/.remux-upload-\(fixture.nonce)"
+        let mutations = await fixture.remote.mutations()
+        let temporaryExists = await fixture.remote.exists(temporary)
+        let destinationContents = await fixture.remote.contents(path: "/home/me/report.txt")
+        XCTAssertEqual(mutations, [
+            .upload(localURL, temporary),
+            .removeFile(temporary),
+        ])
+        XCTAssertFalse(temporaryExists)
+        XCTAssertEqual(destinationContents, Data("old".utf8))
+    }
+
+    func testModifyContentsRenameRefusalPreservesOldDestinationWithoutRemoval() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        let localURL = fixture.localFile(contents: Data("new".utf8))
+        await fixture.remote.failNextRename()
+
+        await assertThrows {
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, contentsURL: localURL, changedFields: [.contents])
+            ) { _ in }
+        }
+
+        let mutations = await fixture.remote.mutations()
+        let contents = await fixture.remote.contents(path: "/home/me/report.txt")
+        XCTAssertEqual(mutations.map(\.kind), [.upload, .rename, .removeFile])
+        XCTAssertEqual(contents, Data("old".utf8))
+    }
+
+    func testModifyContentsUploadFailureCleansTemporaryFile() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        let localURL = fixture.localFile(contents: Data("new".utf8))
+        await fixture.remote.failNextUpload(afterCreatingTemporaryFile: true)
+
+        await assertThrows {
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(item: original, contentsURL: localURL, changedFields: [.contents])
+            ) { _ in }
+        }
+
+        let temporary = "/home/me/.remux-upload-\(fixture.nonce)"
+        let mutations = await fixture.remote.mutations()
+        let temporaryExists = await fixture.remote.exists(temporary)
+        XCTAssertEqual(mutations.map(\.kind), [.upload, .removeFile])
+        XCTAssertFalse(temporaryExists)
+    }
+
+    func testModifyContentsCrossParentMoveCommitsBeforeRemovingOldSourceAndRefreshesParents() async throws {
+        let fixture = try await MutationFixture.withDirectory(path: "from", children: ["report.txt"])
+        try await fixture.seedDirectory("to")
+        let original = try await fixture.identifiedItem(path: "from/report.txt")
+        let destinationParent = try await fixture.identifier(path: "to")
+        await fixture.remote.clearListedDirectories()
+
+        let result = try await fixture.core.modify(
+            request: fixture.modifyRequest(
+                item: original,
+                parent: destinationParent,
+                contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                changedFields: [.contents, .parentItemIdentifier]
+            )
+        ) { _ in }
+
+        let mutations = await fixture.remote.mutations()
+        let listedDirectories = await fixture.remote.listedDirectories()
+        XCTAssertEqual(mutations.map(\.kind), [.upload, .rename, .removeFile])
+        XCTAssertEqual(result.item.remoteItem.path.relative, "to/report.txt")
+        XCTAssertEqual(listedDirectories, [
+            try FileProviderRemotePath(relative: "from"),
+            try FileProviderRemotePath(relative: "to"),
+            try FileProviderRemotePath(relative: "from"),
+            try FileProviderRemotePath(relative: "to"),
+        ])
+    }
+
+    func testModifySymlinkContentsIsRejectedWithoutUpload() async throws {
+        let fixture = try MutationFixture()
+        await fixture.remote.seed(path: "link", type: .symbolicLink, contents: Data())
+        try await fixture.recordRoot()
+        let original = try await fixture.identifiedItem(path: "link")
+
+        await assertThrows({
+            try await fixture.core.modify(
+                request: fixture.modifyRequest(
+                    item: original,
+                    contentsURL: fixture.localFile(contents: Data("new".utf8)),
+                    changedFields: [.contents]
+                )
+            ) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? FileProviderMutationValidationError, .symbolicLinkMutation)
+        }
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
+    func testModifyContentsReceiptReplayDoesNotUploadAgain() async throws {
+        let fixture = try await MutationFixture.withFile(path: "report.txt", contents: Data("old".utf8))
+        let original = try await fixture.identifiedItem(path: "report.txt")
+        let request = fixture.modifyRequest(
+            item: original,
+            contentsURL: fixture.localFile(contents: Data("new".utf8)),
+            changedFields: [.contents]
+        )
+
+        let first = try await fixture.core.modify(request: request) { _ in }
+        let replay = try await fixture.core.modify(request: request) { _ in }
+
+        let mutations = await fixture.remote.mutations()
+        XCTAssertEqual(first.item, replay.item)
+        XCTAssertEqual(mutations.map(\.kind), [.upload, .rename])
     }
 
     func testMoveRefreshesOldAndNewParentsAndRetainsIdentity() async throws {
@@ -704,11 +1014,31 @@ private actor FileProviderTestProgressRecorder {
 }
 
 private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, FileProviderRemoteMutationAccess {
-    enum Mutation: Equatable { case mkdir(String); case upload(URL, String); case rename(String, String); case removeFile(String); case rmdir(String) }
+    enum Mutation: Equatable {
+        case mkdir(String)
+        case upload(URL, String)
+        case rename(String, String)
+        case removeFile(String)
+        case rmdir(String)
+
+        enum Kind: Equatable { case mkdir, upload, rename, removeFile, rmdir }
+
+        var kind: Kind {
+            switch self {
+            case .mkdir: .mkdir
+            case .upload: .upload
+            case .rename: .rename
+            case .removeFile: .removeFile
+            case .rmdir: .rmdir
+            }
+        }
+    }
     private var entries: [FileProviderRemotePath: (metadata: RemuxSFTPFileMetadata, contents: Data)] = [:]
     private var recordedMutations: [Mutation] = []
     private var uploadFailure = false
+    private var uploadFailureCreatesTemporaryFile = false
     private var renameFailure = false
+    private var removalFailure = false
     private var renameBlocked = false
     private var renameWaiters: [CheckedContinuation<Void, Never>] = []
     private var renameStartedWaiters: [CheckedContinuation<Void, Never>] = []
@@ -744,8 +1074,12 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     func exists(_ absolutePath: String) -> Bool { contents(path: absolutePath) != nil }
     func seed(path: String, type: RemuxSFTPFileType, contents: Data) { let remotePath = try! FileProviderRemotePath(relative: path); entries[remotePath] = (RemuxSFTPFileMetadata(size: type == .regular ? UInt64(contents.count) : nil, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: type), contents) }
     func changeMetadata(path: String) { let remotePath = try! FileProviderRemotePath(relative: path); guard var entry = entries[remotePath] else { return }; entry.metadata = RemuxSFTPFileMetadata(size: entry.metadata.size, permissions: 0o600, modificationDate: Date(timeIntervalSince1970: 2), type: entry.metadata.type); entries[remotePath] = entry }
-    func failNextUpload() { uploadFailure = true }
+    func failNextUpload(afterCreatingTemporaryFile: Bool = false) {
+        uploadFailure = true
+        uploadFailureCreatesTemporaryFile = afterCreatingTemporaryFile
+    }
     func failNextRename() { renameFailure = true }
+    func failNextRemoval() { removalFailure = true }
     func blockRename() { renameBlocked = true }
     func releaseRename() { renameBlocked = false; let waiters = renameWaiters; renameWaiters.removeAll(); waiters.forEach { $0.resume() } }
     func waitUntilRenameBlocked() async { guard renameStartedWaiters.isEmpty else { return }; await withCheckedContinuation { renameStartedWaiters.append($0) } }
@@ -776,8 +1110,8 @@ private actor FileProviderMutableRemoteService: FileProviderRemoteServicing, Fil
     func withMutationAccess<Value: Sendable>(_ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value) async throws -> Value { try await operation(self) }
     func invalidate() {}
     func createDirectory(at path: FileProviderRemotePath) throws { try Task.checkCancellation(); guard entries[path] == nil else { throw FileProviderMutationValidationError.destinationOccupied }; entries[path] = (RemuxSFTPFileMetadata(size: nil, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .directory), Data()); recordedMutations.append(.mkdir("/home/me/\(path.relative)")) }
-    func uploadFile(from localURL: URL, to path: FileProviderRemotePath, progress: @escaping @Sendable (Int64) async -> Void) async throws { try Task.checkCancellation(); recordedMutations.append(.upload(localURL, "/home/me/\(path.relative)")); await progress(0); if uploadFailure { uploadFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; let data = try Data(contentsOf: localURL); await progress(Int64(data.count)); entries[path] = (RemuxSFTPFileMetadata(size: UInt64(data.count), permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .regular), data) }
+    func uploadFile(from localURL: URL, to path: FileProviderRemotePath, progress: @escaping @Sendable (Int64) async -> Void) async throws { try Task.checkCancellation(); recordedMutations.append(.upload(localURL, "/home/me/\(path.relative)")); await progress(0); if uploadFailure { uploadFailure = false; if uploadFailureCreatesTemporaryFile { uploadFailureCreatesTemporaryFile = false; entries[path] = (RemuxSFTPFileMetadata(size: 0, permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .regular), Data()) }; throw RemuxSFTPClientError.unsupportedMutation }; let data = try Data(contentsOf: localURL); await progress(Int64(data.count)); entries[path] = (RemuxSFTPFileMetadata(size: UInt64(data.count), permissions: nil, modificationDate: Date(timeIntervalSince1970: 1), type: .regular), data) }
     func renameItem(from source: FileProviderRemotePath, to destination: FileProviderRemotePath) async throws { let waiters = renameStartedWaiters; renameStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if renameBlocked { await withCheckedContinuation { renameWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.rename("/home/me/\(source.relative)", "/home/me/\(destination.relative)")); if renameFailure { renameFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; let moved = entries.filter { $0.key == source || $0.key.relative.hasPrefix(source.relative + "/") }; guard !moved.isEmpty else { throw RemuxSFTPClientError.noSuchFile(source.relative) }; for path in moved.keys { entries.removeValue(forKey: path) }; for (path, entry) in moved { let suffix = path == source ? "" : String(path.relative.dropFirst(source.relative.count)); entries[try FileProviderRemotePath(relative: destination.relative + suffix)] = entry }; itemReadAfterRename = true }
-    func removeFile(at path: FileProviderRemotePath) async throws { let waiters = removalStartedWaiters; removalStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if removalBlocked { await withCheckedContinuation { removalWaiters.append($0) } }; entries.removeValue(forKey: path); recordedMutations.append(.removeFile("/home/me/\(path.relative)")) }
+    func removeFile(at path: FileProviderRemotePath) async throws { try Task.checkCancellation(); let waiters = removalStartedWaiters; removalStartedWaiters.removeAll(); waiters.forEach { $0.resume() }; if removalBlocked { await withCheckedContinuation { removalWaiters.append($0) } }; try Task.checkCancellation(); recordedMutations.append(.removeFile("/home/me/\(path.relative)")); if removalFailure { removalFailure = false; throw RemuxSFTPClientError.unsupportedMutation }; entries.removeValue(forKey: path) }
     func removeEmptyDirectory(at path: FileProviderRemotePath) throws { guard !entries.keys.contains(where: { $0.relative.hasPrefix(path.relative + "/") }) else { throw FileProviderMutationValidationError.destinationOccupied }; entries.removeValue(forKey: path); recordedMutations.append(.rmdir("/home/me/\(path.relative)")) }
 }
