@@ -142,6 +142,288 @@ final class RemuxFileProviderContractTests: XCTestCase {
         XCTAssertTrue(didDrain)
     }
 
+    func testExtensionCoreItemLookupDecodesIdentifierAndProjectsResult() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 42)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let completions = FileProviderTestCompletionRecorder<FileProviderItemProjection>()
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+        let identifier = record.items[0].itemIdentifier
+
+        _ = core.item(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await completions.waitForFirst()
+
+        let results = await completions.results()
+        guard case .success(let projection) = results.first else {
+            XCTFail("Expected a projected item")
+            return
+        }
+        XCTAssertEqual(projection.itemIdentifier, identifier)
+        XCTAssertEqual(projection.filename, "report.txt")
+        XCTAssertEqual(
+            projection.capabilities,
+            [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        )
+        let itemPaths = await service.itemPaths()
+        XCTAssertEqual(itemPaths, [remoteItem.path])
+    }
+
+    func testExtensionCoreFetchUsesOnlyTheDomainTemporaryDirectory() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let completions = FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = record.items[0].itemIdentifier
+
+        _ = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await completions.waitForFirst()
+
+        let results = await completions.results()
+        guard case .success(let fetched) = results.first else {
+            XCTFail("Expected fetched contents")
+            return
+        }
+        XCTAssertEqual(
+            fetched.localURL.deletingLastPathComponent().standardizedFileURL,
+            temporaryDirectory.standardizedFileURL
+        )
+        XCTAssertEqual(try Data(contentsOf: fetched.localURL), Data("contents".utf8))
+        XCTAssertEqual(fetched.item.itemIdentifier, identifier)
+        let fetchURLs = await service.fetchURLs()
+        XCTAssertEqual(fetchURLs, [fetched.localURL])
+    }
+
+    func testFetchProgressTracksRemoteSizeAndCumulativeBytesUntilSuccess() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderProgressRemoteService(item: remoteItem)
+        let completions =
+            FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = record.items[0].itemIdentifier
+
+        let progress = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await service.waitUntilPartialProgress()
+
+        XCTAssertEqual(progress.totalUnitCount, 8)
+        XCTAssertEqual(progress.completedUnitCount, 3)
+        XCTAssertFalse(progress.isFinished)
+
+        await service.finishFetch()
+        await completions.waitForFirst()
+
+        XCTAssertEqual(progress.totalUnitCount, 8)
+        XCTAssertEqual(progress.completedUnitCount, 8)
+        XCTAssertTrue(progress.isFinished)
+        let results = await completions.results()
+        guard case .success = results.first else {
+            XCTFail("Expected fetch to succeed")
+            return
+        }
+    }
+
+    func testSuccessfulEmptyFetchCompletesProgress() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "empty.txt", size: 0)
+        let service = FileProviderEmptyFetchRemoteService(item: remoteItem)
+        let completions =
+            FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = record.items[0].itemIdentifier
+
+        let progress = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await completions.waitForFirst()
+
+        XCTAssertEqual(progress.totalUnitCount, 1)
+        XCTAssertEqual(progress.completedUnitCount, 1)
+        XCTAssertTrue(progress.isFinished)
+    }
+
+    func testFetchCancellationAfterRemoteSuccessRemovesTemporaryFile() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderDelayedFetchRemoteService(item: remoteItem)
+        let completions =
+            FileProviderTestCompletionRecorder<FileProviderFetchedContents>()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let record = try await snapshots.record(directory: .root, items: [remoteItem])
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                temporaryDirectory
+            }
+        )
+        let identifier = record.items[0].itemIdentifier
+        let progress = core.fetchContents(for: identifier) { result in
+            Task {
+                await completions.record(result)
+            }
+        }
+        await service.waitUntilFetchCreated()
+
+        progress.cancel()
+        await service.finishFetch()
+        await completions.waitForFirst()
+
+        let results = await completions.results()
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected cancellation to fail the fetch")
+            return
+        }
+        XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(error.code, NSUserCancelledError)
+        let fetchedLocalURL = await service.localURL
+        let localURL = try XCTUnwrap(fetchedLocalURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
+    }
+
+    func testExtensionCoreMapsRejectedMutationWithoutRemoteCalls() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "report.txt", size: 8)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+        let completions = FileProviderTestCompletionRecorder<Void>()
+
+        _ = core.failedMutation(
+            error: FileProviderMutationValidationError.symbolicLinkMutation
+        ) { error in
+            Task {
+                await completions.record(.failure(error))
+            }
+        }
+        await completions.waitForFirst()
+        let results = await completions.results()
+        XCTAssertEqual(results.count, 1)
+        guard case .failure(let error) = results.first else {
+            XCTFail("Expected rejected mutation error")
+            return
+        }
+        XCTAssertEqual(error.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(error.code, NSFileProviderError.cannotSynchronize.rawValue)
+        let remoteCallCount = await service.totalCallCount()
+        XCTAssertEqual(remoteCallCount, 0)
+    }
+
+    func testExtensionInvalidationDrainsEnumeratorsBeforeClosingService() async throws {
+        let remoteItem = try fileProviderTestItem(relative: "item.txt", size: 1)
+        let service = FileProviderRecordingRemoteService(item: remoteItem)
+        let snapshots = FileProviderSnapshotStore(rootURL: fileProviderTestSnapshotRoot())
+        let core = FileProviderReplicatedExtensionCore(
+            service: service,
+            snapshots: snapshots,
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+        let enumerator = FileProviderTestEnumeratorLifecycle()
+        XCTAssertTrue(core.registerEnumerator(enumerator))
+
+        core.invalidate()
+        core.invalidate()
+        await enumerator.waitUntilDrainStarted()
+
+        let invalidateWasCalled = enumerator.invalidateWasCalled
+        let serviceCallCountBeforeDrain = await service.invalidationCallCount()
+        XCTAssertTrue(invalidateWasCalled)
+        XCTAssertEqual(serviceCallCountBeforeDrain, 0)
+
+        await enumerator.finishDrain()
+        await service.waitUntilInvalidated()
+
+        let serviceCallCountAfterDrain = await service.invalidationCallCount()
+        XCTAssertEqual(serviceCallCountAfterDrain, 1)
+    }
 
     func testSharedAuthenticationFactoryPreservesPasswordCredentials() throws {
         let authentication = ResolvedSSHAuth.password(
@@ -1018,6 +1300,106 @@ final class RemuxFileProviderContractTests: XCTestCase {
 
 }
 
+private actor FileProviderEmptyFetchRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private var mutationAccessCallCount = 0
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        try Data().write(to: localURL)
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 0,
+                completedByteCount: 0
+            )
+        )
+        return returnedItem
+    }
+
+    func invalidate() {
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
+}
+
+private actor FileProviderProgressRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private let partialProgressGate = FileProviderTestRefreshGate()
+    private var mutationAccessCallCount = 0
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 8,
+                completedByteCount: 3
+            )
+        )
+        await partialProgressGate.beginAndWait()
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 8,
+                completedByteCount: 6
+            )
+        )
+        try Data("contents".utf8).write(to: localURL)
+        return returnedItem
+    }
+
+    func waitUntilPartialProgress() async {
+        await partialProgressGate.waitUntilStarted()
+    }
+
+    func finishFetch() async {
+        await partialProgressGate.release()
+    }
+
+    func invalidate() {
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
+}
+
 private actor FileProviderTestRequestState {
     private var started = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1111,6 +1493,179 @@ private actor FileProviderTestCompletionFlag {
 
     private func timeOut(waiterID: UUID) {
         waiters.removeValue(forKey: waiterID)?.resume(returning: false)
+    }
+}
+
+private actor FileProviderRecordingRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private var recordedItemPaths: [FileProviderRemotePath] = []
+    private var recordedFetchURLs: [URL] = []
+    private var mutationAccessCallCount = 0
+    private var invalidationCount = 0
+    private var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    func item(at path: FileProviderRemotePath) -> FileProviderRemoteItem {
+        recordedItemPaths.append(path)
+        return returnedItem
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        recordedFetchURLs.append(localURL)
+        try Data("contents".utf8).write(to: localURL)
+        await progress(
+            FileProviderRemoteFetchProgress(
+                totalByteCount: 8,
+                completedByteCount: 8
+            )
+        )
+        return returnedItem
+    }
+
+    func itemPaths() -> [FileProviderRemotePath] {
+        recordedItemPaths
+    }
+
+    func fetchURLs() -> [URL] {
+        recordedFetchURLs
+    }
+
+    func totalCallCount() -> Int {
+        recordedItemPaths.count + recordedFetchURLs.count
+    }
+
+    func invalidate() {
+        invalidationCount += 1
+        let invalidationWaiters = self.invalidationWaiters
+        self.invalidationWaiters.removeAll()
+        invalidationWaiters.forEach { $0.resume() }
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
+
+    func invalidationCallCount() -> Int {
+        invalidationCount
+    }
+
+    func waitUntilInvalidated() async {
+        guard invalidationCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            invalidationWaiters.append(continuation)
+        }
+    }
+}
+
+private actor FileProviderDelayedFetchRemoteService: FileProviderRemoteServicing {
+    private let returnedItem: FileProviderRemoteItem
+    private var createdURL: URL?
+    private var creationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shouldFinish = false
+    private var mutationAccessCallCount = 0
+
+    init(item: FileProviderRemoteItem) {
+        self.returnedItem = item
+    }
+
+    var localURL: URL? {
+        createdURL
+    }
+
+    func item(at path: FileProviderRemotePath) throws -> FileProviderRemoteItem {
+        throw RemuxSFTPClientError.noSuchFile(path.relative)
+    }
+
+    func list(directory: FileProviderRemotePath) -> [FileProviderRemoteItem] {
+        []
+    }
+
+    func fetch(
+        path: FileProviderRemotePath,
+        to localURL: URL,
+        progress: @escaping @Sendable (FileProviderRemoteFetchProgress) async -> Void
+    ) async throws -> FileProviderRemoteItem {
+        try Data("contents".utf8).write(to: localURL)
+        createdURL = localURL
+        let creationWaiters = self.creationWaiters
+        self.creationWaiters.removeAll()
+        creationWaiters.forEach { $0.resume() }
+
+        guard !shouldFinish else { return returnedItem }
+        await withCheckedContinuation { continuation in
+            finishWaiters.append(continuation)
+        }
+        return returnedItem
+    }
+
+    func waitUntilFetchCreated() async {
+        guard createdURL == nil else { return }
+        await withCheckedContinuation { continuation in
+            creationWaiters.append(continuation)
+        }
+    }
+
+    func finishFetch() {
+        shouldFinish = true
+        let finishWaiters = self.finishWaiters
+        self.finishWaiters.removeAll()
+        finishWaiters.forEach { $0.resume() }
+    }
+
+    func invalidate() {
+    }
+
+    func withMutationAccess<Value: Sendable>(
+        _ operation: @Sendable (any FileProviderRemoteMutationAccess) async throws -> Value
+    ) throws -> Value {
+        mutationAccessCallCount += 1
+        throw RemuxSFTPClientError.noSuchFile("mutation access")
+    }
+}
+
+private final class FileProviderTestEnumeratorLifecycle:
+    FileProviderEnumeratorInvalidating,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let drainGate = FileProviderTestRefreshGate()
+    private var invalidated = false
+
+    var invalidateWasCalled: Bool {
+        lock.withLock { invalidated }
+    }
+
+    func invalidate() {
+        lock.withLock {
+            invalidated = true
+        }
+    }
+
+    func waitUntilInvalidated() async {
+        await drainGate.beginAndWait()
+    }
+
+    func waitUntilDrainStarted() async {
+        await drainGate.waitUntilStarted()
+    }
+
+    func finishDrain() async {
+        await drainGate.release()
     }
 }
 
@@ -1294,6 +1849,11 @@ private func fileProviderTestRefresh(
         anchor: NSFileProviderSyncAnchor(rawValue: Data()),
         delta: FileProviderSnapshotDelta(updated: identifiedItems, deleted: [])
     )
+}
+
+private func fileProviderTestSnapshotRoot() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
 }
 
 private actor FileProviderTestRefreshGate {

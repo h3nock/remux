@@ -224,6 +224,7 @@
 		EE0A712F52F48C1AB61D7AEC /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 9C8429230366D43B2A2833D6 /* Citadel */; };
 		EE225D0322849CE8912D3ED0 /* GhosttyTerminalRuntimeStateReporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC92D96015D360B52AA23FB /* GhosttyTerminalRuntimeStateReporterTests.swift */; };
 		EE488E8B043F3160004A3C20 /* GhosttyAttachmentImageMarkupRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1CB6877AF169792137FA56 /* GhosttyAttachmentImageMarkupRendererTests.swift */; };
+		EE5DAEA78D13235B5BBBC135 /* FileProviderReplicatedExtensionCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A553B1F0E57DC9B2643FCD72 /* FileProviderReplicatedExtensionCore.swift */; };
 		EE735F57D2057349C21C0A49 /* GhosttyPaneScrollContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE4DA1C9532D675CB9E87C4 /* GhosttyPaneScrollContainerView.swift */; };
 		EFCBAAB121A739C685783FDB /* TerminalThemePreviewRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD6734AD2260C5731B081A1 /* TerminalThemePreviewRendererTests.swift */; };
 		F0156D8A8DD8859618DCD825 /* GhosttySingleViewportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ECDF46DC2F389505455C283 /* GhosttySingleViewportView.swift */; };
@@ -410,6 +411,7 @@
 		A1886BE69E5F2201A5629E0C /* GhosttyTerminalSurfaceInteractionOutcomeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalSurfaceInteractionOutcomeTests.swift; sourceTree = "<group>"; };
 		A39CC72773E8432EBC3126E4 /* FileProviderSnapshotStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderSnapshotStoreTests.swift; sourceTree = "<group>"; };
 		A510F3E8FC22231ACA4A8A99 /* GhosttyTmuxPrefixInputBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTmuxPrefixInputBuffer.swift; sourceTree = "<group>"; };
+		A553B1F0E57DC9B2643FCD72 /* FileProviderReplicatedExtensionCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderReplicatedExtensionCore.swift; sourceTree = "<group>"; };
 		A6E17D3CFD2103F3148C1EA6 /* GhosttyDebugComposerDictationBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyDebugComposerDictationBackend.swift; sourceTree = "<group>"; };
 		A76BB5CC730EB26907A34E42 /* GhosttyRuntimeSurfaceTopologySnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyRuntimeSurfaceTopologySnapshotTests.swift; sourceTree = "<group>"; };
 		A7D47826A3796D23B6B88804 /* GhosttyIOSurfaceFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyIOSurfaceFrame.swift; sourceTree = "<group>"; };
@@ -735,6 +737,7 @@
 				2585CF2DC8CEC5017488892D /* FileProviderRemoteItem.swift */,
 				FF66E730E8F051A08B20F833 /* FileProviderRemotePath.swift */,
 				5DB7086AFA61A884FC2D874C /* FileProviderRemoteService.swift */,
+				A553B1F0E57DC9B2643FCD72 /* FileProviderReplicatedExtensionCore.swift */,
 				1323F99367139F745D2840FD /* FileProviderRequestController.swift */,
 				C682B5372D1AC1D7C99D6B2C /* FileProviderSDKItem.swift */,
 				4369D3BB817295081F553170 /* FileProviderSnapshotStore.swift */,
@@ -1043,6 +1046,7 @@
 				C5F95736CD435CA56D834B5E /* FileProviderRemoteItem.swift in Sources */,
 				8F80983038DB0393C3C27087 /* FileProviderRemotePath.swift in Sources */,
 				4F979ED3B4BBD23818B7D8C6 /* FileProviderRemoteService.swift in Sources */,
+				EE5DAEA78D13235B5BBBC135 /* FileProviderReplicatedExtensionCore.swift in Sources */,
 				58E9B471AADFCCBEA45A5FB5 /* FileProviderRequestController.swift in Sources */,
 				381EFAD3AB5D5BC133FAF12D /* FileProviderSDKItem.swift in Sources */,
 				0F4E56668E1D070DA2549277 /* FileProviderSharedStorageMigrator.swift in Sources */,

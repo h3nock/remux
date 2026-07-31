@@ -228,6 +228,39 @@ final class FileProviderRemoteServiceTests: XCTestCase {
         XCTAssertTrue(mutations.isEmpty)
     }
 
+    func testExtensionInvalidationClosesDomainRootOnceWithoutOpeningClientOrChangingTrust() async throws {
+        let fixture = try await FileProviderRemoteServiceFixture.make()
+        let trustedHosts = TrustedHostStore(rootURL: fixture.rootURL)
+        let trustedIdentity = TrustedHostIdentity(
+            serverID: fixture.server.id,
+            host: fixture.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 fixture-public-key",
+            trustedAt: Date(timeIntervalSince1970: 300)
+        )
+        try trustedHosts.replaceIdentities([trustedIdentity])
+        let core = FileProviderReplicatedExtensionCore(
+            service: fixture.service,
+            snapshots: FileProviderSnapshotStore(
+                rootURL: fixture.rootURL.appendingPathComponent(
+                    "snapshots",
+                    isDirectory: true
+                )
+            ),
+            rootDisplayName: "Fixture",
+            temporaryDirectoryURL: {
+                FileManager.default.temporaryDirectory
+            }
+        )
+
+        core.invalidate()
+        core.invalidate()
+        await fixture.clientProvider.waitForCloseCall()
+
+        XCTAssertEqual(fixture.clientProvider.closedServerIDs, [fixture.server.id])
+        XCTAssertEqual(fixture.clientProvider.callCount, 0)
+        XCTAssertEqual(try trustedHosts.loadIdentities(), [trustedIdentity])
+    }
 
     func testServiceLoadsOnlySymlinksWhoseCanonicalTargetStaysInHome() async throws {
         let fixture = try await FileProviderRemoteServiceFixture.make()
