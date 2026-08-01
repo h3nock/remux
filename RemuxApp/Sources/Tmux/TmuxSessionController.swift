@@ -947,10 +947,7 @@ final class TmuxSessionController: @unchecked Sendable {
             return
         }
 
-        let hasSibling = topology.panes.contains {
-            $0.windowID == window.id && $0.id != paneID
-        }
-        if window.activePaneID == paneID, window.zoomed || !hasSibling {
+        if window.activePaneID == paneID {
             let admittedRefresh = admitPaneRefreshIfNeeded(
                 paneID,
                 failureRequest: .selectPane
@@ -958,11 +955,10 @@ final class TmuxSessionController: @unchecked Sendable {
             if admittedRefresh, drainOutbound { _ = self.drainOutbound() }
             return
         }
-        let command = window.zoomed
-            ? "select-pane -Z -t %\(paneID.rawValue)"
-            : "resize-pane -Z -t %\(paneID.rawValue)"
         submitPanePresentationCommandOnWriter(
-            command: command,
+            command: window.zoomed
+                ? "select-pane -Z -t %\(paneID.rawValue)"
+                : "select-pane -t %\(paneID.rawValue)",
             request: .selectPane,
             paneID: paneID,
             drainOutbound: drainOutbound
@@ -982,13 +978,9 @@ final class TmuxSessionController: @unchecked Sendable {
             return
         }
         let paneID = preferredPaneID ?? window.activePaneID
-        let hasSibling = topology.panes.contains { pane in
-            pane.windowID == windowID && pane.id != paneID
-        }
-
         if topology.activeWindowID == windowID {
             guard let paneID else { return }
-            if window.zoomed || !hasSibling {
+            if window.activePaneID == paneID {
                 let admittedRefresh = admitPaneRefreshIfNeeded(
                     paneID,
                     failureRequest: .selectWindow
@@ -997,7 +989,9 @@ final class TmuxSessionController: @unchecked Sendable {
                 return
             }
             submitPanePresentationCommandOnWriter(
-                command: "resize-pane -Z -t %\(paneID.rawValue)",
+                command: window.zoomed
+                    ? "select-pane -Z -t %\(paneID.rawValue)"
+                    : "select-pane -t %\(paneID.rawValue)",
                 request: .selectWindow,
                 paneID: paneID,
                 drainOutbound: drainOutbound
@@ -1016,8 +1010,7 @@ final class TmuxSessionController: @unchecked Sendable {
             windowID: windowID,
             activePaneID: window.activePaneID,
             preferredPaneID: preferredPaneID,
-            zoomed: window.zoomed,
-            hasSibling: hasSibling
+            zoomed: window.zoomed
         )
         if commands.count == 1 {
             guard let paneID else {
@@ -1074,20 +1067,17 @@ final class TmuxSessionController: @unchecked Sendable {
         windowID: TmuxWindowID,
         activePaneID: TmuxPaneID?,
         preferredPaneID: TmuxPaneID?,
-        zoomed: Bool,
-        hasSibling: Bool
+        zoomed: Bool
     ) -> [String] {
         let selectWindow = "select-window -t @\(windowID.rawValue)"
-        guard hasSibling,
-              let preferredPaneID
+        guard let preferredPaneID,
+              preferredPaneID != activePaneID
         else { return [selectWindow] }
-        if zoomed, preferredPaneID == activePaneID {
-            return [selectWindow]
-        }
-        let selectPane = zoomed ? "select-pane" : "resize-pane"
         return [
             selectWindow,
-            "\(selectPane) -Z -t %\(preferredPaneID.rawValue)",
+            zoomed
+                ? "select-pane -Z -t %\(preferredPaneID.rawValue)"
+                : "select-pane -t %\(preferredPaneID.rawValue)",
         ]
     }
 

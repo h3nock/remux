@@ -5,6 +5,18 @@ import XCTest
 
 @MainActor
 final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
+    func testUnzoomedActivePaneDoesNotRequestZoomForPresentation() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        session.handleStateForTesting(.ready)
+
+        session.handleTopology(twoPaneSnapshot(activePaneID: 10, zoomed: false))
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNil(session.lastFailedRequest)
+        await session.shutdown()
+    }
+
     func testRetainedTerminalHandoffPromotesHydratingPaneToLive() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
@@ -64,7 +76,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await session.shutdown()
     }
 
-    func testSameWindowSelectionSuppressesDuplicateZoomForIntermediateTopology() async throws {
+    func testSameWindowSelectionKeepsPendingIntentWithoutRequestingZoom() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         session.handleTopology(twoPaneSnapshot(activePaneID: 10, zoomed: false))
@@ -75,12 +87,11 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
 
         XCTAssertEqual(session.pendingPaneIDForTesting, 11)
-        XCTAssertEqual(session.zoomRequestedPaneIDForTesting, 11)
-        XCTAssertNil(session.lastFailedRequest, "intermediate topology must not enqueue a second zoom")
+        XCTAssertNil(session.lastFailedRequest, "intermediate topology must not enqueue a zoom")
         await session.shutdown()
     }
 
-    func testCrossWindowSelectionSuppressesDuplicateZoomForIntermediateTopology() async throws {
+    func testCrossWindowSelectionKeepsPendingIntentWithoutRequestingZoom() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         session.handleTopology(crossWindowSnapshot(activeWindowID: 1, targetActivePaneID: 20))
@@ -91,12 +102,11 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
 
         XCTAssertEqual(session.pendingPaneIDForTesting, 21)
-        XCTAssertEqual(session.zoomRequestedPaneIDForTesting, 21)
-        XCTAssertNil(session.lastFailedRequest, "group intermediate topology must not toggle zoom again")
+        XCTAssertNil(session.lastFailedRequest, "group intermediate topology must not request zoom")
         await session.shutdown()
     }
 
-    func testSelectionFailureClearsPendingZoomIntent() async throws {
+    func testSelectionFailureClearsPendingIntent() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         session.handleTopology(twoPaneSnapshot(activePaneID: 10, zoomed: false))
@@ -105,7 +115,6 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         session.handleRequestFailedForTesting(.selectPane)
 
         XCTAssertNil(session.pendingPaneIDForTesting)
-        XCTAssertNil(session.zoomRequestedPaneIDForTesting)
         await session.shutdown()
     }
 
