@@ -5,34 +5,28 @@ import XCTest
 
 @MainActor
 final class TmuxSessionControllerClientSizeTests: XCTestCase {
+    func testCrossWindowPaneSelectionDoesNotMutateHostLayout() {
+        let commands = TmuxSessionController.crossWindowSelectionCommands(
+            windowID: 2,
+            activePaneID: 20,
+            preferredPaneID: 21,
+            zoomed: false
+        )
+
+        XCTAssertEqual(
+            commands,
+            ["select-window -t @2", "select-pane -t %21"]
+        )
+        XCTAssertFalse(commands.joined(separator: " ").contains("-Z"))
+    }
+
     func testCrossWindowSelectionCommandPolicy() {
         XCTAssertEqual(
             TmuxSessionController.crossWindowSelectionCommands(
                 windowID: 2,
                 activePaneID: 20,
                 preferredPaneID: 20,
-                zoomed: false,
-                hasSibling: true
-            ),
-            ["select-window -t @2", "resize-pane -Z -t %20"]
-        )
-        XCTAssertEqual(
-            TmuxSessionController.crossWindowSelectionCommands(
-                windowID: 2,
-                activePaneID: 20,
-                preferredPaneID: 21,
-                zoomed: true,
-                hasSibling: true
-            ),
-            ["select-window -t @2", "select-pane -Z -t %21"]
-        )
-        XCTAssertEqual(
-            TmuxSessionController.crossWindowSelectionCommands(
-                windowID: 2,
-                activePaneID: 20,
-                preferredPaneID: 20,
-                zoomed: true,
-                hasSibling: true
+                zoomed: true
             ),
             ["select-window -t @2"]
         )
@@ -40,9 +34,26 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             TmuxSessionController.crossWindowSelectionCommands(
                 windowID: 2,
                 activePaneID: 20,
+                preferredPaneID: 21,
+                zoomed: true
+            ),
+            ["select-window -t @2", "select-pane -Z -t %21"]
+        )
+        XCTAssertEqual(
+            TmuxSessionController.crossWindowSelectionCommands(
+                windowID: 2,
+                activePaneID: 20,
+                preferredPaneID: 21,
+                zoomed: false
+            ),
+            ["select-window -t @2", "select-pane -t %21"]
+        )
+        XCTAssertEqual(
+            TmuxSessionController.crossWindowSelectionCommands(
+                windowID: 2,
+                activePaneID: 20,
                 preferredPaneID: nil,
-                zoomed: false,
-                hasSibling: true
+                zoomed: true
             ),
             ["select-window -t @2"]
         )
@@ -410,7 +421,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
     }
 
-    func testRepeatedCrossWindowUnzoomedSelectionDoesNotQueueSecondToggle() async throws {
+    func testRepeatedCrossWindowSelectionDoesNotAddZoom() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.splitTargetWindow,
             expectedPaneCount: 3
@@ -422,14 +433,12 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertPresentationWrite(
             harness.recorder.takeStrings(),
-            command: "select-window -t @1 ; resize-pane -Z -t %1",
+            command: "select-window -t @1",
             paneID: 1,
         )
 
         harness.controller.pump(Data(
             ("%session-window-changed $42 @1\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + "%layout-change @1 9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} b7de,83x44,0,0,1 *Z\n"
                 + responseBlock(commandNumber: &nextCommandNumber)
                 + refreshResponseBlocks(
                     paneID: 1,
@@ -439,11 +448,11 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         XCTAssertTrue(
             harness.recorder.takeStrings().isEmpty,
-            "the repeated intent must re-evaluate as zero after the first group zooms"
+            "the repeated intent must re-evaluate as zero after selection"
         )
     }
 
-    func testDeferredZoomDoesNotToggleAfterWindowSelectionAlreadyZooms() async throws {
+    func testExplicitZoomRunsAfterNonMutatingWindowSelection() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.splitTargetWindow,
             expectedPaneCount: 3
@@ -455,14 +464,12 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertPresentationWrite(
             harness.recorder.takeStrings(),
-            command: "select-window -t @1 ; resize-pane -Z -t %1",
+            command: "select-window -t @1",
             paneID: 1,
         )
 
         harness.controller.pump(Data(
             ("%session-window-changed $42 @1\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + "%layout-change @1 9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} b7de,83x44,0,0,1 *Z\n"
                 + responseBlock(commandNumber: &nextCommandNumber)
                 + refreshResponseBlocks(
                     paneID: 1,
@@ -470,9 +477,10 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
                 )).utf8
         ))
         await drain(harness.controller)
-        XCTAssertTrue(
-            harness.recorder.takeStrings().isEmpty,
-            "the deferred zoom must re-evaluate to a no-op after the selection group zooms"
+        assertPresentationWrite(
+            harness.recorder.takeStrings(),
+            command: "resize-pane -Z -t %1",
+            paneID: 1,
         )
     }
 
@@ -496,7 +504,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(harness.recorder.takeStrings(), ["select-window -t @0\n"])
     }
 
-    func testColdSplitSelectionEnqueuesPresentationThenRefreshInOneWrite() async throws {
+    func testColdSplitSelectionSelectsWithoutZoomThenRefreshesInOneWrite() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.twoPaneUnzoomedWindow,
             expectedPaneCount: 2
@@ -507,7 +515,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
 
         assertPresentationWrite(
             harness.recorder.takeStrings(),
-            command: "resize-pane -Z -t %2",
+            command: "select-pane -t %2",
             paneID: 2,
         )
     }

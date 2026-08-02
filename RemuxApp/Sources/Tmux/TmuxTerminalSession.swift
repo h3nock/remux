@@ -38,7 +38,6 @@ final class TmuxTerminalSession: ObservableObject {
     private var creatingPaneIDs: Set<TmuxPaneID> = []
     private var failedCreationPaneIDs: Set<TmuxPaneID> = []
     private var pendingPaneID: TmuxPaneID?
-    private var zoomRequestedPaneID: TmuxPaneID?
     private var preparingSurface: TmuxPaneSurface?
     private var viewportMetrics: GhosttySurfaceDisplayMetrics?
     private var isAppActive = true
@@ -145,7 +144,6 @@ final class TmuxTerminalSession: ObservableObject {
         guard !isShutDown else { return }
         isShutDown = true
         pendingPaneID = nil
-        zoomRequestedPaneID = nil
         cancelPendingPresentation()
         livePaneIDs.removeAll()
         pendingTerminalsByPaneID.removeAll()
@@ -193,7 +191,6 @@ final class TmuxTerminalSession: ObservableObject {
         switch newState {
         case .detached, .closed:
             pendingPaneID = nil
-            zoomRequestedPaneID = nil
             cancelPendingPresentation()
             linkIsActive = false
             Task { await link.stop() }
@@ -210,11 +207,6 @@ final class TmuxTerminalSession: ObservableObject {
         livePaneIDs = Set(snapshot.panes.lazy.filter { $0.phase == .live }.map(\.id))
         pendingTerminalsByPaneID = pendingTerminalsByPaneID.filter { paneIDs.contains($0.key) }
         failedCreationPaneIDs.formIntersection(paneIDs)
-        if let zoomRequestedPaneID,
-           activePaneID(in: snapshot) != zoomRequestedPaneID
-            || isFullViewport(paneID: zoomRequestedPaneID, in: snapshot) {
-            self.zoomRequestedPaneID = nil
-        }
         presentActivePane(from: snapshot)
     }
 
@@ -223,7 +215,6 @@ final class TmuxTerminalSession: ObservableObject {
         pendingTerminalsByPaneID.removeValue(forKey: paneID)
         failedCreationPaneIDs.remove(paneID)
         if pendingPaneID == paneID { pendingPaneID = nil }
-        if zoomRequestedPaneID == paneID { zoomRequestedPaneID = nil }
         if preparingSurface?.paneID == paneID { cancelPendingPresentation() }
         if paneSurface?.paneID == paneID { unpublishPane() }
         guard let surface = surfacesByPaneID[paneID] else { return }
@@ -312,12 +303,10 @@ final class TmuxTerminalSession: ObservableObject {
         lastFailedRequest = request
         if request == .selectPane || request == .selectWindow {
             pendingPaneID = nil
-            zoomRequestedPaneID = nil
             cancelPendingPresentation()
         }
         if request == .zoomPane {
-            // Keep the terminal unpresented: split geometry is not the phone's
-            // canonical terminal viewport.
+            // Explicit zoom failed; keep the current pane presentation unchanged.
             return
         }
         if let topology { presentActivePane(from: topology) }
@@ -395,8 +384,7 @@ final class TmuxTerminalSession: ObservableObject {
               let topology,
               topology.panes.contains(where: { $0.id == paneID })
         else { return }
-        if activePaneID(in: topology) == paneID,
-           isFullViewport(paneID: paneID, in: topology) {
+        if activePaneID(in: topology) == paneID {
             let hasConflictingIntent = pendingPaneID != nil && pendingPaneID != paneID
             if !hasConflictingIntent {
                 if paneSurface?.paneID == paneID || preparingSurface?.paneID == paneID {
@@ -411,9 +399,6 @@ final class TmuxTerminalSession: ObservableObject {
         surfacesByPaneID[paneID]?.cancelPickerCaptureForPresentation()
         cancelPendingPresentation()
         pendingPaneID = paneID
-        zoomRequestedPaneID = isFullViewport(paneID: paneID, in: topology)
-            ? nil
-            : paneID
         unpublishPane()
     }
 
@@ -450,8 +435,7 @@ final class TmuxTerminalSession: ObservableObject {
             // contents in place. Keep that real surface focused so input can
             // remain ordered through the control-client queue; only a pane
             // that has not yet been presented must wait for hydration.
-            if paneSurface?.paneID == paneID,
-               isFullViewport(paneID: paneID, in: snapshot) {
+            if paneSurface?.paneID == paneID {
                 paneSurface?.setSceneActive(true)
                 return
             }
@@ -459,16 +443,6 @@ final class TmuxTerminalSession: ObservableObject {
             unpublishPane()
             return
         }
-
-        guard isFullViewport(paneID: paneID, in: snapshot) else {
-            unpublishPane()
-            if zoomRequestedPaneID != paneID {
-                zoomRequestedPaneID = paneID
-                controller.requestZoomPane(paneID: paneID)
-            }
-            return
-        }
-        zoomRequestedPaneID = nil
 
         guard paneSurface?.paneID != paneID else {
             pendingPaneID = nil
@@ -496,8 +470,7 @@ final class TmuxTerminalSession: ObservableObject {
                   let topology,
                   activePaneID(in: topology) == surface.paneID,
                   livePaneIDs.contains(surface.paneID),
-                  pendingPaneID == nil || pendingPaneID == surface.paneID,
-                  isFullViewport(paneID: surface.paneID, in: topology)
+                  pendingPaneID == nil || pendingPaneID == surface.paneID
             else {
                 surface.cancelPresentationPreparation()
                 return
@@ -562,22 +535,8 @@ final class TmuxTerminalSession: ObservableObject {
         return snapshot.windows.first(where: { $0.id == windowID })?.activePaneID
     }
 
-    private func isFullViewport(
-        paneID: TmuxPaneID,
-        in snapshot: TmuxSessionController.TopologySnapshot
-    ) -> Bool {
-        guard let pane = snapshot.panes.first(where: { $0.id == paneID }),
-              let window = snapshot.windows.first(where: { $0.id == pane.windowID })
-        else { return false }
-        if window.zoomed { return true }
-        return !snapshot.panes.contains {
-            $0.windowID == window.id && $0.id != paneID
-        }
-    }
-
     #if DEBUG
     var pendingPaneIDForTesting: TmuxPaneID? { pendingPaneID }
-    var zoomRequestedPaneIDForTesting: TmuxPaneID? { zoomRequestedPaneID }
     var creatingPaneIDsForTesting: Set<TmuxPaneID> { creatingPaneIDs }
     func handleStateForTesting(_ state: TmuxSessionController.SessionState) { handleState(state) }
     func handleRequestFailedForTesting(_ request: TmuxSessionController.Request) {
