@@ -250,6 +250,7 @@ final class RemuxRootModel: ObservableObject {
         guard activeSetupAction == nil else { return }
         let expectedSetupID = currentSetupID
         do {
+            try await dependencies.fileProviderStorageMigrator.migrateIfNeeded()
 #if DEBUG || REMUX_LIVE_UI_TESTING
             try await dependencies.seedDebugConnectionIfRequested()
 #endif
@@ -260,6 +261,7 @@ final class RemuxRootModel: ObservableObject {
             guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
             self.terminalSettings = terminalSettings
             self.library = library
+            await reconcileFileProviderDomains()
             finishSetupSession(expectedSetupID)
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
@@ -605,6 +607,7 @@ final class RemuxRootModel: ObservableObject {
                     workspace: submission.workspace
                 )
                 library = try await dependencies.profileRepository.loadSnapshot()
+                await reconcileFileProviderDomains()
                 let sshAuth = try await resolveSSHAuth(for: server)
                 activate(
                     server: server,
@@ -708,6 +711,7 @@ final class RemuxRootModel: ObservableObject {
                 let library = try await dependencies.profileRepository.loadSnapshot()
                 guard isCurrentSetupAction(action) else { return }
                 self.library = library
+                await reconcileFileProviderDomains()
                 let updatedSSHAuth = try await resolveSSHAuth(for: server)
                 guard isCurrentSetupAction(action) else { return }
                 closePreparedTransports(forServerID: server.id)
@@ -1081,6 +1085,9 @@ final class RemuxRootModel: ObservableObject {
         do {
             try dependencies.trustedHostStore.trustHostKey(challenge)
             reconnectActiveSession(id, source: .manualButton)
+            Task {
+                await reconcileFileProviderDomains()
+            }
         } catch {
             transitionToFailed(error)
         }
@@ -1154,6 +1161,7 @@ final class RemuxRootModel: ObservableObject {
             stopTerminalScreenModels(serverID: id)
             RemuxActiveSessionCollection.removeServer(id, from: &activeSessions)
             library = snapshot
+            await reconcileFileProviderDomains()
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
         } catch {
@@ -1190,6 +1198,17 @@ final class RemuxRootModel: ObservableObject {
 
     func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
         preparedTransportCoordinator.claimOrCreateTransport(for: target)
+    }
+
+    private func reconcileFileProviderDomains() async {
+        do {
+            try await dependencies.fileProviderDomainReconciler.reconcile()
+        } catch {
+            NSLog(
+                "Remux File Provider domain reconciliation failed: %@",
+                String(describing: error)
+            )
+        }
     }
 
     private func applyTerminalSettingsToActiveSessions(_ settings: TerminalSettings) throws {
