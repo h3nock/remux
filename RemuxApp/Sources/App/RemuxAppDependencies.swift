@@ -146,6 +146,29 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
+    static func fileProviderCredentialStores(
+        infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:],
+        service: String = KeychainSSHCredentialStore.defaultService
+    ) throws -> (
+        application: KeychainSSHCredentialStore,
+        shared: KeychainSSHCredentialStore
+    ) {
+        (
+            application: KeychainSSHCredentialStore(
+                service: service,
+                accessGroup: try FileProviderSharedConfiguration.applicationKeychainAccessGroup(
+                    infoDictionary: infoDictionary
+                )
+            ),
+            shared: KeychainSSHCredentialStore(
+                service: service,
+                accessGroup: try FileProviderSharedConfiguration.keychainAccessGroup(
+                    infoDictionary: infoDictionary
+                )
+            )
+        )
+    }
+
     func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
         transportFactory(target, trustedHostStore, sshRootService)
     }
