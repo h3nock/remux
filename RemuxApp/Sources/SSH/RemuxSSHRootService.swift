@@ -13,11 +13,15 @@ struct RemuxSSHRootKey: Hashable, Sendable {
     private let authFingerprint: String
 
     init(target: TmuxConnectionTarget) {
-        self.serverID = target.server.id
-        self.host = target.server.host
-        self.port = target.server.port
-        self.username = target.sshAuth.username
-        self.authFingerprint = target.sshAuth.authFingerprint
+        self.init(server: target.server, auth: target.sshAuth)
+    }
+
+    init(server: SavedServer, auth: ResolvedSSHAuth) {
+        self.serverID = server.id
+        self.host = server.host
+        self.port = server.port
+        self.username = auth.username
+        self.authFingerprint = auth.authFingerprint
     }
 }
 
@@ -396,7 +400,9 @@ struct RemuxSSHPreparedRoot {
             let sshRoot = try await task.value
             await sshRoot.close()
         } catch is CancellationError {
+#if !REMUX_FILE_PROVIDER_EXTENSION
             GhosttyRuntimeTrace.latency("transport.prepare.cleanup cancelled")
+#endif
         } catch {
             NSLog("Remux prepared SSH connection cleanup failed: %@", String(describing: error))
         }
@@ -1096,10 +1102,14 @@ actor RemuxSSHRootService {
         Task {
             do {
                 let connection = try await task.value
+#if !REMUX_FILE_PROVIDER_EXTENSION
                 GhosttyRuntimeTrace.latency("sshRoot.pool.close reason=\(reason)")
+#endif
                 await connection.close()
             } catch is CancellationError {
+#if !REMUX_FILE_PROVIDER_EXTENSION
                 GhosttyRuntimeTrace.latency("sshRoot.pool.close cancelled reason=\(reason)")
+#endif
             } catch {
                 NSLog("Remux SSH root pool close failed (%@): %@", reason, String(describing: error))
             }

@@ -4,6 +4,9 @@ import NIO
 enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
     case operationTimedOut
     case sessionUnavailable
+    case noSuchFile(String)
+    case permissionDenied
+    case unsupportedMutation
     case invalidReadLength(Int)
     case oversizedReadResult(requested: Int, actual: Int)
 
@@ -13,6 +16,12 @@ enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
             return "The remote file operation timed out."
         case .sessionUnavailable:
             return "The terminal session is no longer available."
+        case .noSuchFile:
+            return "The remote file does not exist."
+        case .permissionDenied:
+            return "You do not have permission to modify the remote file."
+        case .unsupportedMutation:
+            return "The remote server does not support this file operation."
         case .invalidReadLength:
             return "The remote file read length is invalid."
         case .oversizedReadResult:
@@ -21,10 +30,49 @@ enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
     }
 }
 
+enum RemuxSFTPFileType: String, Codable, Sendable {
+    case regular
+    case directory
+    case symbolicLink
+    case other
+
+    init(permissions: UInt32?) {
+        let typeBits = permissions.map { $0 & 0o170000 }
+        switch typeBits {
+        case 0o100000:
+            self = .regular
+        case 0o040000:
+            self = .directory
+        case 0o120000:
+            self = .symbolicLink
+        default:
+            self = .other
+        }
+    }
+}
+
 struct RemuxSFTPFileMetadata: Equatable, Sendable {
     let size: UInt64?
     let permissions: UInt32?
     let modificationDate: Date?
+    let type: RemuxSFTPFileType
+
+    init(
+        size: UInt64?,
+        permissions: UInt32?,
+        modificationDate: Date?,
+        type: RemuxSFTPFileType? = nil
+    ) {
+        self.size = size
+        self.permissions = permissions
+        self.modificationDate = modificationDate
+        self.type = type ?? RemuxSFTPFileType(permissions: permissions)
+    }
+}
+
+struct RemuxSFTPDirectoryEntry: Equatable, Sendable {
+    let name: String
+    let metadata: RemuxSFTPFileMetadata
 }
 
 final class RemuxSFTPReadableFile {
@@ -55,12 +103,62 @@ final class RemuxSFTPReadableFile {
 }
 
 protocol RemuxSFTPReadOnlyClient: Sendable {
+    func realPath(atPath path: String) async throws -> String
+    func listDirectory(atPath path: String) async throws -> [RemuxSFTPDirectoryEntry]
     func metadata(atPath path: String) async throws -> RemuxSFTPFileMetadata
+    func linkMetadata(atPath path: String) async throws -> RemuxSFTPFileMetadata
 
     func withFile<ReturnValue: Sendable>(
         atPath path: String,
         _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
     ) async throws -> ReturnValue
+
+    func downloadFile(
+        atPath remotePath: String,
+        to localURL: URL,
+        progress: @escaping @Sendable (Int64) async -> Void
+    ) async throws
+}
+
+extension RemuxSFTPReadOnlyClient {
+    func downloadFile(
+        atPath remotePath: String,
+        to localURL: URL,
+        progress: @escaping @Sendable (Int64) async -> Void
+    ) async throws {
+        do {
+            try Data().write(to: localURL, options: .atomic)
+            let localFile = try FileHandle(forWritingTo: localURL)
+            defer {
+                try? localFile.close()
+            }
+
+            try await withFile(atPath: remotePath) { remoteFile in
+                var offset: UInt64 = 0
+                while true {
+                    try Task.checkCancellation()
+                    let data = try await remoteFile.readChunk(
+                        from: offset,
+                        length: RemuxSFTPReadableFile.maximumChunkLength
+                    )
+                    try Task.checkCancellation()
+                    guard !data.isEmpty else { break }
+
+                    try Task.checkCancellation()
+                    try localFile.write(contentsOf: data)
+                    try Task.checkCancellation()
+
+                    offset += UInt64(data.count)
+                    await progress(Int64(min(offset, UInt64(Int64.max))))
+                    try Task.checkCancellation()
+                }
+            }
+            try localFile.close()
+        } catch {
+            try? FileManager.default.removeItem(at: localURL)
+            throw error
+        }
+    }
 }
 
 typealias RemuxSFTPFileUploadProgressHandler = @Sendable (Int64) async -> Void
@@ -75,6 +173,18 @@ protocol RemuxSFTPUploadClient: Sendable {
     ) async throws
     func renameFile(from temporaryPath: String, to finalPath: String) async throws
     func removeFileIfExists(atPath path: String) async throws
+}
+
+protocol RemuxSFTPFileProviderClient: RemuxSFTPReadOnlyClient {
+    func createDirectory(atPath path: String) async throws
+    func uploadFile(
+        from localURL: URL,
+        to remotePath: String,
+        progress: @escaping RemuxSFTPFileUploadProgressHandler
+    ) async throws
+    func renameItem(from sourcePath: String, to destinationPath: String) async throws
+    func removeFile(atPath path: String) async throws
+    func removeEmptyDirectory(atPath path: String) async throws
 }
 
 protocol RemuxSFTPClientProvider: Sendable {
