@@ -26,6 +26,10 @@
 	<string>Remux uses the microphone so you can dictate messages.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Remux uses on-device speech recognition to turn your dictation into text.</string>
+	<key>RemuxApplicationKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)dev.remux.app</string>
+	<key>RemuxSharedKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)dev.remux.shared</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>
