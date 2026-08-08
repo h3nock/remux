@@ -95,14 +95,19 @@ enum KeychainSSHCredentialStoreError: LocalizedError, Sendable {
 }
 
 actor KeychainSSHCredentialStore: SSHCredentialStore {
-    static let defaultService = "dev.remux.ssh-credentials"
+    static let defaultService = FileProviderSharedConfiguration.credentialService
 
     private let service: String
+    private let accessGroup: String?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(service: String = KeychainSSHCredentialStore.defaultService) {
+    init(
+        service: String = KeychainSSHCredentialStore.defaultService,
+        accessGroup: String? = nil
+    ) {
         self.service = service
+        self.accessGroup = accessGroup
     }
 
     func loadCredential(identityID: SSHIdentity.ID) async throws -> SSHCredential? {
@@ -158,12 +163,21 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         }
     }
 
-    private func baseQuery(for identityID: SSHIdentity.ID, returnData: Bool) -> [CFString: Any] {
+    static func query(
+        service: String,
+        accessGroup: String?,
+        identityID: SSHIdentity.ID,
+        returnData: Bool
+    ) -> [CFString: Any] {
         var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: identityID.uuidString,
         ]
+
+        if let accessGroup {
+            query[kSecAttrAccessGroup] = accessGroup
+        }
 
         if returnData {
             query[kSecReturnData] = true
@@ -171,5 +185,14 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         }
 
         return query
+    }
+
+    private func baseQuery(for identityID: SSHIdentity.ID, returnData: Bool) -> [CFString: Any] {
+        Self.query(
+            service: service,
+            accessGroup: accessGroup,
+            identityID: identityID,
+            returnData: returnData
+        )
     }
 }
