@@ -141,6 +141,11 @@ struct RemuxAppDependencies: Sendable {
         )
     }
 
+    @MainActor
+    private static var deviceDefaultZoomMultipaneWindows: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+    }
+
     /// Applies the user's host-key policy to the SSH stack. Enabling registers
     /// legacy `ssh-rsa` host-key support process-wide (see
     /// `RemuxSSHAlgorithmRegistration`); because NIOSSH registration is sticky,
@@ -354,11 +359,6 @@ struct RemuxAppDependencies: Sendable {
             sshConnectionPrewarmer: { _, _, _ in
             }
         )
-    }
-
-    @MainActor
-    private static var deviceDefaultZoomMultipaneWindows: Bool {
-        UIDevice.current.userInterfaceIdiom == .phone
     }
 
     private static func uiTestingTransportChunks() -> [Data] {
