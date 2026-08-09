@@ -676,6 +676,94 @@ final class RemuxAppUITests: XCTestCase {
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
 
+    func testLiveSessionSwitcherShowsAndResumesRecentSessionsWhenConfigured() throws {
+        let primarySessionName = try generatedLiveLatencySessionName("switcher-primary")
+        let laterSessionNames = try (1...7).map { index in
+            try generatedLiveLatencySessionName("switcher-\(index)")
+        }
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(laterSessionNames.last!)
+            cleanupGeneratedLiveLatencySessionIfPossible(primarySessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(
+            traceRuntime: true,
+            sessionNameOverride: primarySessionName
+        )
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+
+        var previousSessionName = primarySessionName
+        for sessionName in laterSessionNames {
+            createLiveSessionFromTerminal(named: sessionName)
+            openSessionSwitcherFromTerminal()
+            disconnectActiveSessionFromSwitcher(named: previousSessionName)
+            app.buttons["terminal.sessions.close"].tap()
+            previousSessionName = sessionName
+        }
+
+        openSessionSwitcherFromTerminal()
+
+        let primaryRecentRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.recent-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", primarySessionName))
+            .firstMatch
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(identifier: "terminal.sessions.recent-session")
+                .firstMatch.waitForExistence(timeout: 10)
+        )
+        XCTAssertTrue(app.staticTexts["Recent"].exists)
+        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
+        let sessionSheet = app.otherElements["terminal.sessions.sheet"]
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 5))
+        let closeButton = app.buttons["terminal.sessions.close"]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 5))
+        let mediumTop = closeButton.frame.minY
+        attachScreenshot(named: "live-session-switcher-active-and-recent-medium")
+
+        sessionSheet.swipeUp()
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        XCTAssertLessThan(
+            closeButton.frame.minY,
+            mediumTop - 100,
+            "Dragging upward should expand the session sheet before scrolling its list."
+        )
+        attachScreenshot(named: "live-session-switcher-active-and-recent-large")
+
+        let sessionList = app.descendants(matching: .any)["terminal.sessions.list"]
+        for _ in 0..<6 where !primaryRecentRow.exists || !primaryRecentRow.isHittable {
+            sessionList.swipeUp()
+        }
+        XCTAssertTrue(
+            primaryRecentRow.isHittable,
+            "The oldest recent session should remain reachable by scrolling."
+        )
+        primaryRecentRow.tap()
+        XCTAssertFalse(
+            app.otherElements["terminal.sessions.sheet"].waitForExistence(timeout: 1)
+        )
+        waitForLiveTerminalReady(timeout: 60)
+
+        openSessionSwitcherFromTerminal()
+        let resumedActiveRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", primarySessionName))
+            .firstMatch
+        XCTAssertTrue(
+            resumedActiveRow.waitForExistence(timeout: 10),
+            "The resumed session should appear under Active."
+        )
+        XCTAssertFalse(primaryRecentRow.exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(identifier: "terminal.sessions.recent-session")
+                .firstMatch.exists
+        )
+        attachScreenshot(named: "live-session-switcher-resumed-session-active")
+        app.buttons["terminal.sessions.close"].tap()
+    }
+
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("keyboard")
         defer {
@@ -3388,6 +3476,58 @@ final class RemuxAppUITests: XCTestCase {
         tapTerminalHomeButton(homeButton)
 
         XCTAssertTrue(app.descendants(matching: .any)["library.list"].waitForExistence(timeout: 5))
+    }
+
+    private func openSessionSwitcherFromTerminal() {
+        let buttons = app.buttons.matching(identifier: "terminal.sessions")
+        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: 5))
+        guard let button = uniqueHittableElement(
+            in: buttons,
+            description: "terminal.sessions"
+        ) else {
+            XCTFail("Missing hittable terminal Sessions button.")
+            return
+        }
+        button.tap()
+    }
+
+    private func createLiveSessionFromTerminal(named sessionName: String) {
+        openSessionSwitcherFromTerminal()
+        let newSessionButton = app.buttons["terminal.sessions.new"]
+        XCTAssertTrue(newSessionButton.waitForExistence(timeout: 5))
+        newSessionButton.tap()
+
+        let sessionNameField = app.textFields["connection.session"]
+        XCTAssertTrue(sessionNameField.waitForExistence(timeout: 5))
+        sessionNameField.tap()
+        sessionNameField.typeText(sessionName)
+        app.swipeUp()
+
+        let saveButton = app.buttons["connection.save"]
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 5))
+        saveButton.tap()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 15))
+        dismissPasswordManagerPromptIfPresent()
+        waitForLiveTerminalReady(timeout: 60)
+    }
+
+    private func disconnectActiveSessionFromSwitcher(named sessionName: String) {
+        let activeRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
+            .firstMatch
+        XCTAssertTrue(activeRow.waitForExistence(timeout: 5))
+        activeRow.swipeLeft()
+
+        let disconnectButton = app.buttons["terminal.sessions.disconnect"]
+        XCTAssertTrue(disconnectButton.waitForExistence(timeout: 5))
+        disconnectButton.tap()
+
+        let recentRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.recent-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
+            .firstMatch
+        XCTAssertTrue(recentRow.waitForExistence(timeout: 10))
     }
 
     private func waitForTerminalHomeButton(timeout: TimeInterval = 2) -> XCUIElement {
