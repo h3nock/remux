@@ -18,6 +18,8 @@ private extension ResolvedSSHAuth {
             .password(password)
         case .privateKey(let privateKey):
             .privateKey(privateKey)
+        case .none:
+            .none
         }
     }
 }
@@ -311,6 +313,8 @@ struct RemuxAppDependencies: Sendable {
                 if requiresPassword, !didAppend {
                     throw SSHClientError.allAuthenticationOptionsFailed
                 }
+            case .none:
+                break
             }
 
             return RemuxSSHExecResult(

@@ -29,6 +29,33 @@ final class SSHAuthResolverTests: XCTestCase {
         XCTAssertEqual(auth.credential, .password("secret"))
     }
 
+    func testResolvesNoneIdentityThroughIdentity() async throws {
+        let identity = SSHIdentity(
+            id: UUID(),
+            name: "Tailscale node",
+            authenticationKind: .none
+        )
+        let server = SavedServer(
+            displayName: "Server",
+            host: "server.example.test",
+            username: "deploy",
+            identityID: identity.id
+        )
+        let resolver = SSHAuthResolver(credentialStore: TestSSHCredentialStore(credentials: [
+            identity.id: .none,
+        ]))
+
+        let auth = try await resolver.resolve(
+            server: server,
+            in: ConnectionLibrarySnapshot(servers: [server], workspaces: [], identities: [identity])
+        )
+
+        XCTAssertEqual(auth.identityID, identity.id)
+        XCTAssertEqual(auth.username, "deploy")
+        XCTAssertEqual(auth.displayLabel, "Tailscale node")
+        XCTAssertEqual(auth.credential, .none)
+    }
+
     func testMissingIdentityFailsExplicitly() async throws {
         let identityID = UUID()
         let server = SavedServer(

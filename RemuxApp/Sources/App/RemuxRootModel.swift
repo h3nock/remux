@@ -1318,6 +1318,16 @@ final class RemuxRootModel: ObservableObject {
                 identity: identity,
                 credential: .privateKey(credential)
             )
+
+        case .none:
+            let identity = SSHIdentity(
+                name: draft.displayName,
+                authenticationKind: .none
+            )
+            return SSHIdentityCredentialPair(
+                identity: identity,
+                credential: .none
+            )
         }
     }
 
@@ -1348,6 +1358,17 @@ final class RemuxRootModel: ObservableObject {
             return SSHIdentityCredentialPair(
                 identity: identity,
                 credential: .privateKey(credential)
+            )
+
+        case .none:
+            let identity = SSHIdentity(
+                id: existingIdentity.id,
+                name: draft.displayName,
+                authenticationKind: .none
+            )
+            return SSHIdentityCredentialPair(
+                identity: identity,
+                credential: .none
             )
         }
     }

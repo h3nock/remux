@@ -938,6 +938,36 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(savedCredential, .password("demo-password"))
     }
 
+    func testSaveAndConnectPersistsNewProfileWithNoneAuthentication() async throws {
+        let harness = makeHarness()
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Tailscale Server"
+            draft.host = "100.64.0.1"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .none
+            draft.sessionName = "base"
+        }
+
+        await harness.model.saveAndConnect()
+
+        guard let activeSession = harness.model.activeSessions.first else {
+            XCTFail("expected terminal state")
+            return
+        }
+
+        let target = activeSession.target
+        XCTAssertEqual(target.sshAuth.credential, .none)
+
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let identity = try XCTUnwrap(snapshot.identities.first)
+        let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
+        XCTAssertEqual(identity.authenticationKind, .none)
+        XCTAssertEqual(savedCredential, .none)
+    }
+
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {
         let server = SavedServer(
             displayName: "Build Host",
@@ -2110,6 +2140,34 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(session.target.workspace.sessionName, "logs")
         XCTAssertEqual(session.target.sshAuth.credential, .password("identity-secret"))
         XCTAssertEqual(session.target.sshAuth.identityID, identity.id)
+    }
+
+    func testConnectUsesLinkedNoneIdentity() async throws {
+        let identity = SSHIdentity(
+            name: "Tailscale Node",
+            authenticationKind: .none
+        )
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder",
+            identityID: identity.id
+        )
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [workspace],
+            identities: [identity]
+        )
+        try await harness.credentialStore.saveCredential(.none, identityID: identity.id)
+
+        await harness.model.load()
+        await harness.model.connect(to: workspace.id)
+
+        let session = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(session.target.sshAuth.credential, .none)
+        XCTAssertEqual(session.target.sshAuth.identityID, identity.id)
+        XCTAssertEqual(session.target.sshAuth.displayLabel, "Tailscale Node")
     }
 
     func testActiveTerminalScreenEntriesPairSessionsWithExactAttemptModels() async throws {

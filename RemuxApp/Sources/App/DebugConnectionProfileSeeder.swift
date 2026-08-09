@@ -84,6 +84,13 @@ enum DebugConnectionProfileSeeder {
                     publicFingerprint: inspection.publicFingerprint
                 )
                 credential = .privateKey(privateKeyCredential)
+
+            case .none:
+                identity = SSHIdentity(
+                    name: submission.server.displayName,
+                    authenticationKind: .none
+                )
+                credential = .none
             }
             let server = submission.server.savedServer(identityID: identity.id)
             try await credentialStore.saveCredential(

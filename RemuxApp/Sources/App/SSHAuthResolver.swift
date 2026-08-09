@@ -67,6 +67,12 @@ struct SSHAuthResolver: Sendable {
                 identityID: identity.id,
                 displayLabel: identity.name
             )
+        case .none:
+            return .none(
+                username: server.username,
+                identityID: identity.id,
+                displayLabel: identity.name
+            )
         }
     }
 }

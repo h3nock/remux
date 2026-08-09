@@ -1,6 +1,36 @@
 @preconcurrency import Citadel
 @preconcurrency import Crypto
 import Foundation
+import NIOCore
+@preconcurrency import NIOSSH
+
+/// Offers SSH's `none` authentication method once, then fails further offers.
+/// Used for hosts reachable only over an already-authenticated tunnel (e.g.
+/// Tailscale/WireGuard) where sshd is configured to accept `none` and no
+/// password or private key is needed.
+final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
+    private let username: String
+    private var hasOffered = false
+
+    init(username: String) {
+        self.username = username
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        guard !hasOffered else {
+            nextChallengePromise.fail(SSHClientError.allAuthenticationOptionsFailed)
+            return
+        }
+
+        hasOffered = true
+        nextChallengePromise.succeed(
+            NIOSSHUserAuthenticationOffer(username: username, serviceName: "", offer: .none)
+        )
+    }
+}
 
 enum SSHAuthenticationMethodFactory {
     static func make(
@@ -10,6 +40,8 @@ enum SSHAuthenticationMethodFactory {
         switch credential {
         case .password(let password):
             return .passwordBased(username: username, password: password)
+        case .none:
+            return .custom(NoneSSHAuthenticationDelegate(username: username))
         case .privateKey(let credential):
             let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
             let decryptionKey = credential.passphrase.map { Data($0.utf8) }

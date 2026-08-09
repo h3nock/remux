@@ -4,6 +4,7 @@ import Foundation
 enum SSHAuthenticationKind: String, Codable, Sendable {
     case password
     case privateKey
+    case none
 }
 
 struct SSHIdentity: Identifiable, Equatable, Codable, Sendable {
@@ -29,6 +30,7 @@ struct ResolvedSSHAuth: Equatable, Sendable {
     enum Credential: Equatable, Sendable {
         case password(String)
         case privateKey(SSHPrivateKeyCredential)
+        case none
     }
 
     let identityID: UUID
@@ -83,6 +85,20 @@ struct ResolvedSSHAuth: Equatable, Sendable {
                 fingerprint(credential.passphrase ?? ""),
             ].joined(separator: ":"),
             credential: .privateKey(credential)
+        )
+    }
+
+    static func none(
+        username: String,
+        identityID: UUID,
+        displayLabel: String
+    ) -> ResolvedSSHAuth {
+        ResolvedSSHAuth(
+            identityID: identityID,
+            username: username,
+            displayLabel: displayLabel,
+            authFingerprint: "none",
+            credential: .none
         )
     }
 
@@ -416,6 +432,8 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         case .privateKey(let credential):
             self.privateKeyPEM = credential.privateKeyPEM
             self.privateKeyPassphrase = credential.passphrase ?? ""
+        case .none:
+            break
         }
     }
 }
@@ -455,6 +473,7 @@ struct ValidatedTmuxServerDraft: Equatable, Sendable {
     enum Credential: Equatable, Sendable {
         case password(String)
         case privateKey(SSHPrivateKeyCredential)
+        case none
 
         var authenticationKind: SSHAuthenticationKind {
             switch self {
@@ -462,6 +481,8 @@ struct ValidatedTmuxServerDraft: Equatable, Sendable {
                 .password
             case .privateKey:
                 .privateKey
+            case .none:
+                .none
             }
         }
     }
@@ -622,6 +643,9 @@ enum TmuxConnectionDraftValidator {
                     passphrase: privateKeyPassphrase
                 )
             )
+
+        case .none:
+            credential = .none
         }
 
         guard validation.isValid else {

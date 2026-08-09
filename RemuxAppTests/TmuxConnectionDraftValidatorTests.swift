@@ -230,6 +230,25 @@ final class TmuxConnectionDraftValidatorTests: XCTestCase {
         )
     }
 
+    func testValidNoneDraftProducesNoneCredentialWithoutPasswordOrKey() {
+        var draft = validServerDraft()
+        draft.authenticationKind = .none
+        draft.password = ""
+
+        let result = TmuxConnectionDraftValidator.validateServer(
+            draft,
+            existingServerID: nil
+        )
+
+        guard case .valid(let submission) = result else {
+            XCTFail("expected valid server submission")
+            return
+        }
+
+        XCTAssertEqual(submission.credential, .none)
+        XCTAssertEqual(submission.credential.authenticationKind, .none)
+    }
+
     func testPrivateKeyDraftRejectsInvalidKeyText() {
         var draft = validServerDraft()
         draft.authenticationKind = .privateKey

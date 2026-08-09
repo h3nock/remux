@@ -14,6 +14,7 @@ struct SSHPrivateKeyCredential: Equatable, Codable, Sendable {
 enum SSHCredential: Equatable, Codable, Sendable {
     case password(String)
     case privateKey(SSHPrivateKeyCredential)
+    case none
 
     var authenticationKind: SSHAuthenticationKind {
         switch self {
@@ -21,12 +22,15 @@ enum SSHCredential: Equatable, Codable, Sendable {
             .password
         case .privateKey:
             .privateKey
+        case .none:
+            .none
         }
     }
 
     private enum Kind: String, Codable {
         case password
         case privateKey
+        case none
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -50,6 +54,8 @@ enum SSHCredential: Equatable, Codable, Sendable {
                     passphrase: try container.decodeIfPresent(String.self, forKey: .privateKeyPassphrase)
                 )
             )
+        case .none:
+            self = .none
         }
     }
 
@@ -64,6 +70,8 @@ enum SSHCredential: Equatable, Codable, Sendable {
             try container.encode(Kind.privateKey, forKey: .kind)
             try container.encode(credential.privateKeyPEM, forKey: .privateKeyPEM)
             try container.encodeIfPresent(credential.passphrase, forKey: .privateKeyPassphrase)
+        case .none:
+            try container.encode(Kind.none, forKey: .kind)
         }
     }
 }

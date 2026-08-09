@@ -1581,6 +1581,7 @@ struct ConnectionSetupView: View {
                     Picker("Method", selection: authenticationKindBinding) {
                         Text("Password").tag(SSHAuthenticationKind.password)
                         Text("Private Key").tag(SSHAuthenticationKind.privateKey)
+                        Text("None").tag(SSHAuthenticationKind.none)
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("connection.authentication.method")
@@ -1590,6 +1591,13 @@ struct ConnectionSetupView: View {
                         passwordInputRow(validationMessage: validation.password)
                     case .privateKey:
                         privateKeyInputRows()
+                    case .none:
+                        Text(
+                            "Remux connects without a password or private key. Use this only " +
+                                "if the server accepts unauthenticated SSH, such as over Tailscale or WireGuard."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     }
                 } header: {
                     Text("Authentication")
@@ -1713,6 +1721,8 @@ struct ConnectionSetupView: View {
                     return .password
                 case .privateKey:
                     return .privateKeyPassphrase
+                case .none:
+                    break
                 }
             }
             if showsEditableServerFields { return .tmuxExecutablePath }

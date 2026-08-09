@@ -49,7 +49,7 @@ Live builds store app data under the app's application-support root:
 - saved servers in JSON
 - saved workspaces in JSON
 - terminal settings in JSON
-- server passwords in Keychain
+- SSH credentials (password, private key, or none) in Keychain
 - trusted host identities in the trusted-host store
 
 UI tests use in-memory repositories and deterministic transports when possible.
@@ -58,6 +58,12 @@ UI tests use in-memory repositories and deterministic transports when possible.
 
 SSH is the implemented transport. Unsupported transports fail explicitly
 instead of silently falling back to SSH.
+
+Authentication is per-identity and supports password, private key, or `none`.
+The `none` authentication kind offers no credential at all (SSH's `none` user
+auth method) and is meant for hosts that are only reachable through an
+already-authenticated tunnel, such as Tailscale or WireGuard, where the
+server accepts the connection without a password or key.
 
 The transport boundary is small: prepare/start, write outbound bytes, stream
 inbound bytes, report liveness when available, and close. It deliberately does
