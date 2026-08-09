@@ -73,6 +73,8 @@ struct TerminalSelectionSheetCloseButton: View {
                 .foregroundStyle(TerminalSelectionSheetPalette.primary)
                 .frame(width: 36, height: 36)
                 .background(TerminalSelectionSheetPalette.controlFill, in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("Close \(title)")
         .accessibilityIdentifier(accessibilityIdentifier)
@@ -249,20 +251,6 @@ extension View {
                         .padding(6)
                 }
             }
-    }
-
-    func terminalSelectionSheetPresentation(
-        colorScheme: ColorScheme,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        presentationDetents([.medium])
-            .presentationContentInteraction(.scrolls)
-            .presentationDragIndicator(.hidden)
-            .terminalSelectionSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                colorScheme,
-                chromeStyle: chromeStyle
-            )
     }
 
     @ViewBuilder
