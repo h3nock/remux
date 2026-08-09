@@ -112,18 +112,23 @@ private struct RemuxWorkspaceShell: View {
             }
         }
         .sheet(isPresented: $isSessionSwitcherPresented) {
-            ActiveSessionSwitcherView(
-                sessions: ActiveSessionSwitcherProjection.items(
-                    sessions: model.activeSessions,
+            SessionSwitcherView(
+                projection: SessionSwitcherProjection(
+                    snapshot: model.library,
+                    activeSessions: model.activeSessions,
                     selectedSessionID: selectedTerminalID
                 ),
                 servers: model.library.servers,
                 currentServerID: selectedActiveSession?.target.server.id,
-                onSelectSession: model.showActiveSession,
+                onSelectActiveSession: model.showActiveSession,
+                onResumeRecentSession: { workspaceID in
+                    traceSessionOpenTap(workspaceID)
+                    Task { await model.connect(to: workspaceID) }
+                },
                 onDisconnectSession: model.disconnectActiveSession,
                 onCreateSession: beginNewWorkspaceFromTerminal
             )
-            .terminalSelectionSheetPresentation(
+            .sessionSwitcherSheetPresentation(
                 colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
@@ -722,15 +727,7 @@ private struct ConnectionLibraryView: View {
     }
 
     private var recentWorkspaces: [SavedWorkspace] {
-        snapshot.workspaces
-            .filter { !activeWorkspaceIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                if lhs.lastOpenedAt != rhs.lastOpenedAt {
-                    return lhs.lastOpenedAt > rhs.lastOpenedAt
-                }
-
-                return lhs.sessionName.localizedStandardCompare(rhs.sessionName) == .orderedAscending
-            }
+        snapshot.recentWorkspaces(excluding: activeWorkspaceIDs)
     }
 
     private var visibleRecentWorkspaces: [SavedWorkspace] {

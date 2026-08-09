@@ -8,20 +8,48 @@ struct ActiveSessionSwitcherItem: Identifiable, Equatable {
     let isSelected: Bool
 }
 
-enum ActiveSessionSwitcherProjection {
-    static func items(
-        sessions: [ActiveTerminalSession],
+struct RecentSessionSwitcherItem: Identifiable, Equatable {
+    let id: SavedWorkspace.ID
+    let sessionName: String
+    let serverName: String
+    let lastOpenedAt: Date
+}
+
+struct SessionSwitcherProjection: Equatable {
+    let activeSessions: [ActiveSessionSwitcherItem]
+    let recentSessions: [RecentSessionSwitcherItem]
+
+    init(
+        snapshot: ConnectionLibrarySnapshot,
+        activeSessions: [ActiveTerminalSession],
         selectedSessionID: SavedWorkspace.ID?
-    ) -> [ActiveSessionSwitcherItem] {
-        RemuxActiveSessionCollection.sortedForDisplay(sessions).map { session in
-            ActiveSessionSwitcherItem(
-                id: session.id,
-                sessionName: session.target.workspace.sessionName,
-                serverName: session.target.server.displayName,
-                runtimeState: session.runtimeState,
-                isSelected: session.id == selectedSessionID
-            )
-        }
+    ) {
+        self.activeSessions = RemuxActiveSessionCollection
+            .sortedForDisplay(activeSessions)
+            .map { session in
+                ActiveSessionSwitcherItem(
+                    id: session.id,
+                    sessionName: session.target.workspace.sessionName,
+                    serverName: session.target.server.displayName,
+                    runtimeState: session.runtimeState,
+                    isSelected: session.id == selectedSessionID
+                )
+            }
+
+        let activeWorkspaceIDs = Set(activeSessions.map(\.id))
+        self.recentSessions = snapshot
+            .recentWorkspaces(excluding: activeWorkspaceIDs)
+            .compactMap { workspace in
+                guard let server = snapshot.server(id: workspace.serverID) else {
+                    return nil
+                }
+                return RecentSessionSwitcherItem(
+                    id: workspace.id,
+                    sessionName: workspace.sessionName,
+                    serverName: server.displayName,
+                    lastOpenedAt: workspace.lastOpenedAt
+                )
+            }
     }
 
     static func orderedServers(
@@ -39,7 +67,7 @@ enum ActiveSessionSwitcherProjection {
     }
 }
 
-struct ActiveSessionSwitcherView: View {
+struct SessionSwitcherView: View {
     private enum Route: Hashable {
         case chooseServer
     }
@@ -47,10 +75,11 @@ struct ActiveSessionSwitcherView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
-    let sessions: [ActiveSessionSwitcherItem]
+    let projection: SessionSwitcherProjection
     let servers: [SavedServer]
     let currentServerID: SavedServer.ID?
-    let onSelectSession: (SavedWorkspace.ID) -> Void
+    let onSelectActiveSession: (SavedWorkspace.ID) -> Void
+    let onResumeRecentSession: (SavedWorkspace.ID) -> Void
     let onDisconnectSession: (SavedWorkspace.ID) -> Void
     let onCreateSession: (SavedServer.ID) -> Void
 
@@ -64,7 +93,7 @@ struct ActiveSessionSwitcherView: View {
                     switch route {
                     case .chooseServer:
                         NewSessionServerPickerView(
-                            servers: ActiveSessionSwitcherProjection.orderedServers(
+                            servers: SessionSwitcherProjection.orderedServers(
                                 servers,
                                 currentServerID: currentServerID
                             ),
@@ -80,15 +109,32 @@ struct ActiveSessionSwitcherView: View {
     private var sessionList: some View {
         TerminalSelectionSheetScaffold(
             title: "Sessions",
-            context: "\(sessions.count) active",
+            context: sessionCountSummary,
             closeAccessibilityIdentifier: "terminal.sessions.close"
         ) {
             List {
-                sessionRows
+                Section {
+                    ForEach(projection.activeSessions) { session in
+                        activeSessionRow(session)
+                    }
+                } header: {
+                    SessionSwitcherSectionHeader(title: "Active")
+                }
+
+                if !projection.recentSessions.isEmpty {
+                    Section {
+                        ForEach(projection.recentSessions) { session in
+                            recentSessionRow(session)
+                        }
+                    } header: {
+                        SessionSwitcherSectionHeader(title: "Recent")
+                    }
+                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .animation(.snappy, value: sessions.map(\.id))
+            .animation(.snappy, value: projection.activeSessions.map(\.id))
+            .animation(.snappy, value: projection.recentSessions.map(\.id))
             .accessibilityIdentifier("terminal.sessions.list")
         } actions: {
             TerminalSelectionSheetActionButton(
@@ -100,17 +146,15 @@ struct ActiveSessionSwitcherView: View {
         }
     }
 
-    @ViewBuilder
-    private var sessionRows: some View {
-        ForEach(sessions) { session in
-            sessionRow(session)
-        }
+    private var sessionCountSummary: String {
+        let count = projection.activeSessions.count + projection.recentSessions.count
+        return count == 1 ? "1 session" : "\(count) sessions"
     }
 
-    private func sessionRow(_ session: ActiveSessionSwitcherItem) -> some View {
+    private func activeSessionRow(_ session: ActiveSessionSwitcherItem) -> some View {
         Button {
             Haptic.selection()
-            onSelectSession(session.id)
+            onSelectActiveSession(session.id)
             dismiss()
         } label: {
             ActiveSessionSwitcherRow(
@@ -119,11 +163,7 @@ struct ActiveSessionSwitcherView: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("terminal.sessions.session")
-        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-        .listRowSeparator(.visible)
-        .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
-        .listRowBackground(Color.clear)
+        .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.active-session")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 Haptic.warning()
@@ -136,6 +176,18 @@ struct ActiveSessionSwitcherView: View {
         .accessibilityAction(named: Text("Disconnect from Remux")) {
             onDisconnectSession(session.id)
         }
+    }
+
+    private func recentSessionRow(_ session: RecentSessionSwitcherItem) -> some View {
+        Button {
+            Haptic.selection()
+            dismiss()
+            onResumeRecentSession(session.id)
+        } label: {
+            RecentSessionSwitcherRow(session: session)
+        }
+        .buttonStyle(.plain)
+        .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.recent-session")
     }
 
     private var newSessionAction: (() -> Void)? {
@@ -155,6 +207,17 @@ struct ActiveSessionSwitcherView: View {
     private func beginNewSession(_ serverID: SavedServer.ID) {
         dismiss()
         onCreateSession(serverID)
+    }
+}
+
+private struct SessionSwitcherSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+            .textCase(nil)
     }
 }
 
@@ -178,6 +241,7 @@ private struct ActiveSessionSwitcherRow: View {
                     .font(.headline)
                     .foregroundStyle(TerminalSelectionSheetPalette.primary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
 
                 HStack(spacing: 6) {
                     Text(session.serverName)
@@ -213,6 +277,49 @@ private struct ActiveSessionSwitcherRow: View {
         let status = TerminalRuntimeStatusPresentation.projection(for: session.runtimeState).label
         let current = session.isSelected ? ", current session" : ""
         return "\(session.sessionName), \(session.serverName), \(status)\(current)"
+    }
+}
+
+private struct RecentSessionSwitcherRow: View {
+    let session: RecentSessionSwitcherItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                .frame(width: 28, height: 32)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.sessionName)
+                    .font(.headline)
+                    .foregroundStyle(TerminalSelectionSheetPalette.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 6) {
+                    Text(session.serverName)
+                        .lineLimit(1)
+
+                    Text("·")
+                        .accessibilityHidden(true)
+
+                    Text("opened \(session.lastOpenedAt, style: .relative)")
+                }
+                .font(.footnote)
+                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(session.sessionName), \(session.serverName)")
+        .accessibilityValue(Text("Opened \(session.lastOpenedAt, style: .relative)"))
+        .accessibilityHint("Resume this session")
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -273,5 +380,52 @@ private struct NewSessionServerPickerView: View {
         .navigationTitle("Choose Server")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("terminal.sessions.server-picker")
+    }
+}
+
+private struct SessionSwitcherSheetPresentationModifier: ViewModifier {
+    let colorScheme: ColorScheme
+    let chromeStyle: GhosttyTerminalChromeStyle
+
+    @State private var selectedDetent: PresentationDetent = .medium
+
+    func body(content: Content) -> some View {
+        content
+            .presentationDetents(
+                [.medium, .large],
+                selection: $selectedDetent
+            )
+            .presentationContentInteraction(.resizes)
+            .presentationDragIndicator(.visible)
+            .terminalSelectionSheetPresentationBackground()
+            .ghosttyTerminalChromePresentation(
+                colorScheme,
+                chromeStyle: chromeStyle
+            )
+    }
+}
+
+extension View {
+    func sessionSwitcherSheetPresentation(
+        colorScheme: ColorScheme,
+        chromeStyle: GhosttyTerminalChromeStyle
+    ) -> some View {
+        modifier(
+            SessionSwitcherSheetPresentationModifier(
+                colorScheme: colorScheme,
+                chromeStyle: chromeStyle
+            )
+        )
+    }
+}
+
+private extension View {
+    func sessionSwitcherListRow(accessibilityIdentifier: String) -> some View {
+        self
+            .accessibilityIdentifier(accessibilityIdentifier)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowSeparator(.visible)
+            .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
+            .listRowBackground(Color.clear)
     }
 }
