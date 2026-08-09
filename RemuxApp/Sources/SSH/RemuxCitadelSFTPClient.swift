@@ -2,10 +2,122 @@
 import Foundation
 import NIO
 
+struct RemuxCitadelSFTPAttributes: Sendable {
+    let size: UInt64?
+    let permissions: UInt32?
+    let modificationDate: Date?
+
+    init(
+        size: UInt64?,
+        permissions: UInt32?,
+        modificationDate: Date?
+    ) {
+        self.size = size
+        self.permissions = permissions
+        self.modificationDate = modificationDate
+    }
+
+    init(_ attributes: SFTPFileAttributes) {
+        self.init(
+            size: attributes.size,
+            permissions: attributes.permissions,
+            modificationDate: attributes.accessModificationTime?.modificationTime
+        )
+    }
+}
+
+struct RemuxCitadelSFTPDirectoryComponent: Sendable {
+    let filename: String
+    let attributes: RemuxCitadelSFTPAttributes
+}
+
+struct RemuxCitadelSFTPDirectoryResponse: Sendable {
+    let components: [RemuxCitadelSFTPDirectoryComponent]
+}
+
+protocol RemuxCitadelSFTPFile: Sendable {
+    func readData(from offset: UInt64, length: UInt32) async throws -> Data
+    func writeDataPipelined(
+        _ data: Data,
+        at offset: UInt64,
+        maxInFlight: Int
+    ) async throws
+    func close() async throws
+}
+
+protocol RemuxCitadelSFTPConnection: Sendable {
+    func remuxRealPath(atPath path: String) async throws -> String
+    func remuxListDirectory(
+        atPath path: String
+    ) async throws -> [RemuxCitadelSFTPDirectoryResponse]
+    func remuxGetAttributes(atPath path: String) async throws -> RemuxCitadelSFTPAttributes
+    func remuxOpenFileForReading(atPath path: String) async throws -> any RemuxCitadelSFTPFile
+    func remuxOpenFileForWriting(atPath path: String) async throws -> any RemuxCitadelSFTPFile
+    func remuxCreateDirectory(atPath path: String) async throws
+    func remuxRename(from sourcePath: String, to destinationPath: String) async throws
+    func remuxRemove(atPath path: String) async throws
+}
+
+extension SFTPClient: RemuxCitadelSFTPConnection {
+    func remuxRealPath(atPath path: String) async throws -> String {
+        try await getRealPath(atPath: path)
+    }
+
+    func remuxListDirectory(
+        atPath path: String
+    ) async throws -> [RemuxCitadelSFTPDirectoryResponse] {
+        try await listDirectory(atPath: path).map { response in
+            RemuxCitadelSFTPDirectoryResponse(
+                components: response.components.map { component in
+                    RemuxCitadelSFTPDirectoryComponent(
+                        filename: component.filename,
+                        attributes: RemuxCitadelSFTPAttributes(component.attributes)
+                    )
+                }
+            )
+        }
+    }
+
+    func remuxGetAttributes(atPath path: String) async throws -> RemuxCitadelSFTPAttributes {
+        RemuxCitadelSFTPAttributes(try await getAttributes(at: path))
+    }
+
+    func remuxOpenFileForReading(
+        atPath path: String
+    ) async throws -> any RemuxCitadelSFTPFile {
+        RemuxCitadelSFTPFileBox(
+            file: try await openFile(filePath: path, flags: .read)
+        )
+    }
+
+    func remuxOpenFileForWriting(
+        atPath path: String
+    ) async throws -> any RemuxCitadelSFTPFile {
+        RemuxCitadelSFTPFileBox(
+            file: try await openFile(
+                filePath: path,
+                flags: [.write, .create, .truncate]
+            )
+        )
+    }
+
+    func remuxCreateDirectory(atPath path: String) async throws {
+        try await createDirectory(atPath: path)
+    }
+
+    func remuxRename(from sourcePath: String, to destinationPath: String) async throws {
+        try await rename(at: sourcePath, to: destinationPath)
+    }
+
+    func remuxRemove(atPath path: String) async throws {
+        try await remove(at: path)
+    }
+}
+
 struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
     private static let pipelinedWriteMaxInFlight = 64
 
-    private let sftp: SFTPClient
+    private let connection: any RemuxCitadelSFTPConnection
     private let chunkSize: Int
     private let operationTimeout: TimeAmount
     private let leaseState: RemuxSFTPLeaseTeardown
@@ -16,7 +128,21 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         operationTimeout: TimeAmount = .seconds(15),
         leaseState: RemuxSFTPLeaseTeardown
     ) {
-        self.sftp = sftp
+        self.init(
+            connection: sftp,
+            chunkSize: chunkSize,
+            operationTimeout: operationTimeout,
+            leaseState: leaseState
+        )
+    }
+
+    init(
+        connection: any RemuxCitadelSFTPConnection,
+        chunkSize: Int = 4 * 1024 * 1024,
+        operationTimeout: TimeAmount = .seconds(15),
+        leaseState: RemuxSFTPLeaseTeardown
+    ) {
+        self.connection = connection
         self.chunkSize = chunkSize
         self.operationTimeout = operationTimeout
         self.leaseState = leaseState
@@ -24,32 +150,70 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
 
     func realPath(atPath path: String) async throws -> String {
         try await withOperationTimeout {
-            try await sftp.getRealPath(atPath: path)
+            try await connection.remuxRealPath(atPath: path)
+        }
+    }
+
+    func listDirectory(atPath path: String) async throws -> [RemuxSFTPDirectoryEntry] {
+        do {
+            let responses = try await withOperationTimeout {
+                try await connection.remuxListDirectory(atPath: path)
+            }
+            return responses
+                .flatMap(\.components)
+                .filter { $0.filename != "." && $0.filename != ".." }
+                .map { component in
+                    RemuxSFTPDirectoryEntry(
+                        name: component.filename,
+                        metadata: metadata(from: component.attributes)
+                    )
+                }
+        } catch {
+            throw normalizedReadError(error, path: path)
         }
     }
 
     func metadata(atPath path: String) async throws -> RemuxSFTPFileMetadata {
-        let attributes = try await getAttributes(at: path)
-        return RemuxSFTPFileMetadata(
-            size: attributes.size,
-            permissions: attributes.permissions,
-            modificationDate: attributes.accessModificationTime?.modificationTime
-        )
+        do {
+            return metadata(from: try await getAttributes(at: path))
+        } catch {
+            throw normalizedReadError(error, path: path)
+        }
+    }
+
+    func linkMetadata(atPath path: String) async throws -> RemuxSFTPFileMetadata {
+        let parentPath = (path as NSString).deletingLastPathComponent
+        let directoryPath = parentPath.isEmpty ? "." : parentPath
+        let basename = (path as NSString).lastPathComponent
+        guard !basename.isEmpty else {
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+        guard let entry = try await listDirectory(atPath: directoryPath)
+            .first(where: { $0.name == basename })
+        else {
+            throw RemuxSFTPClientError.noSuchFile(path)
+        }
+        return entry.metadata
     }
 
     func withFile<ReturnValue: Sendable>(
         atPath path: String,
         _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
     ) async throws -> ReturnValue {
-        let remoteFile = try await openRemoteFile(
-            at: path,
-            flags: .read
-        )
+        let remoteFile: any RemuxCitadelSFTPFile
+        do {
+            remoteFile = try await openRemoteFile(at: path, mode: .read)
+        } catch {
+            throw normalizedReadError(error, path: path)
+        }
         let readableFile = RemuxSFTPReadableFile { offset, length in
-            let buffer = try await withOperationTimeout {
-                try await remoteFile.file.read(from: offset, length: length)
+            do {
+                return try await withOperationTimeout {
+                    try await remoteFile.readData(from: offset, length: length)
+                }
+            } catch {
+                throw normalizedReadError(error, path: path)
             }
-            return Data(buffer.readableBytesView)
         }
 
         let operationResult: Result<ReturnValue, Error>
@@ -84,7 +248,7 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         } catch where isNoSuchFile(error) {
             do {
                 try await withOperationTimeout {
-                    try await sftp.createDirectory(atPath: path)
+                    try await connection.remuxCreateDirectory(atPath: path)
                 }
             } catch {
                 if try await exists(atPath: path) {
@@ -105,10 +269,7 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
             try? localFile.close()
         }
 
-        let remoteFile = try await openRemoteFile(
-            at: remotePath,
-            flags: [.write, .create, .truncate]
-        )
+        let remoteFile = try await openRemoteFile(at: remotePath, mode: .write)
 
         do {
             var offset: UInt64 = 0
@@ -118,13 +279,10 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
                 let data = try localFile.read(upToCount: chunkSize) ?? Data()
                 guard !data.isEmpty else { break }
 
-                var buffer = ByteBufferAllocator().buffer(capacity: data.count)
-                buffer.writeBytes(data)
-                let writeBuffer = buffer
                 let writeOffset = offset
                 try await withOperationTimeout {
-                    try await remoteFile.file.writePipelined(
-                        writeBuffer,
+                    try await remoteFile.writeDataPipelined(
+                        data,
                         at: writeOffset,
                         maxInFlight: Self.pipelinedWriteMaxInFlight
                     )
@@ -144,14 +302,17 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
 
     func renameFile(from temporaryPath: String, to finalPath: String) async throws {
         try await withOperationTimeout {
-            try await sftp.rename(at: temporaryPath, to: finalPath)
+            try await connection.remuxRename(
+                from: temporaryPath,
+                to: finalPath
+            )
         }
     }
 
     func removeFileIfExists(atPath path: String) async throws {
         do {
             try await withOperationTimeout {
-                try await sftp.remove(at: path)
+                try await connection.remuxRemove(atPath: path)
             }
         } catch where isNoSuchFile(error) {
             return
@@ -160,19 +321,24 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
 
     private func openRemoteFile(
         at remotePath: String,
-        flags: SFTPOpenFileFlags
-    ) async throws -> RemuxCitadelSFTPFileBox {
+        mode: RemuxCitadelSFTPOpenMode
+    ) async throws -> any RemuxCitadelSFTPFile {
         try await withOperationTimeout(
             operation: {
-                let file = try await sftp.openFile(
-                    filePath: remotePath,
-                    flags: flags
-                )
-                return RemuxCitadelSFTPFileBox(file: file)
+                switch mode {
+                case .read:
+                    return try await connection.remuxOpenFileForReading(
+                        atPath: remotePath
+                    )
+                case .write:
+                    return try await connection.remuxOpenFileForWriting(
+                        atPath: remotePath
+                    )
+                }
             },
-            cleanupLateSuccess: { fileBox in
+            cleanupLateSuccess: { file in
                 do {
-                    try await fileBox.file.close()
+                    try await file.close()
                 } catch {
                     NSLog(
                         "Remux SFTP late file open close failed for %@: %@",
@@ -184,9 +350,9 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         )
     }
 
-    private func closeRemoteFile(_ fileBox: RemuxCitadelSFTPFileBox) async throws {
+    private func closeRemoteFile(_ file: any RemuxCitadelSFTPFile) async throws {
         try await withOperationTimeout {
-            try await fileBox.file.close()
+            try await file.close()
         }
     }
 
@@ -199,10 +365,20 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         }
     }
 
-    private func getAttributes(at path: String) async throws -> SFTPFileAttributes {
+    private func getAttributes(at path: String) async throws -> RemuxCitadelSFTPAttributes {
         try await withOperationTimeout {
-            try await sftp.getAttributes(at: path)
+            try await connection.remuxGetAttributes(atPath: path)
         }
+    }
+
+    private func metadata(
+        from attributes: RemuxCitadelSFTPAttributes
+    ) -> RemuxSFTPFileMetadata {
+        RemuxSFTPFileMetadata(
+            size: attributes.size,
+            permissions: attributes.permissions,
+            modificationDate: attributes.modificationDate
+        )
     }
 
     private func withOperationTimeout<Value: Sendable>(
@@ -229,18 +405,53 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
     }
 
     private func isNoSuchFile(_ error: Error) -> Bool {
+        if case .noSuchFile = error as? RemuxSFTPClientError {
+            return true
+        }
         guard let status = error as? SFTPMessage.Status else {
             return false
         }
         return status.errorCode == .noSuchFile
     }
+
+    private func normalizedReadError(_ error: Error, path: String) -> Error {
+        isNoSuchFile(error) ? RemuxSFTPClientError.noSuchFile(path) : error
+    }
 }
 
-private final class RemuxCitadelSFTPFileBox: @unchecked Sendable {
-    let file: SFTPFile
+private enum RemuxCitadelSFTPOpenMode: Sendable {
+    case read
+    case write
+}
+
+private final class RemuxCitadelSFTPFileBox: RemuxCitadelSFTPFile, @unchecked Sendable {
+    private let file: SFTPFile
 
     init(file: SFTPFile) {
         self.file = file
+    }
+
+    func readData(from offset: UInt64, length: UInt32) async throws -> Data {
+        let buffer = try await file.read(from: offset, length: length)
+        return Data(buffer.readableBytesView)
+    }
+
+    func writeDataPipelined(
+        _ data: Data,
+        at offset: UInt64,
+        maxInFlight: Int
+    ) async throws {
+        var buffer = ByteBufferAllocator().buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        try await file.writePipelined(
+            buffer,
+            at: offset,
+            maxInFlight: maxInFlight
+        )
+    }
+
+    func close() async throws {
+        try await file.close()
     }
 }
 
@@ -416,12 +627,14 @@ struct RemuxSessionCitadelSFTPClientProvider: RemuxSFTPClientProvider {
     ) async throws -> RemuxSFTPClientLease<RemuxCitadelSFTPClient> {
         let registration = try await scope.begin()
         do {
+#if !REMUX_FILE_PROVIDER_EXTENSION
             let startedAt = GhosttyRuntimeTrace.latencyEnabled
                 ? GhosttyRuntimeTrace.nowNanos()
                 : nil
             GhosttyRuntimeTrace.latency(
                 "sftp.open begin host=\(hostDescription) source=session"
             )
+#endif
 
             // Citadel bounds subsystem negotiation internally. Await the raw
             // open so shutdown cannot release a shared root while a child is
@@ -429,11 +642,13 @@ struct RemuxSessionCitadelSFTPClientProvider: RemuxSFTPClientProvider {
             let sftp = try await SFTPClient.open(
                 overAuthenticatedSSHChannel: registration.rootChannel
             )
+#if !REMUX_FILE_PROVIDER_EXTENSION
             if let startedAt {
                 GhosttyRuntimeTrace.latency(
                     "sftp.open end host=\(hostDescription) source=session elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
                 )
             }
+#endif
 
             let teardown = RemuxSFTPLeaseTeardown(
                 closeBorrowedChild: {
@@ -553,8 +768,10 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
         }
 
         do {
+#if !REMUX_FILE_PROVIDER_EXTENSION
             let sftpOpenStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
             GhosttyRuntimeTrace.latency("sftp.open begin host=\(rootConfiguration.host):\(rootConfiguration.port)")
+#endif
             let sftp = try await RemuxSFTPTimeout.run(
                 timeout: operationTimeout,
                 operation: {
@@ -568,11 +785,13 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
                     }
                 }
             )
+#if !REMUX_FILE_PROVIDER_EXTENSION
             if let sftpOpenStartedAt {
                 GhosttyRuntimeTrace.latency(
                     "sftp.open end host=\(rootConfiguration.host):\(rootConfiguration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"
                 )
             }
+#endif
             let leaseState = RemuxSFTPLeaseTeardown(
                 closeChild: {
                     try await RemuxSFTPTimeout.run(
