@@ -965,7 +965,7 @@ final class RemuxRootModelTests: XCTestCase {
         let identity = try XCTUnwrap(snapshot.identities.first)
         let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
         XCTAssertEqual(identity.authenticationKind, .none)
-        XCTAssertEqual(savedCredential, .none)
+        XCTAssertEqual(savedCredential, SSHCredential.none)
     }
 
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {
