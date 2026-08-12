@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import GhosttyKit
 
-struct GhosttySurfaceDisplayMetrics: Equatable {
+struct GhosttySurfaceDisplayMetrics: Equatable, Sendable {
     let contentScale: Double
     let pixelWidth: UInt32
     let pixelHeight: UInt32
@@ -30,18 +30,58 @@ struct GhosttySurfaceDisplayMetrics: Equatable {
     }
 }
 
-struct GhosttySurfaceDisplayUpdateTracker {
-    private var lastMetrics: GhosttySurfaceDisplayMetrics?
+struct GhosttyTerminalCellDisplayMetrics: Equatable, Sendable {
+    let pixelWidth: UInt32
+    let pixelHeight: UInt32
+    let contentScale: Double
 
-    mutating func nextMetrics(size: CGSize, scale: CGFloat) -> GhosttySurfaceDisplayMetrics? {
-        let metrics = GhosttySurfaceDisplayMetrics(size: size, scale: scale)
-        guard metrics != lastMetrics else { return nil }
-        lastMetrics = metrics
-        return metrics
+    var pointWidth: CGFloat {
+        CGFloat(Double(pixelWidth) / contentScale)
     }
 
-    mutating func reset() {
-        lastMetrics = nil
+    var pointHeight: CGFloat {
+        CGFloat(Double(pixelHeight) / contentScale)
+    }
+}
+
+struct GhosttyTerminalViewportMeasurement: Equatable, Sendable {
+    let controlViewport: TmuxControlViewport
+    let displayMetrics: GhosttySurfaceDisplayMetrics
+    let cellMetrics: GhosttyTerminalCellDisplayMetrics
+
+    init?(
+        measuredSize: ghostty_surface_size_s,
+        displayMetrics: GhosttySurfaceDisplayMetrics
+    ) {
+        guard let controlViewport = TmuxControlViewport(ghosttySurfaceSize: measuredSize),
+              measuredSize.cell_width_px > 0,
+              measuredSize.cell_height_px > 0
+        else { return nil }
+        self.controlViewport = controlViewport
+        self.displayMetrics = displayMetrics
+        cellMetrics = GhosttyTerminalCellDisplayMetrics(
+            pixelWidth: measuredSize.cell_width_px,
+            pixelHeight: measuredSize.cell_height_px,
+            contentScale: displayMetrics.contentScale
+        )
+    }
+
+    func displayMetrics(columns: UInt32, rows: UInt32) -> GhosttySurfaceDisplayMetrics? {
+        let (pixelWidth, widthOverflow) = columns.multipliedReportingOverflow(
+            by: cellMetrics.pixelWidth
+        )
+        let (pixelHeight, heightOverflow) = rows.multipliedReportingOverflow(
+            by: cellMetrics.pixelHeight
+        )
+        guard columns > 0, rows > 0,
+              !widthOverflow, !heightOverflow,
+              pixelWidth > 0, pixelHeight > 0
+        else { return nil }
+        return GhosttySurfaceDisplayMetrics(
+            contentScale: displayMetrics.contentScale,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+        )
     }
 }
 
@@ -119,6 +159,19 @@ struct GhosttySurfaceInteractionState: Equatable {
     }
 }
 
+private func ghosttyTerminalCellFrame(
+    _ value: ghostty_terminal_surface_cell_geometry_s,
+    scaleFactor: Double
+) -> CGRect? {
+    guard value.visible else { return nil }
+    return CGRect(
+        x: CGFloat(value.x_px / scaleFactor),
+        y: CGFloat(value.y_px / scaleFactor),
+        width: CGFloat(Double(value.width_px) / scaleFactor),
+        height: CGFloat(Double(value.height_px) / scaleFactor)
+    )
+}
+
 struct GhosttyLocalSelectionSnapshot: Equatable {
     static let inactive = GhosttyLocalSelectionSnapshot(
         cValue: ghostty_terminal_surface_selection_snapshot_s(),
@@ -130,22 +183,9 @@ struct GhosttyLocalSelectionSnapshot: Equatable {
     let isActive: Bool
 
     init(cValue: ghostty_terminal_surface_selection_snapshot_s, scaleFactor: Double) {
-        start = Self.rect(cValue.start, scaleFactor: scaleFactor)
-        end = Self.rect(cValue.end, scaleFactor: scaleFactor)
+        start = ghosttyTerminalCellFrame(cValue.start, scaleFactor: scaleFactor)
+        end = ghosttyTerminalCellFrame(cValue.end, scaleFactor: scaleFactor)
         isActive = cValue.active
-    }
-
-    private static func rect(
-        _ value: ghostty_terminal_surface_selection_rect_s,
-        scaleFactor: Double
-    ) -> CGRect? {
-        guard value.visible else { return nil }
-        return CGRect(
-            x: CGFloat(value.x_px / scaleFactor),
-            y: CGFloat(value.y_px / scaleFactor),
-            width: CGFloat(Double(value.width_px) / scaleFactor),
-            height: CGFloat(Double(value.height_px) / scaleFactor)
-        )
     }
 }
 
@@ -306,6 +346,14 @@ final class GhosttyKitControlSurface {
         var snapshot = ghostty_terminal_surface_selection_snapshot_s()
         let result = ghostty_terminal_surface_selection_snapshot(handle, &snapshot)
         return selectionOutcome(result, snapshot: snapshot, retryCommittedWake: false)
+    }
+
+    func cursorGeometry() -> CGRect? {
+        guard !invalidated else { return nil }
+        var geometry = ghostty_terminal_surface_cell_geometry_s()
+        let result = ghostty_terminal_surface_cursor_geometry(handle, &geometry)
+        guard report(result) else { return nil }
+        return ghosttyTerminalCellFrame(geometry, scaleFactor: scaleFactor)
     }
 
     func selectWord(at point: CGPoint) -> GhosttyLocalSelectionOutcome {

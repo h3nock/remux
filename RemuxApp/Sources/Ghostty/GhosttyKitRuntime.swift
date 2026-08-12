@@ -138,7 +138,14 @@ final class GhosttyKitSurfaceView: UIView {
 
 extension TerminalTheme {
     var terminalBackgroundUIColor: UIColor {
-        let hex = terminalBackgroundHex
+        terminalUIColor(hex: terminalBackgroundHex)
+    }
+
+    var terminalCompositeSeparatorUIColor: UIColor {
+        terminalUIColor(hex: terminalCompositeSeparatorHex)
+    }
+
+    private func terminalUIColor(hex: UInt32) -> UIColor {
         return UIColor(
             red: CGFloat((hex >> 16) & 0xFF) / 255,
             green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -189,6 +196,13 @@ final class GhosttyKitRuntime {
     }
 
     func measureTmuxViewport(size: CGSize, scale: CGFloat) throws -> TmuxControlViewport? {
+        try measureTmuxViewportLayout(size: size, scale: scale)?.controlViewport
+    }
+
+    func measureTmuxViewportLayout(
+        size: CGSize,
+        scale: CGFloat
+    ) throws -> GhosttyTerminalViewportMeasurement? {
         let size = GhosttyTerminalViewportCoordinator.normalized(size)
         guard size.width > 1, size.height > 1 else { return nil }
 
@@ -202,7 +216,10 @@ final class GhosttyKitRuntime {
         guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
             throw GhosttyKitRuntimeError.surfaceMeasurementFailed(result)
         }
-        return TmuxControlViewport(ghosttySurfaceSize: measured)
+        return GhosttyTerminalViewportMeasurement(
+            measuredSize: measured,
+            displayMetrics: metrics
+        )
     }
 
     #if DEBUG
@@ -333,9 +350,12 @@ private final class GhosttyKitRuntimeState {
         into config: ghostty_config_t,
         effectiveFontSize: Float32?
     ) throws {
-        guard let contents = settings.ghosttyConfigContents(
+        var contents = settings.ghosttyConfigContents(
             effectiveFontSize: effectiveFontSize
-        ) else { return }
+        ) ?? ""
+        contents += "window-padding-x = 0\n"
+        contents += "window-padding-y = 0\n"
+        contents += "window-padding-balance = false\n"
 
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("remux-ghostty-\(UUID().uuidString).conf")

@@ -181,17 +181,14 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.composerActivationToken, 0)
     }
 
-    func testComposerKeyboardToggleHidesKeyboardAndClearsOwner() {
+    func testComposerKeyboardDismissHidesKeyboardAndClearsOwner() {
         var coordinator = GhosttyTerminalInputCoordinator()
         coordinator.showSystemKeyboard(
             owner: .composer,
             isOwnerAvailable: true
         )
 
-        coordinator.toggleKeyboard(
-            owner: .composer,
-            isOwnerAvailable: true
-        )
+        coordinator.dismissKeyboard()
 
         XCTAssertEqual(coordinator.keyboardMode, .hidden)
         XCTAssertEqual(coordinator.keyboardOwner, .none)

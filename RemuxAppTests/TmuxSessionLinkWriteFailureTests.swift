@@ -65,6 +65,62 @@ final class TmuxSessionLinkWriteFailureTests: XCTestCase {
         withExtendedLifetime(runtime) {}
     }
 
+    func testExplicitStopSendsControllerWorkQueuedBeforeTeardown() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let stateRecorder = SessionStateRecorder()
+        let transport = LinkTestTransport(failWrites: false)
+        let controller = TmuxSessionController(
+            callbacks: TmuxSessionController.Callbacks(
+                onState: { state in
+                    stateRecorder.append(state)
+                }
+            )
+        )
+        let link = TmuxSessionLink(controller: controller, transport: transport)
+
+        try await link.start(viewport: .default)
+        try await waitUntil("controller did not process the initial tmux response") {
+            stateRecorder.contains(.syncing)
+        }
+        controller.requestNewWindow()
+        await link.stop()
+
+        let outbound = await transport.sentData()
+        let expected = Data("new-window\n".utf8)
+        XCTAssertTrue(
+            outbound.contains { $0.range(of: expected) != nil }
+        )
+        await withCheckedContinuation { continuation in
+            controller.shutdown { continuation.resume() }
+        }
+        withExtendedLifetime(runtime) {}
+    }
+
+    func testExplicitStopInvalidatesTransportWhenOutboundDrainStalls() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let transport = StalledLinkTestTransport()
+        let controller = TmuxSessionController(callbacks: .init())
+        let link = TmuxSessionLink(
+            controller: controller,
+            transport: transport,
+            outboundDrainTimeout: .milliseconds(30)
+        )
+
+        try await link.start(viewport: .default)
+        try await waitUntil("startup write did not begin") {
+            await transport.sendDidStart()
+        }
+
+        await link.stop()
+
+        let closeDispositions = await transport.closeDispositions()
+        XCTAssertEqual(closeDispositions, [.invalidated])
+        await withCheckedContinuation { continuation in
+            controller.shutdown { continuation.resume() }
+        }
+        withExtendedLifetime(runtime) {}
+    }
+
     func testUnexpectedReadEndInvalidatesTransportBeforeDisconnectingController() async throws {
         let runtime = try GhosttyKitRuntime()
         let stateRecorder = SessionStateRecorder()
@@ -142,6 +198,7 @@ private actor LinkTestTransport: TmuxControlTransport {
     private let continuation: AsyncThrowingStream<Data, Error>.Continuation
     private var recordedCloseDispositions: [TmuxControlTransportCloseDisposition] = []
     private var recordedSendCount = 0
+    private var recordedData: [Data] = []
 
     init(failWrites: Bool) {
         self.failWrites = failWrites
@@ -160,7 +217,7 @@ private actor LinkTestTransport: TmuxControlTransport {
     }
 
     func send(_ data: Data) async throws {
-        _ = data
+        recordedData.append(data)
         recordedSendCount += 1
         if failWrites {
             throw SendFailure.failed
@@ -180,7 +237,66 @@ private actor LinkTestTransport: TmuxControlTransport {
         recordedSendCount
     }
 
+    func sentData() -> [Data] {
+        recordedData
+    }
+
     func finishInput() {
         continuation.finish()
+    }
+}
+
+private actor StalledLinkTestTransport: TmuxControlTransport {
+    enum SendFailure: Error {
+        case closed
+    }
+
+    nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
+
+    private let inputContinuation: AsyncThrowingStream<Data, Error>.Continuation
+    private var pendingSendContinuation: CheckedContinuation<Void, Never>?
+    private var recordedCloseDispositions: [TmuxControlTransportCloseDisposition] = []
+    private var startedSend = false
+    private var closed = false
+
+    init() {
+        var capturedContinuation: AsyncThrowingStream<Data, Error>.Continuation?
+        receivedBytes = AsyncThrowingStream { continuation in
+            capturedContinuation = continuation
+        }
+        inputContinuation = capturedContinuation!
+    }
+
+    func start(initialViewport: TmuxControlViewport?) async throws {
+        _ = initialViewport
+        inputContinuation.yield(
+            Data("%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n".utf8)
+        )
+    }
+
+    func send(_ data: Data) async throws {
+        _ = data
+        guard !closed else { throw SendFailure.closed }
+        startedSend = true
+        await withCheckedContinuation { pendingSendContinuation = $0 }
+        if closed { throw SendFailure.closed }
+    }
+
+    func close(disposition: TmuxControlTransportCloseDisposition) async {
+        guard !closed else { return }
+        closed = true
+        recordedCloseDispositions.append(disposition)
+        let continuation = pendingSendContinuation
+        pendingSendContinuation = nil
+        continuation?.resume()
+        inputContinuation.finish()
+    }
+
+    func sendDidStart() -> Bool {
+        startedSend
+    }
+
+    func closeDispositions() -> [TmuxControlTransportCloseDisposition] {
+        recordedCloseDispositions
     }
 }

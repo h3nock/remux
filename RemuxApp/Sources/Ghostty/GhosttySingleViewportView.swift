@@ -2,17 +2,17 @@ import GhosttyKit
 import SwiftUI
 import UIKit
 
-/// Hosts the single terminal surface presented by Remux. Pane/window topology belongs to
-/// the picker model; it never participates in viewport layout.
-struct GhosttySingleViewportView: View {
+/// Hosts every visible pane in the active tmux window at its authoritative
+/// grid rectangle using one shared, unscaled cell metric.
+struct GhosttyCompositeViewportView: View {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
-    let onSurfaceTap: ((UUID) -> Void)?
+    let onSurfaceTap: ((UUID, Bool) -> Void)?
     let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let sendKeyEventToSurface: (GhosttySurfaceKeyEvent, UUID) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let isMouseCaptured: (UUID) -> Bool
     let submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
@@ -20,7 +20,7 @@ struct GhosttySingleViewportView: View {
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
 
     var body: some View {
-        GhosttySingleViewportRepresentable(
+        GhosttyCompositeViewportRepresentable(
             surfaceLookup: surfaceLookup,
             projection: projection,
             terminalTheme: terminalTheme,
@@ -28,7 +28,7 @@ struct GhosttySingleViewportView: View {
             onSurfaceTap: onSurfaceTap,
             onPreviewSelection: onPreviewSelection,
             onWindowSwipe: onWindowSwipe,
-            sendKeyEvent: sendKeyEvent,
+            sendKeyEventToSurface: sendKeyEventToSurface,
             onTrackpadFeedbackChange: onTrackpadFeedbackChange,
             isMouseCaptured: isMouseCaptured,
             submitMouseButton: submitMouseButton,
@@ -39,31 +39,37 @@ struct GhosttySingleViewportView: View {
     }
 }
 
-private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
+private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
-    let onSurfaceTap: ((UUID) -> Void)?
+    let onSurfaceTap: ((UUID, Bool) -> Void)?
     let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let sendKeyEventToSurface: (GhosttySurfaceKeyEvent, UUID) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let isMouseCaptured: (UUID) -> Bool
     let submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
 
-    func makeUIView(context: Context) -> GhosttySingleViewportContainerView {
-        let view = GhosttySingleViewportContainerView()
+    func makeUIView(context: Context) -> GhosttyCompositeViewportContainerView {
+        let view = GhosttyCompositeViewportContainerView()
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.updateSelectionHandleStyle(terminalTheme.terminalChromeStyle)
+        view.updateSelectionHandleStyle(
+            terminalTheme.terminalChromeStyle,
+            separatorColor: terminalTheme.terminalCompositeSeparatorUIColor
+        )
         return view
     }
 
-    func updateUIView(_ view: GhosttySingleViewportContainerView, context: Context) {
+    func updateUIView(_ view: GhosttyCompositeViewportContainerView, context: Context) {
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.updateSelectionHandleStyle(terminalTheme.terminalChromeStyle)
+        view.updateSelectionHandleStyle(
+            terminalTheme.terminalChromeStyle,
+            separatorColor: terminalTheme.terminalCompositeSeparatorUIColor
+        )
         view.update(
             projection: projection,
             surfaceLookup: surfaceLookup,
@@ -71,7 +77,7 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
             onSurfaceTap: onSurfaceTap,
             onPreviewSelection: onPreviewSelection,
             onWindowSwipe: onWindowSwipe,
-            sendKeyEvent: sendKeyEvent,
+            sendKeyEventToSurface: sendKeyEventToSurface,
             onTrackpadFeedbackChange: onTrackpadFeedbackChange,
             isMouseCaptured: isMouseCaptured,
             submitMouseButton: submitMouseButton,
@@ -81,27 +87,28 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
     }
 
     static func dismantleUIView(
-        _ view: GhosttySingleViewportContainerView,
+        _ view: GhosttyCompositeViewportContainerView,
         coordinator: ()
     ) {
         view.dismantle()
     }
 }
 
-private final class GhosttySingleViewportContainerView: UIView,
+private final class GhosttyCompositeViewportContainerView: UIView,
     UIGestureRecognizerDelegate,
     @preconcurrency UIEditMenuInteractionDelegate
 {
     private var surfaceLookup = GhosttyManagedSurfaceLookup.empty
     private var projection = GhosttyTerminalViewportPresentationProjection.empty
-    private var activeContainer: GhosttyPaneScrollContainerView?
-    private var activeSurfaceID: UUID?
+    private var containersBySurfaceID: [UUID: GhosttyPaneScrollContainerView] = [:]
+    private var focusedSeparatorColor = UIColor.clear.cgColor
+    private var separatorColor = UIColor.clear
     private var trackpadDriver: GhosttyKeyboardCursorTrackpadDriver?
 
-    private var onSurfaceTap: ((UUID) -> Void)?
+    private var onSurfaceTap: ((UUID, Bool) -> Void)?
     private var onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private var onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var sendKeyEventToSurface: ((GhosttySurfaceKeyEvent, UUID) -> Bool)?
     private var onTrackpadFeedbackChange: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
     private var isMouseCaptured: (UUID) -> Bool = { _ in false }
     private var submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
@@ -159,6 +166,7 @@ private final class GhosttySingleViewportContainerView: UIView,
     override init(frame: CGRect) {
         super.init(frame: frame)
         clipsToBounds = true
+        contentMode = .redraw
         panRecognizer.delegate = self
         surfaceTapRecognizer.require(toFail: selectionLongPressRecognizer)
         addGestureRecognizer(panRecognizer)
@@ -190,57 +198,69 @@ private final class GhosttySingleViewportContainerView: UIView,
         return handle.hitTest(convert(point, to: handle), with: event)
     }
 
-    func updateSelectionHandleStyle(_ style: GhosttyTerminalChromeStyle) {
+    func updateSelectionHandleStyle(
+        _ style: GhosttyTerminalChromeStyle,
+        separatorColor: UIColor
+    ) {
         let fillColor = UIColor(style.accent)
         let borderColor = UIColor(style.accentForeground).cgColor
+        let styleChanged = focusedSeparatorColor != fillColor.cgColor
+            || !self.separatorColor.isEqual(separatorColor)
+            || startSelectionHandle.layer.borderColor != borderColor
+        guard styleChanged else { return }
+        focusedSeparatorColor = fillColor.cgColor
+        self.separatorColor = separatorColor
         startSelectionHandle.backgroundColor = fillColor
         endSelectionHandle.backgroundColor = fillColor
         startSelectionHandle.layer.borderColor = borderColor
         endSelectionHandle.layer.borderColor = borderColor
+        setNeedsDisplay()
     }
 
     func update(
         projection: GhosttyTerminalViewportPresentationProjection,
         surfaceLookup: GhosttyManagedSurfaceLookup,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
-        onSurfaceTap: ((UUID) -> Void)?,
+        onSurfaceTap: ((UUID, Bool) -> Void)?,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?,
         onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?,
-        sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        sendKeyEventToSurface: @escaping (GhosttySurfaceKeyEvent, UUID) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
         isMouseCaptured: @escaping (UUID) -> Bool,
         submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?,
         submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?,
         submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     ) {
+        let topologyChanged = self.projection != projection
         self.projection = projection
         self.surfaceLookup = surfaceLookup
         self.trackpadDriver = trackpadDriver
         self.onSurfaceTap = onSurfaceTap
         self.onPreviewSelection = onPreviewSelection
         self.onWindowSwipe = onWindowSwipe
-        self.sendKeyEvent = sendKeyEvent
+        self.sendKeyEventToSurface = sendKeyEventToSurface
         self.onTrackpadFeedbackChange = onTrackpadFeedbackChange
         self.isMouseCaptured = isMouseCaptured
         self.submitMouseButton = submitMouseButton
         self.submitMousePosition = submitMousePosition
         self.submitMouseScroll = submitMouseScroll
 
+        if topologyChanged {
+            setNeedsDisplay()
+        }
+
         if activePanAxis == .horizontal, !projection.canNavigateWindows {
             resetActivePanState()
         }
-        let previousSurfaceID = activeSurfaceID
-        syncActiveSurface()
-        var shouldRestoreSelection = previousSurfaceID != activeSurfaceID
+        syncVisibleSurfaces()
         if localSelectionSurface != nil {
             if exactLocalSelectionSurface() == nil {
                 cancelLocalSelectionInteraction()
-                shouldRestoreSelection = true
             } else {
                 layoutSelectionHandles()
             }
         }
-        if shouldRestoreSelection {
+        if localSelectionSurface == nil {
             restoreLocalSelectionIfPresent()
         }
         flushLayoutIfPossible()
@@ -249,11 +269,10 @@ private final class GhosttySingleViewportContainerView: UIView,
     func dismantle() {
         disableInteractions()
         resetActivePanState()
-        if let container = activeContainer {
+        for container in containersBySurfaceID.values {
             retire(container: container)
         }
-        activeContainer = nil
-        activeSurfaceID = nil
+        containersBySurfaceID.removeAll()
         surfaceLookup = .empty
         projection = .empty
 
@@ -264,7 +283,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         onSurfaceTap = nil
         onPreviewSelection = nil
         onWindowSwipe = nil
-        sendKeyEvent = nil
+        sendKeyEventToSurface = nil
         onTrackpadFeedbackChange = nil
         isMouseCaptured = { _ in false }
         submitMouseButton = nil
@@ -275,68 +294,143 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        layoutActiveSurface()
+        layoutVisibleSurfaces()
         layoutSelectionHandles()
     }
 
-    private func syncActiveSurface() {
+    override func draw(_ rect: CGRect) {
+        super.draw(rect)
+
+        let visiblePanes = projection.panes.filter { $0.visibleFrame != nil }
+        guard visiblePanes.count > 1,
+              let grid = projection.windowGrid,
+              let cell = projection.cellMetrics,
+              let layout = GhosttyCompositeViewportLayout(
+                  bounds: bounds,
+                  grid: grid,
+                  cellMetrics: cell
+              ),
+              let context = UIGraphicsGetCurrentContext()
+        else { return }
+
+        let canvas = CGRect(origin: layout.origin, size: layout.canvasSize)
+        let separatorLineWidth: CGFloat = 1
+        let focusedSeparatorLineWidth: CGFloat = 2
+        let separators = GhosttyPaneSeparatorLayout.segments(
+            for: visiblePanes.compactMap { pane in
+                pane.visibleFrame.map {
+                    GhosttyPaneSeparatorLayout.Pane(id: pane.id, frame: $0)
+                }
+            }
+        )
+        let separatorPath = CGMutablePath()
+        for separator in separators {
+            addSeparator(
+                to: separatorPath,
+                frame: separator.frame(
+                    origin: layout.origin,
+                    cellSize: layout.cellSize,
+                    lineWidth: separatorLineWidth
+                ),
+                clippedTo: canvas
+            )
+        }
+
+        context.setAllowsAntialiasing(false)
+        context.setShouldAntialias(false)
+        context.setFillColor(separatorColor.cgColor)
+        context.addPath(separatorPath)
+        context.fillPath()
+
+        let focusedPaneID = visiblePanes.first(where: \.isFocused)?.id
+        let focusedPath = CGMutablePath()
+        for separator in separators {
+            guard let range = separator.focusedRange(
+                focusedPaneID: focusedPaneID,
+                paneCount: visiblePanes.count
+            ) else { continue }
+            addSeparator(
+                to: focusedPath,
+                frame: separator.frame(
+                    origin: layout.origin,
+                    cellSize: layout.cellSize,
+                    lineWidth: focusedSeparatorLineWidth,
+                    range: range
+                ),
+                clippedTo: canvas
+            )
+        }
+        context.setFillColor(focusedSeparatorColor)
+        context.addPath(focusedPath)
+        context.fillPath()
+    }
+
+    private func addSeparator(
+        to path: CGMutablePath,
+        frame: CGRect,
+        clippedTo canvas: CGRect
+    ) {
+        let clipped = frame.intersection(canvas)
+        guard !clipped.isNull, !clipped.isEmpty else { return }
+
+        let scale = effectiveScale
+        let pixelAligned = CGRect(
+            x: (clipped.minX * scale).rounded() / scale,
+            y: (clipped.minY * scale).rounded() / scale,
+            width: max((clipped.width * scale).rounded() / scale, 1 / scale),
+            height: max((clipped.height * scale).rounded() / scale, 1 / scale)
+        ).intersection(canvas)
+        guard !pixelAligned.isNull, !pixelAligned.isEmpty else { return }
+        path.addRect(pixelAligned)
+    }
+
+    private func syncVisibleSurfaces() {
         let startedAt = GhosttyRuntimeTrace.perfEnabled
             ? GhosttyRuntimeTrace.nowNanos()
             : nil
         defer {
             if let startedAt {
                 GhosttyRuntimeTrace.perf(
-                    "viewport.sync surface=\(ghosttyDiagnosticShortID(projection.surfaceID)) attached=\(activeContainer == nil ? 0 : 1) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
+                    "viewport.sync panes=\(projection.panes.count) attached=\(containersBySurfaceID.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
                 )
             }
         }
 
-        guard let desiredID = projection.surfaceID else {
-            cancelLocalSelectionInteraction()
-            retireActiveContainer()
-            return
+        let desiredIDs = Set(projection.panes.compactMap { pane in
+            pane.visibleFrame == nil ? nil : pane.id
+        })
+        let retiredSurfaceIDs = containersBySurfaceID.keys.filter {
+            !desiredIDs.contains($0)
+        }
+        for surfaceID in retiredSurfaceIDs {
+            guard let container = containersBySurfaceID.removeValue(forKey: surfaceID)
+            else { continue }
+            retire(container: container)
         }
 
-        if activeSurfaceID != desiredID {
-            cancelLocalSelectionInteraction()
-            retireActiveContainer()
+        for pane in projection.panes where pane.visibleFrame != nil {
+            guard let surface = surfaceLookup.managedSurface(for: pane.id) else {
+                if let container = containersBySurfaceID.removeValue(forKey: pane.id) {
+                    retire(container: container)
+                }
+                continue
+            }
+            let container = containersBySurfaceID[pane.id] ?? GhosttyPaneScrollContainerView()
+            containersBySurfaceID[pane.id] = container
+            container.backgroundColor = .clear
+            _ = container.update(
+                surface: surface,
+                displayScale: effectiveScale,
+                submitRouteForwardedMouseScroll: submitMouseScroll,
+                submitRouteForwardedMousePosition: submitMousePosition
+            )
+            if container.superview !== self {
+                container.removeFromSuperview()
+                addSubview(container)
+            }
         }
-        guard let surface = surfaceLookup.managedSurface(for: desiredID) else {
-            retireActiveContainer()
-            return
-        }
-
-        let container = activeContainer ?? GhosttyPaneScrollContainerView()
-        activeContainer = container
-        activeSurfaceID = desiredID
-        container.backgroundColor = .clear
-        let changed = container.update(
-            surface: surface,
-            displayScale: effectiveScale,
-            submitRouteForwardedMouseScroll: submitMouseScroll,
-            submitRouteForwardedMousePosition: submitMousePosition
-        )
-        if container.superview !== self {
-            container.removeFromSuperview()
-            addSubview(container)
-            bringSubviewToFront(startSelectionHandle)
-            bringSubviewToFront(endSelectionHandle)
-        }
-        if changed {
-            container.layoutIfNeeded()
-        }
-    }
-
-    private func retireActiveContainer() {
-        guard let container = activeContainer else {
-            activeContainer?.removeFromSuperview()
-            activeContainer = nil
-            activeSurfaceID = nil
-            return
-        }
-        retire(container: container)
-        activeContainer = nil
-        activeSurfaceID = nil
+        bringSubviewToFront(startSelectionHandle)
+        bringSubviewToFront(endSelectionHandle)
     }
 
     private func retire(container: GhosttyPaneScrollContainerView) {
@@ -344,40 +438,31 @@ private final class GhosttySingleViewportContainerView: UIView,
         container.removeFromSuperview()
     }
 
-    private func layoutActiveSurface() {
-        guard let surfaceID = activeSurfaceID,
-              let container = activeContainer,
-              let surface = surfaceLookup.managedSurface(for: surfaceID)
-        else { return }
-
+    private func layoutVisibleSurfaces() {
         let startedAt = GhosttyRuntimeTrace.perfEnabled
             ? GhosttyRuntimeTrace.nowNanos()
             : nil
-        let targetFrame = bounds.integral
-        let changedFrame = container.frame != targetFrame
-        if changedFrame {
+        guard let grid = projection.windowGrid,
+              let cell = projection.cellMetrics,
+              let layout = GhosttyCompositeViewportLayout(
+                  bounds: bounds,
+                  grid: grid,
+                  cellMetrics: cell
+              )
+        else { return }
+        var changed = false
+        for pane in projection.panes {
+            guard let visibleFrame = pane.visibleFrame,
+                  let container = containersBySurfaceID[pane.id]
+            else { continue }
+            let targetFrame = layout.frame(for: visibleFrame)
+            guard container.frame != targetFrame else { continue }
             container.frame = targetFrame
+            changed = true
         }
-        let changedContainer = container.update(
-            surface: surface,
-            displayScale: effectiveScale,
-            submitRouteForwardedMouseScroll: submitMouseScroll,
-            submitRouteForwardedMousePosition: submitMousePosition
-        )
-        if changedFrame || changedContainer {
-            container.layoutIfNeeded()
-        }
-        GhosttyRuntimeTrace.flowEndIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "presentation.reveal.ready",
-            fields: [
-                "surface_uuid": surface.id.uuidString,
-                "wall_ns": "\(GhosttyRuntimeTrace.wallNanos())",
-            ]
-        )
         if let startedAt {
             GhosttyRuntimeTrace.perf(
-                "viewport.layout bounds=\(ghosttyDiagnosticRect(bounds)) changed=\(changedFrame || changedContainer) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
+                "viewport.layout bounds=\(ghosttyDiagnosticRect(bounds)) panes=\(containersBySurfaceID.count) changed=\(changed) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
             )
         }
     }
@@ -387,7 +472,7 @@ private final class GhosttySingleViewportContainerView: UIView,
             setNeedsLayout()
             return
         }
-        layoutActiveSurface()
+        layoutVisibleSurfaces()
     }
 
     @objc
@@ -410,9 +495,9 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     private func beginTerminalLongPress(_ recognizer: UILongPressGestureRecognizer) {
         guard let driver = trackpadDriver,
-              let surfaceID = projection.surfaceID,
-              let surface = surfaceLookup.managedSurface(for: surfaceID),
-              surface.view.isDescendant(of: self)
+              let (_, surface, _) = visibleSurface(
+                  at: recognizer.location(in: self)
+              )
         else { return }
 
         cancelLocalSelectionInteraction()
@@ -427,7 +512,7 @@ private final class GhosttySingleViewportContainerView: UIView,
             at: recognizer.location(in: surface.view),
             sendKeyEvent: { [weak self] event in
                 guard self?.exactLocalSelectionSurface() != nil else { return false }
-                return self?.sendKeyEvent?(event) == true
+                return self?.sendKeyEventToSurface?(event, surface.id) == true
             },
             onFeedbackChange: { [weak self] state in
                 self?.onTrackpadFeedbackChange?(state)
@@ -502,8 +587,9 @@ private final class GhosttySingleViewportContainerView: UIView,
     @objc
     private func handleSurfaceTap(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended,
-              let surfaceID = projection.surfaceID,
-              let surface = surfaceLookup.managedSurface(for: surfaceID)
+              let (surfaceID, surface, container) = visibleSurface(
+                  at: recognizer.location(in: self)
+              )
         else { return }
 
         if selectionSnapshot.isActive,
@@ -513,8 +599,18 @@ private final class GhosttySingleViewportContainerView: UIView,
             return
         }
 
+        let visiblePaneCount = projection.panes.lazy.filter {
+            $0.visibleFrame != nil
+        }.count
+        let shouldShowKeyboard = visiblePaneCount == 1
+            || projection.focusedSurfaceID == surfaceID
+        if !shouldShowKeyboard {
+            onSurfaceTap?(surfaceID, false)
+            return
+        }
+
         let mouseCaptured = isMouseCaptured(surfaceID)
-        if activeContainer?.consumeMomentumCatchTap() == true {
+        if container.consumeMomentumCatchTap() == true {
             return
         }
         for action in GhosttySurfaceTapGesture.actions(
@@ -523,7 +619,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         ) {
             switch action {
             case .activateInput:
-                onSurfaceTap?(surfaceID)
+                onSurfaceTap?(surfaceID, true)
             case .mousePosition(let position):
                 _ = submitMousePosition?(surfaceID, position, [])
             case .mouseButton(let event):
@@ -541,8 +637,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
         defer { resetActivePanStateIfEnded(phase) }
 
-        guard let surfaceID = projection.surfaceID,
-              surfaceLookup.managedSurface(for: surfaceID) != nil
+        guard visibleSurface(at: recognizer.location(in: self)) != nil
         else { return }
 
         if longPressOriginalPoint != nil {
@@ -598,8 +693,10 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     private func projectedLocalSelectionSurface() -> GhosttyManagedSurface? {
         guard let recordedSurface = localSelectionSurface,
-              projection.surfaceID == recordedSurface.id,
-              activeSurfaceID == recordedSurface.id,
+              projection.panes.contains(where: {
+                  $0.id == recordedSurface.id && $0.visibleFrame != nil
+              }),
+              containersBySurfaceID[recordedSurface.id] != nil,
               surfaceLookup.managedSurface(for: recordedSurface.id) === recordedSurface,
               recordedSurface.view.isDescendant(of: self)
         else { return nil }
@@ -634,7 +731,8 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     private func restoreLocalSelectionIfPresent() {
         guard localSelectionSurface == nil,
-              let surfaceID = activeSurfaceID,
+              let surfaceID = projection.focusedSurfaceID,
+              containersBySurfaceID[surfaceID] != nil,
               let surface = surfaceLookup.managedSurface(for: surfaceID),
               surface.view.isDescendant(of: self),
               case .snapshot(let snapshot) = surface.controlSurface.selectionSnapshot(),
@@ -783,6 +881,20 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     private var effectiveScale: CGFloat {
         max(window?.screen.scale ?? UIScreen.main.scale, 1)
+    }
+
+    private func visibleSurface(
+        at point: CGPoint
+    ) -> (UUID, GhosttyManagedSurface, GhosttyPaneScrollContainerView)? {
+        for pane in projection.panes.reversed() where pane.visibleFrame != nil {
+            guard let container = containersBySurfaceID[pane.id],
+                  container.frame.contains(point),
+                  let surface = surfaceLookup.managedSurface(for: pane.id),
+                  surface.rendererIsAvailable
+            else { continue }
+            return (pane.id, surface, container)
+        }
+        return nil
     }
 
     func editMenuInteraction(

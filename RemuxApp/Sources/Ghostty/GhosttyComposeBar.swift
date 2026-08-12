@@ -49,7 +49,7 @@ private struct GhosttyComposerInputLayout: Layout {
     let isDictationActive: Bool
     let horizontalSpacing: CGFloat
     let verticalSpacing: CGFloat
-    let expandedContentInset: CGFloat
+    let editingContentInset: CGFloat
 
     func sizeThatFits(
         proposal: ProposedViewSize,
@@ -65,8 +65,10 @@ private struct GhosttyComposerInputLayout: Layout {
             )
         }
 
-        let metrics = metrics(width: width, subviews: subviews)
-        return CGSize(width: width, height: metrics.height)
+        return CGSize(
+            width: width,
+            height: metrics(width: width, subviews: subviews).height
+        )
     }
 
     func placeSubviews(
@@ -78,15 +80,15 @@ private struct GhosttyComposerInputLayout: Layout {
         guard subviews.count == 4 else { return }
         let metrics = metrics(width: bounds.width, subviews: subviews)
 
-        if metrics.isExpanded {
+        if !isDictationActive {
             subviews[1].place(
                 at: CGPoint(
-                    x: bounds.minX + expandedContentInset,
-                    y: bounds.minY + expandedContentInset
+                    x: bounds.minX + editingContentInset,
+                    y: bounds.minY + editingContentInset
                 ),
                 anchor: .topLeading,
                 proposal: ProposedViewSize(
-                    width: max(0, bounds.width - (expandedContentInset * 2)),
+                    width: max(0, bounds.width - (editingContentInset * 2)),
                     height: metrics.center.height
                 )
             )
@@ -113,9 +115,13 @@ private struct GhosttyComposerInputLayout: Layout {
 
         var x = bounds.minX
         for (index, size) in metrics.compactSizes.enumerated() {
+            let centersDictationContent = isDictationActive && index == 1
             subviews[index].place(
-                at: CGPoint(x: x, y: bounds.maxY),
-                anchor: .bottomLeading,
+                at: CGPoint(
+                    x: x,
+                    y: centersDictationContent ? bounds.midY : bounds.maxY
+                ),
+                anchor: centersDictationContent ? .leading : .bottomLeading,
                 proposal: ProposedViewSize(size)
             )
             x += size.width + horizontalSpacing
@@ -126,22 +132,19 @@ private struct GhosttyComposerInputLayout: Layout {
         let leading = subviews[0].sizeThatFits(.unspecified)
         let dictation = subviews[2].sizeThatFits(.unspecified)
         let send = subviews[3].sizeThatFits(.unspecified)
-        let compactCenterWidth = max(
-            0,
-            width - leading.width - dictation.width - send.width - (horizontalSpacing * 3)
-        )
-        let compactCenter = subviews[1].sizeThatFits(
-            ProposedViewSize(width: compactCenterWidth, height: nil)
-        )
         let controlsHeight = max(leading.height, max(dictation.height, send.height))
-        let isExpanded = !isDictationActive && compactCenter.height > controlsHeight
-        let expandedCenterWidth = max(0, width - (expandedContentInset * 2))
-        let center = isExpanded
-            ? subviews[1].sizeThatFits(ProposedViewSize(width: expandedCenterWidth, height: nil))
-            : compactCenter
-        let height = isExpanded
-            ? expandedContentInset + center.height + verticalSpacing + controlsHeight
-            : max(controlsHeight, center.height)
+        let centerWidth = isDictationActive
+            ? max(
+                0,
+                width - leading.width - dictation.width - send.width - (horizontalSpacing * 3)
+            )
+            : max(0, width - (editingContentInset * 2))
+        let center = subviews[1].sizeThatFits(
+            ProposedViewSize(width: centerWidth, height: nil)
+        )
+        let height = isDictationActive
+            ? max(controlsHeight, center.height)
+            : editingContentInset + center.height + verticalSpacing + controlsHeight
 
         return Metrics(
             leading: leading,
@@ -149,7 +152,6 @@ private struct GhosttyComposerInputLayout: Layout {
             dictation: dictation,
             send: send,
             compactSizes: [leading, center, dictation, send],
-            isExpanded: isExpanded,
             height: height
         )
     }
@@ -160,13 +162,16 @@ private struct GhosttyComposerInputLayout: Layout {
         let dictation: CGSize
         let send: CGSize
         let compactSizes: [CGSize]
-        let isExpanded: Bool
         let height: CGFloat
     }
 }
 
 struct GhosttyComposeBar: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
+    @AppStorage("terminal.composer.keyboardDismissHintShown")
+    private var hasShownKeyboardDismissHint = false
+    @State private var isShowingKeyboardDismissHint = false
+    @State private var hasCommittedKeyboardDismissDrag = false
 
     // The bar observes the composer directly so draft keystrokes and
     // dictation updates re-render only this subtree, not the terminal
@@ -175,10 +180,14 @@ struct GhosttyComposeBar: View {
     let isTerminalInputAvailable: Bool
 
     let wantsKeyboardFocus: Bool
+    let isSoftwareKeyboardVisible: Bool
+    let isKeyboardDismissalActive: Bool
     let keyboardActivationToken: Int
     let keyboardResponderHandoff: GhosttyKeyboardResponderHandoff
     let onKeyboardFocusRequest: () -> Void
     let onKeyboardResponderAttached: () -> Void
+    let onDismissKeyboard: () -> Void
+    let onClose: () -> Void
     let onChoosePhotos: () -> Void
     let onChooseFiles: () -> Void
     let onOpenAttachment: (GhosttyPendingAttachment.ID) -> Void
@@ -225,12 +234,16 @@ struct GhosttyComposeBar: View {
         )
     }
 
+    private var showsAttachments: Bool {
+        !dictationPhase.isActive && !attachments.isEmpty
+    }
+
     var body: some View {
 #if DEBUG
         let _ = GhosttySurfaceScreenPerfProbe.recordBarEval()
 #endif
-        VStack(spacing: attachments.isEmpty ? 0 : 6) {
-            if !attachments.isEmpty {
+        VStack(spacing: showsAttachments ? 6 : 0) {
+            if showsAttachments {
                 GhosttyComposerAttachmentStrip(
                     attachments: attachments,
                     isEnabled: submissionState.allowsComposerInput,
@@ -249,11 +262,37 @@ struct GhosttyComposeBar: View {
 
             composerRow
         }
+        .padding(.top, dictationPhase.isActive ? 0 : 12)
         .padding(.vertical, 4)
         .padding(.horizontal, 3)
         .frame(minHeight: GhosttyKeyboardChromeSizing.baselineHeight)
         .frame(maxWidth: .infinity)
         .ghosttyComposerSurface()
+        .animation(
+            GhosttyKeyboardChromeAnimation.composerTransition,
+            value: dictationPhase.isActive
+        )
+        .overlay(alignment: .top) {
+            if showsKeyboardDismissAffordance {
+                keyboardDismissAffordance
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.animation(.easeOut(duration: 0.12)),
+                            removal: .opacity.animation(.easeOut(duration: 0.08))
+                        )
+                    )
+            }
+        }
+        .onChange(of: showsKeyboardDismissAffordance, initial: true) { _, isVisible in
+            guard isVisible else {
+                isShowingKeyboardDismissHint = false
+                hasCommittedKeyboardDismissDrag = false
+                return
+            }
+            guard !hasShownKeyboardDismissHint else { return }
+            isShowingKeyboardDismissHint = true
+            hasShownKeyboardDismissHint = true
+        }
         .overlay {
             Color.clear
                 .accessibilityElement()
@@ -272,14 +311,20 @@ struct GhosttyComposeBar: View {
         .accessibilityIdentifier("terminal.composer")
     }
 
+    private var showsKeyboardDismissAffordance: Bool {
+        isSoftwareKeyboardVisible
+            && !isKeyboardDismissalActive
+            && !dictationPhase.isActive
+    }
+
     private var composerRow: some View {
         GhosttyComposerInputLayout(
             isDictationActive: dictationPhase.isActive,
             horizontalSpacing: 2,
             verticalSpacing: 2,
-            expandedContentInset: 8
+            editingContentInset: 8
         ) {
-            leadingControl
+            leadingControls
 
             composerTextRegion
 
@@ -292,6 +337,52 @@ struct GhosttyComposeBar: View {
                 action: onSend
             )
         }
+    }
+
+    private var keyboardDismissAffordance: some View {
+        ZStack {
+            Color.clear
+
+            VStack(spacing: 3) {
+                Capsule()
+                    .fill(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                    .frame(width: 34, height: 5)
+
+                if isShowingKeyboardDismissHint && !dictationPhase.isActive {
+                    Text("Drag down to hide keyboard")
+                        .font(.caption2)
+                        .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                        .transition(.opacity)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+        .contentShape(Rectangle())
+        .highPriorityGesture(keyboardDismissGesture)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Keyboard")
+        .accessibilityHint("Drag down to hide the keyboard.")
+        .accessibilityIdentifier("terminal.composer.keyboard-dismiss")
+        .accessibilityAction(named: Text("Hide Keyboard")) {
+            onDismissKeyboard()
+        }
+    }
+
+    private var keyboardDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard showsKeyboardDismissAffordance,
+                      !hasCommittedKeyboardDismissDrag else { return }
+                let downwardDistance = value.translation.height
+                guard downwardDistance >= 10,
+                      downwardDistance > abs(value.translation.width) else { return }
+                hasCommittedKeyboardDismissDrag = true
+                onDismissKeyboard()
+            }
+            .onEnded { _ in
+                hasCommittedKeyboardDismissDrag = false
+            }
     }
 
     private var composerTextRegion: some View {
@@ -346,7 +437,7 @@ struct GhosttyComposeBar: View {
     }
 
     @ViewBuilder
-    private var leadingControl: some View {
+    private var leadingControls: some View {
         if dictationPhase.isActive {
             dictationModeButton(
                 systemName: "xmark",
@@ -355,7 +446,10 @@ struct GhosttyComposeBar: View {
                 action: onCancelDictation
             )
         } else {
-            attachmentMenu
+            HStack(spacing: 2) {
+                attachmentMenu
+                closeButton
+            }
         }
     }
 
@@ -448,7 +542,7 @@ struct GhosttyComposeBar: View {
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -457,6 +551,25 @@ struct GhosttyComposeBar: View {
         .opacity(submissionState.allowsComposerInput ? 1 : 0.38)
         .accessibilityLabel("Add attachment")
         .accessibilityIdentifier("terminal.composer.attachments")
+    }
+
+    private var closeButton: some View {
+        Button {
+            Haptic.chromeControlPress()
+            onClose()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 17, weight: .medium))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(GhosttyComposerPressButtonStyle())
+        .disabled(!submissionState.allowsComposerInput)
+        .opacity(submissionState.allowsComposerInput ? 1 : 0.38)
+        .accessibilityLabel("Close composer")
+        .accessibilityHint("Return to direct terminal input while preserving the draft.")
+        .accessibilityIdentifier("terminal.composer.toggle")
     }
 
     private var dictationButton: some View {
@@ -523,8 +636,37 @@ private struct GhosttyComposerPressButtonStyle: ButtonStyle {
                             : Color.clear
                     )
             }
-            .contentShape(Circle())
+            .contentShape(Rectangle())
             .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+}
+
+struct GhosttyComposerDictationMeterSizing {
+    static let height: CGFloat = 32
+    static let barWidth: CGFloat = 2.5
+    static let barSpacing: CGFloat = 2
+    static let maximumWidth: CGFloat = 220
+    static let targetWidthFraction: CGFloat = 0.86
+    static let minimumSideInset: CGFloat = 12
+    static let maximumBarCount = Int(
+        (maximumWidth + barSpacing) / (barWidth + barSpacing)
+    )
+
+    static func visibleBarCount(
+        availableWidth: CGFloat,
+        sampleCount: Int
+    ) -> Int {
+        guard sampleCount > 0 else { return 0 }
+
+        let proportionalWidth = availableWidth * targetWidthFraction
+        let insetWidth = availableWidth - (minimumSideInset * 2)
+        let targetWidth = min(maximumWidth, min(proportionalWidth, insetWidth))
+        guard targetWidth >= barWidth else { return 0 }
+
+        let fittingCount = Int(
+            floor((targetWidth + barSpacing) / (barWidth + barSpacing))
+        )
+        return min(sampleCount, fittingCount)
     }
 }
 
@@ -532,18 +674,31 @@ private struct GhosttyComposerDictationMeter: View {
     @ObservedObject var model: GhosttyComposerAudioLevelModel
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(model.levels.indices, id: \.self) { index in
-                Capsule()
-                    .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
-                    .frame(
-                        width: 2.5,
-                        height: max(4, 6 + (model.levels[index] * 24))
-                    )
+        GeometryReader { geometry in
+            let visibleBarCount = GhosttyComposerDictationMeterSizing.visibleBarCount(
+                availableWidth: geometry.size.width,
+                sampleCount: model.levels.count
+            )
+            let firstVisibleIndex = model.levels.count - visibleBarCount
+
+            HStack(spacing: GhosttyComposerDictationMeterSizing.barSpacing) {
+                ForEach(0..<visibleBarCount, id: \.self) { offset in
+                    Capsule()
+                        .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
+                        .frame(
+                            width: GhosttyComposerDictationMeterSizing.barWidth,
+                            height: max(
+                                4,
+                                6 + (model.levels[firstVisibleIndex + offset] * 24)
+                            )
+                        )
+                }
             }
+            .frame(height: geometry.size.height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 32)
+        .frame(height: GhosttyComposerDictationMeterSizing.height)
         .clipped()
         .accessibilityLabel("Recording audio")
         .accessibilityIdentifier("terminal.composer.dictation.meter")
@@ -665,7 +820,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         )
         let lineHeight = textView.font?.lineHeight ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
         let verticalInsets = textView.textContainerInset.top + textView.textContainerInset.bottom
-        let maximumHeight = ceil((lineHeight * 5) + verticalInsets)
+        let maximumHeight = ceil((lineHeight * 6) + verticalInsets)
         let resolvedHeight = min(max(measuredHeight, 36), maximumHeight)
         textView.isScrollEnabled = measuredHeight > maximumHeight
         return CGSize(width: width, height: resolvedHeight)

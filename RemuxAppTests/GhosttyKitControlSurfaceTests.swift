@@ -129,59 +129,17 @@ final class GhosttyKitControlSurfaceTests: XCTestCase {
         )
     }
 
-    func testDisplayUpdateTrackerSuppressesUnchangedMetrics() {
-        var tracker = GhosttySurfaceDisplayUpdateTracker()
-        let size = CGSize(width: 390, height: 641)
-
-        XCTAssertEqual(
-            tracker.nextMetrics(size: size, scale: 3),
-            GhosttySurfaceDisplayMetrics(
-                contentScale: 3,
-                pixelWidth: 1170,
-                pixelHeight: 1923
-            )
-        )
-        XCTAssertNil(tracker.nextMetrics(size: size, scale: 3))
-    }
-
-    func testDisplayUpdateTrackerEmitsWhenRoundedPixelSizeChanges() {
-        var tracker = GhosttySurfaceDisplayUpdateTracker()
-
-        XCTAssertNotNil(tracker.nextMetrics(size: CGSize(width: 390, height: 641), scale: 3))
-        XCTAssertNil(tracker.nextMetrics(size: CGSize(width: 390, height: 641), scale: 3))
-        XCTAssertEqual(
-            tracker.nextMetrics(size: CGSize(width: 390, height: 640.5), scale: 3),
-            GhosttySurfaceDisplayMetrics(
-                contentScale: 3,
-                pixelWidth: 1170,
-                pixelHeight: 1922
-            )
-        )
-    }
-
-    func testDisplayUpdateTrackerResetAllowsSameMetricsAgain() {
-        var tracker = GhosttySurfaceDisplayUpdateTracker()
-        let size = CGSize(width: 390, height: 641)
-
-        XCTAssertNotNil(tracker.nextMetrics(size: size, scale: 3))
-        XCTAssertNil(tracker.nextMetrics(size: size, scale: 3))
-
-        tracker.reset()
-
-        XCTAssertNotNil(tracker.nextMetrics(size: size, scale: 3))
-    }
-
     func testSelectionSnapshotConvertsBackingPixelsWithoutSwappingEndpointRoles() {
         let snapshot = GhosttyLocalSelectionSnapshot(
             cValue: ghostty_terminal_surface_selection_snapshot_s(
-                start: ghostty_terminal_surface_selection_rect_s(
+                start: ghostty_terminal_surface_cell_geometry_s(
                     x_px: 180,
                     y_px: 30,
                     width_px: 24,
                     height_px: 60,
                     visible: true
                 ),
-                end: ghostty_terminal_surface_selection_rect_s(
+                end: ghostty_terminal_surface_cell_geometry_s(
                     x_px: 60,
                     y_px: 90,
                     width_px: 24,
@@ -202,14 +160,14 @@ final class GhosttyKitControlSurfaceTests: XCTestCase {
     func testSelectionSnapshotOmitsInvisibleEndpointGeometry() {
         let snapshot = GhosttyLocalSelectionSnapshot(
             cValue: ghostty_terminal_surface_selection_snapshot_s(
-                start: ghostty_terminal_surface_selection_rect_s(
+                start: ghostty_terminal_surface_cell_geometry_s(
                     x_px: 30,
                     y_px: 60,
                     width_px: 24,
                     height_px: 60,
                     visible: true
                 ),
-                end: ghostty_terminal_surface_selection_rect_s(
+                end: ghostty_terminal_surface_cell_geometry_s(
                     x_px: 0,
                     y_px: 0,
                     width_px: 0,

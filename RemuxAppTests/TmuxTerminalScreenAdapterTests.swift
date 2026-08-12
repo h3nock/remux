@@ -27,6 +27,38 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertNil(registry.windowID(for: UUID()))
     }
 
+    func testPendingPaneFocusWinsUntilTmuxConfirmsIt() {
+        let activePaneIDs: Set<TmuxPaneID> = [10, 11]
+
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.resolvedFocusedPaneID(
+                server: 10,
+                pending: 11,
+                activePaneIDs: activePaneIDs
+            ),
+            11
+        )
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.resolvedFocusedPaneID(
+                server: 11,
+                pending: nil,
+                activePaneIDs: activePaneIDs
+            ),
+            11
+        )
+    }
+
+    func testPendingPaneFocusCannotEscapeTheActiveWindow() {
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.resolvedFocusedPaneID(
+                server: 10,
+                pending: 99,
+                activePaneIDs: [10, 11]
+            ),
+            10
+        )
+    }
+
     private func makeSession(runtime: GhosttyKitRuntime) -> TmuxTerminalSession {
         TmuxTerminalSession(
             app: runtime.appHandleForTesting,
@@ -61,17 +93,304 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
     private func pane(
         id: TmuxPaneID,
-        windowID: TmuxWindowID
+        windowID: TmuxWindowID,
+        x: UInt32 = 0,
+        y: UInt32 = 0,
+        width: UInt32 = 80,
+        height: UInt32 = 24
     ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
             windowID: windowID,
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 24,
+            x: x,
+            y: y,
+            width: width,
+            height: height,
             phase: .live
         )
+    }
+
+    private func topology(
+        windowID: TmuxWindowID = 1,
+        zoomed: Bool,
+        activePaneID: TmuxPaneID? = 10,
+        paneCount: Int
+    ) -> TmuxSessionController.TopologySnapshot {
+        TmuxSessionController.TopologySnapshot(
+            sessionName: "zoom-default-test",
+            windows: [window(
+                id: windowID,
+                active: true,
+                paneID: activePaneID,
+                zoomed: zoomed
+            )],
+            panes: (0..<paneCount).map { offset in
+                pane(
+                    id: TmuxPaneID(UInt64(10 + offset)),
+                    windowID: windowID,
+                    x: UInt32(offset * 40),
+                    width: UInt32(paneCount == 1 ? 80 : 39)
+                )
+            },
+            activeWindowID: windowID
+        )
+    }
+
+    func testMultipaneZoomDefaultTargetsAnUnzoomedWindowOnlyOnce() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+        let topology = topology(zoomed: false, paneCount: 2)
+
+        XCTAssertEqual(policy.windowIDsNeedingChange(in: topology), [1])
+        XCTAssertEqual(policy.windowIDsNeedingChange(in: topology), [])
+    }
+
+    func testMultipaneZoomDefaultUnzoomsAnAlreadyZoomedWindowWhenDisabled() {
+        var policy = TmuxMultipaneZoomDefaultPolicy()
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: true, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testMultipaneZoomDefaultDoesNotToggleAMatchingWindow() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: true, paneCount: 2)),
+            []
+        )
+    }
+
+    func testChangingGlobalDefaultResetsAResolvedWindow() {
+        var policy = TmuxMultipaneZoomDefaultPolicy()
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            []
+        )
+        XCTAssertTrue(policy.setEnabled(true))
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testGlobalResetForwardsLatestIntentAgainstStaleMatchingTopology() {
+        var policy = TmuxMultipaneZoomDefaultPolicy()
+        let staleUnzoomedTopology = topology(zoomed: false, paneCount: 2)
+
+        XCTAssertTrue(policy.setEnabled(true))
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(
+                in: staleUnzoomedTopology,
+                includingMatchingWindows: true
+            ),
+            [1]
+        )
+
+        XCTAssertTrue(policy.setEnabled(false))
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(
+                in: staleUnzoomedTopology,
+                includingMatchingWindows: true
+            ),
+            [1]
+        )
+    }
+
+    func testGlobalChangeDoesNotSubmitAnAlreadyMatchingWindow() {
+        var policy = TmuxMultipaneZoomDefaultPolicy()
+        let topology = topology(zoomed: true, paneCount: 2)
+
+        XCTAssertTrue(policy.setEnabled(true))
+        XCTAssertEqual(policy.windowIDsNeedingChange(in: topology), [])
+        XCTAssertEqual(policy.windowIDsNeedingChange(in: topology), [])
+    }
+
+    func testMultipaneZoomDefaultWaitsUntilASinglePaneWindowBecomesMultipane() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 1)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testMultipaneZoomDefaultReappliesAfterReturningToOnePane() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 1)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testReturningToOnePaneEndsThePerWindowChoice() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+        policy.recordWindowChoice(1)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 1)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testMultipaneZoomDefaultWaitsForAnAuthoritativeActivePane() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(
+                in: topology(zoomed: false, activePaneID: nil, paneCount: 2)
+            ),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testPerWindowResolutionLastsUntilGlobalDefaultChanges() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+        policy.recordWindowChoice(1)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            []
+        )
+        XCTAssertTrue(policy.setEnabled(false))
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: true, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testNormalMultipaneViewportProjectsEveryTmuxPaneRectangle() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _, _ in },
+            viewportStabilityHandler: { _ in }
+        )
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "split-test",
+            windows: [
+                TmuxSessionController.WindowInfo(
+                    id: 1,
+                    name: "split",
+                    active: true,
+                    zoomed: false,
+                    width: 80,
+                    height: 24,
+                    activePaneID: 11
+                )
+            ],
+            panes: [
+                pane(id: 10, windowID: 1, width: 39),
+                pane(id: 11, windowID: 1, x: 40, width: 40)
+            ],
+            activeWindowID: 1
+        ))
+
+        let viewport = adapter.terminalScreenPresentationProjection.viewport
+        XCTAssertEqual(viewport.windowGrid, .init(columns: 80, rows: 24))
+        XCTAssertFalse(viewport.isServerZoomed)
+        XCTAssertEqual(viewport.panes.count, 2)
+        XCTAssertEqual(
+            viewport.panes.map(\.normalFrame),
+            [
+                .init(x: 0, y: 0, columns: 39, rows: 24),
+                .init(x: 40, y: 0, columns: 40, rows: 24),
+            ]
+        )
+        XCTAssertEqual(viewport.panes.map(\.visibleFrame), viewport.panes.map(\.normalFrame))
+        XCTAssertEqual(viewport.panes.map(\.isFocused), [false, true])
+
+        await session.shutdown()
+    }
+
+    func testServerZoomProjectsOnlyActivePaneAcrossFullWindow() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _, _ in },
+            viewportStabilityHandler: { _ in }
+        )
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "zoom-test",
+            windows: [
+                TmuxSessionController.WindowInfo(
+                    id: 1,
+                    name: "zoomed",
+                    active: true,
+                    zoomed: true,
+                    width: 80,
+                    height: 24,
+                    activePaneID: 11
+                )
+            ],
+            panes: [
+                pane(id: 10, windowID: 1, width: 39),
+                pane(id: 11, windowID: 1, x: 40, width: 40)
+            ],
+            activeWindowID: 1
+        ))
+
+        let viewport = adapter.terminalScreenPresentationProjection.viewport
+        XCTAssertTrue(viewport.isServerZoomed)
+        XCTAssertEqual(viewport.panes[0].visibleFrame, nil)
+        XCTAssertEqual(
+            viewport.panes[1].visibleFrame,
+            .init(x: 0, y: 0, columns: 80, rows: 24)
+        )
+        XCTAssertEqual(
+            viewport.panes[1].normalFrame,
+            .init(x: 40, y: 0, columns: 40, rows: 24)
+        )
+
+        let windowID = try XCTUnwrap(
+            adapter.windowSelectionSheetRenderProjection().selectedWindowID
+        )
+        let panePicker = adapter.paneSelectionSheetRenderProjection(topLevelID: windowID)
+        XCTAssertTrue(panePicker.isServerZoomed)
+        XCTAssertEqual(panePicker.windowGrid, .init(columns: 80, rows: 24))
+        XCTAssertEqual(
+            panePicker.panes.compactMap(\.frame),
+            [
+                .init(x: 0, y: 0, columns: 39, rows: 24),
+                .init(x: 40, y: 0, columns: 40, rows: 24),
+            ],
+            "the picker must keep canonical unzoomed geometry while the viewport is zoomed"
+        )
+
+        await session.shutdown()
     }
 
     func testWindowProjectionReflectsEmittedTopologyImmediately() async throws {
@@ -80,8 +399,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -130,8 +448,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -183,8 +500,14 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
         XCTAssertEqual(cache.store(preview(first), for: 1), [])
         XCTAssertEqual(cache.store(preview(second), for: 2), [])
-        XCTAssertNotNil(cache.preview(for: 1), "reading pane 1 must refresh its LRU age")
-        XCTAssertEqual(cache.store(preview(third), for: 3), [2])
+        XCTAssertNotNil(
+            cache.preview(for: 1),
+            "reading pane 1 must refresh its LRU age"
+        )
+        XCTAssertEqual(
+            cache.store(preview(third), for: 3),
+            [2]
+        )
         XCTAssertNotNil(cache.preview(for: 1))
         XCTAssertNil(cache.preview(for: 2))
         XCTAssertNotNil(cache.preview(for: 3))
@@ -237,6 +560,18 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         }
         XCTAssertEqual(provenance.columns, 80)
         XCTAssertEqual(provenance.rows, 24)
+    }
+
+    func testPanePreviewCacheReplacesThePreviousImageForAPane() throws {
+        let first = try makeImage(width: 4, height: 4)
+        let replacement = try makeImage(width: 3, height: 3)
+        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
+
+        cache.store(preview(first), for: 1)
+        cache.store(preview(replacement), for: 1)
+
+        XCTAssertTrue(cache.preview(for: 1)?.image === replacement)
+        XCTAssertEqual(cache.entries.count, 1)
     }
 
     private func makeImage(width: Int, height: Int) throws -> CGImage {

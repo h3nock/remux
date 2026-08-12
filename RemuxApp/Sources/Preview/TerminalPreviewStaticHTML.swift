@@ -364,7 +364,7 @@ private actor TerminalPreviewStaticHTMLTransport {
     }
 
     private let entryURL: URL
-    private let entryMetadata: RemuxSFTPFileMetadata
+    private var entryMetadata: RemuxSFTPFileMetadata?
     private let readLease: TerminalPreviewStaticHTMLReadLease
     private var operations: [ObjectIdentifier: Operation] = [:]
     private var closed = false
@@ -391,7 +391,13 @@ private actor TerminalPreviewStaticHTMLTransport {
         }
         guard !sink.isStopped else { return }
         let readLease = readLease
-        let knownMetadata = url == entryURL ? entryMetadata : nil
+        let knownMetadata: RemuxSFTPFileMetadata?
+        if url == entryURL {
+            knownMetadata = entryMetadata
+            entryMetadata = nil
+        } else {
+            knownMetadata = nil
+        }
         let token = UUID()
         let task = Task {
             do {
@@ -526,9 +532,13 @@ private final class TerminalPreviewStaticHTMLSchemeTaskSink: @unchecked Sendable
 
 struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
     let resource: TerminalPreviewStaticHTMLResource
+    let reloadGeneration: UInt
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(resource: resource)
+        Coordinator(
+            resource: resource,
+            reloadGeneration: reloadGeneration
+        )
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -541,7 +551,14 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        reloadTerminalPreviewWebView(
+            webView,
+            ifRequested: reloadGeneration,
+            lastGeneration: &context.coordinator.reloadGeneration,
+            fallbackURL: resource.entryURL
+        )
+    }
 
     static func makeWebView(
         schemeHandler: TerminalPreviewStaticHTMLSchemeHandler
@@ -553,6 +570,7 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
             forURLScheme: TerminalPreviewStaticHTMLResource.scheme
         )
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
@@ -562,14 +580,17 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let schemeHandler: TerminalPreviewStaticHTMLSchemeHandler
         private let policy: TerminalPreviewWebLinkPolicy
+        fileprivate var reloadGeneration: UInt
 
         init(
             resource: TerminalPreviewStaticHTMLResource,
+            reloadGeneration: UInt = 0,
             openExternalURL: @escaping @MainActor (URL) -> Void = {
                 UIApplication.shared.open($0)
             }
         ) {
             self.schemeHandler = resource.makeSchemeHandler()
+            self.reloadGeneration = reloadGeneration
             self.policy = TerminalPreviewWebLinkPolicy(
                 allowsNavigation: { url in
                     url.scheme == TerminalPreviewStaticHTMLResource.scheme

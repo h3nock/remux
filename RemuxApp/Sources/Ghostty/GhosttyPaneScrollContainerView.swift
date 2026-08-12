@@ -87,6 +87,7 @@ enum GhosttyPaneScrollGeometry {
 final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let scrollView = UIScrollView()
     private let contentView = UIView()
+    private let rendererRecoveryImageView = UIImageView()
 
     /// The viewport borrows the one retained pane surface it currently shows.
     /// `TmuxTerminalSession` owns that surface independently of UIKit attachment.
@@ -177,6 +178,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             )
             haltPhysicsScroll()
             self.surface?.onScrollStateChange = nil
+            self.surface?.onRendererRecoveryChange = nil
             resetViewportScrollInteractionState()
             self.surface = surface
 
@@ -189,11 +191,16 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
                 guard let self, self.surface === surface else { return }
                 self.synchronizeFromSurface()
             }
+            surface.onRendererRecoveryChange = { [weak self, weak surface] in
+                guard let self, self.surface === surface else { return }
+                self.synchronizeRendererRecovery()
+            }
             needsLayout = true
         }
         surface.view.isHidden = false
         surface.view.alpha = 1
         surface.view.layer.opacity = 1
+        synchronizeRendererRecovery()
 
         needsLayout = synchronizeRoute() || needsLayout
         if needsLayout {
@@ -206,16 +213,17 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         super.layoutSubviews()
         scrollView.frame = bounds
         physicsScrollView.frame = bounds
+        rendererRecoveryImageView.frame = bounds
         physicsScrollView.synchronizeVirtualContent()
         recenterPhysicsScrollIfIdle()
         synchronizeFromSurface()
-        synchronizeSurfaceFrame()
     }
 
     func detachSurfaceIfNeeded(_ surface: GhosttyManagedSurface) {
         guard self.surface === surface else { return }
         haltPhysicsScroll()
         surface.onScrollStateChange = nil
+        surface.onRendererRecoveryChange = nil
         self.surface = nil
         submitRouteForwardedMouseScroll = nil
         submitRouteForwardedMousePosition = nil
@@ -331,6 +339,30 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         // touches on the container while driving the scroll view's
         // native deceleration.
         addGestureRecognizer(physicsScrollView.panGestureRecognizer)
+
+        rendererRecoveryImageView.backgroundColor = .clear
+        rendererRecoveryImageView.contentMode = .scaleToFill
+        rendererRecoveryImageView.isUserInteractionEnabled = false
+        rendererRecoveryImageView.isHidden = true
+        addSubview(rendererRecoveryImageView)
+    }
+
+    private func synchronizeRendererRecovery() {
+        guard let surface else {
+            rendererRecoveryImageView.image = nil
+            rendererRecoveryImageView.isHidden = true
+            isUserInteractionEnabled = true
+            return
+        }
+        rendererRecoveryImageView.image = surface.rendererRecoverySnapshot.map {
+            UIImage(cgImage: $0, scale: displayScale, orientation: .up)
+        }
+        rendererRecoveryImageView.backgroundColor = surface.rendererRecoverySnapshot == nil
+            && !surface.rendererIsAvailable
+            ? surface.view.backgroundColor
+            : .clear
+        rendererRecoveryImageView.isHidden = surface.rendererIsAvailable
+        isUserInteractionEnabled = surface.rendererIsAvailable
     }
 
     @discardableResult
@@ -385,34 +417,6 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             lastSentViewportScrollPosition = GhosttyPaneScrollGeometry.position(for: surface.scrollState)
             pinSurfaceToVisibleBounds()
         }
-    }
-
-    private func synchronizeSurfaceFrame() {
-        guard let surface else { return }
-        guard let viewportSize = GhosttyPaneScrollGeometry.displayViewportSize(for: bounds) else {
-            GhosttyRuntimeTrace.tmuxViewport(
-                "scroll.surfaceFrame skipped_unsized surface=\(ghosttyDiagnosticShortID(surface.id)) bounds=\(ghosttyDiagnosticRect(bounds)) before=\(ghosttyDiagnosticSurfaceSize(surface.controlSurface.currentSize()))"
-            )
-            return
-        }
-
-        pinSurfaceToVisibleBounds(surface: surface, viewportSize: viewportSize)
-        GhosttyRuntimeTrace.tmuxViewport(
-            "scroll.surfaceFrame begin surface=\(ghosttyDiagnosticShortID(surface.id)) viewport=\(Int(viewportSize.width))x\(Int(viewportSize.height)) offset=\(scrollView.contentOffset.x),\(scrollView.contentOffset.y) scale=\(displayScale) before=\(ghosttyDiagnosticSurfaceSize(surface.controlSurface.currentSize()))"
-        )
-        GhosttyRuntimeTrace.diagnostics(
-            "scroll.surfaceFrame surface=\(ghosttyDiagnosticShortID(surface.id)) viewport=\(viewportSize.width)x\(viewportSize.height) offset=\(scrollView.contentOffset.x),\(scrollView.contentOffset.y) scale=\(displayScale) before={\(surface.diagnosticSummary())}"
-        )
-        let didUpdateDisplay = surface.updateDisplay(size: viewportSize, scale: displayScale)
-        if didUpdateDisplay {
-            surface.view.alignGhosttyRendererSublayers()
-        }
-        GhosttyRuntimeTrace.tmuxViewport(
-            "scroll.surfaceFrame end surface=\(ghosttyDiagnosticShortID(surface.id)) didUpdateDisplay=\(didUpdateDisplay) after=\(ghosttyDiagnosticSurfaceSize(surface.controlSurface.currentSize()))"
-        )
-        GhosttyRuntimeTrace.diagnostics(
-            "scroll.surfaceFrame applied surface={\(surface.diagnosticSummary())}"
-        )
     }
 
     private func pinSurfaceToVisibleBounds() {

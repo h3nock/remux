@@ -61,12 +61,20 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer opened without keyboard"))
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        let compactComposerFrame = composer.frame
-        XCTAssertLessThanOrEqual(compactComposerFrame.height, 60)
+        let editingComposerFrame = composer.frame
+        let editingTerminalFrame = app.otherElements["terminal.screen"].frame
+        guard let editingContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
         XCTAssertGreaterThan(
-            compactComposerFrame.width,
-            app.otherElements["terminal.screen"].frame.width * 0.55,
-            "The compact composer must fill the middle dock slot."
+            editingComposerFrame.height,
+            60,
+            "The editor and controls must use distinct rows even for an empty draft."
+        )
+        XCTAssertGreaterThan(
+            editingComposerFrame.width,
+            app.otherElements["terminal.screen"].frame.width * 0.9,
+            "The composer must use the full bottom-chrome width."
         )
         let placeholder = app.staticTexts["terminal.composer.placeholder"]
         XCTAssertTrue(placeholder.exists)
@@ -78,32 +86,35 @@ final class RemuxAppUITests: XCTestCase {
         let cancel = app.buttons["terminal.composer.dictation.cancel"]
         let stop = app.buttons["terminal.composer.dictation.stop"]
         let meter = app.descendants(matching: .any)["terminal.composer.dictation.meter"]
+        let keyboardDismiss = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
         XCTAssertFalse(placeholder.exists)
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation started with keyboard hidden"))
+        XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-recording")
-        XCTAssertEqual(composer.frame.height, compactComposerFrame.height, accuracy: 1)
+        XCTAssertLessThan(
+            composer.frame.height,
+            editingComposerFrame.height,
+            "Active dictation must collapse the same composer surface into a compact row."
+        )
         XCTAssertEqual(
             composer.frame.width,
-            compactComposerFrame.width,
+            editingComposerFrame.width,
             accuracy: 1,
             "Dictation must not shrink the composer."
         )
-
-        composerToggle.tap()
-        XCTAssertFalse(composer.waitForExistence(timeout: 1))
-        openHomeFromTerminal()
-        let activeSession = activeSessionRows.firstMatch
-        XCTAssertTrue(activeSession.waitForExistence(timeout: 3))
-        activeSession.tap()
-        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
-        XCTAssertTrue(composerToggle.waitForExistence(timeout: 3))
-        composerToggle.tap()
-        XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        XCTAssertTrue(stop.waitForExistence(timeout: 3))
-        XCTAssertTrue(meter.waitForExistence(timeout: 3))
+        XCTAssertEqual(
+            app.otherElements["terminal.screen"].frame,
+            editingTerminalFrame,
+            "Transient dictation must not resize the terminal surface."
+        )
+        guard let recordingContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertEqual(recordingContinuity.effectiveViewport, editingContinuity.effectiveViewport)
+        XCTAssertEqual(recordingContinuity.bottomChrome, editingContinuity.bottomChrome)
 
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         stop.tap()
@@ -111,6 +122,8 @@ final class RemuxAppUITests: XCTestCase {
         let status = app.staticTexts["terminal.composer.dictation.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 1))
         XCTAssertEqual(status.label, "Transcribing…")
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "transcribing kept keyboard hidden"))
+        XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-transcribing")
 
         let field = app.textViews["terminal.composer.field"]
@@ -121,8 +134,8 @@ final class RemuxAppUITests: XCTestCase {
 
         field.tap()
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer field focused"))
-        field.typeText(" Keep this draft")
         let visibleKeyboardFrame = app.keyboards.firstMatch.frame
+        field.typeText(" Keep this draft")
         guard let originalDraft = field.value as? String else {
             XCTFail("Composer field did not expose its edited draft")
             return
@@ -130,8 +143,9 @@ final class RemuxAppUITests: XCTestCase {
         mic.tap()
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         XCTAssertFalse(placeholder.exists)
-        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation started with keyboard visible"))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertFalse(keyboardDismiss.exists, "Transient dictation states must not show the keyboard drag affordance.")
         attachScreenshot(named: "composer-dictation-recording-keyboard-visible")
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         cancel.tap()
@@ -140,20 +154,34 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(field.value as? String, originalDraft)
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation cancelled with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertTrue(keyboardDismiss.waitForExistence(timeout: 3))
         attachScreenshot(named: "composer-dictation-cancelled")
 
         mic.tap()
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
-        XCTAssertNotNil(waitForKeyboardPresence(true, label: "second dictation started with keyboard visible"))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "second dictation kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertFalse(keyboardDismiss.exists)
         stop.tap()
 
+        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertEqual(status.label, "Transcribing…")
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "transcribing kept keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertTrue(keyboardDismiss.waitForExistence(timeout: 3))
+
+        composerToggle.tap()
+        XCTAssertFalse(
+            composer.waitForExistence(timeout: 1),
+            "Close must dismiss the composer when terminal keyboard handoff is unavailable."
+        )
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer close fallback"))
     }
 
-    func testComposerDictationKeepsMiddleDockWidth() {
+    func testComposerDictationKeepsFullChromeWidth() {
         app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = "Width stability"
         launchSimulatorApp()
         openConnectionSetup()
@@ -163,17 +191,26 @@ final class RemuxAppUITests: XCTestCase {
 
         let terminal = app.otherElements["terminal.screen"]
         XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+
         let composerToggle = app.buttons["terminal.composer.toggle"]
         XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
-        composerToggle.tap()
+        // Exercise the allocated button cell outside the inscribed circular
+        // feedback. The full cell must remain interactive even though only
+        // the circle is rendered when the control is pressed.
+        composerToggle
+            .coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            .withOffset(CGVector(dx: 2, dy: 2))
+            .tap()
 
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        let compactWidth = composer.frame.width
+        let keyboardToggle = app.buttons["terminal.keyboard"]
+        XCTAssertFalse(keyboardToggle.exists, "Composer mode must not expose a keyboard button.")
+        let composerWidth = composer.frame.width
         XCTAssertGreaterThan(
-            compactWidth,
-            terminal.frame.width * 0.55,
-            "The compact composer must fill the middle dock slot."
+            composerWidth,
+            terminal.frame.width * 0.9,
+            "The composer must use the full bottom-chrome width."
         )
 
         let mic = app.buttons["terminal.composer.mic"]
@@ -186,7 +223,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
         XCTAssertEqual(
             composer.frame.width,
-            compactWidth,
+            composerWidth,
             accuracy: 1,
             "Dictation must not shrink the composer."
         )
@@ -194,7 +231,7 @@ final class RemuxAppUITests: XCTestCase {
 
         cancel.tap()
         XCTAssertTrue(mic.waitForExistence(timeout: 3))
-        XCTAssertEqual(composer.frame.width, compactWidth, accuracy: 1)
+        XCTAssertEqual(composer.frame.width, composerWidth, accuracy: 1)
     }
 
     func testComposerDictationCanRestartAfterNoSpeech() {
@@ -231,7 +268,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["No speech detected. Try again."].exists)
     }
 
-    func testComposerToggleKeepsOpenKeyboardAndTerminalViewportStable() {
+    func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
         app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
         launchSimulatorApp()
         openConnectionSetup()
@@ -261,7 +298,8 @@ final class RemuxAppUITests: XCTestCase {
         guard let hiddenOpenContinuity = waitForKeyboardContinuity(owner: "none") else {
             return
         }
-        XCTAssertEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+        XCTAssertNotEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+        XCTAssertNotEqual(hiddenOpenContinuity.bottomChrome, hiddenContinuity.bottomChrome)
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
@@ -286,15 +324,16 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard after terminal handoff"))
         guard let composerContinuity = waitForKeyboardContinuity(owner: "composer") else {
             return
         }
         XCTAssertEqual(composerContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
-        XCTAssertEqual(
+        XCTAssertNotEqual(
             composerContinuity.effectiveViewport,
             initialContinuity.effectiveViewport,
-            "Opening the composer changed the terminal viewport "
+            "Opening the composer must reserve its full height from the terminal viewport "
                 + "from live=\(initialContinuity.liveViewport), effective=\(initialContinuity.effectiveViewport) "
                 + "to live=\(composerContinuity.liveViewport), effective=\(composerContinuity.effectiveViewport); "
                 + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome), "
@@ -306,6 +345,13 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        XCTAssertNotNil(
+            waitForKeyboardPresence(
+                true,
+                label: "terminal keyboard after composer close",
+                stableFor: 0.75
+            )
+        )
         guard let terminalContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
@@ -317,22 +363,74 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard after reopen"))
         guard let reopenedContinuity = waitForKeyboardContinuity(owner: "composer") else {
             return
         }
         XCTAssertEqual(reopenedContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(composerField.value as? String, "Keep this draft")
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
-        XCTAssertEqual(reopenedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+        XCTAssertEqual(reopenedContinuity.effectiveViewport, composerContinuity.effectiveViewport)
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        XCTAssertNotNil(
+            waitForKeyboardPresence(
+                true,
+                label: "terminal keyboard after second composer close",
+                stableFor: 0.75
+            )
+        )
         guard let reclosedContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
         XCTAssertEqual(reclosedContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
         XCTAssertEqual(reclosedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+    }
+
+    func testComposerHandleDismissesAndEditorRestoresKeyboard() {
+        app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
+        app.launchArguments += ["-terminal.composer.keyboardDismissHintShown", "NO"]
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        hideKeyboardIfPresent()
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard before handle drag"))
+        guard let visibleContinuity = waitForKeyboardContinuity(owner: "composer") else {
+            return
+        }
+
+        let handle = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
+        attachScreenshot(named: "composer-keyboard-dismiss-hint")
+        let dragStart = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let dragEnd = dragStart.withOffset(CGVector(dx: 0, dy: 14))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragEnd)
+
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer keyboard after handle drag"))
+        XCTAssertTrue(field.exists, "Dismissing the keyboard must keep the composer open.")
+        guard let hiddenContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertGreaterThan(hiddenContinuity.willHideCount, visibleContinuity.willHideCount)
+        attachScreenshot(named: "composer-keyboard-dismissed")
+
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard after editor retap"))
+        XCTAssertNotNil(waitForKeyboardContinuity(owner: "composer"))
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
     }
 
     func testComposerMultilineKeepsWidthAndKeyboardStable() {
@@ -361,7 +459,7 @@ final class RemuxAppUITests: XCTestCase {
             waitForSoftwareKeyboardOnScreen(timeout: 3),
             "Composer Send continuity must be exercised with the software keyboard visibly on screen."
         )
-        let compactTextWidth = composerField.frame.width
+        let initialTextWidth = composerField.frame.width
 
         let initialText = "Explain why this composer keeps its width"
         composerField.typeText(initialText)
@@ -373,7 +471,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertGreaterThan(
             composerWidthBeforeWrapping,
             terminal.frame.width * 0.55,
-            "The composer must fill the middle dock slot rather than shrink-wrap its content."
+            "The composer must fill the bottom chrome rather than shrink-wrap its content."
         )
         composerField.typeText(
             " and explain why the composer keeps the same width while its text wraps across multiple lines"
@@ -387,20 +485,25 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertGreaterThan(
             composerField.frame.width,
             composerBounds.frame.width * 0.88,
-            "Expanded text must use the composer width instead of staying between the controls."
+            "The editor must use the composer width instead of sitting between controls."
         )
-        XCTAssertGreaterThan(
+        XCTAssertEqual(
             composerField.frame.width,
-            compactTextWidth,
-            "The text region must widen when it moves above the control row."
+            initialTextWidth,
+            accuracy: 1,
+            "The editor must keep its full width as text wraps."
         )
 
         let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let closeButton = app.buttons["terminal.composer.toggle"]
         let micButton = app.buttons["terminal.composer.mic"]
         let sendButton = app.buttons["terminal.composer.send"]
         XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
+        XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
         XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
         XCTAssertEqual(micButton.frame.midY, sendButton.frame.midY, accuracy: 1)
+        XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, closeButton.frame.minX)
+        XCTAssertLessThan(closeButton.frame.maxX, micButton.frame.minX)
         attachScreenshot(named: "composer-multiline-width-stable")
 
         let keyboard = app.keyboards.firstMatch
@@ -466,6 +569,16 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings.theme.preview"].waitForExistence(timeout: 2))
         app.buttons["Mocha"].tap()
         XCTAssertTrue(app.staticTexts["Catppuccin Mocha"].waitForExistence(timeout: 2))
+    }
+
+    func testFreshPhoneInstallShowsMultipaneZoomDefaultEnabled() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let zoom = app.switches["settings.zoom-multipane-windows-by-default"]
+        XCTAssertTrue(zoom.waitForExistence(timeout: 2))
+        XCTAssertEqual(zoom.value as? String, "1")
     }
 
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
@@ -563,6 +676,145 @@ final class RemuxAppUITests: XCTestCase {
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
 
+    func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
+        let primarySessionName = try generatedLiveLatencySessionName("switcher-primary")
+        let availableSessionName = try generatedLiveLatencySessionName("switcher-available")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(availableSessionName)
+            cleanupGeneratedLiveLatencySessionIfPossible(primarySessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(
+            traceRuntime: true,
+            sessionNameOverride: primarySessionName
+        )
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+
+        sendTerminalCommand("tmux new-session -d -s \(availableSessionName)")
+        hideKeyboardIfPresent()
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+
+        openSessionSwitcherFromTerminal()
+
+        let sessionSheet = app.otherElements["terminal.sessions.sheet"]
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 5))
+        let closeButton = app.buttons["terminal.sessions.close"]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 5))
+        let mediumTop = closeButton.frame.minY
+        attachScreenshot(named: "live-session-switcher-medium")
+
+        let refreshButton = app.buttons["terminal.sessions.refresh"]
+        XCTAssertTrue(refreshButton.waitForExistence(timeout: 5))
+        for _ in 0..<20 where !refreshButton.isEnabled {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(refreshButton.isEnabled)
+        refreshButton.tap()
+
+        let inlineAvailableRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.available-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+            .firstMatch
+        let availableBrowser = app.buttons["terminal.sessions.available-browser"]
+        let sessionList = app.descendants(matching: .any)["terminal.sessions.list"]
+        let discoveryDeadline = Date().addingTimeInterval(15)
+        while !inlineAvailableRow.exists,
+              !availableBrowser.exists,
+              Date() < discoveryDeadline {
+            if sessionList.exists {
+                sessionList.swipeUp()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(
+            inlineAvailableRow.exists || availableBrowser.exists,
+            "Discovered remote tmux sessions should be reachable under Available."
+        )
+        XCTAssertTrue(app.staticTexts["Available"].exists)
+        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
+
+        if closeButton.frame.minY >= mediumTop - 100 {
+            sessionSheet.swipeUp()
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        }
+        XCTAssertLessThan(
+            closeButton.frame.minY,
+            mediumTop - 100,
+            "Dragging upward should expand the session sheet before scrolling its list."
+        )
+        attachScreenshot(named: "live-session-switcher-active-and-available-large")
+
+        let availableRow: XCUIElement
+        if availableBrowser.exists {
+            for _ in 0..<8 where !availableBrowser.isHittable {
+                sessionList.swipeUp()
+            }
+            XCTAssertTrue(availableBrowser.isHittable)
+            availableBrowser.tap()
+
+            let browserView = app.descendants(matching: .any)[
+                "terminal.sessions.available-browser-view"
+            ]
+            XCTAssertTrue(browserView.waitForExistence(timeout: 5))
+            let searchField = app.searchFields.firstMatch
+            XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+            XCTAssertLessThan(
+                searchField.frame.minY,
+                mediumTop - 100,
+                "The Available browser should present at the large detent."
+            )
+            searchField.tap()
+            searchField.typeText(availableSessionName)
+            availableRow = app.descendants(matching: .any)
+                .matching(identifier: "terminal.sessions.available-result")
+                .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+                .firstMatch
+            attachScreenshot(named: "live-session-switcher-available-search")
+        } else {
+            availableRow = inlineAvailableRow
+            for _ in 0..<8 where !availableRow.exists || !availableRow.isHittable {
+                sessionList.swipeUp()
+            }
+        }
+        XCTAssertTrue(
+            availableRow.waitForExistence(timeout: 10) && availableRow.isHittable,
+            "The specifically generated tmux session should be reachable under Available."
+        )
+        availableRow.tap()
+        XCTAssertFalse(
+            app.otherElements["terminal.sessions.sheet"].waitForExistence(timeout: 1)
+        )
+        waitForLiveTerminalReady(timeout: 60)
+
+        openSessionSwitcherFromTerminal()
+        let availableActiveRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+            .firstMatch
+        XCTAssertTrue(
+            availableActiveRow.waitForExistence(timeout: 10),
+            "The discovered session should move to Active after resuming."
+        )
+
+        let primaryRecentRow = disconnectActiveSessionFromSwitcher(named: primarySessionName)
+        primaryRecentRow.tap()
+        XCTAssertFalse(
+            app.otherElements["terminal.sessions.sheet"].waitForExistence(timeout: 1)
+        )
+        waitForLiveTerminalReady(timeout: 60)
+
+        openSessionSwitcherFromTerminal()
+        let resumedActiveRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", primarySessionName))
+            .firstMatch
+        XCTAssertTrue(resumedActiveRow.waitForExistence(timeout: 10))
+        XCTAssertFalse(primaryRecentRow.exists)
+        attachScreenshot(named: "live-session-switcher-discovered-and-recent-resumed")
+        app.buttons["terminal.sessions.close"].tap()
+    }
+
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("keyboard")
         defer {
@@ -649,16 +901,12 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        let firstPaneTile = app.buttons["terminal.pane.tile.1"]
-        XCTAssertTrue(firstPaneTile.waitForExistence(timeout: 10))
-        let secondPaneTile = app.buttons["terminal.pane.tile.2"]
-        XCTAssertTrue(secondPaneTile.waitForExistence(timeout: 10))
-        XCTAssertTrue(
-            secondPaneTile.label.hasPrefix("Pane 2 of 2"),
-            "The live agent TUI profiling fixture must contain exactly two panes; got \(secondPaneTile.label)."
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        let paneTiles = panePickerTiles()
+        let firstPaneTile = paneTiles[0]
+        let secondPaneTile = paneTiles[1]
         assertPreviewTilesContainRenderedImages(
-            tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
+            tiles: paneTiles,
             attachmentName: "agent-tui-pane-previews"
         )
         let firstPaneIsActive = firstPaneTile.label.hasSuffix(", active")
@@ -668,29 +916,25 @@ final class RemuxAppUITests: XCTestCase {
             secondPaneIsActive,
             "Exactly one profiling pane must be active."
         )
-        var targetIndex = firstPaneIsActive ? 2 : 1
+        var targetIndex = firstPaneIsActive ? 1 : 0
         dismissTopSheetIfPresent()
 
         for _ in 0..<switchCount {
             openPanesSheet()
-            tapPickerButton(
-                identifier: "terminal.pane.tile.\(targetIndex)",
-                fallbackLabel: "Pane \(targetIndex) of 2"
-            )
+            XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+            panePickerTiles()[targetIndex].tap()
             RunLoop.current.run(until: Date().addingTimeInterval(0.35))
-            targetIndex = targetIndex == 1 ? 2 : 1
+            targetIndex = targetIndex == 0 ? 1 : 0
         }
 
         // Both panes have now been presented at the real app viewport. The
         // inactive tile must come from its last full-viewport live capture,
         // not the cold split-geometry fallback.
         openPanesSheet()
-        assertPreviewTileUsesFullViewportWidth(
-            tileIdentifier: "terminal.pane.tile.1"
-        )
-        assertPreviewTileUsesFullViewportWidth(
-            tileIdentifier: "terminal.pane.tile.2"
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        for tile in panePickerTiles() {
+            assertPreviewTileUsesFullViewportWidth(tile: tile)
+        }
         dismissTopSheetIfPresent()
 
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
@@ -704,12 +948,10 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
-        for paneIndex in 1...2 {
+        for paneIndex in 0..<2 {
             openPanesSheet()
-            tapPickerButton(
-                identifier: "terminal.pane.tile.\(paneIndex)",
-                fallbackLabel: "Pane \(paneIndex) of 2"
-            )
+            XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+            panePickerTiles()[paneIndex].tap()
             waitForLiveTerminalReady(timeout: 30)
         }
 
@@ -728,8 +970,10 @@ final class RemuxAppUITests: XCTestCase {
         activeSession.tap()
         waitForLiveTerminalReady(timeout: 30)
         openPanesSheet()
-        assertPreviewTileUsesFullViewportWidth(tileIdentifier: "terminal.pane.tile.1")
-        assertPreviewTileUsesFullViewportWidth(tileIdentifier: "terminal.pane.tile.2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        for tile in panePickerTiles() {
+            assertPreviewTileUsesFullViewportWidth(tile: tile)
+        }
     }
 
     /// Deliberately synthetic scrollback/throughput stress. This proves lossless
@@ -808,10 +1052,9 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
         assertPreviewTilesContainRenderedImages(
-            tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
+            tiles: panePickerTiles(),
             attachmentName: "pane-previews"
         )
         dismissTopSheetIfPresent()
@@ -828,7 +1071,10 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["terminal.window.tile.1"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["terminal.window.tile.2"].waitForExistence(timeout: 10))
         assertPreviewTilesContainRenderedImages(
-            tileIdentifiers: ["terminal.window.tile.1", "terminal.window.tile.2"],
+            tiles: [
+                app.buttons["terminal.window.tile.1"],
+                app.buttons["terminal.window.tile.2"],
+            ],
             attachmentName: "window-previews"
         )
     }
@@ -1061,26 +1307,26 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        tapPickerButton(identifier: "terminal.pane.tile.1", fallbackLabel: "Pane 1 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[0].tap()
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.tile.2", fallbackLabel: "Pane 2 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[1].tap()
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        removePickerItem(
-            tileIdentifier: "terminal.pane.tile.2",
-            actionIdentifier: "terminal.pane.remove.2",
-            actionLabel: "Remove Pane 2",
-            confirmIdentifier: "terminal.pane.remove.confirm.2",
-            confirmLabel: "Remove Pane 2"
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        let removedPaneIdentifier = panePickerTiles()[1].identifier
+        removePanePickerItem(app.buttons[removedPaneIdentifier])
+        XCTAssertTrue(
+            waitForElementToDisappear(app.buttons[removedPaneIdentifier], timeout: 10),
+            "The requested pane should disappear from the picker."
         )
         XCTAssertTrue(
-            waitForElementToDisappear(app.buttons["terminal.pane.tile.2"], timeout: 10),
-            "Pane 2 should disappear after removal."
+            waitForPanePickerTileCount(1, timeout: 10),
+            "The removed pane should disappear from the picker."
         )
         dismissTopSheetIfPresent()
         waitForLiveTerminalReady(timeout: 30)
@@ -1295,24 +1541,15 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertFalse(
-            app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 1),
-            "A fresh generated live session should start with one pane."
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(1, timeout: 10))
 
         tapPickerButton(identifier: "terminal.pane.stack", fallbackLabel: "Stack")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        XCTAssertFalse(
-            app.buttons["terminal.pane.tile.3"].waitForExistence(timeout: 2),
-            "Stack should create exactly one additional pane."
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
 
-        tapPickerButton(identifier: "terminal.pane.tile.2", fallbackLabel: "Pane 2 of 2")
+        panePickerTiles()[1].tap()
         waitForLiveTerminalReady(timeout: 30)
         sendTerminalCommand("printf '\(marker)\\n'")
         hideKeyboardIfPresent()
@@ -1462,14 +1699,10 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        let pane4 = waitForHittablePickerButton(
-            identifier: "terminal.pane.tile.4",
-            fallbackLabel: "Pane 4 of 4",
-            timeout: 20
-        )
-        XCTAssertNotNil(pane4, "Pane 4 in Window 10 should be reachable in the mixed dense topology.")
+        XCTAssertTrue(waitForPanePickerTileCount(4, timeout: 20))
+        let pane4 = panePickerTiles()[3]
 
-        pane4?.tap()
+        pane4.tap()
         waitForLiveTerminalReady(timeout: 30)
         sendTerminalCommand("printf '\(marker)\\n'")
         hideKeyboardIfPresent()
@@ -1501,9 +1734,8 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        tapPickerButton(identifier: "terminal.pane.tile.1", fallbackLabel: "Pane 1 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[0].tap()
         waitForLiveTerminalReady(timeout: 30)
 
         sendTerminalCommand("echo REMUX_FOREGROUND_BEFORE")
@@ -1512,23 +1744,22 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        tapPickerButton(identifier: "terminal.pane.tile.2", fallbackLabel: "Pane 2 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[1].tap()
         waitForLiveTerminalReady(timeout: 30)
         sendTerminalCommand("echo REMUX_FOREGROUND_AFTER")
 
         openPanesSheet()
-        removePickerItem(
-            tileIdentifier: "terminal.pane.tile.2",
-            actionIdentifier: "terminal.pane.remove.2",
-            actionLabel: "Remove Pane 2",
-            confirmIdentifier: "terminal.pane.remove.confirm.2",
-            confirmLabel: "Remove Pane 2"
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        let removedPaneIdentifier = panePickerTiles()[1].identifier
+        removePanePickerItem(app.buttons[removedPaneIdentifier])
+        XCTAssertTrue(
+            waitForElementToDisappear(app.buttons[removedPaneIdentifier], timeout: 10),
+            "The requested pane should disappear after foreground restoration."
         )
         XCTAssertTrue(
-            waitForElementToDisappear(app.buttons["terminal.pane.tile.2"], timeout: 10),
-            "Pane 2 should disappear after post-foreground removal."
+            waitForPanePickerTileCount(1, timeout: 10),
+            "The removed pane should disappear after foreground restoration."
         )
         dismissTopSheetIfPresent()
         waitForLiveTerminalReady(timeout: 30)
@@ -1692,13 +1923,14 @@ final class RemuxAppUITests: XCTestCase {
         ))
         fflush(stdout)
 
-        let back = app.buttons["terminal.preview.back"].firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        let close = app.buttons["terminal.preview.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        XCTAssertEqual(close.label, "Close Preview")
         let previewCloseStarted = ProcessInfo.processInfo.systemUptime
-        back.tap()
+        close.tap()
         XCTAssertTrue(
-            waitForElementToDisappear(back, timeout: 5),
-            "Back should return directly to the retained terminal."
+            waitForElementToDisappear(close, timeout: 5),
+            "Close should return directly to the retained terminal."
         )
         print(String(
             format: "REMUX_PREVIEW_CLOSE_MS %.1f",
@@ -1730,15 +1962,15 @@ final class RemuxAppUITests: XCTestCase {
         print("REMUX_PREVIEW_RAPID_DISMISS_BEGIN")
         fflush(stdout)
         rapidPreview.tap()
-        let rapidBack = app.buttons["terminal.preview.back"].firstMatch
+        let rapidClose = app.buttons["terminal.preview.close"].firstMatch
         XCTAssertTrue(
-            rapidBack.waitForExistence(timeout: 2),
+            rapidClose.waitForExistence(timeout: 2),
             "Preview chrome should appear immediately while the file is loading."
         )
-        rapidBack.tap()
+        rapidClose.tap()
         XCTAssertTrue(
-            waitForElementToDisappear(rapidBack, timeout: 5),
-            "Immediate Back should return to the retained terminal."
+            waitForElementToDisappear(rapidClose, timeout: 5),
+            "Immediate Close should return to the retained terminal."
         )
         waitForLiveTerminalInputReady(timeout: 10)
         XCTAssertTrue(
@@ -1798,6 +2030,22 @@ final class RemuxAppUITests: XCTestCase {
                 ) != nil else {
                     return
                 }
+                if scenario.name == "static-html-relative-assets"
+                    || scenario.name == "live-localhost" {
+                    let firstLoad = app.staticTexts["Reload count 1"].firstMatch
+                    XCTAssertTrue(
+                        firstLoad.waitForExistence(timeout: 10),
+                        "\(scenario.token) should execute its first page load."
+                    )
+                    let refresh = app.buttons["terminal.preview.refresh"].firstMatch
+                    XCTAssertTrue(refresh.waitForExistence(timeout: 5))
+                    refresh.tap()
+                    XCTAssertTrue(
+                        app.staticTexts["Reload count 2"].firstMatch
+                            .waitForExistence(timeout: 10),
+                        "Refresh should reload \(scenario.token) in the existing web view."
+                    )
+                }
             } else {
                 XCTAssertTrue(
                     scenarioFailure.exists,
@@ -1806,10 +2054,10 @@ final class RemuxAppUITests: XCTestCase {
                 XCTAssertFalse(scenarioContent.exists)
             }
 
-            let scenarioBack = app.buttons["terminal.preview.back"].firstMatch
-            XCTAssertTrue(scenarioBack.waitForExistence(timeout: 5))
-            scenarioBack.tap()
-            XCTAssertTrue(waitForElementToDisappear(scenarioBack, timeout: 5))
+            let scenarioClose = app.buttons["terminal.preview.close"].firstMatch
+            XCTAssertTrue(scenarioClose.waitForExistence(timeout: 5))
+            scenarioClose.tap()
+            XCTAssertTrue(waitForElementToDisappear(scenarioClose, timeout: 5))
             waitForLiveTerminalInputReady(timeout: 10)
             XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 10))
         }
@@ -2317,17 +2565,26 @@ final class RemuxAppUITests: XCTestCase {
         _ expected: Bool,
         label: String,
         timeout: TimeInterval = 3,
-        pollInterval: TimeInterval = 0.01
+        pollInterval: TimeInterval = 0.01,
+        stableFor minimumStableDuration: TimeInterval = 0
     ) -> TimeInterval? {
         let start = Date()
         let deadline = start.addingTimeInterval(timeout)
         let keyboard = app.keyboards.firstMatch
+        var matchingSince: Date?
 
         repeat {
-            if keyboard.exists == expected {
-                let elapsed = Date().timeIntervalSince(start)
-                print("Remux UI perf keyboard.\(expected ? "visible" : "hidden") label=\"\(label)\" elapsed_ms=\(String(format: "%.3f", elapsed * 1000))")
-                return elapsed
+            if isSoftwareKeyboardOnScreen(keyboard) == expected {
+                let now = Date()
+                matchingSince = matchingSince ?? now
+                if let matchingSince,
+                   now.timeIntervalSince(matchingSince) >= minimumStableDuration {
+                    let elapsed = now.timeIntervalSince(start)
+                    print("Remux UI perf keyboard.\(expected ? "visible" : "hidden") label=\"\(label)\" elapsed_ms=\(String(format: "%.3f", elapsed * 1000))")
+                    return elapsed
+                }
+            } else {
+                matchingSince = nil
             }
             RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
         } while Date() < deadline
@@ -2903,7 +3160,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func assertPreviewTilesContainRenderedImages(
-        tileIdentifiers: [String],
+        tiles: [XCUIElement],
         attachmentName: String,
         minDistinctColors: Int = 8,
         minNonBackgroundPixels: Int = 2_500,
@@ -2911,7 +3168,7 @@ final class RemuxAppUITests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let tiles = tileIdentifiers.map { app.buttons[$0] }
+        let tileIdentifiers = tiles.map { $0.identifier }
         for (identifier, tile) in zip(tileIdentifiers, tiles) {
             XCTAssertTrue(
                 tile.waitForExistence(timeout: 5),
@@ -3049,11 +3306,11 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func assertPreviewTileUsesFullViewportWidth(
-        tileIdentifier: String,
+        tile: XCUIElement,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let tile = app.buttons[tileIdentifier]
+        let tileIdentifier = tile.identifier
         XCTAssertTrue(
             tile.waitForExistence(timeout: 5),
             "Missing preview tile \(tileIdentifier)",
@@ -3270,6 +3527,46 @@ final class RemuxAppUITests: XCTestCase {
         tapTerminalHomeButton(homeButton)
 
         XCTAssertTrue(app.descendants(matching: .any)["library.list"].waitForExistence(timeout: 5))
+    }
+
+    private func openSessionSwitcherFromTerminal() {
+        let buttons = app.buttons.matching(identifier: "terminal.sessions")
+        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: 5))
+        guard let button = uniqueHittableElement(
+            in: buttons,
+            description: "terminal.sessions"
+        ) else {
+            XCTFail("Missing hittable terminal Sessions button.")
+            return
+        }
+        button.tap()
+    }
+
+    private func disconnectActiveSessionFromSwitcher(named sessionName: String) -> XCUIElement {
+        let activeRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
+            .firstMatch
+        XCTAssertTrue(activeRow.waitForExistence(timeout: 5))
+        activeRow.swipeLeft()
+
+        let disconnectButton = app.buttons["terminal.sessions.disconnect"]
+        XCTAssertTrue(disconnectButton.waitForExistence(timeout: 5))
+        disconnectButton.tap()
+
+        let recentRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.recent-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
+            .firstMatch
+        let deadline = Date().addingTimeInterval(5)
+        while !recentRow.isHittable, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertTrue(
+            recentRow.isHittable,
+            "Disconnecting from Remux should retain the session under Recent."
+        )
+        return recentRow
     }
 
     private func waitForTerminalHomeButton(timeout: TimeInterval = 2) -> XCUIElement {
@@ -3588,6 +3885,39 @@ final class RemuxAppUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
+    private func panePickerTiles() -> [XCUIElement] {
+        app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.pane.tile."))
+            .allElementsBoundByIndex
+    }
+
+    private func waitForPanePickerTileCount(
+        _ expectedCount: Int,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if panePickerTiles().count == expectedCount {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return panePickerTiles().count == expectedCount
+    }
+
+    private func removePanePickerItem(_ tile: XCUIElement) {
+        let tilePrefix = "terminal.pane.tile."
+        XCTAssertTrue(tile.identifier.hasPrefix(tilePrefix))
+        let paneIdentifier = String(tile.identifier.dropFirst(tilePrefix.count))
+        XCTAssertFalse(paneIdentifier.isEmpty)
+
+        tile.press(forDuration: 1.0)
+        tapPickerButton(
+            identifier: "terminal.pane.remove.\(paneIdentifier)",
+            fallbackLabel: "Remove Pane"
+        )
+    }
+
     private func removePickerItem(
         tileIdentifier: String,
         actionIdentifier: String,
@@ -3629,19 +3959,19 @@ final class RemuxAppUITests: XCTestCase {
         let keyboard = app.keyboards.firstMatch
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let frame = keyboard.frame
-            if keyboard.exists,
-               frame.height > 100,
-               frame.intersects(app.frame) {
+            if isSoftwareKeyboardOnScreen(keyboard) {
                 return true
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
 
+        return isSoftwareKeyboardOnScreen(keyboard)
+    }
+
+    private func isSoftwareKeyboardOnScreen(_ keyboard: XCUIElement) -> Bool {
+        guard keyboard.exists else { return false }
         let frame = keyboard.frame
-        return keyboard.exists
-            && frame.height > 100
-            && frame.intersects(app.frame)
+        return frame.height > 100 && frame.intersects(app.frame)
     }
 
     private func waitForCopyMenuItem(timeout: TimeInterval) -> XCUIElement {

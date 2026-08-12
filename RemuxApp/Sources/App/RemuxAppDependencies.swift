@@ -1,6 +1,7 @@
 @preconcurrency import Citadel
 import Foundation
 import NIOCore
+import UIKit
 
 enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
@@ -44,6 +45,11 @@ struct RemuxAppDependencies: Sendable {
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService
+    private let tmuxSessionDiscoverer: @Sendable (
+        _ target: TmuxConnectionTarget,
+        _ trustedHostStore: TrustedHostStore,
+        _ sshRootService: RemuxSSHRootService
+    ) async throws -> [String]
     private let debugConnectionSeeder: @Sendable (
         _ profileRepository: any ConnectionProfileRepository,
         _ credentialStore: any SSHCredentialStore
@@ -72,6 +78,11 @@ struct RemuxAppDependencies: Sendable {
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
+        tmuxSessionDiscoverer: @escaping @Sendable (
+            _ target: TmuxConnectionTarget,
+            _ trustedHostStore: TrustedHostStore,
+            _ sshRootService: RemuxSSHRootService
+        ) async throws -> [String] = RemuxAppDependencies.liveTmuxSessionDiscoverer,
         debugConnectionSeeder: @escaping @Sendable (
             _ profileRepository: any ConnectionProfileRepository,
             _ credentialStore: any SSHCredentialStore
@@ -87,9 +98,11 @@ struct RemuxAppDependencies: Sendable {
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
+        self.tmuxSessionDiscoverer = tmuxSessionDiscoverer
         self.debugConnectionSeeder = debugConnectionSeeder
     }
 
+    @MainActor
     static func launch() -> Result<RemuxAppDependencies, Error> {
         Result {
 #if DEBUG || REMUX_LIVE_UI_TESTING
@@ -101,6 +114,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
+    @MainActor
     static func live() throws -> RemuxAppDependencies {
 #if DEBUG || REMUX_LIVE_UI_TESTING
         let environment = ProcessInfo.processInfo.environment
@@ -125,7 +139,10 @@ struct RemuxAppDependencies: Sendable {
         let trustedHostStore = TrustedHostStore(rootURL: root)
         return RemuxAppDependencies(
             profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
-            settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
+            settingsRepository: FileBackedTerminalSettingsRepository(
+                rootURL: root,
+                defaultZoomMultipaneWindows: deviceDefaultZoomMultipaneWindows
+            ),
             shortcutRepository: FileBackedShortcutRepository(rootURL: root),
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,
@@ -133,6 +150,11 @@ struct RemuxAppDependencies: Sendable {
                 trustedHostStore: trustedHostStore
             )
         )
+    }
+
+    @MainActor
+    private static var deviceDefaultZoomMultipaneWindows: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
     }
 
     /// Applies the user's host-key policy to the SSH stack. Enabling registers
@@ -179,6 +201,10 @@ struct RemuxAppDependencies: Sendable {
 
     func makeAttachmentTransferService(for target: TmuxConnectionTarget) -> any GhosttyAttachmentTransferService {
         attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
+    }
+
+    func discoverTmuxSessions(for target: TmuxConnectionTarget) async throws -> [String] {
+        try await tmuxSessionDiscoverer(target, trustedHostStore, sshRootService)
     }
 
     func closeIdleSSHConnections(forServerID serverID: SavedServer.ID) {
@@ -276,6 +302,44 @@ struct RemuxAppDependencies: Sendable {
         return GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
     }
 
+    private static func liveTmuxSessionDiscoverer(
+        target: TmuxConnectionTarget,
+        trustedHostStore: TrustedHostStore,
+        sshRootService: RemuxSSHRootService
+    ) async throws -> [String] {
+        let trace = RemuxTransportStartupTrace(
+            flowID: "session.discovery.\(target.server.id.uuidString)"
+        )
+        let configuration = sshConfiguration(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            traceFlowID: nil
+        )
+        guard let rootKey = configuration.sshRootKey else {
+            preconditionFailure("Tmux discovery requires an SSH root key")
+        }
+
+        let preparedRoot = await sshRootService.preparedRoot(
+            for: rootKey,
+            configuration: configuration.sshRootConfiguration,
+            trace: trace
+        )
+        do {
+            let sshRoot = try await preparedRoot.sshRoot()
+            let claimedRoot = try await preparedRoot.claim(sshRoot, trace: trace)
+            let sessions = try await TmuxSessionDiscovery.discover(
+                using: claimedRoot,
+                tmuxExecutable: configuration.tmuxExecutable,
+                trace: trace
+            )
+            await preparedRoot.cancelAndCleanup()
+            return sessions
+        } catch {
+            await preparedRoot.cancelAndCleanup()
+            throw error
+        }
+    }
+
     private static func sshRootConfiguration(
         for target: TmuxConnectionTarget,
         trustedHostStore: TrustedHostStore,
@@ -333,6 +397,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
+    @MainActor
     static func uiTesting() throws -> RemuxAppDependencies {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemuxUITesting", isDirectory: true)
@@ -346,7 +411,13 @@ struct RemuxAppDependencies: Sendable {
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
-            settingsRepository: InMemoryTerminalSettingsRepository(),
+            settingsRepository: InMemoryTerminalSettingsRepository(
+                settings: {
+                    var settings = TerminalSettings.default
+                    settings.zoomMultipaneWindowsByDefault = deviceDefaultZoomMultipaneWindows
+                    return settings
+                }()
+            ),
             shortcutRepository: InMemoryShortcutRepository(),
             credentialStore: InMemorySSHCredentialStore(),
             trustedHostStore: trustedHostStore,
@@ -485,7 +556,11 @@ private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {
 }
 
 private actor InMemoryTerminalSettingsRepository: TerminalSettingsRepository {
-    private var settings = TerminalSettings.default
+    private var settings: TerminalSettings
+
+    init(settings: TerminalSettings = .default) {
+        self.settings = settings
+    }
 
     func loadSettings() async throws -> TerminalSettings {
         settings

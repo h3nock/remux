@@ -2,7 +2,13 @@
 
 > A native iOS client for remote tmux workspaces.
 
-https://github.com/user-attachments/assets/53d7ffd2-c2ba-4661-955f-37e3b94f9859
+<p align="center">
+  <a href="https://trendshift.io/repositories/91075?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-91075" target="_blank" rel="noopener noreferrer">
+    <img src="https://trendshift.io/api/badge/repositories/91075" alt="h3nock/remux | Trendshift" width="250" height="55" />
+  </a>
+</p>
+
+https://github.com/user-attachments/assets/e7482322-15f8-4f7d-aca4-83368fddd07c
 
 <p align="center">
   <a href="https://testflight.apple.com/join/fHqG1ruE">Join the beta on TestFlight</a>
@@ -23,6 +29,8 @@ terminal, and uploads photos and files, with markup for images.
 - **Shortcut palette**: Run saved commands with a tap. Starter sets cover
   shell, Claude Code, and Codex, and you can add your own commands and
   groups.
+- **Voice dictation**: Dictate text in the composer using on-device speech
+  recognition.
 - **Attachments**: Upload photos and files to the server, with markup for
   images. The remote path is typed at the prompt.
 - **File preview**: Long-press a path in terminal output to preview it:

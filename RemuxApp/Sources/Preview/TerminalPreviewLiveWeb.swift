@@ -46,6 +46,20 @@ struct TerminalPreviewWebLinkPolicy {
     }
 }
 
+@MainActor
+func reloadTerminalPreviewWebView(
+    _ webView: WKWebView,
+    ifRequested generation: UInt,
+    lastGeneration: inout UInt,
+    fallbackURL: URL
+) {
+    guard lastGeneration != generation else { return }
+    lastGeneration = generation
+    if webView.reloadFromOrigin() == nil {
+        webView.load(URLRequest(url: webView.url ?? fallbackURL))
+    }
+}
+
 enum TerminalPreviewLiveWebError: LocalizedError, Equatable, Sendable {
     case invalidLocalURL
 
@@ -160,36 +174,56 @@ struct TerminalPreviewLiveWebClient: Sendable {
 
 struct TerminalPreviewLiveWebView: UIViewRepresentable {
     let resource: TerminalPreviewLiveWebResource
+    let reloadGeneration: UInt
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(resource: resource)
+        Coordinator(
+            resource: resource,
+            reloadGeneration: reloadGeneration
+        )
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
+        let webView = Self.makeWebView()
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.load(URLRequest(url: resource.localURL))
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        reloadTerminalPreviewWebView(
+            webView,
+            ifRequested: reloadGeneration,
+            lastGeneration: &context.coordinator.reloadGeneration,
+            fallbackURL: resource.localURL
+        )
+    }
+
+    static func makeWebView() -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        return webView
+    }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private let policy: TerminalPreviewWebLinkPolicy
+        fileprivate var reloadGeneration: UInt
 
         init(
             resource: TerminalPreviewLiveWebResource,
+            reloadGeneration: UInt = 0,
             openExternalURL: @escaping @MainActor (URL) -> Void = {
                 UIApplication.shared.open($0)
             }
         ) {
             let localPort = resource.localPort
+            self.reloadGeneration = reloadGeneration
             self.policy = TerminalPreviewWebLinkPolicy(
                 allowsNavigation: { url in
                     guard let scheme = url.scheme?.lowercased(),

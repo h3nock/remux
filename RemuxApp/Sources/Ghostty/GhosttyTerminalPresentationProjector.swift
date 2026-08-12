@@ -177,7 +177,6 @@ struct GhosttyTerminalInteractionProjection: Equatable, Sendable {
     let selectedActiveLeafID: UUID?
     let selectedWindowIndex: Int?
     let windowCount: Int
-    let selectedPaneIndex: Int?
     let paneCount: Int
     let isWaitingForPanes: Bool
 }
@@ -197,16 +196,239 @@ struct GhosttyTerminalScreenPresentationProjection: Equatable {
     let statusOverlay: GhosttyTerminalStatusOverlayProjection
 }
 
-/// Remux presents exactly one tmux pane per app viewport on every supported
-/// device class. Topology identities remain stable for picker actions; this
-/// projection identifies the one native surface instance currently hosted.
+struct GhosttyTerminalGridSize: Equatable, Sendable {
+    let columns: UInt32
+    let rows: UInt32
+}
+
+struct GhosttyTerminalGridRect: Equatable, Sendable {
+    let x: UInt32
+    let y: UInt32
+    let columns: UInt32
+    let rows: UInt32
+}
+
+/// One internal tmux pane boundary expressed in window-grid coordinates.
+///
+/// `firstPaneID` is the pane on the left of a vertical separator or above a
+/// horizontal separator. `secondPaneID` is the pane on the other side. The
+/// separator is presentation-only: it never changes either pane's grid rect.
+struct GhosttyPaneSeparatorSegment: Equatable, Sendable {
+    enum Orientation: Equatable, Sendable {
+        case vertical
+        case horizontal
+    }
+
+    let orientation: Orientation
+    let position: CGFloat
+    let start: CGFloat
+    let end: CGFloat
+    let firstPaneID: UUID
+    let secondPaneID: UUID
+
+    func focusedRange(focusedPaneID: UUID?, paneCount: Int) -> Range<CGFloat>? {
+        guard let focusedPaneID,
+              focusedPaneID == firstPaneID || focusedPaneID == secondPaneID,
+              start < end
+        else { return nil }
+
+        guard paneCount == 2 else { return start..<end }
+
+        let midpoint = start + (end - start) / 2
+        return focusedPaneID == firstPaneID
+            ? start..<midpoint
+            : midpoint..<end
+    }
+
+    func frame(
+        origin: CGPoint,
+        cellSize: CGSize,
+        lineWidth: CGFloat,
+        range: Range<CGFloat>? = nil
+    ) -> CGRect {
+        let range = range ?? start..<end
+        switch orientation {
+        case .vertical:
+            return CGRect(
+                x: origin.x + position * cellSize.width - lineWidth / 2,
+                y: origin.y + range.lowerBound * cellSize.height,
+                width: lineWidth,
+                height: (range.upperBound - range.lowerBound) * cellSize.height
+            )
+        case .horizontal:
+            return CGRect(
+                x: origin.x + range.lowerBound * cellSize.width,
+                y: origin.y + position * cellSize.height - lineWidth / 2,
+                width: (range.upperBound - range.lowerBound) * cellSize.width,
+                height: lineWidth
+            )
+        }
+    }
+}
+
+enum GhosttyPaneSeparatorLayout {
+    struct Pane: Equatable, Sendable {
+        let id: UUID
+        let frame: GhosttyTerminalGridRect
+    }
+
+    static func segments(for panes: [Pane]) -> [GhosttyPaneSeparatorSegment] {
+        guard panes.count > 1 else { return [] }
+
+        var result: [GhosttyPaneSeparatorSegment] = []
+        for firstIndex in panes.indices {
+            for secondIndex in panes.index(after: firstIndex)..<panes.endIndex {
+                if let segment = segment(
+                    between: panes[firstIndex],
+                    and: panes[secondIndex]
+                ) {
+                    result.append(segment)
+                }
+            }
+        }
+        return result
+    }
+
+    private static func segment(
+        between first: Pane,
+        and second: Pane
+    ) -> GhosttyPaneSeparatorSegment? {
+        let firstRight = Int64(first.frame.x) + Int64(first.frame.columns)
+        let secondRight = Int64(second.frame.x) + Int64(second.frame.columns)
+        if firstRight + 1 == Int64(second.frame.x)
+            || secondRight + 1 == Int64(first.frame.x)
+        {
+            let firstIsLeft = firstRight < secondRight
+            let left = firstIsLeft ? first : second
+            let right = firstIsLeft ? second : first
+            return makeSegment(
+                orientation: .vertical,
+                first: left,
+                second: right,
+                position: right.frame.x,
+                firstSpan: (left.frame.y, left.frame.rows),
+                secondSpan: (right.frame.y, right.frame.rows)
+            )
+        }
+
+        let firstBottom = Int64(first.frame.y) + Int64(first.frame.rows)
+        let secondBottom = Int64(second.frame.y) + Int64(second.frame.rows)
+        if firstBottom + 1 == Int64(second.frame.y)
+            || secondBottom + 1 == Int64(first.frame.y)
+        {
+            let firstIsTop = firstBottom < secondBottom
+            let top = firstIsTop ? first : second
+            let bottom = firstIsTop ? second : first
+            return makeSegment(
+                orientation: .horizontal,
+                first: top,
+                second: bottom,
+                position: bottom.frame.y,
+                firstSpan: (top.frame.x, top.frame.columns),
+                secondSpan: (bottom.frame.x, bottom.frame.columns)
+            )
+        }
+
+        return nil
+    }
+
+    private static func makeSegment(
+        orientation: GhosttyPaneSeparatorSegment.Orientation,
+        first: Pane,
+        second: Pane,
+        position: UInt32,
+        firstSpan: (start: UInt32, length: UInt32),
+        secondSpan: (start: UInt32, length: UInt32)
+    ) -> GhosttyPaneSeparatorSegment? {
+        let start = max(Int64(firstSpan.start), Int64(secondSpan.start))
+        let end = min(
+            Int64(firstSpan.start) + Int64(firstSpan.length),
+            Int64(secondSpan.start) + Int64(secondSpan.length)
+        )
+        guard start < end else { return nil }
+
+        return GhosttyPaneSeparatorSegment(
+            orientation: orientation,
+            position: CGFloat(position) - 0.5,
+            start: CGFloat(start) - 0.5,
+            end: CGFloat(end) + 0.5,
+            firstPaneID: first.id,
+            secondPaneID: second.id
+        )
+    }
+}
+
+struct GhosttyCompositeViewportLayout: Equatable {
+    let origin: CGPoint
+    let canvasSize: CGSize
+    let cellSize: CGSize
+
+    init?(
+        bounds: CGRect,
+        grid: GhosttyTerminalGridSize,
+        cellMetrics: GhosttyTerminalCellDisplayMetrics
+    ) {
+        guard grid.columns > 0, grid.rows > 0,
+              cellMetrics.pixelWidth > 0, cellMetrics.pixelHeight > 0,
+              cellMetrics.contentScale.isFinite,
+              cellMetrics.contentScale > 0
+        else { return nil }
+        let scale = CGFloat(cellMetrics.contentScale)
+        cellSize = CGSize(
+            width: CGFloat(cellMetrics.pixelWidth) / scale,
+            height: CGFloat(cellMetrics.pixelHeight) / scale
+        )
+        canvasSize = CGSize(
+            width: CGFloat(grid.columns) * cellSize.width,
+            height: CGFloat(grid.rows) * cellSize.height
+        )
+        let unsnappedOrigin = CGPoint(
+            x: max((bounds.width - canvasSize.width) / 2, 0),
+            y: max((bounds.height - canvasSize.height) / 2, 0)
+        )
+        origin = CGPoint(
+            x: (unsnappedOrigin.x * scale).rounded() / scale,
+            y: (unsnappedOrigin.y * scale).rounded() / scale
+        )
+    }
+
+    func frame(for gridRect: GhosttyTerminalGridRect) -> CGRect {
+        CGRect(
+            x: origin.x + CGFloat(gridRect.x) * cellSize.width,
+            y: origin.y + CGFloat(gridRect.y) * cellSize.height,
+            width: CGFloat(gridRect.columns) * cellSize.width,
+            height: CGFloat(gridRect.rows) * cellSize.height
+        )
+    }
+}
+
+/// The authoritative tmux window grid projected into one Remux viewport.
+///
+/// Pane rectangles remain expressed in tmux cells. UIKit converts them to
+/// points only at the final layout boundary, so topology never depends on
+/// device pixels or renderer state.
 struct GhosttyTerminalViewportPresentationProjection: Equatable {
+    struct Pane: Identifiable, Equatable, Sendable {
+        let id: UUID
+        let normalFrame: GhosttyTerminalGridRect
+        let visibleFrame: GhosttyTerminalGridRect?
+        let isFocused: Bool
+    }
+
     static let empty = GhosttyTerminalViewportPresentationProjection(
-        surfaceID: nil,
+        windowGrid: nil,
+        cellMetrics: nil,
+        panes: [],
+        focusedSurfaceID: nil,
+        isServerZoomed: false,
         windowCount: 0
     )
 
-    let surfaceID: UUID?
+    let windowGrid: GhosttyTerminalGridSize?
+    let cellMetrics: GhosttyTerminalCellDisplayMetrics?
+    let panes: [Pane]
+    let focusedSurfaceID: UUID?
+    let isServerZoomed: Bool
     let windowCount: Int
 
     var canNavigateWindows: Bool {
@@ -266,9 +488,8 @@ struct GhosttyWindowSelectionSheetRenderProjection: Equatable, Sendable {
 struct GhosttyPaneSelectionSheetRenderProjection: Equatable, Sendable {
     struct Pane: Identifiable, Equatable, Sendable {
         let id: UUID
-        let displayIndex: Int
-        let totalCount: Int
         let isSelected: Bool
+        let frame: GhosttyTerminalGridRect?
     }
 
     let topLevelID: UUID
@@ -276,6 +497,8 @@ struct GhosttyPaneSelectionSheetRenderProjection: Equatable, Sendable {
     let selectedPaneID: UUID?
     let previewLeafIDs: [UUID]
     let paneCount: Int
+    let windowGrid: GhosttyTerminalGridSize?
+    let isServerZoomed: Bool
 }
 
 @MainActor
@@ -287,7 +510,8 @@ enum GhosttyTerminalPresentationProjector {
         debugStatus: String,
         registryDebugSummary: String,
         presentedSurfaceID: UUID?,
-        snapshot: GhosttyRuntimeSurfaceTopologySnapshot
+        snapshot: GhosttyRuntimeSurfaceTopologySnapshot,
+        viewportProjection: GhosttyTerminalViewportPresentationProjection
     ) -> GhosttyTerminalScreenPresentationProjection {
         let readiness = TerminalReadinessProjector.snapshot(
             phase: phase,
@@ -303,10 +527,7 @@ enum GhosttyTerminalPresentationProjector {
                 presentedSurfaceID: presentedSurfaceID,
                 snapshot: snapshot
             ),
-            viewport: GhosttyTerminalViewportPresentationProjection(
-                surfaceID: presentedSurfaceID,
-                windowCount: snapshot.topLevels.count
-            ),
+            viewport: viewportProjection,
             statusOverlay: terminalStatusOverlayProjection(
                 readiness: readiness,
                 commandFailureMessage: commandFailureMessage,
@@ -354,10 +575,6 @@ enum GhosttyTerminalPresentationProjector {
         snapshot: GhosttyRuntimeSurfaceTopologySnapshot
     ) -> GhosttyTerminalInteractionProjection {
         let selectedTopLevel = snapshot.selectedTopLevel
-        let selectedPaneIndex = selectedTopLevel.flatMap { topLevel -> Int? in
-            guard let focusedLeafID = topLevel.resolvedFocusedLeafID else { return nil }
-            return topLevel.leafIDs.firstIndex(of: focusedLeafID)
-        }
         let hasFocusedSurface = presentedSurfaceID != nil
 
         return GhosttyTerminalInteractionProjection(
@@ -369,7 +586,6 @@ enum GhosttyTerminalPresentationProjector {
             selectedActiveLeafID: presentedSurfaceID,
             selectedWindowIndex: snapshot.selectedTopLevelIndex,
             windowCount: snapshot.topLevels.count,
-            selectedPaneIndex: selectedPaneIndex,
             paneCount: selectedTopLevel?.leafIDs.count ?? 0,
             isWaitingForPanes: TerminalReadinessProjector.isWaitingForPanes(
                 phase: phase,
@@ -451,10 +667,10 @@ enum GhosttyTerminalPresentationProjector {
             )
         }
 
-        let topLevelExists = snapshot.topLevels.contains { $0.id == topLevelID }
+        let topLevelIsSelected = snapshot.selectedTopLevelID == topLevelID
         return GhosttyPaneSelectionSheetTopologyProjection(
             topLevelID: topLevelID,
-            shouldDismissPaneSheet: !topLevelExists
+            shouldDismissPaneSheet: !topLevelIsSelected
         )
     }
 
@@ -492,7 +708,8 @@ enum GhosttyTerminalPresentationProjector {
 
     static func paneSelectionSheetRenderProjection(
         topLevelID: UUID,
-        snapshot: GhosttyRuntimeSurfaceTopologySnapshot
+        snapshot: GhosttyRuntimeSurfaceTopologySnapshot,
+        viewport: GhosttyTerminalViewportPresentationProjection? = nil
     ) -> GhosttyPaneSelectionSheetRenderProjection {
         guard let topLevel = snapshot.topLevels.first(where: { $0.id == topLevelID }) else {
             return GhosttyPaneSelectionSheetRenderProjection(
@@ -500,18 +717,24 @@ enum GhosttyTerminalPresentationProjector {
                 panes: [],
                 selectedPaneID: nil,
                 previewLeafIDs: [],
-                paneCount: 0
+                paneCount: 0,
+                windowGrid: nil,
+                isServerZoomed: false
             )
         }
 
-        let selectedPaneID = topLevel.resolvedFocusedLeafID
-        let totalCount = topLevel.leafIDs.count
-        let panes = topLevel.leafIDs.enumerated().map { index, paneID in
+        let selectedPaneID = viewport?.focusedSurfaceID.flatMap { focusedID in
+            topLevel.leafIDs.contains(focusedID) ? focusedID : nil
+        } ?? topLevel.resolvedFocusedLeafID
+        let paneCount = topLevel.leafIDs.count
+        let viewportPanesByID = Dictionary(
+            uniqueKeysWithValues: (viewport?.panes ?? []).map { ($0.id, $0) }
+        )
+        let panes = topLevel.leafIDs.map { paneID in
             GhosttyPaneSelectionSheetRenderProjection.Pane(
                 id: paneID,
-                displayIndex: index + 1,
-                totalCount: totalCount,
-                isSelected: paneID == selectedPaneID
+                isSelected: paneID == selectedPaneID,
+                frame: viewportPanesByID[paneID]?.normalFrame
             )
         }
 
@@ -520,7 +743,9 @@ enum GhosttyTerminalPresentationProjector {
             panes: panes,
             selectedPaneID: selectedPaneID,
             previewLeafIDs: topLevel.leafIDs,
-            paneCount: totalCount
+            paneCount: paneCount,
+            windowGrid: viewport?.windowGrid,
+            isServerZoomed: viewport?.isServerZoomed ?? false
         )
     }
 }

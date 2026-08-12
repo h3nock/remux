@@ -51,13 +51,13 @@ final class GhosttyManagedSurface {
     private weak var paneOwner: TmuxPaneSurface?
     private(set) var isFocused = false
     private(set) var isVisible = false
+    private(set) var rendererIsAvailable = true
+    private(set) var rendererRecoverySnapshot: CGImage?
     private(set) var scrollState: GhosttySurfaceScrollState
     private(set) var scrollRoute: GhosttySurfaceScrollRoute
     var onScrollStateChange: (() -> Void)?
-    var onDisplayUpdate: ((GhosttyManagedSurface, CGSize, CGFloat) -> Void)?
     var onLocalSelectionGeometryChange: (() -> Void)?
-
-    private var displayUpdateTracker = GhosttySurfaceDisplayUpdateTracker()
+    var onRendererRecoveryChange: (() -> Void)?
 
     init(
         id: UUID,
@@ -81,6 +81,7 @@ final class GhosttyManagedSurface {
     @discardableResult
     func sendInput(_ text: String) -> FocusedTerminalInputSubmissionResult {
         guard !text.isEmpty else { return .empty }
+        guard rendererIsAvailable else { return .surfaceRejected }
         guard controlSurface.sendInput(text) else { return .surfaceRejected }
         onLocalSelectionGeometryChange?()
         return .accepted
@@ -89,16 +90,18 @@ final class GhosttyManagedSurface {
     @discardableResult
     func sendPaste(_ text: String) -> FocusedTerminalInputSubmissionResult {
         guard !text.isEmpty else { return .empty }
+        guard rendererIsAvailable else { return .surfaceRejected }
         return controlSurface.sendPaste(text) ? .accepted : .surfaceRejected
     }
 
     func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool {
-        guard !text.isEmpty, let paneOwner else { return false }
+        guard !text.isEmpty, rendererIsAvailable, let paneOwner else { return false }
         return await paneOwner.sendPasteAwaitingCommandCompletion(text)
     }
 
     @discardableResult
     func sendKeyEvent(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
+        guard rendererIsAvailable else { return .surfaceRejected }
         guard controlSurface.sendKeyEvent(event) else { return .surfaceRejected }
         onLocalSelectionGeometryChange?()
         return .accepted
@@ -107,7 +110,7 @@ final class GhosttyManagedSurface {
     func sendKeyEventAwaitingCommandCompletion(
         _ event: GhosttySurfaceKeyEvent
     ) async -> Bool {
-        guard let paneOwner else { return false }
+        guard rendererIsAvailable, let paneOwner else { return false }
         let delivered = await paneOwner.sendKeyEventAwaitingCommandCompletion(event)
         if delivered {
             onLocalSelectionGeometryChange?()
@@ -128,7 +131,6 @@ final class GhosttyManagedSurface {
     }
 
     func prepareForPermanentRemoval() {
-        onDisplayUpdate = nil
         onScrollStateChange = nil
         setFocused(false)
         setVisible(false)
@@ -136,25 +138,30 @@ final class GhosttyManagedSurface {
         view.removeFromSuperview()
         onLocalSelectionGeometryChange?()
         onLocalSelectionGeometryChange = nil
+        onRendererRecoveryChange = nil
     }
 
     func replaceControlSurface(_ replacement: GhosttyKitControlSurface) {
         controlSurface = replacement
-        displayUpdateTracker.reset()
         refreshInteractionState()
         isFocused = false
         isVisible = false
     }
 
-    @discardableResult
-    func updateDisplay(size: CGSize, scale: CGFloat) -> Bool {
-        guard let metrics = displayUpdateTracker.nextMetrics(size: size, scale: scale) else {
-            return false
+    func beginRendererRecovery(snapshot: CGImage?) {
+        rendererIsAvailable = false
+        if let snapshot {
+            rendererRecoverySnapshot = snapshot
         }
-        guard paneOwner?.updateDisplay(metrics: metrics) == true else { return false }
-        onDisplayUpdate?(self, size, scale)
-        onLocalSelectionGeometryChange?()
-        return true
+        onRendererRecoveryChange?()
+    }
+
+    func finishRendererReplacement(isAvailable: Bool) {
+        rendererIsAvailable = isAvailable
+        if isAvailable {
+            rendererRecoverySnapshot = nil
+        }
+        onRendererRecoveryChange?()
     }
 
     func refreshInteractionState() {
@@ -168,23 +175,27 @@ final class GhosttyManagedSurface {
 
     @discardableResult
     func sendMouseButton(_ event: GhosttySurfaceMouseButtonEvent) -> Bool {
-        controlSurface.sendMouseButton(event)
+        guard rendererIsAvailable else { return false }
+        return controlSurface.sendMouseButton(event)
     }
 
     func sendMousePosition(
         _ position: CGPoint,
         mods: GhosttySurfaceKeyEvent.Mods = []
     ) {
+        guard rendererIsAvailable else { return }
         _ = controlSurface.sendMousePosition(position, mods: mods)
     }
 
     func sendMouseScroll(_ event: GhosttySurfaceMouseScrollEvent) {
+        guard rendererIsAvailable else { return }
         _ = controlSurface.sendMouseScroll(event)
         refreshInteractionState()
     }
 
     @discardableResult
     func scrollToPosition(row: UInt64, cellOffset: Double) -> GhosttySurfaceScrollState {
+        guard rendererIsAvailable else { return scrollState }
         let next = controlSurface.scrollToPosition(row: row, cellOffset: cellOffset)
         guard next != scrollState else { return scrollState }
         scrollState = next
@@ -198,7 +209,7 @@ final class GhosttyManagedSurface {
     }
 
     func isMouseCaptured() -> Bool {
-        controlSurface.isMouseCaptured()
+        rendererIsAvailable && controlSurface.isMouseCaptured()
     }
 
     func diagnosticSummary() -> String {

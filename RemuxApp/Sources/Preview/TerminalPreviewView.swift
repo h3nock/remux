@@ -3,6 +3,7 @@ import SwiftUI
 struct TerminalPreviewView: View {
     @ObservedObject var session: TerminalPreviewSession
     let terminalTheme: TerminalTheme
+    @State private var webReloadGeneration: UInt = 0
 
     var body: some View {
         NavigationStack {
@@ -12,18 +13,15 @@ struct TerminalPreviewView: View {
                 .navigationTitle(session.currentCandidate?.filename ?? "Preview")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: .cancellationAction) {
                         Button(action: session.close) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "chevron.left")
-                                    .font(.body.weight(.semibold))
-                                Text("Terminal")
-                            }
+                            Image(systemName: "xmark")
                         }
-                        .accessibilityIdentifier("terminal.preview.back")
+                        .accessibilityLabel("Close Preview")
+                        .accessibilityIdentifier("terminal.preview.close")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(action: session.refresh) {
+                        Button(action: refreshPreview) {
                             Image(systemName: "arrow.clockwise")
                         }
                         .accessibilityLabel("Refresh")
@@ -66,9 +64,15 @@ struct TerminalPreviewView: View {
                 case .file(let file):
                     GhosttyQuickLookPreview(resource: file)
                 case .staticHTML(let html):
-                    TerminalPreviewStaticHTMLView(resource: html)
+                    TerminalPreviewStaticHTMLView(
+                        resource: html,
+                        reloadGeneration: webReloadGeneration
+                    )
                 case .liveWeb(let liveWeb):
-                    TerminalPreviewLiveWebView(resource: liveWeb)
+                    TerminalPreviewLiveWebView(
+                        resource: liveWeb,
+                        reloadGeneration: webReloadGeneration
+                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -84,7 +88,7 @@ struct TerminalPreviewView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("Retry", action: session.refresh)
+                Button("Retry", action: session.restart)
                     .buttonStyle(.borderedProminent)
                     .tint(terminalTheme.terminalChromeStyle.accent)
                     .accessibilityIdentifier("terminal.preview.retry")
@@ -92,6 +96,20 @@ struct TerminalPreviewView: View {
             .padding(28)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("terminal.preview.failure")
+        }
+    }
+
+    private func refreshPreview() {
+        switch session.state {
+        case .ready(_, let resource):
+            switch resource {
+            case .file:
+                session.restart()
+            case .staticHTML, .liveWeb:
+                webReloadGeneration &+= 1
+            }
+        case .idle, .loading, .failed:
+            session.restart()
         }
     }
 }

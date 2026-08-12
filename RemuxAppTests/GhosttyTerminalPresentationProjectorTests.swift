@@ -4,6 +4,131 @@ import XCTest
 
 @MainActor
 final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
+    func testCompositeLayoutUsesExactSharedCellMetricWithoutScaling() throws {
+        let layout = try XCTUnwrap(GhosttyCompositeViewportLayout(
+            bounds: CGRect(x: 0, y: 0, width: 400, height: 300),
+            grid: .init(columns: 80, rows: 24),
+            cellMetrics: .init(
+                pixelWidth: 8,
+                pixelHeight: 16,
+                contentScale: 2
+            )
+        ))
+
+        XCTAssertEqual(layout.cellSize, CGSize(width: 4, height: 8))
+        XCTAssertEqual(layout.canvasSize, CGSize(width: 320, height: 192))
+        XCTAssertEqual(layout.origin, CGPoint(x: 40, y: 54))
+        XCTAssertEqual(
+            layout.frame(for: .init(x: 0, y: 0, columns: 39, rows: 24)),
+            CGRect(x: 40, y: 54, width: 156, height: 192)
+        )
+        XCTAssertEqual(
+            layout.frame(for: .init(x: 40, y: 0, columns: 40, rows: 24)),
+            CGRect(x: 200, y: 54, width: 160, height: 192)
+        )
+    }
+
+    func testTwoSideBySidePanesShareOneDividerWithTmuxHalfFocusOwnership() throws {
+        let leftID = UUID()
+        let rightID = UUID()
+        let separators = GhosttyPaneSeparatorLayout.segments(for: [
+            .init(
+                id: leftID,
+                frame: .init(x: 0, y: 0, columns: 39, rows: 24)
+            ),
+            .init(
+                id: rightID,
+                frame: .init(x: 40, y: 0, columns: 40, rows: 24)
+            ),
+        ])
+
+        let separator = try XCTUnwrap(separators.first)
+        XCTAssertEqual(separators.count, 1)
+        XCTAssertEqual(separator.orientation, .vertical)
+        XCTAssertEqual(separator.position, 39.5)
+        XCTAssertEqual(separator.start, -0.5)
+        XCTAssertEqual(separator.end, 24.5)
+        XCTAssertEqual(
+            separator.focusedRange(focusedPaneID: leftID, paneCount: 2),
+            -0.5..<12
+        )
+        XCTAssertEqual(
+            separator.focusedRange(focusedPaneID: rightID, paneCount: 2),
+            12..<24.5
+        )
+    }
+
+    func testTwoStackedPanesShareOneDividerWithTmuxHalfFocusOwnership() throws {
+        let topID = UUID()
+        let bottomID = UUID()
+        let separators = GhosttyPaneSeparatorLayout.segments(for: [
+            .init(
+                id: topID,
+                frame: .init(x: 0, y: 0, columns: 80, rows: 11)
+            ),
+            .init(
+                id: bottomID,
+                frame: .init(x: 0, y: 12, columns: 80, rows: 12)
+            ),
+        ])
+
+        let separator = try XCTUnwrap(separators.first)
+        XCTAssertEqual(separators.count, 1)
+        XCTAssertEqual(separator.orientation, .horizontal)
+        XCTAssertEqual(separator.position, 11.5)
+        XCTAssertEqual(
+            separator.focusedRange(focusedPaneID: topID, paneCount: 2),
+            -0.5..<40
+        )
+        XCTAssertEqual(
+            separator.focusedRange(focusedPaneID: bottomID, paneCount: 2),
+            40..<80.5
+        )
+    }
+
+    func testNestedLayoutHighlightsEveryInternalSegmentAdjacentToFocusedPane() {
+        let topLeftID = UUID()
+        let bottomLeftID = UUID()
+        let rightID = UUID()
+        let separators = GhosttyPaneSeparatorLayout.segments(for: [
+            .init(
+                id: topLeftID,
+                frame: .init(x: 0, y: 0, columns: 39, rows: 11)
+            ),
+            .init(
+                id: bottomLeftID,
+                frame: .init(x: 0, y: 12, columns: 39, rows: 12)
+            ),
+            .init(
+                id: rightID,
+                frame: .init(x: 40, y: 0, columns: 40, rows: 24)
+            ),
+        ])
+
+        XCTAssertEqual(separators.count, 3)
+        let focusedSegments = separators.filter {
+            $0.focusedRange(focusedPaneID: rightID, paneCount: 3) != nil
+        }
+        XCTAssertEqual(focusedSegments.count, 2)
+        XCTAssertTrue(focusedSegments.allSatisfy { $0.orientation == .vertical })
+        XCTAssertEqual(
+            focusedSegments.map { $0.focusedRange(focusedPaneID: rightID, paneCount: 3) },
+            [Optional(-0.5..<11.5), Optional(11.5..<24.5)]
+        )
+    }
+
+    func testSinglePaneHasNoSeparatorOrFocusMarker() {
+        let paneID = UUID()
+        XCTAssertTrue(
+            GhosttyPaneSeparatorLayout.segments(for: [
+                .init(
+                    id: paneID,
+                    frame: .init(x: 0, y: 0, columns: 80, rows: 24)
+                ),
+            ]).isEmpty
+        )
+    }
+
     func testReadinessProjectionReportsRuntimeStateSemantics() {
         let reason = TerminalDisconnectReason(
             kind: .transportIO,
@@ -353,12 +478,45 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
                 debugStatus: "ready",
                 registryDebugSummary: "one surface",
                 presentedSurfaceID: surfaceInstanceID,
-                snapshot: snapshot
+                snapshot: snapshot,
+                viewportProjection: .init(
+                    windowGrid: nil,
+                    cellMetrics: nil,
+                    panes: [],
+                    focusedSurfaceID: surfaceInstanceID,
+                    isServerZoomed: false,
+                    windowCount: 1
+                )
             )
 
-        XCTAssertEqual(projection.viewport.surfaceID, surfaceInstanceID)
+        XCTAssertEqual(projection.viewport.focusedSurfaceID, surfaceInstanceID)
         XCTAssertEqual(projection.interaction.selectedActiveLeafID, surfaceInstanceID)
-        XCTAssertNotEqual(projection.viewport.surfaceID, paneID)
+        XCTAssertNotEqual(projection.viewport.focusedSurfaceID, paneID)
+    }
+
+    func testPaneSheetDismissesWhenItsWindowIsNoLongerSelected() {
+        let firstWindowID = UUID()
+        let secondWindowID = UUID()
+        let snapshot = GhosttyRuntimeSurfaceTopologySnapshot(
+            topLevels: [
+                GhosttyTopLevelSurface(id: firstWindowID, leafIDs: []),
+                GhosttyTopLevelSurface(id: secondWindowID, leafIDs: []),
+            ],
+            selectedTopLevelID: secondWindowID
+        )
+
+        XCTAssertTrue(
+            GhosttyTerminalPresentationProjector.paneSelectionSheetTopologyProjection(
+                topLevelID: firstWindowID,
+                snapshot: snapshot
+            ).shouldDismissPaneSheet
+        )
+        XCTAssertFalse(
+            GhosttyTerminalPresentationProjector.paneSelectionSheetTopologyProjection(
+                topLevelID: secondWindowID,
+                snapshot: snapshot
+            ).shouldDismissPaneSheet
+        )
     }
 
     func testWindowSelectionProjectionRemovesControlScalarsOnceAndPreservesUnicode() throws {

@@ -24,9 +24,10 @@ final class TerminalSettingsTests: XCTestCase {
         let settings = try JSONDecoder().decode(TerminalSettings.self, from: data)
 
         XCTAssertFalse(settings.allowInsecureRSAHostKeys)
+        XCTAssertFalse(settings.zoomMultipaneWindowsByDefault)
     }
 
-    func testTerminalAppearanceComparisonIgnoresLegacyRSAHostKeyPolicy() {
+    func testTerminalAppearanceComparisonIgnoresNonAppearanceSettings() {
         let settings = TerminalSettings(fontSize: 13, theme: .remuxDark)
         let rsaOnly = TerminalSettings(
             fontSize: 13,
@@ -35,8 +36,14 @@ final class TerminalSettingsTests: XCTestCase {
         )
         let fontChanged = TerminalSettings(fontSize: 14, theme: .remuxDark)
         let themeChanged = TerminalSettings(fontSize: 13, theme: .remuxLight)
+        let multipaneDefaultChanged = TerminalSettings(
+            fontSize: 13,
+            theme: .remuxDark,
+            zoomMultipaneWindowsByDefault: true
+        )
 
         XCTAssertTrue(settings.hasSameTerminalAppearance(as: rsaOnly))
+        XCTAssertTrue(settings.hasSameTerminalAppearance(as: multipaneDefaultChanged))
         XCTAssertFalse(settings.hasSameTerminalAppearance(as: fontChanged))
         XCTAssertFalse(settings.hasSameTerminalAppearance(as: themeChanged))
     }

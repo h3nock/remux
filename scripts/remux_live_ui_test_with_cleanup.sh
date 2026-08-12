@@ -437,8 +437,10 @@ cat >"$html_path" <<'PREVIEW_HTML'
 PREVIEW_HTML
 cat >"$script_path" <<'PREVIEW_JS'
 document.addEventListener('DOMContentLoaded', function () {
+  var reloadCount = Number(sessionStorage.getItem('remuxReloadCount') || '0') + 1;
+  sessionStorage.setItem('remuxReloadCount', String(reloadCount));
   var banner = document.createElement('p');
-  banner.textContent = 'JavaScript executed';
+  banner.textContent = 'Reload count ' + reloadCount;
   banner.style.color = '#f8fafc';
   banner.style.font = '600 20px -apple-system, sans-serif';
   document.body.appendChild(banner);

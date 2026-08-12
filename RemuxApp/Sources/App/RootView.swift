@@ -112,19 +112,36 @@ private struct RemuxWorkspaceShell: View {
             }
         }
         .sheet(isPresented: $isSessionSwitcherPresented) {
-            ActiveSessionSwitcherView(
-                sessions: ActiveSessionSwitcherProjection.items(
-                    sessions: model.activeSessions,
+            SessionSwitcherView(
+                projection: SessionSwitcherProjection(
+                    snapshot: model.library,
+                    activeSessions: model.activeSessions,
+                    discoveryStates: model.tmuxSessionDiscoveryStates,
                     selectedSessionID: selectedTerminalID
                 ),
                 servers: model.library.servers,
                 currentServerID: selectedActiveSession?.target.server.id,
-                onSelectSession: model.showActiveSession,
+                onSelectActiveSession: model.showActiveSession,
+                onResumeSession: { workspaceID in
+                    traceSessionOpenTap(workspaceID)
+                    Task { await model.connect(to: workspaceID) }
+                },
+                onResumeAvailableSession: { serverID, sessionName in
+                    Task {
+                        await model.connectToDiscoveredSession(
+                            named: sessionName,
+                            on: serverID
+                        )
+                    }
+                },
                 onDisconnectSession: model.disconnectActiveSession,
-                onCreateSession: beginNewWorkspaceFromTerminal
+                onCreateSession: beginNewWorkspaceFromTerminal,
+                onRefresh: model.refreshTmuxSessions,
+                discoveryStates: model.tmuxSessionDiscoveryStates
             )
-            .terminalSelectionSheetPresentation(
-                colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
+            .terminalSelectionSheetPresentationBackground()
+            .ghosttyTerminalChromePresentation(
+                model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
         }
@@ -262,7 +279,8 @@ private struct RemuxWorkspaceShell: View {
             ConnectionLibraryView(
                 snapshot: model.library,
                 activeSessions: model.activeSessions,
-                terminalSettings: model.terminalSettings,
+                discoveryStates: model.tmuxSessionDiscoveryStates,
+                terminalSettings: terminalSettingsBinding,
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID in
                     Task { await model.beginNewWorkspace(for: serverID) }
@@ -291,17 +309,23 @@ private struct RemuxWorkspaceShell: View {
                 },
                 onDeleteWorkspace: { workspaceID in
                     Task { await model.deleteWorkspace(workspaceID) }
-                },
-                onSettingsChange: { settings in
-                    Task {
-                        await model.updateTerminalSettings { current in
-                            current = settings
-                        }
-                    }
                 }
             )
         }
         .zIndex(2)
+    }
+
+    private var terminalSettingsBinding: Binding<TerminalSettings> {
+        Binding(
+            get: { model.terminalSettings },
+            set: { settings in
+                Task {
+                    await model.updateTerminalSettings { current in
+                        current = settings
+                    }
+                }
+            }
+        )
     }
 
     private func traceSessionOpenTap(_ workspaceID: SavedWorkspace.ID) {
@@ -463,7 +487,8 @@ private struct ConnectionLibraryView: View {
 
     let snapshot: ConnectionLibrarySnapshot
     let activeSessions: [ActiveTerminalSession]
-    let terminalSettings: TerminalSettings
+    let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
+    @Binding var terminalSettings: TerminalSettings
     let onAddServer: () -> Void
     let onAddWorkspace: (SavedServer.ID) -> Void
     let onEditServer: (SavedServer.ID) -> Void
@@ -473,7 +498,6 @@ private struct ConnectionLibraryView: View {
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
-    let onSettingsChange: (TerminalSettings) -> Void
 
     @State private var showsAllConnectedSessions = false
     @State private var showsAllRecentSessions = false
@@ -504,10 +528,7 @@ private struct ConnectionLibraryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink {
-                    TerminalSettingsView(
-                        initialSettings: terminalSettings,
-                        onChange: onSettingsChange
-                    )
+                    TerminalSettingsView(settings: $terminalSettings)
                 } label: {
                     Image(systemName: "gearshape")
                 }
@@ -628,7 +649,7 @@ private struct ConnectionLibraryView: View {
     private var serversSection: some View {
         Section {
             ForEach(snapshot.servers) { server in
-                let workspaces = snapshot.workspaces(for: server.id)
+                let workspaces = visibleWorkspaces(for: server.id)
                 let latest = workspaces.first
 
                 NavigationLink {
@@ -720,15 +741,12 @@ private struct ConnectionLibraryView: View {
     }
 
     private var recentWorkspaces: [SavedWorkspace] {
-        snapshot.workspaces
-            .filter { !activeWorkspaceIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                if lhs.lastOpenedAt != rhs.lastOpenedAt {
-                    return lhs.lastOpenedAt > rhs.lastOpenedAt
-                }
-
-                return lhs.sessionName.localizedStandardCompare(rhs.sessionName) == .orderedAscending
-            }
+        snapshot.recentWorkspaces(excluding: activeWorkspaceIDs).filter {
+            TmuxSessionReconciliation.includesSavedWorkspace(
+                $0,
+                discoveryStates: discoveryStates
+            )
+        }
     }
 
     private var visibleRecentWorkspaces: [SavedWorkspace] {
@@ -741,6 +759,16 @@ private struct ConnectionLibraryView: View {
             $0.target.server.id == serverID
                 && TerminalRuntimeStateProjection.isRootVisibleConnected($0.runtimeState)
         }.count
+    }
+
+    private func visibleWorkspaces(for serverID: SavedServer.ID) -> [SavedWorkspace] {
+        snapshot.workspaces(for: serverID).filter { workspace in
+            activeWorkspaceIDs.contains(workspace.id)
+                || TmuxSessionReconciliation.includesSavedWorkspace(
+                    workspace,
+                    discoveryStates: discoveryStates
+                )
+        }
     }
 
     private func disconnectActiveSession(_ sessionID: SavedWorkspace.ID) {
@@ -1003,7 +1031,7 @@ private struct ServerDetailView: View {
     }
 }
 
-private struct DisclosureRowLabel: View {
+struct DisclosureRowLabel: View {
     let title: String
     let systemImage: String
 
@@ -1154,14 +1182,14 @@ private struct SessionLibraryRow: View {
         case .serverAndLastOpened:
             HStack(spacing: 6) {
                 Text(server.displayName)
-                Text("opened \(workspace.lastOpenedAt, style: .relative)")
+                SessionLastOpenedText(date: workspace.lastOpenedAt)
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
             .lineLimit(1)
 
         case .lastOpenedOnly:
-            Text("opened \(workspace.lastOpenedAt, style: .relative)")
+            SessionLastOpenedText(date: workspace.lastOpenedAt)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1234,15 +1262,12 @@ private func serverSummary(
 }
 
 private struct TerminalSettingsView: View {
+    @Binding private var sourceSettings: TerminalSettings
     @State private var settings: TerminalSettings
-    let onChange: (TerminalSettings) -> Void
 
-    init(
-        initialSettings: TerminalSettings,
-        onChange: @escaping (TerminalSettings) -> Void
-    ) {
-        _settings = State(initialValue: initialSettings)
-        self.onChange = onChange
+    init(settings: Binding<TerminalSettings>) {
+        _sourceSettings = settings
+        _settings = State(initialValue: settings.wrappedValue)
     }
 
     var body: some View {
@@ -1284,6 +1309,23 @@ private struct TerminalSettingsView: View {
             .libraryHomeListRowSurface()
 
             Section {
+                Toggle(
+                    "Zoom multipane windows",
+                    isOn: zoomMultipaneWindowsByDefaultBinding
+                )
+                .tint(LibraryHomePalette.controlAccent)
+                .accessibilityIdentifier("settings.zoom-multipane-windows-by-default")
+            } header: {
+                Text("Windows & Panes")
+            } footer: {
+                Text(
+                    "You can override this per window from Panes. Remux normally clears zooms "
+                        + "it applied when closing. If one remains on the server, use prefix + z."
+                )
+            }
+            .libraryHomeListRowSurface()
+
+            Section {
                 Toggle("Allow older RSA host keys", isOn: allowInsecureRSAHostKeysBinding)
                     .tint(LibraryHomePalette.controlAccent)
                     .accessibilityIdentifier("settings.allow-insecure-rsa")
@@ -1306,6 +1348,13 @@ private struct TerminalSettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.form")
+        .onAppear {
+            settings = sourceSettings
+        }
+        .onChange(of: sourceSettings) { previousSettings, updatedSettings in
+            guard settings == previousSettings else { return }
+            settings = updatedSettings
+        }
     }
 
     private var useDefaultFontBinding: Binding<Bool> {
@@ -1313,7 +1362,7 @@ private struct TerminalSettingsView: View {
             get: { settings.fontSize == nil },
             set: { useDefault in
                 settings.fontSize = useDefault ? nil : TerminalSettings.defaultExplicitFontSize
-                onChange(settings)
+                sourceSettings = settings
             }
         )
     }
@@ -1323,7 +1372,7 @@ private struct TerminalSettingsView: View {
             get: { Double(settings.fontSize ?? TerminalSettings.defaultExplicitFontSize) },
             set: { value in
                 settings.fontSize = Float32(value)
-                onChange(settings)
+                sourceSettings = settings
             }
         )
     }
@@ -1333,7 +1382,7 @@ private struct TerminalSettingsView: View {
             get: { settings.theme },
             set: { value in
                 settings.theme = value
-                onChange(settings)
+                sourceSettings = settings
             }
         )
     }
@@ -1343,7 +1392,17 @@ private struct TerminalSettingsView: View {
             get: { settings.allowInsecureRSAHostKeys },
             set: { value in
                 settings.allowInsecureRSAHostKeys = value
-                onChange(settings)
+                sourceSettings = settings
+            }
+        )
+    }
+
+    private var zoomMultipaneWindowsByDefaultBinding: Binding<Bool> {
+        Binding(
+            get: { settings.zoomMultipaneWindowsByDefault },
+            set: { value in
+                settings.zoomMultipaneWindowsByDefault = value
+                sourceSettings = settings
             }
         )
     }

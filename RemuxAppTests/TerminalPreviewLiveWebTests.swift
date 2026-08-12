@@ -5,6 +5,13 @@ import XCTest
 @testable import Remux
 
 final class TerminalPreviewLiveWebTests: XCTestCase {
+    @MainActor
+    func testWebViewEnablesBackForwardNavigationGestures() {
+        let webView = TerminalPreviewLiveWebView.makeWebView()
+
+        XCTAssertTrue(webView.allowsBackForwardNavigationGestures)
+    }
+
     func testClientRoutesLocalhostTargetsToLiveWeb() async throws {
         let client = TerminalPreviewClient(
             loadFile: { _ in throw LiveWebRouteError.file },

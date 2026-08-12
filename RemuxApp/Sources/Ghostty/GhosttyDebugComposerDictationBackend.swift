@@ -84,7 +84,7 @@ final class GhosttyDebugComposerDictationBackend:
                 }
 
                 run.handler(.started)
-                for index in 0..<GhosttyComposerAudioLevelModel.barCount {
+                for index in 0..<GhosttyComposerAudioLevelModel.historyCapacity {
                     run.handler(.audioLevel(0.14 + (CGFloat(index % 7) * 0.1)))
                 }
 

@@ -58,6 +58,8 @@ final class TmuxScreenModel: ObservableObject {
     private var lastSubmittedClientSize: TmuxSessionController.ClientSize?
     private var lastStableClientSize: TmuxSessionController.ClientSize?
     private var viewportIsStable = true
+    private var lastViewportPointSize: CGSize?
+    private var lastViewportScale: CGFloat?
 
     private let initialClientSize: TmuxSessionController.ClientSize?
 
@@ -116,11 +118,13 @@ final class TmuxScreenModel: ObservableObject {
         self.session = session
         terminalScreenAdapter.activate(
             session: session,
-            initialViewportHandler: { [weak self] size, scale in
-                self?.prepareInitialViewport(size: size, scale: scale)
-            },
-            clientSizeHandler: { [weak self] size in
-                self?.submitClientSizeIfChanged(size)
+            zoomMultipaneWindowsByDefault: currentTerminalSettings.zoomMultipaneWindowsByDefault,
+            initialViewportHandler: { [weak self] size, scale, claimActiveViewport in
+                self?.prepareInitialViewport(
+                    size: size,
+                    scale: scale,
+                    claimActiveViewport: claimActiveViewport
+                )
             },
             viewportStabilityHandler: { [weak self] stable in
                 self?.setViewportStability(stable)
@@ -193,17 +197,35 @@ final class TmuxScreenModel: ObservableObject {
         session?.connect(viewport: viewport)
     }
 
-    private func prepareInitialViewport(size: CGSize, scale: CGFloat) {
+    private func prepareInitialViewport(
+        size: CGSize,
+        scale: CGFloat,
+        claimActiveViewport: Bool = false
+    ) {
         guard !stopped else { return }
-        session?.updateViewportMetrics(size: size, scale: scale)
-        guard initialViewport == nil else { return }
         guard let runtime else { return }
+        lastViewportPointSize = size
+        lastViewportScale = scale
 
         do {
-            guard let viewport = try runtime.measureTmuxViewport(size: size, scale: scale) else {
+            guard let measurement = try runtime.measureTmuxViewportLayout(
+                size: size,
+                scale: scale
+            ) else {
                 return
             }
-            connect(viewport: viewport)
+            session?.updateViewportMeasurement(measurement)
+            if initialViewport == nil {
+                connect(viewport: measurement.controlViewport)
+            } else {
+                _ = submitClientSizeIfChanged(
+                    TmuxSessionController.ClientSize(
+                        cols: UInt32(measurement.controlViewport.columns),
+                        rows: UInt32(measurement.controlViewport.rows)
+                    ),
+                    claimActiveViewport: claimActiveViewport
+                )
+            }
         } catch {
             startupFailure = String(describing: error)
             report(.disconnected(Self.initialViewportFailureReason))
@@ -215,13 +237,21 @@ final class TmuxScreenModel: ObservableObject {
     /// controller work while the first submission is still pending.
     @discardableResult
     func submitClientSizeIfChanged(
-        _ size: TmuxSessionController.ClientSize
+        _ size: TmuxSessionController.ClientSize,
+        claimActiveViewport: Bool = false
     ) -> Bool {
         guard !stopped, let controller = session?.controller else { return false }
-        guard size != lastSubmittedClientSize else { return false }
-        lastSubmittedClientSize = size
-        if viewportIsStable { lastStableClientSize = size }
-        controller.setClientSize(cols: size.cols, rows: size.rows)
+        let sizeChanged = size != lastSubmittedClientSize
+        guard sizeChanged || claimActiveViewport else { return false }
+        if sizeChanged {
+            lastSubmittedClientSize = size
+            if viewportIsStable { lastStableClientSize = size }
+        }
+        controller.setClientSize(
+            cols: size.cols,
+            rows: size.rows,
+            claimActiveViewport: claimActiveViewport
+        )
         return true
     }
 
@@ -292,6 +322,9 @@ final class TmuxScreenModel: ObservableObject {
     /// before each retained pane surface re-snapshots it in place.
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         guard settings != currentTerminalSettings else { return }
+        terminalScreenAdapter.setZoomMultipaneWindowsByDefault(
+            settings.zoomMultipaneWindowsByDefault
+        )
         guard !settings.hasSameTerminalAppearance(as: currentTerminalSettings) else {
             currentTerminalSettings = settings
             return
@@ -300,6 +333,9 @@ final class TmuxScreenModel: ObservableObject {
         currentTerminalSettings = settings
         session?.applyTerminalConfiguration(theme: settings.theme)
         terminalScreenAdapter.terminalConfigurationDidChange()
+        if let lastViewportPointSize, let lastViewportScale {
+            prepareInitialViewport(size: lastViewportPointSize, scale: lastViewportScale)
+        }
     }
 
     func stop() async {
@@ -307,6 +343,7 @@ final class TmuxScreenModel: ObservableObject {
         stopped = true
         stateObservation = nil
         transportFailureObservation = nil
+        terminalScreenAdapter.prepareForSessionShutdown()
         terminalScreenAdapter.invalidate()
         if let session {
             await session.shutdown()

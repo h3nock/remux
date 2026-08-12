@@ -120,7 +120,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
             if case .failed = session.state { return true }
             return false
         }
-        session.refresh()
+        session.restart()
         try await waitUntil("retry did not become ready") {
             if case .ready = session.state { return true }
             return false
@@ -162,7 +162,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
             if case .failed = session.state { return true }
             return false
         }
-        session.refresh()
+        session.restart()
         try await waitUntil("retry did not become ready") {
             if case .ready = session.state { return true }
             return false

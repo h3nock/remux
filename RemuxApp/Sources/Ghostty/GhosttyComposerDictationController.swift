@@ -28,7 +28,7 @@ enum GhosttyComposerDictationDraft {
 
 @MainActor
 final class GhosttyComposerAudioLevelModel: ObservableObject {
-    nonisolated static let barCount = 28
+    nonisolated static let historyCapacity = GhosttyComposerDictationMeterSizing.maximumBarCount
 
     @Published private(set) var levels: [CGFloat]
 
@@ -48,14 +48,14 @@ final class GhosttyComposerAudioLevelModel: ObservableObject {
     }
 
     func replace(with levels: [CGFloat]) {
-        precondition(levels.count == Self.barCount)
+        precondition(levels.count == Self.historyCapacity)
         self.levels = levels
     }
 
     private static var emptyLevels: [CGFloat] {
         Array(
             repeating: 0.08,
-            count: Self.barCount
+            count: Self.historyCapacity
         )
     }
 }
@@ -621,8 +621,6 @@ private final class GhosttyComposerAudioTapProcessor:
 
 @MainActor
 final class GhosttyComposerDictationController: ObservableObject {
-    static let meterBarCount = GhosttyComposerAudioLevelModel.barCount
-
     @Published private(set) var phase = GhosttyComposerDictationPhase.idle
     let audioLevelModel: GhosttyComposerAudioLevelModel
 

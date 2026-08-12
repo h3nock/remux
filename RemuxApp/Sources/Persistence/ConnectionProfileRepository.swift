@@ -46,15 +46,32 @@ struct ConnectionLibrarySnapshot: Equatable, Sendable {
     }
 
     func workspaces(for serverID: SavedServer.ID) -> [SavedWorkspace] {
-        workspaces
-            .filter { $0.serverID == serverID }
-            .sorted { lhs, rhs in
-                if lhs.lastOpenedAt != rhs.lastOpenedAt {
-                    return lhs.lastOpenedAt > rhs.lastOpenedAt
-                }
+        sortedByLastOpened(workspaces.filter { $0.serverID == serverID })
+    }
 
-                return lhs.sessionName.localizedStandardCompare(rhs.sessionName) == .orderedAscending
+    func recentWorkspaces(
+        excluding excludedWorkspaceIDs: Set<SavedWorkspace.ID>
+    ) -> [SavedWorkspace] {
+        sortedByLastOpened(
+            workspaces.filter { !excludedWorkspaceIDs.contains($0.id) }
+        )
+    }
+
+    private func sortedByLastOpened(
+        _ workspaces: [SavedWorkspace]
+    ) -> [SavedWorkspace] {
+        workspaces.sorted { lhs, rhs in
+            if lhs.lastOpenedAt != rhs.lastOpenedAt {
+                return lhs.lastOpenedAt > rhs.lastOpenedAt
             }
+
+            let nameComparison = lhs.sessionName.localizedStandardCompare(rhs.sessionName)
+            if nameComparison != .orderedSame {
+                return nameComparison == .orderedAscending
+            }
+
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
     }
 }
 

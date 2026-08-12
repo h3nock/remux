@@ -152,6 +152,43 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
     }
 
     @MainActor
+    func testSchemeHandlerUsesEntryMetadataOnlyForFirstRequest() async throws {
+        let metadataPresence = StaticHTMLMetadataPresenceRecorder()
+        let entryMetadata = RemuxSFTPFileMetadata(
+            size: 5,
+            permissions: nil,
+            modificationDate: nil
+        )
+        let resource = try TerminalPreviewStaticHTMLResource(
+            remotePath: "/srv/app/index.html",
+            entryMetadata: entryMetadata,
+            readLease: TerminalPreviewStaticHTMLReadLease(
+                stream: { _, metadata, onMetadata, onChunk in
+                    await metadataPresence.record(metadata != nil)
+                    try await onMetadata(metadata ?? entryMetadata)
+                    try await onChunk(Data("index".utf8))
+                },
+                close: {}
+            )
+        )
+        let handler = resource.makeSchemeHandler()
+        let firstTask = StaticHTMLSchemeTaskSpy(url: resource.entryURL)
+        let secondTask = StaticHTMLSchemeTaskSpy(url: resource.entryURL)
+
+        handler.webView(WKWebView(), start: firstTask)
+        try await waitUntil("first scheme task did not finish") {
+            firstTask.finishCount == 1
+        }
+        handler.webView(WKWebView(), start: secondTask)
+        try await waitUntil("second scheme task did not finish") {
+            secondTask.finishCount == 1
+        }
+
+        let recordedPresence = await metadataPresence.values()
+        XCTAssertEqual(recordedPresence, [true, false])
+    }
+
+    @MainActor
     func testStoppedSchemeTaskReceivesNothingAfterStopReturns() async throws {
         let entered = StaticHTMLTestGate()
         let release = StaticHTMLTestGate()
@@ -237,6 +274,7 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
         let webView = TerminalPreviewStaticHTMLView.makeWebView(
             schemeHandler: resource.makeSchemeHandler()
         )
+        XCTAssertTrue(webView.allowsBackForwardNavigationGestures)
         webView.load(URLRequest(url: resource.entryURL))
 
         try await waitUntil(
@@ -415,6 +453,18 @@ private actor StaticHTMLCloseCounter {
 
     func value() -> Int {
         count
+    }
+}
+
+private actor StaticHTMLMetadataPresenceRecorder {
+    private var recordedValues: [Bool] = []
+
+    func record(_ value: Bool) {
+        recordedValues.append(value)
+    }
+
+    func values() -> [Bool] {
+        recordedValues
     }
 }
 

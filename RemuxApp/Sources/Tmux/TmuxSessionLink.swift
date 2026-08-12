@@ -13,6 +13,7 @@ actor TmuxSessionLink {
     let controller: TmuxSessionController
 
     private let transport: any TmuxControlTransport
+    private let outboundDrainTimeout: Duration
     private var readTask: Task<Void, Never>?
     private var writeTask: Task<Void, Never>?
     private let outbound: AsyncStream<Data>
@@ -23,10 +24,12 @@ actor TmuxSessionLink {
 
     init(
         controller: TmuxSessionController,
-        transport: any TmuxControlTransport
+        transport: any TmuxControlTransport,
+        outboundDrainTimeout: Duration = .seconds(2)
     ) {
         self.controller = controller
         self.transport = transport
+        self.outboundDrainTimeout = outboundDrainTimeout
 
         var continuation: AsyncStream<Data>.Continuation!
         self.outbound = AsyncStream { continuation = $0 }
@@ -108,8 +111,6 @@ actor TmuxSessionLink {
     func stop() async {
         guard !stopped else { return }
         stopped = true
-        controller.setOutboundSink(nil)
-        outboundContinuation.finish()
 
         let pendingReadTask = readTask
         let pendingWriteTask = writeTask
@@ -117,10 +118,25 @@ actor TmuxSessionLink {
         self.writeTask = nil
 
         pendingReadTask?.cancel()
-        pendingWriteTask?.cancel()
-        await closeTransport(disposition: .reusable)
         _ = await pendingReadTask?.result
-        _ = await pendingWriteTask?.result
+        await controller.finishOutbound()
+        outboundContinuation.finish()
+        await finishWriteTask(pendingWriteTask)
+        await closeTransport(disposition: .reusable)
+    }
+
+    private func finishWriteTask(_ task: Task<Void, Never>?) async {
+        guard let task else { return }
+        let timeout = outboundDrainTimeout
+        let deadline = Task { [weak self, task] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, let self else { return }
+            await self.closeTransport(disposition: .invalidated)
+            task.cancel()
+        }
+        _ = await task.result
+        deadline.cancel()
+        _ = await deadline.result
     }
 
     private func invalidateTransportAfterWriteFailure() async {

@@ -71,7 +71,7 @@ final class TerminalPreviewSession: ObservableObject {
         startLoading(candidate, resolvingPathWith: resolver, client: client)
     }
 
-    func refresh() {
+    func restart() {
         guard let client, let currentCandidate, let pathResolver else { return }
         task?.cancel()
         releaseReadyResource()
