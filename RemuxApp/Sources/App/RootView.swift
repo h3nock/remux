@@ -1607,23 +1607,15 @@ struct ConnectionSetupView: View {
                     Picker("Method", selection: authenticationKindBinding) {
                         Text("Password").tag(SSHAuthenticationKind.password)
                         Text("Private Key").tag(SSHAuthenticationKind.privateKey)
-                        Text("None").tag(SSHAuthenticationKind.none)
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("connection.authentication.method")
 
                     switch draft.authenticationKind {
-                    case .password:
+                    case .password, .none:
                         passwordInputRow(validationMessage: validation.password)
                     case .privateKey:
                         privateKeyInputRows()
-                    case .none:
-                        Text(
-                            "Remux connects without a password or private key. Use this only " +
-                                "if the server accepts unauthenticated SSH, such as over Tailscale or WireGuard."
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                     }
                 } header: {
                     Text("Authentication")
@@ -2005,7 +1997,7 @@ struct ConnectionSetupView: View {
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            SecureField("Required", text: binding(for: \.password))
+            SecureField("Optional", text: binding(for: \.password))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.oneTimeCode)
@@ -2015,6 +2007,10 @@ struct ConnectionSetupView: View {
                 .onSubmit { advance(from: .password) }
                 .frame(minHeight: 28)
                 .accessibilityIdentifier("connection.password")
+
+            Text("Leave the password empty if you use Tailscale SSH.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
             fieldValidationMessage(validationMessage)
         }
