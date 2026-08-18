@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import GhosttyKit
 
@@ -373,7 +374,7 @@ final class TmuxTerminalSession: ObservableObject {
         columns: UInt32,
         rows: UInt32,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> GhosttyPanePreviewSession.RenderedPreview? {
+    ) async -> CGImage? {
         guard !isShutDown,
               state == .ready,
               livePaneIDs.contains(paneID),

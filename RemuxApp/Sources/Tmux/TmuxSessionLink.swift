@@ -36,9 +36,9 @@ actor TmuxSessionLink {
         self.outboundContinuation = continuation
     }
 
-    /// Establish the control channel with the real grid, then create the
-    /// native client with that same grid. This order prevents its initial
-    /// refresh/list batch from racing transport opening.
+    /// Establish the control channel before creating the native client. This
+    /// order prevents its initial refresh/list batch from racing transport
+    /// opening; the controller reconciles any newer viewport in its startup.
     func start(viewport: TmuxControlViewport?) async throws {
         guard !stopped else { throw LinkError.stopped }
         guard let viewport else { throw LinkError.missingInitialViewport }

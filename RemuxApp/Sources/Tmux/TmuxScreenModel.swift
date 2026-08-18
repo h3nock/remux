@@ -119,8 +119,12 @@ final class TmuxScreenModel: ObservableObject {
         terminalScreenAdapter.activate(
             session: session,
             zoomMultipaneWindowsByDefault: currentTerminalSettings.zoomMultipaneWindowsByDefault,
-            initialViewportHandler: { [weak self] size, scale in
-                self?.prepareInitialViewport(size: size, scale: scale)
+            initialViewportHandler: { [weak self] size, scale, claimActiveViewport in
+                self?.prepareInitialViewport(
+                    size: size,
+                    scale: scale,
+                    claimActiveViewport: claimActiveViewport
+                )
             },
             viewportStabilityHandler: { [weak self] stable in
                 self?.setViewportStability(stable)
@@ -193,7 +197,11 @@ final class TmuxScreenModel: ObservableObject {
         session?.connect(viewport: viewport)
     }
 
-    private func prepareInitialViewport(size: CGSize, scale: CGFloat) {
+    private func prepareInitialViewport(
+        size: CGSize,
+        scale: CGFloat,
+        claimActiveViewport: Bool = false
+    ) {
         guard !stopped else { return }
         guard let runtime else { return }
         lastViewportPointSize = size
@@ -210,10 +218,13 @@ final class TmuxScreenModel: ObservableObject {
             if initialViewport == nil {
                 connect(viewport: measurement.controlViewport)
             } else {
-                _ = submitClientSizeIfChanged(TmuxSessionController.ClientSize(
-                    cols: UInt32(measurement.controlViewport.columns),
-                    rows: UInt32(measurement.controlViewport.rows)
-                ))
+                _ = submitClientSizeIfChanged(
+                    TmuxSessionController.ClientSize(
+                        cols: UInt32(measurement.controlViewport.columns),
+                        rows: UInt32(measurement.controlViewport.rows)
+                    ),
+                    claimActiveViewport: claimActiveViewport
+                )
             }
         } catch {
             startupFailure = String(describing: error)
@@ -226,13 +237,21 @@ final class TmuxScreenModel: ObservableObject {
     /// controller work while the first submission is still pending.
     @discardableResult
     func submitClientSizeIfChanged(
-        _ size: TmuxSessionController.ClientSize
+        _ size: TmuxSessionController.ClientSize,
+        claimActiveViewport: Bool = false
     ) -> Bool {
         guard !stopped, let controller = session?.controller else { return false }
-        guard size != lastSubmittedClientSize else { return false }
-        lastSubmittedClientSize = size
-        if viewportIsStable { lastStableClientSize = size }
-        controller.setClientSize(cols: size.cols, rows: size.rows)
+        let sizeChanged = size != lastSubmittedClientSize
+        guard sizeChanged || claimActiveViewport else { return false }
+        if sizeChanged {
+            lastSubmittedClientSize = size
+            if viewportIsStable { lastStableClientSize = size }
+        }
+        controller.setClientSize(
+            cols: size.cols,
+            rows: size.rows,
+            claimActiveViewport: claimActiveViewport
+        )
         return true
     }
 
@@ -313,7 +332,6 @@ final class TmuxScreenModel: ObservableObject {
         try runtime?.applyTerminalSettings(settings)
         currentTerminalSettings = settings
         session?.applyTerminalConfiguration(theme: settings.theme)
-        terminalScreenAdapter.terminalConfigurationDidChange()
         if let lastViewportPointSize, let lastViewportScale {
             prepareInitialViewport(size: lastViewportPointSize, scale: lastViewportScale)
         }

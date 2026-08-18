@@ -210,7 +210,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: "Sessions",
-                    accessibilityHint: "Switch active sessions or open the Remux library.",
+                    accessibilityHint: "Switch active sessions, resume recent or available sessions, or create a new session.",
                     accessibilityIdentifier: "terminal.sessions",
                     isActive: false,
                     isEnabled: !isInteractionLocked,

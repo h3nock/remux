@@ -112,19 +112,36 @@ private struct RemuxWorkspaceShell: View {
             }
         }
         .sheet(isPresented: $isSessionSwitcherPresented) {
-            ActiveSessionSwitcherView(
-                sessions: ActiveSessionSwitcherProjection.items(
-                    sessions: model.activeSessions,
+            SessionSwitcherView(
+                projection: SessionSwitcherProjection(
+                    snapshot: model.library,
+                    activeSessions: model.activeSessions,
+                    discoveryStates: model.tmuxSessionDiscoveryStates,
                     selectedSessionID: selectedTerminalID
                 ),
                 servers: model.library.servers,
                 currentServerID: selectedActiveSession?.target.server.id,
-                onSelectSession: model.showActiveSession,
+                onSelectActiveSession: model.showActiveSession,
+                onResumeSession: { workspaceID in
+                    traceSessionOpenTap(workspaceID)
+                    Task { await model.connect(to: workspaceID) }
+                },
+                onResumeAvailableSession: { serverID, sessionName in
+                    Task {
+                        await model.connectToDiscoveredSession(
+                            named: sessionName,
+                            on: serverID
+                        )
+                    }
+                },
                 onDisconnectSession: model.disconnectActiveSession,
-                onCreateSession: beginNewWorkspaceFromTerminal
+                onCreateSession: beginNewWorkspaceFromTerminal,
+                onRefresh: model.refreshTmuxSessions,
+                discoveryStates: model.tmuxSessionDiscoveryStates
             )
-            .terminalSelectionSheetPresentation(
-                colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
+            .terminalSelectionSheetPresentationBackground()
+            .ghosttyTerminalChromePresentation(
+                model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
         }
@@ -262,6 +279,7 @@ private struct RemuxWorkspaceShell: View {
             ConnectionLibraryView(
                 snapshot: model.library,
                 activeSessions: model.activeSessions,
+                discoveryStates: model.tmuxSessionDiscoveryStates,
                 terminalSettings: terminalSettingsBinding,
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID in
@@ -469,6 +487,7 @@ private struct ConnectionLibraryView: View {
 
     let snapshot: ConnectionLibrarySnapshot
     let activeSessions: [ActiveTerminalSession]
+    let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
     @Binding var terminalSettings: TerminalSettings
     let onAddServer: () -> Void
     let onAddWorkspace: (SavedServer.ID) -> Void
@@ -630,7 +649,7 @@ private struct ConnectionLibraryView: View {
     private var serversSection: some View {
         Section {
             ForEach(snapshot.servers) { server in
-                let workspaces = snapshot.workspaces(for: server.id)
+                let workspaces = visibleWorkspaces(for: server.id)
                 let latest = workspaces.first
 
                 NavigationLink {
@@ -722,15 +741,12 @@ private struct ConnectionLibraryView: View {
     }
 
     private var recentWorkspaces: [SavedWorkspace] {
-        snapshot.workspaces
-            .filter { !activeWorkspaceIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                if lhs.lastOpenedAt != rhs.lastOpenedAt {
-                    return lhs.lastOpenedAt > rhs.lastOpenedAt
-                }
-
-                return lhs.sessionName.localizedStandardCompare(rhs.sessionName) == .orderedAscending
-            }
+        snapshot.recentWorkspaces(excluding: activeWorkspaceIDs).filter {
+            TmuxSessionReconciliation.includesSavedWorkspace(
+                $0,
+                discoveryStates: discoveryStates
+            )
+        }
     }
 
     private var visibleRecentWorkspaces: [SavedWorkspace] {
@@ -743,6 +759,16 @@ private struct ConnectionLibraryView: View {
             $0.target.server.id == serverID
                 && TerminalRuntimeStateProjection.isRootVisibleConnected($0.runtimeState)
         }.count
+    }
+
+    private func visibleWorkspaces(for serverID: SavedServer.ID) -> [SavedWorkspace] {
+        snapshot.workspaces(for: serverID).filter { workspace in
+            activeWorkspaceIDs.contains(workspace.id)
+                || TmuxSessionReconciliation.includesSavedWorkspace(
+                    workspace,
+                    discoveryStates: discoveryStates
+                )
+        }
     }
 
     private func disconnectActiveSession(_ sessionID: SavedWorkspace.ID) {
@@ -1005,7 +1031,7 @@ private struct ServerDetailView: View {
     }
 }
 
-private struct DisclosureRowLabel: View {
+struct DisclosureRowLabel: View {
     let title: String
     let systemImage: String
 
@@ -1156,14 +1182,14 @@ private struct SessionLibraryRow: View {
         case .serverAndLastOpened:
             HStack(spacing: 6) {
                 Text(server.displayName)
-                Text("opened \(workspace.lastOpenedAt, style: .relative)")
+                SessionLastOpenedText(date: workspace.lastOpenedAt)
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
             .lineLimit(1)
 
         case .lastOpenedOnly:
-            Text("opened \(workspace.lastOpenedAt, style: .relative)")
+            SessionLastOpenedText(date: workspace.lastOpenedAt)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

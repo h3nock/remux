@@ -475,6 +475,12 @@ final class GhosttyKitControlSurface {
         return report(ghostty_terminal_surface_set_visible(handle, visible))
     }
 
+    @discardableResult
+    func requestFrame() -> Bool {
+        guard !invalidated else { return false }
+        return report(ghostty_terminal_surface_request_frame(handle))
+    }
+
     func currentSize() -> ghostty_surface_size_s {
         guard !invalidated else { return ghostty_surface_size_s() }
         var size = ghostty_surface_size_s()

@@ -676,6 +676,145 @@ final class RemuxAppUITests: XCTestCase {
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
 
+    func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
+        let primarySessionName = try generatedLiveLatencySessionName("switcher-primary")
+        let availableSessionName = try generatedLiveLatencySessionName("switcher-available")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(availableSessionName)
+            cleanupGeneratedLiveLatencySessionIfPossible(primarySessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(
+            traceRuntime: true,
+            sessionNameOverride: primarySessionName
+        )
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+
+        sendTerminalCommand("tmux new-session -d -s \(availableSessionName)")
+        hideKeyboardIfPresent()
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+
+        openSessionSwitcherFromTerminal()
+
+        let sessionSheet = app.otherElements["terminal.sessions.sheet"]
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 5))
+        let closeButton = app.buttons["terminal.sessions.close"]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 5))
+        let mediumTop = closeButton.frame.minY
+        attachScreenshot(named: "live-session-switcher-medium")
+
+        let refreshButton = app.buttons["terminal.sessions.refresh"]
+        XCTAssertTrue(refreshButton.waitForExistence(timeout: 5))
+        for _ in 0..<20 where !refreshButton.isEnabled {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(refreshButton.isEnabled)
+        refreshButton.tap()
+
+        let inlineAvailableRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.available-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+            .firstMatch
+        let availableBrowser = app.buttons["terminal.sessions.available-browser"]
+        let sessionList = app.descendants(matching: .any)["terminal.sessions.list"]
+        let discoveryDeadline = Date().addingTimeInterval(15)
+        while !inlineAvailableRow.exists,
+              !availableBrowser.exists,
+              Date() < discoveryDeadline {
+            if sessionList.exists {
+                sessionList.swipeUp()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(
+            inlineAvailableRow.exists || availableBrowser.exists,
+            "Discovered remote tmux sessions should be reachable under Available."
+        )
+        XCTAssertTrue(app.staticTexts["Available"].exists)
+        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
+
+        if closeButton.frame.minY >= mediumTop - 100 {
+            sessionSheet.swipeUp()
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        }
+        XCTAssertLessThan(
+            closeButton.frame.minY,
+            mediumTop - 100,
+            "Dragging upward should expand the session sheet before scrolling its list."
+        )
+        attachScreenshot(named: "live-session-switcher-active-and-available-large")
+
+        let availableRow: XCUIElement
+        if availableBrowser.exists {
+            for _ in 0..<8 where !availableBrowser.isHittable {
+                sessionList.swipeUp()
+            }
+            XCTAssertTrue(availableBrowser.isHittable)
+            availableBrowser.tap()
+
+            let browserView = app.descendants(matching: .any)[
+                "terminal.sessions.available-browser-view"
+            ]
+            XCTAssertTrue(browserView.waitForExistence(timeout: 5))
+            let searchField = app.searchFields.firstMatch
+            XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+            XCTAssertLessThan(
+                searchField.frame.minY,
+                mediumTop - 100,
+                "The Available browser should present at the large detent."
+            )
+            searchField.tap()
+            searchField.typeText(availableSessionName)
+            availableRow = app.descendants(matching: .any)
+                .matching(identifier: "terminal.sessions.available-result")
+                .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+                .firstMatch
+            attachScreenshot(named: "live-session-switcher-available-search")
+        } else {
+            availableRow = inlineAvailableRow
+            for _ in 0..<8 where !availableRow.exists || !availableRow.isHittable {
+                sessionList.swipeUp()
+            }
+        }
+        XCTAssertTrue(
+            availableRow.waitForExistence(timeout: 10) && availableRow.isHittable,
+            "The specifically generated tmux session should be reachable under Available."
+        )
+        availableRow.tap()
+        XCTAssertFalse(
+            app.otherElements["terminal.sessions.sheet"].waitForExistence(timeout: 1)
+        )
+        waitForLiveTerminalReady(timeout: 60)
+
+        openSessionSwitcherFromTerminal()
+        let availableActiveRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+            .firstMatch
+        XCTAssertTrue(
+            availableActiveRow.waitForExistence(timeout: 10),
+            "The discovered session should move to Active after resuming."
+        )
+
+        let primaryRecentRow = disconnectActiveSessionFromSwitcher(named: primarySessionName)
+        primaryRecentRow.tap()
+        XCTAssertFalse(
+            app.otherElements["terminal.sessions.sheet"].waitForExistence(timeout: 1)
+        )
+        waitForLiveTerminalReady(timeout: 60)
+
+        openSessionSwitcherFromTerminal()
+        let resumedActiveRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", primarySessionName))
+            .firstMatch
+        XCTAssertTrue(resumedActiveRow.waitForExistence(timeout: 10))
+        XCTAssertFalse(primaryRecentRow.exists)
+        attachScreenshot(named: "live-session-switcher-discovered-and-recent-resumed")
+        app.buttons["terminal.sessions.close"].tap()
+    }
+
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("keyboard")
         defer {
@@ -740,7 +879,7 @@ final class RemuxAppUITests: XCTestCase {
         let panes = app.buttons["terminal.panes"]
         XCTAssertTrue(panes.waitForExistence(timeout: 10))
         panes.tap()
-        let split = app.buttons["Split"]
+        let split = app.buttons["terminal.pane.split.right"]
         XCTAssertTrue(split.waitForExistence(timeout: 8))
         split.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(5))
@@ -766,18 +905,17 @@ final class RemuxAppUITests: XCTestCase {
         let paneTiles = panePickerTiles()
         let firstPaneTile = paneTiles[0]
         let secondPaneTile = paneTiles[1]
-        assertPreviewTilesContainRenderedImages(
-            tiles: paneTiles,
-            attachmentName: "agent-tui-pane-previews"
-        )
-        let firstPaneIsActive = firstPaneTile.label.hasSuffix(", active")
-        let secondPaneIsActive = secondPaneTile.label.hasSuffix(", active")
-        XCTAssertNotEqual(
-            firstPaneIsActive,
-            secondPaneIsActive,
+        assertPaneTopology(paneCount: 2)
+        let selectedPaneTiles = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.pane.tile."))
+            .matching(NSPredicate(format: "selected == true"))
+        XCTAssertEqual(
+            selectedPaneTiles.count,
+            1,
             "Exactly one profiling pane must be active."
         )
-        var targetIndex = firstPaneIsActive ? 1 : 0
+        let selectedPaneIdentifier = selectedPaneTiles.element(boundBy: 0).identifier
+        var targetIndex = firstPaneTile.identifier == selectedPaneIdentifier ? 1 : 0
         dismissTopSheetIfPresent()
 
         for _ in 0..<switchCount {
@@ -788,53 +926,13 @@ final class RemuxAppUITests: XCTestCase {
             targetIndex = targetIndex == 0 ? 1 : 0
         }
 
-        // Both panes have now been presented at the real app viewport. The
-        // inactive tile must come from its last full-viewport live capture,
-        // not the cold split-geometry fallback.
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        for tile in panePickerTiles() {
-            assertPreviewTileUsesFullViewportWidth(tile: tile)
-        }
+        assertPaneTopology(paneCount: 2)
         dismissTopSheetIfPresent()
 
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
-    }
-
-    func testLiveVisitedPanePreviewsSurviveThemeChangeWhenConfigured() throws {
-        let sessionName = try liveAgentTUISessionName()
-        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
-
-        openFirstSavedSession()
-        waitForLiveTerminalReady(timeout: 90)
-
-        for paneIndex in 0..<2 {
-            openPanesSheet()
-            XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-            panePickerTiles()[paneIndex].tap()
-            waitForLiveTerminalReady(timeout: 30)
-        }
-
-        openHomeFromTerminal()
-        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
-        app.buttons["library.settings"].tap()
-        XCTAssertTrue(settingsForm.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Mocha"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 2))
-        app.buttons["Mocha"].tap()
-        app.buttons["Latte"].tap()
-        app.navigationBars["Settings"].buttons.element(boundBy: 0).tap()
-
-        let activeSession = activeSessionRows.firstMatch
-        XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
-        activeSession.tap()
-        waitForLiveTerminalReady(timeout: 30)
-        openPanesSheet()
-        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        for tile in panePickerTiles() {
-            assertPreviewTileUsesFullViewportWidth(tile: tile)
-        }
     }
 
     /// Deliberately synthetic scrollback/throughput stress. This proves lossless
@@ -877,7 +975,7 @@ final class RemuxAppUITests: XCTestCase {
         let panes = app.buttons["terminal.panes"]
         XCTAssertTrue(panes.waitForExistence(timeout: 10))
         panes.tap()
-        XCTAssertTrue(app.buttons["Split"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["terminal.pane.split.right"].waitForExistence(timeout: 8))
         dismissTopSheetIfPresent()
 
         let windows = app.buttons["terminal.windows"]
@@ -890,7 +988,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(activeSessionRows.firstMatch.waitForExistence(timeout: 5))
     }
 
-    func testLiveSSHPreviewSheetsRenderTerminalImagesWhenConfigured() throws {
+    func testLiveSSHSelectionSheetsRenderPaneTopologyAndWindowPreviewsWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("preview")
         defer {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
@@ -905,7 +1003,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.split", fallbackLabel: "Split")
+        tapPickerButton(identifier: "terminal.pane.split.right", fallbackLabel: "Split right")
         waitForLiveTerminalReady(timeout: 30)
 
         sendTerminalCommand(
@@ -914,10 +1012,7 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        assertPreviewTilesContainRenderedImages(
-            tiles: panePickerTiles(),
-            attachmentName: "pane-previews"
-        )
+        assertPaneTopology(paneCount: 2, attachmentName: "pane-topology")
         dismissTopSheetIfPresent()
 
         openWindowsSheet()
@@ -1164,7 +1259,7 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.split", fallbackLabel: "Split")
+        tapPickerButton(identifier: "terminal.pane.split.right", fallbackLabel: "Split right")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
@@ -1404,7 +1499,7 @@ final class RemuxAppUITests: XCTestCase {
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(1, timeout: 10))
 
-        tapPickerButton(identifier: "terminal.pane.stack", fallbackLabel: "Stack")
+        tapPickerButton(identifier: "terminal.pane.split.down", fallbackLabel: "Split down")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
@@ -1561,6 +1656,7 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(4, timeout: 20))
+        assertPaneTopology(paneCount: 4, attachmentName: "dense-pane-topology")
         let pane4 = panePickerTiles()[3]
 
         pane4.tap()
@@ -1591,7 +1687,7 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.split", fallbackLabel: "Split")
+        tapPickerButton(identifier: "terminal.pane.split.right", fallbackLabel: "Split right")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
@@ -3025,7 +3121,6 @@ final class RemuxAppUITests: XCTestCase {
         attachmentName: String,
         minDistinctColors: Int = 8,
         minNonBackgroundPixels: Int = 2_500,
-        minBrightPixels: Int = 1_000,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -3041,20 +3136,9 @@ final class RemuxAppUITests: XCTestCase {
 
         let deadline = Date().addingTimeInterval(15)
         var lastScreenshot: XCUIScreenshot?
-        var lastStats: [String: (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int)] = [:]
-        var lastAccessibilityValues: [String: String] = [:]
+        var lastStats: [String: (distinctColors: Int, nonBackgroundPixels: Int)] = [:]
 
         while Date() < deadline {
-            lastAccessibilityValues = Dictionary(
-                uniqueKeysWithValues: zip(tileIdentifiers, tiles).map { identifier, tile in
-                    (identifier, tile.value as? String ?? "")
-                }
-            )
-            guard lastAccessibilityValues.values.allSatisfy({ $0 == "Preview ready" }) else {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-                continue
-            }
-
             let screenshot = XCUIScreen.main.screenshot()
             lastScreenshot = screenshot
 
@@ -3068,8 +3152,7 @@ final class RemuxAppUITests: XCTestCase {
             let allTilesRendered = tileIdentifiers.allSatisfy { identifier in
                 guard let stats = lastStats[identifier] else { return false }
                 return stats.distinctColors > minDistinctColors &&
-                    stats.nonBackgroundPixels > minNonBackgroundPixels &&
-                    stats.brightPixels > minBrightPixels
+                    stats.nonBackgroundPixels > minNonBackgroundPixels
             }
             if allTilesRendered {
                 let attachment = XCTAttachment(screenshot: screenshot)
@@ -3090,14 +3173,11 @@ final class RemuxAppUITests: XCTestCase {
         }
 
         let diagnostics = tileIdentifiers.map { identifier in
-            let value = lastAccessibilityValues[identifier, default: ""]
             guard let stats = lastStats[identifier] else {
-                return "\(identifier): accessibilityValue=\(value.debugDescription), no pixel sample"
+                return "\(identifier): no pixel sample"
             }
-            return "\(identifier): accessibilityValue=\(value.debugDescription), " +
-                "distinctColors=\(stats.distinctColors), " +
-                "nonBackgroundPixels=\(stats.nonBackgroundPixels), " +
-                "brightPixels=\(stats.brightPixels)"
+            return "\(identifier): distinctColors=\(stats.distinctColors), " +
+                "nonBackgroundPixels=\(stats.nonBackgroundPixels)"
         }.joined(separator: "; ")
 
         XCTFail(
@@ -3107,35 +3187,46 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    private func assertPaneTopology(
+        paneCount: Int,
+        attachmentName: String? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let paneSheet = elementWithIdentifier("terminal.panes.sheet")
+        XCTAssertTrue(paneSheet.waitForExistence(timeout: 5), file: file, line: line)
+
+        let tiles = panePickerTiles()
+        XCTAssertEqual(tiles.count, paneCount, file: file, line: line)
+        var selectedPaneCount = 0
+        for tile in tiles where tile.isSelected {
+            selectedPaneCount += 1
+        }
+        XCTAssertEqual(
+            selectedPaneCount,
+            1,
+            "Exactly one topology pane must be selected.",
+            file: file,
+            line: line
+        )
+
+        if let attachmentName {
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = attachmentName
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     private func previewTileRenderedPixelStats(
         screenshot: XCUIScreenshot,
         tile: XCUIElement
-    ) -> (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int)? {
+    ) -> (distinctColors: Int, nonBackgroundPixels: Int)? {
         guard let snapshot = previewTileRenderedPixels(
             screenshot: screenshot,
             tile: tile
         ) else { return nil }
-        return previewTileRenderedPixelStats(snapshot)
-    }
-
-    private func previewTileRenderedPixelStats(
-        _ snapshot: (pixels: [UInt8], width: Int, height: Int)
-    ) -> (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int) {
-        let stats = pixelStats(snapshot)
-        var brightPixels = 0
-        for offset in stride(from: 0, to: snapshot.pixels.count, by: 4) {
-            let red = Int(snapshot.pixels[offset])
-            let green = Int(snapshot.pixels[offset + 1])
-            let blue = Int(snapshot.pixels[offset + 2])
-            if red + green + blue >= 360 {
-                brightPixels += 1
-            }
-        }
-        return (
-            distinctColors: stats.distinctColors,
-            nonBackgroundPixels: stats.nonBackgroundPixels,
-            brightPixels: brightPixels
-        )
+        return pixelStats(snapshot)
     }
 
     private func previewTileRenderedPixels(
@@ -3164,106 +3255,6 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         return renderedPixels(cgImage: cgImage, crop: pixelCrop)
-    }
-
-    private func assertPreviewTileUsesFullViewportWidth(
-        tile: XCUIElement,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        let tileIdentifier = tile.identifier
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: 5),
-            "Missing preview tile \(tileIdentifier)",
-            file: file,
-            line: line
-        )
-
-        let deadline = Date().addingTimeInterval(15)
-        var lastSpan: Double = 0
-        var lastTrailingPixels = 0
-        var lastTrailingRowRatio: Double = 0
-        var lastDistinctColors = 0
-        var lastNonBackgroundPixels = 0
-        var lastBrightPixels = 0
-        while Date() < deadline {
-            let screenshot = XCUIScreen.main.screenshot()
-            if let pixels = previewTileRenderedPixels(
-                screenshot: screenshot,
-                tile: tile
-            ) {
-                let rendered = previewTileRenderedPixelStats(pixels)
-                lastDistinctColors = rendered.distinctColors
-                lastNonBackgroundPixels = rendered.nonBackgroundPixels
-                lastBrightPixels = rendered.brightPixels
-                let coverage = previewWidthCoverage(pixels)
-                lastSpan = coverage.span
-                lastTrailingPixels = coverage.trailingPixels
-                lastTrailingRowRatio = coverage.trailingRowRatio
-                if lastDistinctColors > 8,
-                   lastNonBackgroundPixels > 2_500,
-                   lastBrightPixels > 1_000,
-                   coverage.span >= 0.72,
-                   coverage.trailingPixels >= 100,
-                   coverage.trailingRowRatio >= 0.18 {
-                    let attachment = XCTAttachment(screenshot: screenshot)
-                    attachment.name = "full-viewport-preview-\(tileIdentifier)"
-                    attachment.lifetime = .keepAlways
-                    add(attachment)
-                    return
-                }
-            }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-        }
-
-        XCTFail(
-            "Preview tile \(tileIdentifier) remained blank or split-width after a live full-viewport visit; distinctColors=\(lastDistinctColors) nonBackgroundPixels=\(lastNonBackgroundPixels) brightPixels=\(lastBrightPixels) span=\(lastSpan) trailingPixels=\(lastTrailingPixels) trailingRowRatio=\(lastTrailingRowRatio)",
-            file: file,
-            line: line
-        )
-    }
-
-    private func previewWidthCoverage(
-        _ snapshot: (pixels: [UInt8], width: Int, height: Int)
-    ) -> (span: Double, trailingPixels: Int, trailingRowRatio: Double) {
-        var columnBackgrounds = Array(repeating: UInt32(0), count: snapshot.width)
-        for x in 0..<snapshot.width {
-            var colorCounts: [UInt32: Int] = [:]
-            for y in 0..<snapshot.height {
-                let offset = (y * snapshot.width + x) * 4
-                colorCounts[quantizedColor(snapshot.pixels, offset: offset), default: 0] += 1
-            }
-            columnBackgrounds[x] = colorCounts.max(by: { $0.value < $1.value })?.key ?? 0
-        }
-
-        var minX = snapshot.width
-        var maxX = -1
-        var trailingPixels = 0
-        var trailingRows = 0
-        let trailingStart = snapshot.width * 3 / 4
-        for y in 0..<snapshot.height {
-            var rowHasTrailingContent = false
-            for x in 0..<snapshot.width {
-                let offset = (y * snapshot.width + x) * 4
-                let color = quantizedColor(snapshot.pixels, offset: offset)
-                guard color != columnBackgrounds[x] else { continue }
-                minX = min(minX, x)
-                maxX = max(maxX, x)
-                if x >= trailingStart {
-                    trailingPixels += 1
-                    rowHasTrailingContent = true
-                }
-            }
-            if rowHasTrailingContent {
-                trailingRows += 1
-            }
-        }
-        guard maxX >= minX else { return (0, 0, 0) }
-        return (
-            span: Double(maxX - minX + 1) / Double(snapshot.width),
-            trailingPixels: trailingPixels,
-            trailingRowRatio: Double(trailingRows) / Double(snapshot.height)
-        )
     }
 
     private func quantizedColor(_ pixels: [UInt8], offset: Int) -> UInt32 {
@@ -3388,6 +3379,46 @@ final class RemuxAppUITests: XCTestCase {
         tapTerminalHomeButton(homeButton)
 
         XCTAssertTrue(app.descendants(matching: .any)["library.list"].waitForExistence(timeout: 5))
+    }
+
+    private func openSessionSwitcherFromTerminal() {
+        let buttons = app.buttons.matching(identifier: "terminal.sessions")
+        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: 5))
+        guard let button = uniqueHittableElement(
+            in: buttons,
+            description: "terminal.sessions"
+        ) else {
+            XCTFail("Missing hittable terminal Sessions button.")
+            return
+        }
+        button.tap()
+    }
+
+    private func disconnectActiveSessionFromSwitcher(named sessionName: String) -> XCUIElement {
+        let activeRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
+            .firstMatch
+        XCTAssertTrue(activeRow.waitForExistence(timeout: 5))
+        activeRow.swipeLeft()
+
+        let disconnectButton = app.buttons["terminal.sessions.disconnect"]
+        XCTAssertTrue(disconnectButton.waitForExistence(timeout: 5))
+        disconnectButton.tap()
+
+        let recentRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.recent-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
+            .firstMatch
+        let deadline = Date().addingTimeInterval(5)
+        while !recentRow.isHittable, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertTrue(
+            recentRow.isHittable,
+            "Disconnecting from Remux should retain the session under Recent."
+        )
+        return recentRow
     }
 
     private func waitForTerminalHomeButton(timeout: TimeInterval = 2) -> XCUIElement {
@@ -3586,8 +3617,8 @@ final class RemuxAppUITests: XCTestCase {
             waitForAnyPickerElement(
                 [
                     elementWithIdentifier("terminal.panes.sheet"),
-                    app.buttons["terminal.pane.split"],
-                    app.buttons["Split"],
+                    app.buttons["terminal.pane.split.right"],
+                    app.buttons["Split right"],
                 ],
                 timeout: 8
             ),
@@ -3603,8 +3634,8 @@ final class RemuxAppUITests: XCTestCase {
 
     private var panePickerIsOpen: Bool {
         elementWithIdentifier("terminal.panes.sheet").exists
-            || app.buttons["terminal.pane.split"].exists
-            || app.buttons["Split"].exists
+            || app.buttons["terminal.pane.split.right"].exists
+            || app.buttons["Split right"].exists
     }
 
     private func tapPickerButton(identifier: String, fallbackLabel: String) {
@@ -3649,11 +3680,6 @@ final class RemuxAppUITests: XCTestCase {
 
         if elementWithIdentifier("terminal.windows.scroll").exists {
             elementWithIdentifier("terminal.windows.scroll").swipeUp(velocity: .slow)
-            return
-        }
-
-        if elementWithIdentifier("terminal.panes.scroll").exists {
-            elementWithIdentifier("terminal.panes.scroll").swipeUp(velocity: .slow)
             return
         }
 

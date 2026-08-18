@@ -113,6 +113,32 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await fulfillment(of: [requestFailure], timeout: 0.05)
     }
 
+    func testWindowPaneMetadataRefreshDrainsOneRequest() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestRefreshWindowPaneMetadata(windowID: 0)
+        await drain(harness.controller)
+
+        let writes = harness.recorder.takeStrings()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertFalse(try XCTUnwrap(writes.first).isEmpty)
+    }
+
+    func testWindowPaneMetadataRefreshIgnoresUnknownWindow() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestRefreshWindowPaneMetadata(windowID: 99)
+        await drain(harness.controller)
+
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
+    }
+
     func testShutdownResumesOutstandingPaneCurrentDirectoryQuery() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.threePaneZoomedWindow,
@@ -646,6 +672,56 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(harness.recorder.takeStrings(), ["refresh-client -C 100x40\n"])
     }
 
+    func testClientSizeBeforeStartBecomesLatestInitialGrid() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let recorder = ControllerOutboundRecorder()
+        let attaching = expectation(description: "controller started attaching")
+        let controller = TmuxSessionController(
+            callbacks: .init(
+                onState: { state in
+                    if state == .attaching { attaching.fulfill() }
+                },
+                onRequestFailed: { request in
+                    XCTFail("unexpected request failure: \(request)")
+                }
+            )
+        )
+        addTeardownBlock {
+            _ = runtime
+            await withCheckedContinuation { continuation in
+                controller.shutdown { continuation.resume() }
+            }
+        }
+        controller.setOutboundSink { recorder.append($0) }
+        controller.setClientSize(cols: 83, rows: 44, claimActiveViewport: true)
+        controller.setClientSize(cols: 100, rows: 45, claimActiveViewport: true)
+        await drain(controller)
+
+        XCTAssertTrue(recorder.takeStrings().isEmpty)
+
+        try await withCheckedThrowingContinuation { continuation in
+            controller.start(initialSize: .init(cols: 83, rows: 44)) { result in
+                continuation.resume(with: result)
+            }
+        }
+        await fulfillment(of: [attaching], timeout: 1)
+        controller.pump(Data(
+            "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n".utf8
+        ))
+        await drain(controller)
+
+        XCTAssertEqual(
+            recorder.takeStrings(),
+            [
+                "display-message -p '#{version}'\n"
+                    + "refresh-client -C 100x45\n"
+                    + "list-windows -F '#{session_id} #{window_id} #{window_active} "
+                    + "#{pane_id} #{window_width} #{window_height} #{window_layout} "
+                    + "#{window_visible_layout} #{window_name}'\n"
+            ]
+        )
+    }
+
     func testClientSizeRevertPublishesEachDistinctSize() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
@@ -657,6 +733,142 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(
             harness.recorder.takeStrings(),
             ["refresh-client -C 100x40\n", "refresh-client -C 83x44\n"]
+        )
+    }
+
+    func testActiveViewportClaimDoesNothingWhenWindowMatchesClientSize() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+
+        harness.controller.claimActiveViewportIfNeeded()
+        await drain(harness.controller)
+
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
+    }
+
+    func testExplicitViewportReclaimRunsWhenTopologyStillMatches() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+
+        harness.controller.reclaimActiveViewport()
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["select-window -t @0\n"])
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber
+        ).utf8))
+        await drain(harness.controller)
+
+        harness.controller.reclaimActiveViewport()
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["select-window -t @0\n"],
+            "a matching reclaim must not wait for a layout change that tmux will not emit"
+        )
+    }
+
+    func testInputClaimsMismatchedActiveViewportBeforeSendingBytes() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let desktopLayout = "d4fd,189x49,0,0,0"
+        harness.controller.pump(Data(
+            "%layout-change @0 \(desktopLayout) \(desktopLayout) *\n".utf8
+        ))
+        await drain(harness.controller)
+
+        XCTAssertTrue(harness.controller.sendInput(paneID: 0, Data("a".utf8)))
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["select-window -t @0\nsend-keys -H -t %0 61\n"]
+        )
+
+        XCTAssertTrue(harness.controller.sendInput(paneID: 0, Data("b".utf8)))
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["send-keys -H -t %0 62\n"],
+            "key repeat must not enqueue duplicate viewport claims"
+        )
+
+        harness.controller.pump(Data(
+            "%layout-change @0 \(desktopLayout) \(desktopLayout) *\n".utf8
+        ))
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber
+        ).utf8))
+        await drain(harness.controller)
+
+        XCTAssertTrue(harness.controller.sendInput(paneID: 0, Data("c".utf8)))
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["send-keys -H -t %0 63\n"],
+            "a command reply must not settle the claim while the viewport still mismatches"
+        )
+
+        let remuxLayout = "b7dd,83x44,0,0,0"
+        harness.controller.pump(Data(
+            "%layout-change @0 \(remuxLayout) \(remuxLayout) *\n".utf8
+        ))
+        harness.controller.pump(Data(
+            "%layout-change @0 \(desktopLayout) \(desktopLayout) *\n".utf8
+        ))
+        await drain(harness.controller)
+
+        XCTAssertTrue(harness.controller.sendInput(paneID: 0, Data("d".utf8)))
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["select-window -t @0\nsend-keys -H -t %0 64\n"]
+        )
+    }
+
+    func testSelectedViewportResizePublishesRefreshThenClaimInOneWrite() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+
+        harness.controller.setClientSize(
+            cols: 100,
+            rows: 40,
+            claimActiveViewport: true
+        )
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["refresh-client -C 100x40\nselect-window -t @0\n"]
+        )
+    }
+
+    func testActiveViewportClaimPrecedesTopologyActionInOneWrite() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+        let desktopLayout = "d4fd,189x49,0,0,0"
+        harness.controller.pump(Data(
+            "%layout-change @0 \(desktopLayout) \(desktopLayout) *\n".utf8
+        ))
+        await drain(harness.controller)
+
+        harness.controller.requestNewWindow()
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["select-window -t @0\nnew-window\n"]
         )
     }
 

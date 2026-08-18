@@ -413,6 +413,8 @@ struct GhosttyTerminalViewportPresentationProjection: Equatable {
         let normalFrame: GhosttyTerminalGridRect
         let visibleFrame: GhosttyTerminalGridRect?
         let isFocused: Bool
+        let tmuxCurrentCommand: String
+        let tmuxCurrentPath: String
     }
 
     static let empty = GhosttyTerminalViewportPresentationProjection(
@@ -461,7 +463,6 @@ struct GhosttyWindowSheetPresentationProjection: Equatable, Sendable {
 
 struct GhosttyPaneSheetPresentationProjection: Equatable, Sendable {
     let topLevelID: UUID
-    let previewLeafIDs: [UUID]
 }
 
 struct GhosttyPaneSelectionSheetTopologyProjection: Equatable, Sendable {
@@ -488,17 +489,16 @@ struct GhosttyWindowSelectionSheetRenderProjection: Equatable, Sendable {
 struct GhosttyPaneSelectionSheetRenderProjection: Equatable, Sendable {
     struct Pane: Identifiable, Equatable, Sendable {
         let id: UUID
-        let isSelected: Bool
         let frame: GhosttyTerminalGridRect?
+        let tmuxCurrentCommand: String
+        let tmuxCurrentPath: String
     }
 
-    let topLevelID: UUID
     let panes: [Pane]
     let selectedPaneID: UUID?
-    let previewLeafIDs: [UUID]
-    let paneCount: Int
-    let windowGrid: GhosttyTerminalGridSize?
     let isServerZoomed: Bool
+
+    var paneCount: Int { panes.count }
 }
 
 @MainActor
@@ -634,7 +634,7 @@ enum GhosttyTerminalPresentationProjector {
         guard !snapshot.topLevels.isEmpty else { return nil }
 
         return GhosttyWindowSheetPresentationProjection(
-            previewLeafIDs: snapshot.topLevels.compactMap(\.resolvedFocusedLeafID)
+            previewLeafIDs: prioritizedWindowPreviewLeafIDs(snapshot: snapshot)
         )
     }
 
@@ -643,10 +643,7 @@ enum GhosttyTerminalPresentationProjector {
     ) -> GhosttyPaneSheetPresentationProjection? {
         guard let topLevel = snapshot.selectedTopLevel else { return nil }
 
-        return GhosttyPaneSheetPresentationProjection(
-            topLevelID: topLevel.id,
-            previewLeafIDs: topLevel.leafIDs
-        )
+        return GhosttyPaneSheetPresentationProjection(topLevelID: topLevel.id)
     }
 
     static func paneCount(
@@ -695,8 +692,19 @@ enum GhosttyTerminalPresentationProjector {
         return GhosttyWindowSelectionSheetRenderProjection(
             windows: windows,
             selectedWindowID: selectedWindowID,
-            previewLeafIDs: windows.compactMap(\.focusedPreviewPaneID)
+            previewLeafIDs: prioritizedWindowPreviewLeafIDs(snapshot: snapshot)
         )
+    }
+
+    private static func prioritizedWindowPreviewLeafIDs(
+        snapshot: GhosttyRuntimeSurfaceTopologySnapshot
+    ) -> [UUID] {
+        let selectedTopLevelID = snapshot.selectedTopLevelID
+        let selected = snapshot.selectedTopLevel?.resolvedFocusedLeafID
+        let remaining = snapshot.topLevels.lazy
+            .filter { $0.id != selectedTopLevelID }
+            .compactMap(\.resolvedFocusedLeafID)
+        return [selected].compactMap { $0 } + remaining
     }
 
     private static func displaySafeWindowName(_ name: String) -> String {
@@ -713,12 +721,8 @@ enum GhosttyTerminalPresentationProjector {
     ) -> GhosttyPaneSelectionSheetRenderProjection {
         guard let topLevel = snapshot.topLevels.first(where: { $0.id == topLevelID }) else {
             return GhosttyPaneSelectionSheetRenderProjection(
-                topLevelID: topLevelID,
                 panes: [],
                 selectedPaneID: nil,
-                previewLeafIDs: [],
-                paneCount: 0,
-                windowGrid: nil,
                 isServerZoomed: false
             )
         }
@@ -726,25 +730,21 @@ enum GhosttyTerminalPresentationProjector {
         let selectedPaneID = viewport?.focusedSurfaceID.flatMap { focusedID in
             topLevel.leafIDs.contains(focusedID) ? focusedID : nil
         } ?? topLevel.resolvedFocusedLeafID
-        let paneCount = topLevel.leafIDs.count
         let viewportPanesByID = Dictionary(
             uniqueKeysWithValues: (viewport?.panes ?? []).map { ($0.id, $0) }
         )
         let panes = topLevel.leafIDs.map { paneID in
             GhosttyPaneSelectionSheetRenderProjection.Pane(
                 id: paneID,
-                isSelected: paneID == selectedPaneID,
-                frame: viewportPanesByID[paneID]?.normalFrame
+                frame: viewportPanesByID[paneID]?.normalFrame,
+                tmuxCurrentCommand: viewportPanesByID[paneID]?.tmuxCurrentCommand ?? "",
+                tmuxCurrentPath: viewportPanesByID[paneID]?.tmuxCurrentPath ?? ""
             )
         }
 
         return GhosttyPaneSelectionSheetRenderProjection(
-            topLevelID: topLevelID,
             panes: panes,
             selectedPaneID: selectedPaneID,
-            previewLeafIDs: topLevel.leafIDs,
-            paneCount: paneCount,
-            windowGrid: viewport?.windowGrid,
             isServerZoomed: viewport?.isServerZoomed ?? false
         )
     }

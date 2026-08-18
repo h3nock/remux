@@ -80,7 +80,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         XCTAssertEqual(closeDispositions, [.reusable])
     }
 
-    func testScreenModelRejectsRepeatedGridBeforeControllerSubmission() async throws {
+    func testScreenModelRejectsRepeatedGridUnlessViewportClaimRequested() async throws {
         let transport = ForegroundInactiveTransport(isActive: true)
         let model = TmuxScreenModel(
             target: makeTarget(),
@@ -100,6 +100,11 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         }
         XCTAssertEqual(model.carriedClientSize, Self.initialClientSize)
         XCTAssertFalse(model.submitClientSizeIfChanged(Self.initialClientSize))
+        XCTAssertTrue(model.submitClientSizeIfChanged(
+            Self.initialClientSize,
+            claimActiveViewport: true
+        ))
+        XCTAssertEqual(model.carriedClientSize, Self.initialClientSize)
 
         let changed = TmuxSessionController.ClientSize(cols: 52, rows: 31)
         XCTAssertTrue(model.submitClientSizeIfChanged(changed))

@@ -67,28 +67,28 @@ final class TmuxPaneSurface {
         case captured(GhosttyIOSurfaceFrame)
     }
 
+    private enum FramePublicationRequest {
+        case presentation(
+            expectedWidth: UInt32,
+            expectedHeight: UInt32,
+            keepVisibleAfterSuccess: Bool
+        )
+        case preview(GhosttyPanePreviewSession.PixelBudget)
+    }
+
     private final class FramePublicationWait: @unchecked Sendable {
-        let transientVisibility: Bool
-        let keepVisibleAfterSuccess: Bool
-        let captureOwnedPixels: Bool
-        let expectedWidth: UInt32
-        let expectedHeight: UInt32
+        let request: FramePublicationRequest
         var observation: NSKeyValueObservation?
         var continuation: CheckedContinuation<FramePublication?, Never>?
         var timeoutTask: Task<Void, Never>?
 
-        init(
-            transientVisibility: Bool,
-            keepVisibleAfterSuccess: Bool,
-            captureOwnedPixels: Bool,
-            expectedWidth: UInt32,
-            expectedHeight: UInt32
-        ) {
-            self.transientVisibility = transientVisibility
-            self.keepVisibleAfterSuccess = keepVisibleAfterSuccess
-            self.captureOwnedPixels = captureOwnedPixels
-            self.expectedWidth = expectedWidth
-            self.expectedHeight = expectedHeight
+        init(request: FramePublicationRequest) {
+            self.request = request
+        }
+
+        var isPreview: Bool {
+            if case .preview = request { return true }
+            return false
         }
     }
 
@@ -534,11 +534,11 @@ final class TmuxPaneSurface {
                     }
                     let publication = await matchingPublication(
                         on: rendererLayer,
-                        transientVisibility: true,
-                        keepVisibleAfterSuccess: true,
-                        captureOwnedPixels: false,
-                        expectedWidth: metrics.pixelWidth,
-                        expectedHeight: metrics.pixelHeight
+                        request: .presentation(
+                            expectedWidth: metrics.pixelWidth,
+                            expectedHeight: metrics.pixelHeight,
+                            keepVisibleAfterSuccess: true
+                        )
                     )
                     guard presentationGeneration == generation else {
                         completion(.failed)
@@ -609,11 +609,11 @@ final class TmuxPaneSurface {
         }
     }
 
-    /// Cancel any transient detached render before pane selection owns the
-    /// surface. Cancellation hides immediately and invalidates KVO, so no
-    /// delayed completion can hide the newly selected pane.
+    /// Cancel a pending picker frame before pane selection owns the surface.
+    /// Invalidating the observation prevents a delayed preview completion
+    /// from racing the pane's presentation.
     func cancelPickerCaptureForPresentation() {
-        guard framePublicationWait?.keepVisibleAfterSuccess == false else { return }
+        guard framePublicationWait?.isPreview == true else { return }
         cancelFramePublicationWait()
     }
 
@@ -621,7 +621,7 @@ final class TmuxPaneSurface {
         columns: UInt32,
         rows: UInt32,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> GhosttyPanePreviewSession.RenderedPreview? {
+    ) async -> CGImage? {
         guard lifecycle == .active,
               framePublicationWait == nil,
               presentationTask == nil,
@@ -631,91 +631,40 @@ final class TmuxPaneSurface {
         else { return nil }
         let current = renderer.control.currentSize()
 
-        let source: GhosttyPanePreviewSession.PreviewSource
-        if current.columns == columns, current.rows == rows {
-            source = .paneGeometry(.init(
-                surfaceID: instanceID.rawValue,
-                columns: columns,
-                rows: rows
-            ))
-        } else if isViewportSized(current) {
-            source = .fullViewport(.init(
-                surfaceID: instanceID.rawValue,
-                pixelWidth: current.width_px,
-                pixelHeight: current.height_px
-            ))
-        } else {
-            return nil
-        }
+        guard (current.columns == columns && current.rows == rows)
+                || isViewportSized(current)
+        else { return nil }
 
         let frame: GhosttyIOSurfaceFrame
-        if presented,
-           let published = try? GhosttyIOSurfaceFrame.read(from: rendererLayer) {
-            // The composite is already presenting this exact publication. Its
-            // backing allocation can lag a just-reported renderer size until
-            // the next draw, but rejecting it would make a visible pane's
-            // picker tile blank even though the pane is on screen.
-            frame = published
-        } else if let dimensions = GhosttyIOSurfaceFrame.dimensions(in: rendererLayer),
-           dimensions.width == Int(current.width_px),
-           dimensions.height == Int(current.height_px),
-           let published = try? GhosttyIOSurfaceFrame.read(from: rendererLayer) {
+        if presented {
+            guard let dimensions = GhosttyIOSurfaceFrame.dimensions(in: rendererLayer),
+                  let sourceRect = previewSourceRect(
+                    width: dimensions.width,
+                    height: dimensions.height,
+                    budget: budget
+                  )
+            else { return nil }
+            guard let published = try? GhosttyIOSurfaceFrame.read(
+                from: rendererLayer,
+                sourceRect: sourceRect
+            ) else { return nil }
             frame = published
         } else {
-            guard !presented,
-                  let publication = await matchingPublication(
-                    on: rendererLayer,
-                    transientVisibility: true,
-                    keepVisibleAfterSuccess: false,
-                    captureOwnedPixels: true,
-                    expectedWidth: current.width_px,
-                    expectedHeight: current.height_px
-                  ),
-                  case .captured(let published) = publication
+            guard let publication = await matchingPublication(
+                on: rendererLayer,
+                request: .preview(budget)
+            ), case .captured(let published) = publication
             else { return nil }
             frame = published
         }
 
-        // Crop twice the displayed width and height, then downsample into the
-        // existing display-sized cache budget.
-        let cropWidth = UInt32(clamping: UInt64(budget.width) * 2)
-        let cropHeight = UInt32(clamping: UInt64(budget.height) * 2)
-        let viewportAnchor = CGRect(
-            x: 0,
-            y: 0,
-            width: CGFloat(frame.width),
-            height: CGFloat(frame.height)
-        )
-        let cropAnchor: CGRect
-        if let cursor = renderer.control.cursorGeometry() {
-            let scale = CGFloat(canonicalViewportMetrics.contentScale)
-            cropAnchor = CGRect(
-                x: cursor.minX * scale,
-                y: cursor.minY * scale,
-                width: cursor.width * scale,
-                height: cursor.height * scale
-            )
-        } else {
-            cropAnchor = viewportAnchor
-        }
-        guard let sourceRect = frame.sourceRect(
-            centeredOn: cropAnchor,
-            maxWidth: cropWidth,
-            maxHeight: cropHeight
-        ) ?? frame.sourceRect(
-            centeredOn: viewportAnchor,
-            maxWidth: cropWidth,
-            maxHeight: cropHeight
-        ) else { return nil }
-
         guard let image = await makePreviewImage(
             from: frame,
-            sourceRect: sourceRect,
             budget: budget
         ) else {
             return nil
         }
-        return .init(image: image, source: source)
+        return image
     }
 
     private func rendererDidFail() {
@@ -790,28 +739,17 @@ final class TmuxPaneSurface {
 
     private func matchingPublication(
         on layer: CALayer,
-        transientVisibility: Bool,
-        keepVisibleAfterSuccess: Bool,
-        captureOwnedPixels: Bool,
-        expectedWidth: UInt32,
-        expectedHeight: UInt32
+        request: FramePublicationRequest
     ) async -> FramePublication? {
-        // Drain any stale display invalidation before observing. The visibility
-        // mailbox below is ordered after resize and is what requests the real
-        // updateFrame/draw whose IOSurface publication we accept.
+        // Drain stale display invalidation before observing the next renderer
+        // publication.
         layer.displayIfNeeded()
         return await withCheckedContinuation { continuation in
             guard !Task.isCancelled, framePublicationWait == nil else {
                 continuation.resume(returning: nil)
                 return
             }
-            let wait = FramePublicationWait(
-                transientVisibility: transientVisibility,
-                keepVisibleAfterSuccess: keepVisibleAfterSuccess,
-                captureOwnedPixels: captureOwnedPixels,
-                expectedWidth: expectedWidth,
-                expectedHeight: expectedHeight
-            )
+            let wait = FramePublicationWait(request: request)
             let layerReference = LayerReference(layer)
             let relay = previewRelay
             wait.continuation = continuation
@@ -832,7 +770,13 @@ final class TmuxPaneSurface {
                     }
                 }
             }
-            if transientVisibility {
+            switch request {
+            case .preview:
+                guard renderer?.control.requestFrame() == true else {
+                    finishFramePublicationWait(wait, publication: nil)
+                    return
+                }
+            case .presentation(_, _, let keepVisibleAfterSuccess):
                 _ = renderer?.control.setFocused(keepVisibleAfterSuccess)
                 guard renderer?.control.setVisible(true) == true else {
                     finishFramePublicationWait(wait, publication: nil)
@@ -849,24 +793,38 @@ final class TmuxPaneSurface {
         guard framePublicationWait === wait,
               let dimensions = GhosttyIOSurfaceFrame.dimensions(in: layer)
         else { return }
-        guard dimensions.width == Int(wait.expectedWidth),
-              dimensions.height == Int(wait.expectedHeight)
-        else { return }
-        guard wait.captureOwnedPixels else {
+
+        switch wait.request {
+        case .presentation(let expectedWidth, let expectedHeight, _):
+            guard dimensions.width == Int(expectedWidth),
+                  dimensions.height == Int(expectedHeight)
+            else { return }
             finishFramePublicationWait(wait, publication: .ready)
-            return
+
+        case .preview(let budget):
+            guard let sourceRect = previewSourceRect(
+                width: dimensions.width,
+                height: dimensions.height,
+                budget: budget
+            ) else {
+                finishFramePublicationWait(wait, publication: nil)
+                return
+            }
+            let frame: GhosttyIOSurfaceFrame
+            do {
+                frame = try GhosttyIOSurfaceFrame.read(
+                    from: layer,
+                    sourceRect: sourceRect
+                )
+            } catch {
+                GhosttyRuntimeTrace.diagnostics(
+                    "tmuxPane.frameRead failed pane=\(paneID) error=\(String(describing: error))"
+                )
+                finishFramePublicationWait(wait, publication: nil)
+                return
+            }
+            finishFramePublicationWait(wait, publication: .captured(frame))
         }
-        let frame: GhosttyIOSurfaceFrame
-        do {
-            frame = try GhosttyIOSurfaceFrame.read(from: layer)
-        } catch {
-            GhosttyRuntimeTrace.diagnostics(
-                "tmuxPane.frameRead failed pane=\(paneID) error=\(String(describing: error))"
-            )
-            finishFramePublicationWait(wait, publication: nil)
-            return
-        }
-        finishFramePublicationWait(wait, publication: .captured(frame))
     }
 
     private func finishFramePublicationWait(
@@ -879,10 +837,9 @@ final class TmuxPaneSurface {
         wait.observation?.invalidate()
         wait.observation = nil
         framePublicationWait = nil
-        if wait.transientVisibility,
-           (publication == nil || !wait.keepVisibleAfterSuccess),
-           !presented {
-            _ = renderer?.control.setVisible(false)
+        if case .presentation(_, _, let keepVisibleAfterSuccess) = wait.request,
+           publication == nil || !keepVisibleAfterSuccess {
+            if !presented { _ = renderer?.control.setVisible(false) }
         }
         let continuation = wait.continuation
         wait.continuation = nil
@@ -896,24 +853,15 @@ final class TmuxPaneSurface {
 
     private func makePreviewImage(
         from frame: GhosttyIOSurfaceFrame,
-        sourceRect: CGRect?,
         budget: GhosttyPanePreviewSession.PixelBudget
     ) async -> CGImage? {
         let paneID = paneID
         return await Task.detached(priority: .userInitiated) {
             do {
-                if let sourceRect {
-                    return try frame.image(
-                        sourceRect: sourceRect,
-                        maxWidth: budget.width,
-                        maxHeight: budget.height
-                    )
-                } else {
-                    return try frame.image(
-                        maxWidth: budget.width,
-                        maxHeight: budget.height
-                    )
-                }
+                return try frame.image(
+                    maxWidth: budget.width,
+                    maxHeight: budget.height
+                )
             } catch {
                 GhosttyRuntimeTrace.diagnostics(
                     "tmuxPane.previewRead failed pane=\(paneID) error=\(String(describing: error))"
@@ -921,6 +869,41 @@ final class TmuxPaneSurface {
                 return nil
             }
         }.value
+    }
+
+    private func previewSourceRect(
+        width: Int,
+        height: Int,
+        budget: GhosttyPanePreviewSession.PixelBudget
+    ) -> CGRect? {
+        let viewportAnchor = CGRect(x: 0, y: 0, width: width, height: height)
+        let cropAnchor: CGRect
+        if let cursor = renderer?.control.cursorGeometry() {
+            let scale = CGFloat(canonicalViewportMetrics.contentScale)
+            cropAnchor = CGRect(
+                x: cursor.minX * scale,
+                y: cursor.minY * scale,
+                width: cursor.width * scale,
+                height: cursor.height * scale
+            )
+        } else {
+            cropAnchor = viewportAnchor
+        }
+        let cropWidth = UInt32(clamping: UInt64(budget.width) * 2)
+        let cropHeight = UInt32(clamping: UInt64(budget.height) * 2)
+        return GhosttyIOSurfaceFrame.sourceRect(
+            width: width,
+            height: height,
+            centeredOn: cropAnchor,
+            maxWidth: cropWidth,
+            maxHeight: cropHeight
+        ) ?? GhosttyIOSurfaceFrame.sourceRect(
+            width: width,
+            height: height,
+            centeredOn: viewportAnchor,
+            maxWidth: cropWidth,
+            maxHeight: cropHeight
+        )
     }
 
     private func isViewportSized(_ size: ghostty_surface_size_s) -> Bool {

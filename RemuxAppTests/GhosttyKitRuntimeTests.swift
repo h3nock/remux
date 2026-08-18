@@ -121,16 +121,57 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         XCTAssertGreaterThan(image.height, 0)
     }
 
-    func testPreviewSourceRectCentersOnCursorAndClampsToFrameEdges() throws {
-        let frame = GhosttyIOSurfaceFrame(
-            width: 1_000,
-            height: 800,
-            bytesPerRow: 4_000,
-            bytes: Data()
+    func testHiddenSurfacePublishesRequestedCurrentFrame() async throws {
+        let fixture = try NativeTerminalSurfaceFixture()
+        defer { fixture.close() }
+        let layer = try fixture.createSurface()
+        try fixture.feed("hidden frame\r\n")
+
+        try await awaitPublication(on: layer) {
+            try fixture.requestFrame()
+        }
+
+        let frame = try GhosttyIOSurfaceFrame.read(from: layer)
+        XCTAssertGreaterThan(frame.width, 0)
+        XCTAssertGreaterThan(frame.height, 0)
+
+        try fixture.feed("\n\u{1B}]11;#010203\u{1B}\\")
+        try await awaitPublication(
+            on: layer,
+            matchingBGRPixel: [3, 2, 1]
+        ) {
+            try fixture.requestFrame()
+        }
+        XCTAssertTrue(
+            try GhosttyIOSurfaceFrame.read(from: layer).bgrPixel
+                .isApproximatelyEqual(to: [3, 2, 1])
+        )
+    }
+
+    func testIOSurfaceReadCopiesOnlyRequestedRectangle() async throws {
+        let fixture = try NativeTerminalSurfaceFixture()
+        defer { fixture.close() }
+        let layer = try fixture.createSurface()
+        try await awaitPublication(on: layer) {
+            try fixture.setVisible()
+        }
+
+        let frame = try GhosttyIOSurfaceFrame.read(
+            from: layer,
+            sourceRect: CGRect(x: 10, y: 12, width: 40, height: 30)
         )
 
+        XCTAssertEqual(frame.width, 40)
+        XCTAssertEqual(frame.height, 30)
+        XCTAssertEqual(frame.bytesPerRow, 160)
+        XCTAssertEqual(frame.bytes.count, 4_800)
+    }
+
+    func testPreviewSourceRectCentersOnCursorAndClampsToFrameEdges() throws {
         XCTAssertEqual(
-            frame.sourceRect(
+            GhosttyIOSurfaceFrame.sourceRect(
+                width: 1_000,
+                height: 800,
                 centeredOn: CGRect(x: 495, y: 395, width: 10, height: 10),
                 maxWidth: 400,
                 maxHeight: 300
@@ -138,7 +179,9 @@ final class GhosttyKitRuntimeTests: XCTestCase {
             CGRect(x: 300, y: 250, width: 400, height: 300)
         )
         XCTAssertEqual(
-            frame.sourceRect(
+            GhosttyIOSurfaceFrame.sourceRect(
+                width: 1_000,
+                height: 800,
                 centeredOn: CGRect(x: 0, y: 0, width: 10, height: 10),
                 maxWidth: 400,
                 maxHeight: 300
@@ -146,7 +189,9 @@ final class GhosttyKitRuntimeTests: XCTestCase {
             CGRect(x: 0, y: 0, width: 400, height: 300)
         )
         XCTAssertEqual(
-            frame.sourceRect(
+            GhosttyIOSurfaceFrame.sourceRect(
+                width: 1_000,
+                height: 800,
                 centeredOn: CGRect(x: 990, y: 790, width: 10, height: 10),
                 maxWidth: 400,
                 maxHeight: 300
@@ -156,47 +201,15 @@ final class GhosttyKitRuntimeTests: XCTestCase {
     }
 
     func testPreviewSourceRectRejectsCursorOutsideFrame() {
-        let frame = GhosttyIOSurfaceFrame(
-            width: 100,
-            height: 80,
-            bytesPerRow: 400,
-            bytes: Data()
-        )
-
         XCTAssertNil(
-            frame.sourceRect(
+            GhosttyIOSurfaceFrame.sourceRect(
+                width: 100,
+                height: 80,
                 centeredOn: CGRect(x: 120, y: 10, width: 8, height: 16),
                 maxWidth: 40,
                 maxHeight: 30
             )
         )
-    }
-
-    func testPreviewImageCropUsesTopLeftBackingPixelCoordinates() throws {
-        var bytes = Data(repeating: 0, count: 4 * 4 * 4)
-        for y in 0..<4 {
-            for x in 0..<4 {
-                bytes[(y * 4 + x) * 4] = UInt8(y * 10 + x)
-                bytes[(y * 4 + x) * 4 + 3] = 255
-            }
-        }
-        let frame = GhosttyIOSurfaceFrame(
-            width: 4,
-            height: 4,
-            bytesPerRow: 16,
-            bytes: bytes
-        )
-
-        let image = try frame.image(
-            sourceRect: CGRect(x: 1, y: 1, width: 2, height: 2),
-            maxWidth: 2,
-            maxHeight: 2
-        )
-
-        XCTAssertEqual(image.width, 2)
-        XCTAssertEqual(image.height, 2)
-        XCTAssertEqual(image.firstChannelPixel(x: 0, y: 0), 11)
-        XCTAssertEqual(image.firstChannelPixel(x: 1, y: 1), 22)
     }
 
     func testLiveConfigUpdatePreservesSurfaceAndTerminalOSCBackgroundOverride() async throws {
@@ -447,6 +460,15 @@ private final class NativeTerminalSurfaceFixture {
         try runtime.applyTerminalSettings(settings)
         guard let surface else { throw FixtureError.missingRendererLayer }
         let result = ghostty_terminal_surface_update_config(surface)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw FixtureError.surface(result)
+        }
+        ghostty_app_tick(runtime.appHandleForTesting)
+    }
+
+    func requestFrame() throws {
+        guard let surface else { throw FixtureError.missingRendererLayer }
+        let result = ghostty_terminal_surface_request_frame(surface)
         guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
             throw FixtureError.surface(result)
         }

@@ -97,7 +97,9 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         x: UInt32 = 0,
         y: UInt32 = 0,
         width: UInt32 = 80,
-        height: UInt32 = 24
+        height: UInt32 = 24,
+        currentCommand: String = "",
+        currentPath: String = ""
     ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
@@ -106,6 +108,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             y: y,
             width: width,
             height: height,
+            currentCommand: currentCommand,
+            currentPath: currentPath,
             phase: .live
         )
     }
@@ -292,7 +296,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -310,8 +314,21 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
                 )
             ],
             panes: [
-                pane(id: 10, windowID: 1, width: 39),
-                pane(id: 11, windowID: 1, x: 40, width: 40)
+                pane(
+                    id: 10,
+                    windowID: 1,
+                    width: 39,
+                    currentCommand: "nvim",
+                    currentPath: "/work/editor"
+                ),
+                pane(
+                    id: 11,
+                    windowID: 1,
+                    x: 40,
+                    width: 40,
+                    currentCommand: "node",
+                    currentPath: "/work/server"
+                )
             ],
             activeWindowID: 1
         ))
@@ -339,7 +356,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -357,8 +374,21 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
                 )
             ],
             panes: [
-                pane(id: 10, windowID: 1, width: 39),
-                pane(id: 11, windowID: 1, x: 40, width: 40)
+                pane(
+                    id: 10,
+                    windowID: 1,
+                    width: 39,
+                    currentCommand: "nvim",
+                    currentPath: "/work/editor"
+                ),
+                pane(
+                    id: 11,
+                    windowID: 1,
+                    x: 40,
+                    width: 40,
+                    currentCommand: "node",
+                    currentPath: "/work/server"
+                )
             ],
             activeWindowID: 1
         ))
@@ -380,7 +410,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
         let panePicker = adapter.paneSelectionSheetRenderProjection(topLevelID: windowID)
         XCTAssertTrue(panePicker.isServerZoomed)
-        XCTAssertEqual(panePicker.windowGrid, .init(columns: 80, rows: 24))
         XCTAssertEqual(
             panePicker.panes.compactMap(\.frame),
             [
@@ -389,6 +418,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             ],
             "the picker must keep canonical unzoomed geometry while the viewport is zoomed"
         )
+        XCTAssertEqual(panePicker.panes.map(\.tmuxCurrentCommand), ["nvim", "node"])
+        XCTAssertEqual(panePicker.panes.map(\.tmuxCurrentPath), ["/work/editor", "/work/server"])
 
         await session.shutdown()
     }
@@ -399,7 +430,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -420,8 +451,16 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             "the first emitted topology must project immediately, not lag one update behind"
         )
         XCTAssertEqual(first.windows.map(\.displayName), ["editor", "logs"])
-        let firstPaneSurfaceID = try XCTUnwrap(first.previewLeafIDs.first)
+        let firstPaneSurfaceID = try XCTUnwrap(first.windows.first?.focusedPreviewPaneID)
         XCTAssertEqual(adapter.tmuxPaneID(for: firstPaneSurfaceID), 10)
+        XCTAssertTrue(
+            first.previewLeafIDs.isEmpty,
+            "topology cards must not submit captures before their local surfaces exist"
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(adapter.windowSheetPresentationProjection()).previewLeafIDs.isEmpty,
+            "initial presentation must not submit captures before local surfaces exist"
+        )
 
         let oneWindow = TmuxSessionController.TopologySnapshot(
             sessionName: "fresh-test",
@@ -442,13 +481,13 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
-    func testNameOnlyTopologyUpdatePreservesSurfaceIdentityAndPanePreview() async throws {
+    func testNameOnlyTopologyUpdatePreservesSurfaceIdentityAndCardTarget() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -461,12 +500,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         session.handleTopology(initial)
         let before = adapter.windowSelectionSheetRenderProjection()
         let beforeWindowID = try XCTUnwrap(before.windows.first?.id)
-        let beforePaneID = try XCTUnwrap(before.previewLeafIDs.first)
-
-        let image = try makeImage(width: 4, height: 4)
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1_024)
-        cache.store(preview(image), for: 10)
-        let initialByteCost = cache.totalByteCost
+        let beforePaneID = try XCTUnwrap(before.windows.first?.focusedPreviewPaneID)
 
         let renamed = TmuxSessionController.TopologySnapshot(
             sessionName: "rename-test",
@@ -479,132 +513,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
         XCTAssertEqual(after.windows.first?.displayName, "déploy-漢字")
         XCTAssertEqual(after.windows.first?.id, beforeWindowID)
-        XCTAssertEqual(after.previewLeafIDs.first, beforePaneID)
-        XCTAssertEqual(
-            cache.retainOnly(Set(renamed.panes.map(\.id))),
-            [],
-            "a name-only topology update must not evict any pane preview"
-        )
-        XCTAssertTrue(cache.preview(for: 10)?.image === image)
-        XCTAssertEqual(cache.totalByteCost, initialByteCost)
+        XCTAssertEqual(after.windows.first?.focusedPreviewPaneID, beforePaneID)
 
         await session.shutdown()
-    }
-
-    func testPanePreviewCacheEvictsLeastRecentlyUsedImageWithinByteLimit() throws {
-        let first = try makeImage(width: 4, height: 4)
-        let second = try makeImage(width: 4, height: 4)
-        let third = try makeImage(width: 4, height: 4)
-        let imageCost = first.bytesPerRow * first.height
-        var cache = TmuxPanePreviewImageCache(byteLimit: imageCost * 2)
-
-        XCTAssertEqual(cache.store(preview(first), for: 1), [])
-        XCTAssertEqual(cache.store(preview(second), for: 2), [])
-        XCTAssertNotNil(
-            cache.preview(for: 1),
-            "reading pane 1 must refresh its LRU age"
-        )
-        XCTAssertEqual(
-            cache.store(preview(third), for: 3),
-            [2]
-        )
-        XCTAssertNotNil(cache.preview(for: 1))
-        XCTAssertNil(cache.preview(for: 2))
-        XCTAssertNotNil(cache.preview(for: 3))
-        XCTAssertEqual(cache.totalByteCost, imageCost * 2)
-    }
-
-    func testPanePreviewCacheDropsRemovedTopologyPanes() throws {
-        let image = try makeImage(width: 4, height: 4)
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
-        cache.store(preview(image), for: 1)
-        cache.store(preview(image), for: 2)
-
-        XCTAssertEqual(Set(cache.retainOnly(Set([2]))), Set([1]))
-        XCTAssertNil(cache.preview(for: 1))
-        XCTAssertNotNil(cache.preview(for: 2))
-    }
-
-    func testPanePreviewCacheRejectsImageLargerThanByteLimit() throws {
-        let image = try makeImage(width: 4, height: 4)
-        var cache = TmuxPanePreviewImageCache(
-            byteLimit: image.bytesPerRow * image.height - 1
-        )
-
-        XCTAssertEqual(cache.store(preview(image), for: 1), [])
-        XCTAssertNil(cache.preview(for: 1))
-        XCTAssertEqual(cache.totalByteCost, 0)
-    }
-
-    func testPanePreviewCacheRetainsFullViewportProvenance() throws {
-        let image = try makeImage(width: 4, height: 4)
-        let expected = provenance()
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
-
-        cache.store(
-            .init(image: image, source: .fullViewport(expected)),
-            for: 1
-        )
-
-        XCTAssertEqual(cache.entries[1]?.preview.source, .fullViewport(expected))
-    }
-
-    func testPanePreviewCacheRetainsPaneGeometrySource() throws {
-        let image = try makeImage(width: 4, height: 4)
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
-
-        cache.store(preview(image), for: 1)
-
-        guard case .paneGeometry(let provenance)? = cache.preview(for: 1)?.source else {
-            return XCTFail("expected pane geometry provenance")
-        }
-        XCTAssertEqual(provenance.columns, 80)
-        XCTAssertEqual(provenance.rows, 24)
-    }
-
-    func testPanePreviewCacheReplacesThePreviousImageForAPane() throws {
-        let first = try makeImage(width: 4, height: 4)
-        let replacement = try makeImage(width: 3, height: 3)
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
-
-        cache.store(preview(first), for: 1)
-        cache.store(preview(replacement), for: 1)
-
-        XCTAssertTrue(cache.preview(for: 1)?.image === replacement)
-        XCTAssertEqual(cache.entries.count, 1)
-    }
-
-    private func makeImage(width: Int, height: Int) throws -> CGImage {
-        let context = try XCTUnwrap(CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ))
-        return try XCTUnwrap(context.makeImage())
-    }
-
-    private func provenance() -> GhosttyPanePreviewSession.FullViewportProvenance {
-        GhosttyPanePreviewSession.FullViewportProvenance(
-            surfaceID: UUID(),
-            pixelWidth: 390,
-            pixelHeight: 709
-        )
-    }
-
-    private func preview(
-        _ image: CGImage
-    ) -> GhosttyPanePreviewSession.RenderedPreview {
-        .init(
-            image: image,
-            source: .paneGeometry(.init(
-                surfaceID: UUID(),
-                columns: 80,
-                rows: 24
-            ))
-        )
     }
 }

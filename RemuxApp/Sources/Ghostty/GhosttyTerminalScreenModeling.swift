@@ -47,13 +47,27 @@ protocol GhosttyTerminalRenderingModeling: ObservableObject {
     var commandFailureEvent: GhosttyTmuxCommandFailureEvent? { get }
     var stateTraceLabel: String { get }
 
-    func prepareInitialViewport(size: CGSize, scale: CGFloat)
+    func prepareInitialViewport(
+        size: CGSize,
+        scale: CGFloat,
+        claimActiveViewport: Bool
+    )
 
     /// Host hint that the terminal viewport is (not) in its settled
     /// shape — false while a transient overlay (software keyboard) is
     /// changing the layout. Engines use it to decide which reported
     /// viewport is safe to carry into a reconnect.
     func setViewportStabilityHint(stable: Bool)
+}
+
+extension GhosttyTerminalRenderingModeling {
+    func prepareInitialViewport(size: CGSize, scale: CGFloat) {
+        prepareInitialViewport(
+            size: size,
+            scale: scale,
+            claimActiveViewport: false
+        )
+    }
 }
 
 @MainActor
@@ -112,6 +126,12 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
 protocol GhosttyTmuxActionModeling: ObservableObject {
     // MARK: tmux topology actions
 
+    func reclaimActiveTmuxViewport()
+
+    func claimActiveTmuxViewportIfNeeded()
+
+    func refreshTmuxPaneMetadata(inTopLevel id: UUID)
+
     @discardableResult
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome
 
@@ -158,7 +178,7 @@ protocol GhosttyTmuxActionModeling: ObservableObject {
 protocol GhosttyTmuxSelectionModeling: ObservableObject {
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession
 
     // MARK: Selection sheets

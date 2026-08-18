@@ -104,8 +104,92 @@ struct ActiveTerminalScreenEntry: Identifiable {
     }
 }
 
+struct TmuxSessionDiscoveryState: Equatable {
+    enum Phase: Equatable {
+        case idle
+        case loading
+        case loaded
+        case failed
+    }
+
+    static let idle = TmuxSessionDiscoveryState(
+        phase: .idle,
+        lastSuccessfulSessionNames: nil
+    )
+
+    let phase: Phase
+    let lastSuccessfulSessionNames: [String]?
+
+    var sessionNames: [String] {
+        lastSuccessfulSessionNames ?? []
+    }
+
+    var isLoading: Bool {
+        phase == .loading
+    }
+
+    func startingRefresh() -> Self {
+        Self(
+            phase: .loading,
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+        )
+    }
+
+    func finishingRefresh(with sessionNames: [String]) -> Self {
+        Self(
+            phase: .loaded,
+            lastSuccessfulSessionNames: sessionNames
+        )
+    }
+
+    func failingRefresh() -> Self {
+        Self(
+            phase: .failed,
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+        )
+    }
+
+    func cancellingRefresh() -> Self {
+        guard let lastSuccessfulSessionNames else { return .idle }
+        return Self(
+            phase: .loaded,
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+        )
+    }
+
+    func confirmingExistingSession(named sessionName: String) -> Self {
+        guard var lastSuccessfulSessionNames,
+              !lastSuccessfulSessionNames.contains(sessionName) else {
+            return self
+        }
+        lastSuccessfulSessionNames.append(sessionName)
+        return Self(
+            phase: phase,
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+        )
+    }
+}
+
+enum TmuxSessionReconciliation {
+    static func includesSavedWorkspace(
+        _ workspace: SavedWorkspace,
+        discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
+    ) -> Bool {
+        guard let discoveredNames = discoveryStates[workspace.serverID]?
+            .lastSuccessfulSessionNames else {
+            return true
+        }
+        return discoveredNames.contains(workspace.sessionName)
+    }
+}
+
 @MainActor
 final class RemuxRootModel: ObservableObject {
+    private struct TmuxSessionRefresh {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
     private static let libraryPrewarmServerLimit = 3
 
     private struct EditServerTrustSnapshot {
@@ -189,6 +273,7 @@ final class RemuxRootModel: ObservableObject {
     @Published private(set) var terminalSettings: TerminalSettings = .default
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
     @Published private(set) var isSetupActionInProgress = false
+    @Published private(set) var tmuxSessionDiscoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState] = [:]
 
     var setupSessionID: UUID? {
         currentSetupID
@@ -217,6 +302,7 @@ final class RemuxRootModel: ObservableObject {
     private var currentSetupID: UUID?
     private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
+    private var tmuxSessionRefreshes: [SavedServer.ID: TmuxSessionRefresh] = [:]
 
     init(
         dependencies: RemuxAppDependencies,
@@ -242,6 +328,9 @@ final class RemuxRootModel: ObservableObject {
 
     deinit {
         MainActor.assumeIsolated {
+            for refresh in tmuxSessionRefreshes.values {
+                refresh.task.cancel()
+            }
             stopAllTerminalScreenModels()
         }
     }
@@ -263,6 +352,7 @@ final class RemuxRootModel: ObservableObject {
             finishSetupSession(expectedSetupID)
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
+            scheduleLaunchTmuxSessionDiscovery()
         } catch {
             guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
             finishSetupSession(expectedSetupID)
@@ -665,6 +755,7 @@ final class RemuxRootModel: ObservableObject {
                     throw ConnectionProfileRepositoryError.missingServer(serverID)
                 }
 
+                invalidateTmuxSessionRefresh(for: serverID)
                 let server = submission.savedServer(identityID: updatedIdentityCredential.identity.id)
                 cancelLibrarySSHPrewarm()
                 let previousCredential = try await dependencies.credentialStore.loadCredential(
@@ -922,23 +1013,47 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func connect(to workspaceID: SavedWorkspace.ID) async {
+        guard
+            let workspace = library.workspace(id: workspaceID),
+            let server = library.server(id: workspace.serverID)
+        else {
+            GhosttyRuntimeTrace.flowEnd(
+                sessionOpenFlowID(workspaceID),
+                event: "model.connect.missingProfile",
+                fields: ["workspaceID": workspaceID.uuidString]
+            )
+            return
+        }
+
+        await connect(server: server, workspace: workspace)
+    }
+
+    func connectToDiscoveredSession(
+        named sessionName: String,
+        on serverID: SavedServer.ID
+    ) async {
+        guard !sessionName.isEmpty,
+              let server = library.server(id: serverID) else {
+            return
+        }
+        let workspace = library.workspaces(for: serverID).first {
+            $0.sessionName == sessionName
+        } ?? SavedWorkspace(serverID: serverID, sessionName: sessionName)
+        await connect(server: server, workspace: workspace)
+    }
+
+    private func connect(
+        server: SavedServer,
+        workspace: SavedWorkspace
+    ) async {
+        let workspaceID = workspace.id
         let flow = sessionOpenFlowID(workspaceID)
         GhosttyRuntimeTrace.flowEvent(
             flow,
             event: "model.connect.begin",
             fields: ["workspaceID": workspaceID.uuidString]
         )
-        guard
-            let workspace = library.workspace(id: workspaceID),
-            let server = library.server(id: workspace.serverID)
-        else {
-            GhosttyRuntimeTrace.flowEnd(
-                flow,
-                event: "model.connect.missingProfile",
-                fields: ["workspaceID": workspaceID.uuidString]
-            )
-            return
-        }
+        cancelTmuxSessionRefreshForInteractiveConnection(serverID: server.id)
 
         let sshAuth: ResolvedSSHAuth
         do {
@@ -989,6 +1104,41 @@ final class RemuxRootModel: ObservableObject {
                 fields: ["error": String(describing: error)]
             )
         }
+    }
+
+    func tmuxSessionDiscoveryState(
+        for serverID: SavedServer.ID?
+    ) -> TmuxSessionDiscoveryState {
+        guard let serverID else { return .idle }
+        return tmuxSessionDiscoveryStates[serverID] ?? .idle
+    }
+
+    func refreshTmuxSessions() {
+        for server in library.servers {
+            refreshTmuxSessions(for: server.id)
+        }
+    }
+
+    /// Coalesces launch and explicit refresh requests for one server. A
+    /// completed result must still match the server profile it started with;
+    /// editing or deleting that server makes the result stale.
+    func refreshTmuxSessions(for serverID: SavedServer.ID) {
+        guard tmuxSessionRefreshes[serverID] == nil,
+              let server = library.server(id: serverID) else {
+            return
+        }
+
+        let refreshID = UUID()
+        tmuxSessionDiscoveryStates[serverID] = tmuxSessionDiscoveryState(for: serverID)
+            .startingRefresh()
+        let task = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await self.performTmuxSessionRefresh(
+                for: server,
+                refreshID: refreshID
+            )
+        }
+        tmuxSessionRefreshes[serverID] = TmuxSessionRefresh(id: refreshID, task: task)
     }
 
     func showActiveSession(_ id: SavedWorkspace.ID) {
@@ -1096,6 +1246,27 @@ final class RemuxRootModel: ObservableObject {
             requestedReconnectSource: automaticReconnectSource(for: update)
         )
         traceTerminalRuntimeStateUpdate(update, outcome: outcome)
+        switch outcome {
+        case .applied(.connected),
+             .automaticReconnectStarted(_, .connected),
+             .automaticReconnectSkipped(_, .connected):
+            if let session = RemuxActiveSessionCollection.session(
+                update.workspaceID,
+                in: activeSessions
+            ) {
+                claimActiveTmuxViewportIfSelectedAndActive(for: session)
+                let serverID = session.target.server.id
+                let discoveryState = tmuxSessionDiscoveryState(for: serverID)
+                tmuxSessionDiscoveryStates[serverID] = discoveryState
+                    .confirmingExistingSession(named: session.target.workspace.sessionName)
+                if discoveryState.phase == .idle || discoveryState.phase == .failed {
+                    refreshTmuxSessions(for: serverID)
+                }
+            }
+        case .missingSession, .staleInstance, .applied,
+             .automaticReconnectStarted, .automaticReconnectSkipped:
+            break
+        }
         if case .automaticReconnectStarted(let source, _) = outcome {
             reconnectActiveSession(update.workspaceID, source: source)
         }
@@ -1104,10 +1275,35 @@ final class RemuxRootModel: ObservableObject {
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
         currentAppLifecyclePhase = phase
+        if phase == .background {
+            cancelAllTmuxSessionRefreshes()
+        }
         let models = Array(terminalScreenModels.values)
         for model in models {
             model.handleAppLifecyclePhase(phase)
         }
+
+        guard phase == .active,
+              case .terminal(let selectedID) = state,
+              let session = RemuxActiveSessionCollection.session(
+                  selectedID,
+                  in: activeSessions
+              )
+        else { return }
+        terminalScreenModels[TerminalRuntimeAttemptKey(session: session)]?
+            .terminalScreenAdapter
+            .reclaimActiveTmuxViewport()
+    }
+
+    private func claimActiveTmuxViewportIfSelectedAndActive(
+        for session: ActiveTerminalSession
+    ) {
+        guard currentAppLifecyclePhase == .active,
+              state == .terminal(session.id)
+        else { return }
+        terminalScreenModels[TerminalRuntimeAttemptKey(session: session)]?
+            .terminalScreenAdapter
+            .claimActiveTmuxViewportIfNeeded()
     }
 
     func disconnectActiveSession(_ id: SavedWorkspace.ID) {
@@ -1136,6 +1332,7 @@ final class RemuxRootModel: ObservableObject {
     func deleteServer(_ id: SavedServer.ID) async {
         do {
             let deletedServer = library.server(id: id)
+            invalidateTmuxSessionRefresh(for: id)
             try await dependencies.profileRepository.deleteServer(id: id)
             try dependencies.trustedHostStore.deleteIdentity(for: id)
             var snapshot = try await dependencies.profileRepository.loadSnapshot()
@@ -1463,6 +1660,90 @@ final class RemuxRootModel: ObservableObject {
             sshAuth: sshAuth,
             terminalSettings: terminalSettings
         )
+    }
+
+    private func performTmuxSessionRefresh(
+        for server: SavedServer,
+        refreshID: UUID
+    ) async {
+        defer { finishTmuxSessionRefresh(for: server.id, refreshID: refreshID) }
+
+        do {
+            let sshAuth = try await resolveSSHAuth(for: server)
+            guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            let discoveryTarget = target(
+                server: server,
+                workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
+                sshAuth: sshAuth
+            )
+            let names = try await dependencies.discoverTmuxSessions(for: discoveryTarget)
+            guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
+                .finishingRefresh(with: Self.normalizedTmuxSessionNames(names))
+        } catch is CancellationError {
+            guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
+                .cancellingRefresh()
+            return
+        } catch {
+            guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            // Discovery is auxiliary to an already-running terminal. Keep its
+            // failure inside the sheet rather than replacing the app route.
+            tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
+                .failingRefresh()
+        }
+    }
+
+    private func scheduleLaunchTmuxSessionDiscovery() {
+        Task(priority: .utility) { @MainActor [weak self] in
+            await Task.yield()
+            self?.refreshTmuxSessions()
+        }
+    }
+
+    private static func normalizedTmuxSessionNames(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        return names.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private func isCurrentTmuxSessionRefresh(
+        _ server: SavedServer,
+        refreshID: UUID
+    ) -> Bool {
+        tmuxSessionRefreshes[server.id]?.id == refreshID
+            && library.server(id: server.id) == server
+    }
+
+    private func finishTmuxSessionRefresh(
+        for serverID: SavedServer.ID,
+        refreshID: UUID
+    ) {
+        guard tmuxSessionRefreshes[serverID]?.id == refreshID else { return }
+        tmuxSessionRefreshes.removeValue(forKey: serverID)
+    }
+
+    private func invalidateTmuxSessionRefresh(for serverID: SavedServer.ID) {
+        tmuxSessionRefreshes.removeValue(forKey: serverID)?.task.cancel()
+        tmuxSessionDiscoveryStates.removeValue(forKey: serverID)
+    }
+
+    private func cancelTmuxSessionRefreshForInteractiveConnection(
+        serverID: SavedServer.ID
+    ) {
+        guard let refresh = tmuxSessionRefreshes.removeValue(forKey: serverID) else { return }
+        refresh.task.cancel()
+        tmuxSessionDiscoveryStates[serverID] = tmuxSessionDiscoveryState(for: serverID)
+            .cancellingRefresh()
+    }
+
+    private func cancelAllTmuxSessionRefreshes() {
+        let refreshes = tmuxSessionRefreshes
+        tmuxSessionRefreshes.removeAll()
+        for (serverID, refresh) in refreshes {
+            refresh.task.cancel()
+            tmuxSessionDiscoveryStates[serverID] = tmuxSessionDiscoveryState(for: serverID)
+                .cancellingRefresh()
+        }
     }
 
     private static func makeDefaultTerminalScreenModel(

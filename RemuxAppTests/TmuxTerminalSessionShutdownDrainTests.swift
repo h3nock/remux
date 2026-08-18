@@ -153,6 +153,8 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
             y: 0,
             width: 80,
             height: 24,
+            currentCommand: "",
+            currentPath: "",
             phase: phase
         )
     }

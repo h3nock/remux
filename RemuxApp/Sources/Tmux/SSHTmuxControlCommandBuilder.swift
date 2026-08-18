@@ -20,6 +20,16 @@ enum SSHTmuxControlCommandBuilder {
         ].joined(separator: " ")
     }
 
+    static func listSessionsCommand(tmuxExecutable: String) -> String {
+        // Discovery runs through an ordinary SSH exec channel, never the
+        // control-mode channel. Keep the configured executable out of the
+        // login shell just as the attach command does.
+        [
+            "exec /bin/sh -c '\(discoveryScript)' remux",
+            octalEncodedArgument(tmuxExecutable),
+        ].joined(separator: " ")
+    }
+
     private static let launchScript = [
         #"PATH="${PATH:+$PATH:}\#(fallbackRemotePath)""#,
         "export PATH",
@@ -29,6 +39,19 @@ enum SSHTmuxControlCommandBuilder {
         #"session=$(printf %b "$2")"#,
         #"resolved=$(command -v "$tmux" 2> /dev/null)"#,
         #"if [ -x "$resolved" ]; then exec "$resolved" -u -C new-session -A -s "$session" -x "$3" -y "$4"; fi"#,
+        #"if [ -e "$tmux" ]; then echo "\#(tmuxNotExecutableMarker): $tmux" >&2; exit 126; fi"#,
+        #"echo "\#(tmuxNotFoundMarker): $tmux" >&2"#,
+        "exit 127",
+    ].joined(separator: "; ")
+
+    private static let discoveryScript = [
+        #"PATH="${PATH:+$PATH:}\#(fallbackRemotePath)""#,
+        "export PATH",
+        "LC_ALL=C",
+        "export LC_ALL",
+        #"tmux=$(printf %b "$1")"#,
+        #"resolved=$(command -v "$tmux" 2> /dev/null)"#,
+        "if [ -x \"$resolved\" ]; then exec \"$resolved\" list-sessions -F \"#{session_name}\"; fi",
         #"if [ -e "$tmux" ]; then echo "\#(tmuxNotExecutableMarker): $tmux" >&2; exit 126; fi"#,
         #"echo "\#(tmuxNotFoundMarker): $tmux" >&2"#,
         "exit 127",

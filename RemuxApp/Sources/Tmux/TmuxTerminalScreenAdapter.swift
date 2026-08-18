@@ -66,8 +66,6 @@ struct TmuxMultipaneZoomDefaultPolicy {
 /// active window while the composite viewport presents every visible pane.
 @MainActor
 final class TmuxTerminalScreenAdapter: ObservableObject {
-    private static let panePreviewCacheByteLimit = 8 * 1024 * 1024
-
     private weak var session: TmuxTerminalSession?
     private var controller: TmuxSessionController?
 
@@ -82,7 +80,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var activeManagedSurface: GhosttyManagedSurface?
     private var activeManagedPaneID: TmuxPaneID?
     private var pendingFocusedPaneID: TmuxPaneID?
-    private var initialViewportHandler: ((CGSize, CGFloat) -> Void)?
+    private var initialViewportHandler: ((CGSize, CGFloat, Bool) -> Void)?
     private var viewportStabilityHandler: ((Bool) -> Void)?
     private var latestViewportMeasurement: GhosttyTerminalViewportMeasurement?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
@@ -90,9 +88,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var pendingZoomOwnershipWindowIDs: Set<TmuxWindowID> = []
     private var pendingOwnedZoomPreservation: (windowID: TmuxWindowID, paneID: TmuxPaneID)?
     private var multipaneZoomDefault = TmuxMultipaneZoomDefaultPolicy()
-    private var panePreviewCache = TmuxPanePreviewImageCache(
-        byteLimit: TmuxTerminalScreenAdapter.panePreviewCacheByteLimit
-    )
 
     private var commandFailureMessage: String?
     private(set) var commandFailureEvent: GhosttyTmuxCommandFailureEvent?
@@ -105,7 +100,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     func activate(
         session: TmuxTerminalSession,
         zoomMultipaneWindowsByDefault: Bool = false,
-        initialViewportHandler: @escaping (CGSize, CGFloat) -> Void,
+        initialViewportHandler: @escaping (CGSize, CGFloat, Bool) -> Void,
         viewportStabilityHandler: @escaping (Bool) -> Void
     ) {
         self.session = session
@@ -115,15 +110,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         self.viewportStabilityHandler = viewportStabilityHandler
 
         session.$state
-            .sink { [weak self] state in
-                guard let self else { return }
-                if case .detached = state {
-                    self.clearPanePreviewCache(reason: "detached")
-                } else if case .closed = state {
-                    self.clearPanePreviewCache(reason: "closed")
-                }
-                self.objectWillChange.send()
-            }
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &subscriptions)
         session.$topology
             .sink { [weak self] topology in
@@ -132,12 +119,10 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 if let topology {
                     self.reconcileZoomOwnership(with: topology)
                     self.applyMultipaneZoomDefaultIfNeeded(to: topology)
-                    self.reconcilePanePreviewCache(with: topology)
                 } else {
                     self.ownedZoomWindowIDs.removeAll()
                     self.pendingZoomOwnershipWindowIDs.removeAll()
                     self.pendingOwnedZoomPreservation = nil
-                    self.clearPanePreviewCache(reason: "topology-unavailable")
                 }
                 self.rebuildTopologySnapshot()
                 self.reconcileManagedSurfaces(
@@ -201,7 +186,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         multipaneZoomDefault.reset()
         activeManagedPaneID = nil
         pendingFocusedPaneID = nil
-        clearPanePreviewCache(reason: "invalidate")
         session = nil
         controller = nil
         initialViewportHandler = nil
@@ -209,10 +193,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         latestViewportMeasurement = nil
         latestTopology = nil
         cachedTopologySnapshot = Self.emptyTopologySnapshot
-    }
-
-    func terminalConfigurationDidChange() {
-        clearPanePreviewCache(reason: "appearance-change")
     }
 
     func tmuxPaneID(for surfaceID: UUID) -> TmuxPaneID? {
@@ -277,7 +257,9 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                     visibleFrame: window.zoomed
                         ? (isFocused ? fullWindowFrame : nil)
                         : normalFrame,
-                    isFocused: isFocused
+                    isFocused: isFocused,
+                    tmuxCurrentCommand: pane.currentCommand,
+                    tmuxCurrentPath: pane.currentPath
                 )
             }
 
@@ -505,8 +487,12 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 // MARK: - GhosttyTerminalScreenModeling
 
 extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
-    func prepareInitialViewport(size: CGSize, scale: CGFloat) {
-        initialViewportHandler?(size, scale)
+    func prepareInitialViewport(
+        size: CGSize,
+        scale: CGFloat,
+        claimActiveViewport: Bool
+    ) {
+        initialViewportHandler?(size, scale, claimActiveViewport)
     }
 
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection {
@@ -553,21 +539,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing
-    ) -> GhosttyPanePreviewSession {
-        return newPanePreviewSession(
-            leafIDs: leafIDs,
-            previewSizing: previewSizing
-        )
-    }
-
-    private func newPanePreviewSession(
-        leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
-            previewSizing: previewSizing,
+            pixelBudget: pixelBudget,
             client: GhosttyPanePreviewSession.PreviewClient(
                 capture: { [weak self] leafID, budget in
                     guard let self,
@@ -575,16 +551,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                           let paneID = self.identities.paneID(for: leafID),
                           let pane = self.latestTopology?.panes.first(where: { $0.id == paneID })
                     else { return nil }
-                    let captureBudget = self.previewBudget(
-                        budget,
-                        for: pane,
-                        sizing: previewSizing
-                    )
                     return await session.capturePickerPreview(
                         paneID: paneID,
                         columns: pane.width,
                         rows: pane.height,
-                        budget: captureBudget
+                        budget: budget
                     )
                 },
                 cancelCapture: { [weak self] leafID in
@@ -592,152 +563,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                           let paneID = self.identities.paneID(for: leafID)
                     else { return }
                     self.session?.cancelPickerPreview(paneID: paneID)
-                },
-                cachedPreview: { [weak self] leafID in
-                    guard let self,
-                          let paneID = self.identities.paneID(for: leafID)
-                    else { return nil }
-                    guard let preview = self.panePreviewCache.preview(for: paneID) else {
-                        GhosttyRuntimeTrace.perf(
-                            "tmuxPane.preview.cache pane=\(paneID) result=miss"
-                        )
-                        return nil
-                    }
-                    guard self.previewIsCurrent(preview, for: paneID) else {
-                        self.panePreviewCache.remove(paneID)
-                        return nil
-                    }
-                    GhosttyRuntimeTrace.perf(
-                        "tmuxPane.preview.cache pane=\(paneID) result=hit source=\(Self.previewSourceLabel(preview.source)) bytes=\(preview.image.bytesPerRow * preview.image.height)"
-                    )
-                    return preview
-                },
-                shouldRefreshCachedImage: { [weak self] leafID in
-                    guard let self,
-                          let paneID = self.identities.paneID(for: leafID)
-                    else { return false }
-                    return self.session?.surfacesByPaneID[paneID] != nil
-                },
-                cacheRenderedPreview: { [weak self] leafID, preview in
-                    guard let self,
-                          self.session?.state == .ready,
-                          let paneID = self.identities.paneID(for: leafID),
-                          self.latestTopology?.panes.contains(where: { $0.id == paneID }) == true
-                    else { return }
-                    let evictedPaneIDs = self.panePreviewCache.store(
-                        preview,
-                        for: paneID
-                    )
-                    guard self.panePreviewCache.entries[paneID]?.preview.image === preview.image else {
-                        GhosttyRuntimeTrace.perf(
-                            "tmuxPane.preview.cache pane=\(paneID) result=reject-oversize bytes=\(preview.image.bytesPerRow * preview.image.height) limit=\(self.panePreviewCache.byteLimit)"
-                        )
-                        return
-                    }
-                    GhosttyRuntimeTrace.perf(
-                        "tmuxPane.preview.cache pane=\(paneID) result=store source=\(Self.previewSourceLabel(preview.source)) bytes=\(preview.image.bytesPerRow * preview.image.height) total=\(self.panePreviewCache.totalByteCost)"
-                    )
-                    if !evictedPaneIDs.isEmpty {
-                        GhosttyRuntimeTrace.perf(
-                            "tmuxPane.preview.cache result=evict panes=\(evictedPaneIDs) total=\(self.panePreviewCache.totalByteCost)"
-                        )
-                    }
                 }
             )
-        )
-    }
-
-    private func previewBudget(
-        _ budget: GhosttyPanePreviewSession.PixelBudget,
-        for pane: TmuxSessionController.PaneInfo,
-        sizing: GhosttyPanePreviewSession.PreviewSizing
-    ) -> GhosttyPanePreviewSession.PixelBudget {
-        guard case .paneMap = sizing else { return budget }
-        guard let window = latestTopology?.windows.first(where: {
-            $0.id == pane.windowID
-        }), window.width > 0, window.height > 0 else { return budget }
-        return .init(
-            width: Self.proportionalPreviewDimension(
-                budget.width,
-                part: pane.width,
-                whole: window.width
-            ),
-            height: Self.proportionalPreviewDimension(
-                budget.height,
-                part: pane.height,
-                whole: window.height
-            )
-        )
-    }
-
-    private static func proportionalPreviewDimension(
-        _ dimension: UInt32,
-        part: UInt32,
-        whole: UInt32
-    ) -> UInt32 {
-        guard dimension > 0, part > 0, whole > 0 else { return 1 }
-        return max(
-            1,
-            UInt32((Double(dimension) * Double(part) / Double(whole)).rounded(.up))
-        )
-    }
-
-    private func previewIsCurrent(
-        _ preview: GhosttyPanePreviewSession.RenderedPreview,
-        for paneID: TmuxPaneID
-    ) -> Bool {
-        guard let topology = latestTopology,
-              let pane = topology.panes.first(where: { $0.id == paneID }),
-              let window = topology.windows.first(where: { $0.id == pane.windowID }),
-              let currentSurfaceID = session?.surfacesByPaneID[paneID]?.instanceID.rawValue
-        else { return false }
-
-        switch preview.source {
-        case .paneGeometry(let provenance):
-            return provenance.surfaceID == currentSurfaceID
-                && pane.width == provenance.columns
-                && pane.height == provenance.rows
-        case .fullViewport(let provenance):
-            guard provenance.surfaceID == currentSurfaceID,
-                  window.zoomed,
-                  window.activePaneID == paneID,
-                  let metrics = latestViewportMeasurement?.displayMetrics(
-                      columns: window.width,
-                      rows: window.height
-                  )
-            else { return false }
-            return metrics.pixelWidth == provenance.pixelWidth
-                && metrics.pixelHeight == provenance.pixelHeight
-        }
-    }
-
-    private static func previewSourceLabel(
-        _ source: GhosttyPanePreviewSession.PreviewSource
-    ) -> String {
-        switch source {
-        case .paneGeometry(let provenance):
-            return "pane-geometry-\(provenance.columns)x\(provenance.rows)"
-        case .fullViewport(let provenance):
-            return "full-viewport-\(provenance.pixelWidth)x\(provenance.pixelHeight)"
-        }
-    }
-
-    private func reconcilePanePreviewCache(
-        with topology: TmuxSessionController.TopologySnapshot
-    ) {
-        guard !panePreviewCache.entries.isEmpty else { return }
-        let removedPaneIDs = panePreviewCache.retainOnly(Set(topology.panes.map(\.id)))
-        guard !removedPaneIDs.isEmpty else { return }
-        GhosttyRuntimeTrace.perf(
-            "tmuxPane.preview.cache result=topology-remove panes=\(removedPaneIDs) total=\(panePreviewCache.totalByteCost)"
-        )
-    }
-
-    private func clearPanePreviewCache(reason: String) {
-        guard !panePreviewCache.entries.isEmpty else { return }
-        panePreviewCache.removeAll()
-        GhosttyRuntimeTrace.perf(
-            "tmuxPane.preview.cache result=clear reason=\(reason)"
         )
     }
 
@@ -834,6 +661,19 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     // MARK: tmux topology actions
+
+    func reclaimActiveTmuxViewport() {
+        controller?.reclaimActiveViewport()
+    }
+
+    func claimActiveTmuxViewportIfNeeded() {
+        controller?.claimActiveViewportIfNeeded()
+    }
+
+    func refreshTmuxPaneMetadata(inTopLevel id: UUID) {
+        guard let windowID = identities.windowID(for: id) else { return }
+        controller?.requestRefreshWindowPaneMetadata(windowID: windowID)
+    }
 
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
         guard let paneID = identities.paneID(for: id), let controller else {
@@ -1131,8 +971,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func windowSheetPresentationProjection() -> GhosttyWindowSheetPresentationProjection? {
-        GhosttyTerminalPresentationProjector.windowSheetPresentationProjection(
+        guard let projection = GhosttyTerminalPresentationProjector.windowSheetPresentationProjection(
             snapshot: topologySnapshot
+        ) else { return nil }
+        return GhosttyWindowSheetPresentationProjection(
+            previewLeafIDs: capturablePreviewLeafIDs(projection.previewLeafIDs)
         )
     }
 
@@ -1159,9 +1002,22 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func windowSelectionSheetRenderProjection() -> GhosttyWindowSelectionSheetRenderProjection {
-        GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(
+        let projection = GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(
             snapshot: topologySnapshot
         )
+        return GhosttyWindowSelectionSheetRenderProjection(
+            windows: projection.windows,
+            selectedWindowID: projection.selectedWindowID,
+            previewLeafIDs: capturablePreviewLeafIDs(projection.previewLeafIDs)
+        )
+    }
+
+    private func capturablePreviewLeafIDs(_ prioritizedLeafIDs: [UUID]) -> [UUID] {
+        guard let session else { return [] }
+        return prioritizedLeafIDs.filter { leafID in
+            guard let paneID = identities.paneID(for: leafID) else { return false }
+            return session.surfacesByPaneID[paneID] != nil
+        }
     }
 
     func paneSelectionSheetRenderProjection(

@@ -40,6 +40,19 @@ struct GhosttyIOSurfaceFrame: Sendable {
     /// Metal reuses its fixed frame targets, so later draws may overwrite the
     /// same allocation even while another owner holds a CF reference.
     static func read(from layer: CALayer) throws -> Self {
+        try copyPixels(from: layer, sourceRect: nil)
+    }
+
+    /// Copies only the requested pixels from the currently published
+    /// IOSurface.
+    static func read(from layer: CALayer, sourceRect: CGRect) throws -> Self {
+        try copyPixels(from: layer, sourceRect: sourceRect)
+    }
+
+    private static func copyPixels(
+        from layer: CALayer,
+        sourceRect: CGRect?
+    ) throws -> Self {
         guard let surface = iosurface(from: layer) else {
             throw ReadError.invalidGeometry
         }
@@ -62,33 +75,57 @@ struct GhosttyIOSurfaceFrame: Sendable {
         guard pixelFormat == bgraPixelFormat else {
             throw ReadError.unsupportedPixelFormat(pixelFormat)
         }
-        let (byteCount, overflow) = bytesPerRow.multipliedReportingOverflow(by: height)
+        guard let sourceRect else {
+            let (byteCount, overflow) = bytesPerRow.multipliedReportingOverflow(
+                by: height
+            )
+            guard !overflow else { throw ReadError.invalidGeometry }
+            return Self(
+                width: width,
+                height: height,
+                bytesPerRow: bytesPerRow,
+                bytes: Data(bytes: base, count: byteCount)
+            )
+        }
+
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let copiedRect = sourceRect.standardized.integral.intersection(bounds)
+        guard !copiedRect.isNull, !copiedRect.isEmpty else {
+            throw ReadError.invalidGeometry
+        }
+        let copiedX = Int(copiedRect.minX)
+        let copiedY = Int(copiedRect.minY)
+        let copiedWidth = Int(copiedRect.width)
+        let copiedHeight = Int(copiedRect.height)
+        let copiedBytesPerRow = copiedWidth * 4
+        let (byteCount, overflow) = copiedBytesPerRow.multipliedReportingOverflow(
+            by: copiedHeight
+        )
         guard !overflow else { throw ReadError.invalidGeometry }
+        var bytes = Data(count: byteCount)
+        bytes.withUnsafeMutableBytes { destination in
+            guard let destinationBase = destination.baseAddress else { return }
+            for row in 0..<copiedHeight {
+                let source = base.advanced(
+                    by: (copiedY + row) * bytesPerRow + copiedX * 4
+                )
+                destinationBase.advanced(by: row * copiedBytesPerRow).copyMemory(
+                    from: source,
+                    byteCount: copiedBytesPerRow
+                )
+            }
+        }
         return Self(
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow,
-            bytes: Data(bytes: base, count: byteCount)
+            width: copiedWidth,
+            height: copiedHeight,
+            bytesPerRow: copiedBytesPerRow,
+            bytes: bytes
         )
     }
 
-    func image(maxWidth: UInt32, maxHeight: UInt32) throws -> CGImage {
-        try makeImage(sourceRect: nil, maxWidth: maxWidth, maxHeight: maxHeight)
-    }
-
-    func image(
-        sourceRect: CGRect,
-        maxWidth: UInt32,
-        maxHeight: UInt32
-    ) throws -> CGImage {
-        try makeImage(
-            sourceRect: sourceRect,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight
-        )
-    }
-
-    func sourceRect(
+    static func sourceRect(
+        width: Int,
+        height: Int,
         centeredOn anchor: CGRect,
         maxWidth: UInt32,
         maxHeight: UInt32
@@ -125,14 +162,10 @@ struct GhosttyIOSurfaceFrame: Sendable {
         return CGRect(x: x, y: y, width: integralWidth, height: integralHeight)
     }
 
-    private func makeImage(
-        sourceRect requestedSourceRect: CGRect?,
-        maxWidth: UInt32,
-        maxHeight: UInt32
-    ) throws -> CGImage {
+    func image(maxWidth: UInt32, maxHeight: UInt32) throws -> CGImage {
         guard maxWidth > 0, maxHeight > 0,
               let provider = CGDataProvider(data: bytes as CFData),
-              let fullImage = CGImage(
+              let source = CGImage(
                 width: width,
                 height: height,
                 bitsPerComponent: 8,
@@ -147,18 +180,6 @@ struct GhosttyIOSurfaceFrame: Sendable {
               )
         else { throw ReadError.imageCreationFailed }
 
-        let source: CGImage
-        if let requestedSourceRect {
-            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            let sourceRect = requestedSourceRect.standardized.integral.intersection(bounds)
-            guard !sourceRect.isNull, !sourceRect.isEmpty,
-                  let cropped = fullImage.cropping(to: sourceRect)
-            else { throw ReadError.invalidGeometry }
-            source = cropped
-        } else {
-            source = fullImage
-        }
-
         let scale = min(
             1,
             min(
@@ -166,7 +187,7 @@ struct GhosttyIOSurfaceFrame: Sendable {
                 Double(maxHeight) / Double(source.height)
             )
         )
-        guard scale < 1 || requestedSourceRect != nil else { return source }
+        guard scale < 1 else { return source }
 
         let targetWidth = max(1, Int((Double(source.width) * scale).rounded(.down)))
         let targetHeight = max(1, Int((Double(source.height) * scale).rounded(.down)))

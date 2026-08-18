@@ -3,17 +3,32 @@ import XCTest
 @testable import Remux
 
 final class PanePreviewLayoutTests: XCTestCase {
-    func testWindowGridUsesTwoColumnTileBudget() {
-        let metrics = PanePreviewLayout.windowMetrics(availableWidth: 361)
+    func testPortraitWindowGridUsesTwoColumnPortraitCards() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 393, height: 852)
+        )
 
         XCTAssertEqual(metrics.columnCount, 2)
-        XCTAssertEqual(metrics.tilePointSize, CGSize(width: 175, height: 172))
-        XCTAssertEqual(metrics.previewPointSize, CGSize(width: 159, height: 120))
+        XCTAssertEqual(metrics.tilePointSize, CGSize(width: 175, height: 193))
+        XCTAssertEqual(metrics.capturePointSize, CGSize(width: 159, height: 120))
     }
 
-    func testWindowPhysicalPixelBudgetTracksWindowGridMetrics() {
+    func testLandscapeWindowGridUsesThreeColumnFourByThreeCards() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 852, height: 393)
+        )
+
+        XCTAssertEqual(metrics.columnCount, 3)
+        XCTAssertEqual(metrics.tilePointSize, CGSize(width: 266, height: 200))
+        XCTAssertEqual(metrics.capturePointSize, CGSize(width: 250, height: 188))
+    }
+
+    func testWindowPhysicalPixelBudgetUsesResolvedMetrics() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 393, height: 852)
+        )
         let budget = PanePreviewLayout.windowPhysicalPixelBudget(
-            availableWidth: 361,
+            metrics: metrics,
             scale: 3
         )
 
@@ -21,35 +36,51 @@ final class PanePreviewLayoutTests: XCTestCase {
         XCTAssertEqual(budget.height, 360)
     }
 
-    func testPaneMapUsesSquareCanvasAndPreservesRelativePaneGeometry() throws {
-        let metrics = try XCTUnwrap(PanePreviewLayout.paneMapMetrics(
-            windowGrid: GhosttyTerminalGridSize(columns: 83, rows: 44),
-            availableWidth: 361,
-            maximumHeight: 400
-        ))
-
-        XCTAssertEqual(metrics.size.width, 361, accuracy: 0.001)
-        XCTAssertEqual(metrics.size.height, 361, accuracy: 0.001)
-
-        let rightPane = metrics.frame(for: GhosttyTerminalGridRect(
-            x: 42,
-            y: 0,
-            columns: 41,
-            rows: 44
-        ))
-        XCTAssertEqual(rightPane.minX, metrics.cellSize.width * 42, accuracy: 0.001)
-        XCTAssertEqual(rightPane.maxX, metrics.size.width, accuracy: 0.001)
-        XCTAssertEqual(rightPane.height, metrics.size.height, accuracy: 0.001)
+    func testLandscapeWindowGridUsesAvailableContentBudget() {
+        let availableHeight: CGFloat = 393
+        let navigationBarHeight: CGFloat = 44
+        let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
+            availableHeight: availableHeight,
+            navigationBarHeight: navigationBarHeight
+        )
+        let windowHeight = PanePreviewLayout.gridIdealHeight(
+            itemCount: 100,
+            metrics: PanePreviewLayout.windowMetrics(
+                availableSize: CGSize(width: 852, height: availableHeight)
+            ),
+            maximumContentHeight: maximumContentHeight
+        )
+        XCTAssertEqual(
+            maximumContentHeight + TerminalSelectionSheetLayout.fixedChromeHeight(
+                navigationBarHeight: navigationBarHeight
+            ),
+            availableHeight
+        )
+        XCTAssertEqual(windowHeight, maximumContentHeight)
+        XCTAssertEqual(
+            TerminalSelectionSheetLayout.sheetHeight(
+                contentHeight: windowHeight,
+                navigationBarHeight: navigationBarHeight
+            ),
+            availableHeight
+        )
     }
 
-    func testPaneMapPreviewBudgetMatchesItsMaximumDisplayBounds() {
-        let budget = PanePreviewLayout.paneMapPhysicalPixelBudget(
-            availableWidth: 361,
-            maximumHeight: 460,
-            scale: 3
+    func testWindowGridPreservesItsPartialNextRowAffordanceWithinTheBudget() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 393, height: 852)
+        )
+        let expectedHeight = metrics.tilePointSize.height
+            + metrics.gridSpacing
+            + metrics.tilePointSize.height * 0.5
+        let height = PanePreviewLayout.gridIdealHeight(
+            itemCount: 5,
+            metrics: metrics,
+            maximumContentHeight: 320
         )
 
-        XCTAssertEqual(budget.width, 1_083)
-        XCTAssertEqual(budget.height, 1_083)
+        XCTAssertEqual(height, expectedHeight)
+        XCTAssertLessThanOrEqual(height, 320)
     }
+
 }

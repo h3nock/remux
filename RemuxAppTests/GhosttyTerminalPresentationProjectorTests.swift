@@ -543,6 +543,48 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         )
     }
 
+    func testWindowPreviewCapturePrioritizesTheSelectedWindow() {
+        let firstWindowID = UUID()
+        let selectedWindowID = UUID()
+        let thirdWindowID = UUID()
+        let firstPaneID = UUID()
+        let selectedPaneID = UUID()
+        let thirdPaneID = UUID()
+        let snapshot = GhosttyRuntimeSurfaceTopologySnapshot(
+            topLevels: [
+                GhosttyTopLevelSurface(
+                    id: firstWindowID,
+                    leafIDs: [firstPaneID],
+                    focusedLeafID: firstPaneID
+                ),
+                GhosttyTopLevelSurface(
+                    id: selectedWindowID,
+                    leafIDs: [selectedPaneID],
+                    focusedLeafID: selectedPaneID
+                ),
+                GhosttyTopLevelSurface(
+                    id: thirdWindowID,
+                    leafIDs: [thirdPaneID],
+                    focusedLeafID: thirdPaneID
+                ),
+            ],
+            selectedTopLevelID: selectedWindowID
+        )
+
+        let projection = GhosttyTerminalPresentationProjector
+            .windowSelectionSheetRenderProjection(snapshot: snapshot)
+
+        XCTAssertEqual(
+            projection.windows.map(\.id),
+            [firstWindowID, selectedWindowID, thirdWindowID],
+            "capture priority must not reorder the picker tiles"
+        )
+        XCTAssertEqual(
+            projection.previewLeafIDs,
+            [selectedPaneID, firstPaneID, thirdPaneID]
+        )
+    }
+
     func testTerminalReadyTraceFieldsPreserveExistingKeysAndAddRawReadinessFacts() throws {
         let workspaceID = try XCTUnwrap(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         let selectedLeafID = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
