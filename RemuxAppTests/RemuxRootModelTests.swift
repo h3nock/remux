@@ -106,6 +106,46 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(discoveredServerIDs, [first.server.id, second.server.id])
     }
 
+    func testDiscoveryHostKeyChallengeCanBeTrustedAndRetried() async throws {
+        let pair = makePasswordBackedServer()
+        let challenge = makeHostKeyChallenge(
+            serverID: pair.server.id,
+            host: pair.server.host
+        )
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+                .success(["main", "ops"]),
+            ]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+
+        await harness.model.load()
+
+        let didRequireTrust = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).hostKeyChallenge
+                == challenge
+        }
+        XCTAssertTrue(didRequireTrust)
+
+        harness.model.trustTmuxSessionDiscoveryHostKey(challenge)
+
+        let didRetry = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id)
+                == TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main", "ops"])
+        }
+        XCTAssertTrue(didRetry)
+        let discoveryCount = await discoverer.targets().count
+        XCTAssertEqual(discoveryCount, 2)
+    }
+
     func testDiscoveryRefreshRetainsLastSuccessfulSnapshotOnFailure() {
         let loaded = TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main"])
 
@@ -311,14 +351,14 @@ final class RemuxRootModelTests: XCTestCase {
                 setupSessionID: UUID(),
                 terminalTheme: .remuxDark,
                 isActionInProgress: true,
+                showsServerSummaryForNewSession: false,
                 onChange: { _ in },
                 onConnect: {},
                 publicKeyInstallTarget: { _ in throw CancellationError() },
                 preflightPublicKeyInstallation: { _ in .passwordRequired },
                 appendPublicKey: { _, _ in },
                 verifyPublicKeyInstallation: { _ in },
-                trustSetupHostKey: { _ in },
-                onCancel: {}
+                trustSetupHostKey: { _ in }
             )
         }
         let hostingController = UIHostingController(rootView: view)
@@ -487,7 +527,7 @@ final class RemuxRootModelTests: XCTestCase {
     func testTrustSetupHostKeyStoresChallengeForDraftServerID() throws {
         let harness = makeHarness()
         harness.model.beginNewServer()
-        let draft = try setupDraft(from: harness.model.state)
+        let draft = try setupDraft(from: harness.model)
         let challenge = makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test")
 
         try harness.model.trustSetupHostKey(
@@ -507,13 +547,13 @@ final class RemuxRootModelTests: XCTestCase {
         let harness = makeHarness()
         await harness.model.load()
         harness.model.beginNewServer()
-        let draft = try setupDraft(from: harness.model.state)
+        let draft = try setupDraft(from: harness.model)
         try harness.model.trustSetupHostKey(
             makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test"),
             setupSessionID: harness.model.setupSessionID
         )
 
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
@@ -528,7 +568,7 @@ final class RemuxRootModelTests: XCTestCase {
         )
         await harness.model.load()
         harness.model.beginNewServer()
-        let serverID = try setupDraft(from: harness.model.state).serverID
+        let serverID = try setupDraft(from: harness.model).serverID
         let generatedKey = SSHPrivateKeyInspector.generateEd25519()
         var draft = TmuxConnectionDraft(serverID: serverID)
         draft.host = "server.example.test"
@@ -547,7 +587,7 @@ final class RemuxRootModelTests: XCTestCase {
             setupSessionID: cancelledSetupSessionID
         )
 
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
         harness.model.beginNewServer()
 
         do {
@@ -602,15 +642,21 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
 
         await harness.model.beginEditServer(serverID: pair.server.id)
+        let setupSessionID = harness.model.setupSessionID
         try harness.model.trustSetupHostKey(
             updatedChallenge,
-            setupSessionID: harness.model.setupSessionID
+            setupSessionID: setupSessionID
         )
-        await harness.model.cancelSetup()
+        await harness.model.showLibrary()
+
+        XCTAssertEqual(harness.model.setupSessionID, setupSessionID)
+        XCTAssertNotNil(harness.model.connectionSetup)
+
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertEqual(
@@ -639,13 +685,13 @@ final class RemuxRootModelTests: XCTestCase {
             ),
             setupSessionID: harness.model.setupSessionID
         )
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
     }
 
-    func testCancelEditServerRejectsInstallAndTrustDuringLibraryReload() async throws {
+    func testCancelEditServerRejectsStaleInstallAndTrustCallbacks() async throws {
         let pair = makePasswordBackedServer()
         let recorder = RootModelPublicKeyInstallerRecorder(
             results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
@@ -674,25 +720,18 @@ final class RemuxRootModelTests: XCTestCase {
             draft.authenticationKind = .privateKey
             draft.privateKeyPEM = generatedKey.privateKeyPEM
         }
-        let draft = try setupDraft(from: harness.model.state)
+        let draft = try setupDraft(from: harness.model)
         let setupSessionID = harness.model.setupSessionID
         try harness.model.trustSetupHostKey(
             makeChangedHostKeyChallenge(
                 serverID: pair.server.id,
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+                receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
             ),
             setupSessionID: setupSessionID
         )
-        await harness.profileRepository.suspendNextLoad(
-            thenThrow: ConnectionProfileRepositoryError.missingServer(pair.server.id)
-        )
-
-        let cancelTask = Task {
-            await harness.model.cancelSetup()
-        }
-        await harness.profileRepository.waitForSuspendedLoad()
+        harness.model.cancelSetup()
 
         do {
             _ = try await harness.model.preflightPublicKeyInstallation(
@@ -710,7 +749,7 @@ final class RemuxRootModelTests: XCTestCase {
                     serverID: pair.server.id,
                     host: "stale.example.test",
                     trustedIdentity: originalIdentity,
-                    receivedOpenSSHPublicKey: "ssh-ed25519 stale-host-key"
+                    receivedOpenSSHPublicKey: "ssh-ed25519 c3RhbGUtaG9zdC1rZXk="
                 ),
                 setupSessionID: setupSessionID
             )
@@ -726,9 +765,8 @@ final class RemuxRootModelTests: XCTestCase {
             try loadTrustedHostIdentities(root: harness.trustedHostRoot),
             [originalIdentity]
         )
-
-        await harness.profileRepository.resumeSuspendedLoad()
-        await cancelTask.value
+        XCTAssertNil(harness.model.connectionSetup)
+        XCTAssertEqual(harness.model.state, .library)
     }
 
     func testEditServerSaveFailureRestoresExactPriorTrustAndPreservesUnrelatedTrust() async throws {
@@ -767,7 +805,7 @@ final class RemuxRootModelTests: XCTestCase {
                 serverID: pair.server.id,
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+                receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
             ),
             setupSessionID: harness.model.setupSessionID
         )
@@ -855,7 +893,7 @@ final class RemuxRootModelTests: XCTestCase {
                 serverID: pair.server.id,
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+                receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
             ),
             setupSessionID: harness.model.setupSessionID
         )
@@ -913,7 +951,7 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.credentialStore.resumeSuspendedLoad()
         await beginEditTask.value
 
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
         let retainedIdentity = try XCTUnwrap(
             loadTrustedHostIdentities(root: harness.trustedHostRoot).first
@@ -944,7 +982,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
 
         await harness.model.beginEditServer(serverID: pair.server.id)
@@ -990,7 +1028,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
         try harness.model.trustSetupHostKey(
             replacementChallenge,
@@ -1007,11 +1045,11 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.credentialStore.waitForSuspendedLoad()
         XCTAssertTrue(harness.model.isSetupActionInProgress)
 
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
-        guard case .setup = harness.model.state else {
+        guard harness.model.connectionSetup != nil else {
             await harness.credentialStore.resumeSuspendedLoad()
-            await saveTask.value
+            _ = await saveTask.value
             return XCTFail("expected save to retain ownership of setup")
         }
         XCTAssertEqual(
@@ -1021,7 +1059,7 @@ final class RemuxRootModelTests: XCTestCase {
         )
 
         await harness.credentialStore.resumeSuspendedLoad()
-        await saveTask.value
+        _ = await saveTask.value
 
         XCTAssertFalse(harness.model.isSetupActionInProgress)
         let snapshot = try await harness.profileRepository.loadSnapshot()
@@ -1057,7 +1095,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
         try harness.model.trustSetupHostKey(
             replacementChallenge,
@@ -1076,15 +1114,15 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.profileRepository.waitForSuspendedLoad()
         XCTAssertTrue(harness.model.isSetupActionInProgress)
 
-        await harness.model.cancelSetup()
-        guard case .setup = harness.model.state else {
+        harness.model.cancelSetup()
+        guard harness.model.connectionSetup != nil else {
             await harness.profileRepository.resumeSuspendedLoad()
-            await saveTask.value
+            _ = await saveTask.value
             return XCTFail("expected save to retain ownership of setup")
         }
 
         await harness.profileRepository.resumeSuspendedLoad()
-        await saveTask.value
+        _ = await saveTask.value
 
         XCTAssertFalse(harness.model.isSetupActionInProgress)
         guard case .failed = harness.model.state else {
@@ -1122,18 +1160,18 @@ final class RemuxRootModelTests: XCTestCase {
         try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
         await harness.model.load()
 
-        await harness.model.beginNewWorkspace(for: pair.server.id)
+        harness.model.beginNewWorkspace(for: pair.server.id)
         let newWorkspaceChallenge = makeChangedHostKeyChallenge(
             serverID: pair.server.id,
             host: "new-workspace.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 new-workspace-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 bmV3LXdvcmtzcGFjZS1ob3N0LWtleQ=="
         )
         try harness.model.trustSetupHostKey(
             newWorkspaceChallenge,
             setupSessionID: harness.model.setupSessionID
         )
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
         let newWorkspaceIdentity = try XCTUnwrap(
             loadTrustedHostIdentities(root: harness.trustedHostRoot).first
@@ -1146,13 +1184,13 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "edit-workspace.example.test",
             trustedIdentity: newWorkspaceIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 edit-workspace-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 ZWRpdC13b3Jrc3BhY2UtaG9zdC1rZXk="
         )
         try harness.model.trustSetupHostKey(
             editWorkspaceChallenge,
             setupSessionID: harness.model.setupSessionID
         )
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
         let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
@@ -1163,9 +1201,13 @@ final class RemuxRootModelTests: XCTestCase {
         )
     }
 
-    func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
-        let settings = TerminalSettings(fontSize: 15, theme: .remuxDark)
-        let harness = makeHarness(settings: settings)
+    func testSaveNewServerPersistsNoWorkspaceAndReturnsToLibrary() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base", "ops"])])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
         await harness.model.load()
         harness.model.beginNewServer()
         harness.model.updateDraft { draft in
@@ -1174,38 +1216,186 @@ final class RemuxRootModelTests: XCTestCase {
             draft.port = "22"
             draft.username = "demo"
             draft.password = "demo-password"
-            draft.sessionName = "base"
         }
 
-        await harness.model.saveAndConnect()
-
-        guard
-            case .terminal(let activeWorkspaceID) = harness.model.state,
-            let activeSession = harness.model.activeSessions.first
-        else {
-            XCTFail("expected terminal state")
-            return
-        }
-
-        let target = activeSession.target
-        XCTAssertEqual(activeWorkspaceID, target.workspace.id)
-        XCTAssertEqual(target.server.displayName, "Example Server")
-        XCTAssertEqual(target.workspace.sessionName, "base")
-        XCTAssertEqual(target.sshAuth.credential, .password("demo-password"))
-        XCTAssertEqual(target.sshAuth.identityID, target.server.identityID)
-        XCTAssertEqual(target.sshAuth.displayLabel, "Example Server")
-        XCTAssertEqual(target.terminalSettings, settings)
+        let savedServerID = await harness.model.saveAndConnect()
+        let serverID = try XCTUnwrap(savedServerID)
 
         let snapshot = try await harness.profileRepository.loadSnapshot()
+        let server = try XCTUnwrap(snapshot.server(id: serverID))
         let identity = try XCTUnwrap(snapshot.identities.first)
         let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
-        XCTAssertEqual(snapshot.servers, [target.server])
-        XCTAssertEqual(snapshot.workspaces, [target.workspace])
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertTrue(harness.model.activeSessions.isEmpty)
+        XCTAssertEqual(server.displayName, "Example Server")
+        XCTAssertEqual(snapshot.servers, [server])
+        XCTAssertTrue(snapshot.workspaces.isEmpty)
         XCTAssertEqual(snapshot.identities, [identity])
-        XCTAssertEqual(target.server.identityID, identity.id)
+        XCTAssertEqual(server.identityID, identity.id)
         XCTAssertEqual(identity.name, "Example Server")
         XCTAssertEqual(identity.authenticationKind, .password)
         XCTAssertEqual(savedCredential, .password("demo-password"))
+        XCTAssertEqual(
+            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames,
+            ["base", "ops"]
+        )
+        let verifiedTargets = await discoverer.targets()
+        let verifiedTarget = try XCTUnwrap(verifiedTargets.first)
+        XCTAssertEqual(verifiedTarget.server, server)
+        XCTAssertEqual(verifiedTarget.sshAuth.username, "demo")
+        XCTAssertEqual(verifiedTarget.sshAuth.credential, .password("demo-password"))
+    }
+
+    func testNewServerVerificationFailureKeepsDraftWithoutPersistingProfile() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(
+                    TmuxSessionDiscoveryError.remoteExit(
+                        status: 127,
+                        stderr: SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
+                    )
+                ),
+            ]
+        )
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+        XCTAssertNil(savedServerID)
+
+        let setup = try XCTUnwrap(harness.model.connectionSetup)
+        XCTAssertEqual(setup.draft.displayName, "Example Server")
+        XCTAssertEqual(
+            setup.submissionIssue,
+            .verificationFailed("Install tmux on this server or update Executable Path.")
+        )
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let credentials = await harness.credentialStore.credentialsSnapshot()
+        XCTAssertEqual(snapshot, .empty)
+        XCTAssertEqual(credentials, [:])
+    }
+
+    func testNewServerHostKeyTrustRetriesVerificationBeforePersistence() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let serverID = try setupDraft(from: harness.model).serverID
+        let challenge = makeHostKeyChallenge(
+            serverID: serverID,
+            host: "server.example.com"
+        )
+        await discoverer.appendResults([
+            .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+            .success(["base"]),
+        ])
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = challenge.host
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+
+        let firstSaveResult = await harness.model.saveAndConnect()
+        XCTAssertNil(firstSaveResult)
+        XCTAssertEqual(
+            harness.model.connectionSetup?.submissionIssue,
+            .hostKeyTrustRequired(challenge)
+        )
+        let snapshotBeforeTrust = try await harness.profileRepository.loadSnapshot()
+        XCTAssertEqual(snapshotBeforeTrust, .empty)
+
+        XCTAssertTrue(
+            harness.model.trustNewServerHostKey(
+                challenge,
+                setupSessionID: harness.model.setupSessionID
+            )
+        )
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertEqual(savedServerID, serverID)
+        let verifiedTargets = await discoverer.targets()
+        XCTAssertEqual(verifiedTargets.count, 2)
+        XCTAssertEqual(
+            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames,
+            ["base"]
+        )
+    }
+
+    func testNewServerPersistenceFailureKeepsDraftAndTrustUntilCancel() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let serverID = try setupDraft(from: harness.model).serverID
+        let challenge = makeHostKeyChallenge(
+            serverID: serverID,
+            host: "server.example.com"
+        )
+        await discoverer.appendResults([
+            .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+            .success(["base"]),
+        ])
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = challenge.host
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+        let submittedDraft = try setupDraft(from: harness.model)
+
+        _ = await harness.model.saveAndConnect()
+        XCTAssertTrue(
+            harness.model.trustNewServerHostKey(
+                challenge,
+                setupSessionID: harness.model.setupSessionID
+            )
+        )
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(serverID)
+        )
+
+        let saveResult = await harness.model.saveAndConnect()
+
+        XCTAssertNil(saveResult)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(harness.model.connectionSetup?.draft, submittedDraft)
+        XCTAssertEqual(harness.model.connectionSetup?.submissionIssue, .saveFailed)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let credentials = await harness.credentialStore.credentialsSnapshot()
+        XCTAssertEqual(snapshot, .empty)
+        XCTAssertEqual(credentials, [:])
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot).map(\.serverID),
+            [serverID]
+        )
+
+        harness.model.cancelSetup()
+
+        XCTAssertNil(harness.model.connectionSetup)
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
     }
 
     func testSaveAndConnectPersistsNewProfileWithNoneAuthentication() async throws {
@@ -1634,19 +1824,35 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.load()
         await harness.model.showLibrary()
 
-        await harness.model.beginNewWorkspace(for: server.id)
+        XCTAssertTrue(harness.model.beginNewWorkspace(for: server.id))
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
 
+        XCTAssertEqual(harness.model.state, .library)
         XCTAssertEqual(setup.draft.displayName, server.displayName)
         XCTAssertEqual(setup.draft.host, server.host)
         XCTAssertEqual(setup.draft.username, server.username)
         XCTAssertEqual(setup.draft.sessionName, "")
         XCTAssertEqual(setup.validation, .empty)
         XCTAssertEqual(setup.mode, .newWorkspace(server.id))
+    }
+
+    func testBeginNewWorkspaceReportsFailureWhileAnotherSetupOwnsTheModel() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [passwordBackedServer.server],
+            identities: [passwordBackedServer.identity]
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+
+        XCTAssertFalse(
+            harness.model.beginNewWorkspace(for: passwordBackedServer.server.id)
+        )
+        XCTAssertEqual(harness.model.connectionSetup?.mode, .newServer)
     }
 
     func testBeginNewWorkspaceDoesNotGenerateSessionNameFromExistingWorkspaces() async throws {
@@ -1665,9 +1871,9 @@ final class RemuxRootModelTests: XCTestCase {
         )
         await harness.model.load()
 
-        await harness.model.beginNewWorkspace(for: server.id)
+        harness.model.beginNewWorkspace(for: server.id)
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
@@ -1693,13 +1899,13 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.load()
         await harness.model.connect(to: workspace.id)
 
-        await harness.model.beginNewWorkspace(
-            for: server.id,
-            cancelDestination: .terminal(workspace.id)
-        )
-        await harness.model.cancelSetup()
+        harness.model.beginNewWorkspace(for: server.id)
+        XCTAssertEqual(harness.model.state, .terminal(workspace.id))
+        XCTAssertNotNil(harness.model.connectionSetup)
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .terminal(workspace.id))
+        XCTAssertNil(harness.model.connectionSetup)
         XCTAssertEqual(harness.model.activeSessions.map(\.id), [workspace.id])
     }
 
@@ -1719,12 +1925,9 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.load()
         await harness.model.connect(to: workspace.id)
 
-        await harness.model.beginNewWorkspace(
-            for: server.id,
-            cancelDestination: .terminal(workspace.id)
-        )
+        harness.model.beginNewWorkspace(for: server.id)
         harness.model.disconnectActiveSession(workspace.id)
-        await harness.model.cancelSetup()
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertTrue(harness.model.activeSessions.isEmpty)
@@ -1740,10 +1943,13 @@ final class RemuxRootModelTests: XCTestCase {
         )
         await harness.model.load()
 
-        await harness.model.beginNewWorkspace(for: server.id)
-        await harness.model.cancelSetup()
+        harness.model.beginNewWorkspace(for: server.id)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertNotNil(harness.model.connectionSetup)
+        harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
+        XCTAssertNil(harness.model.connectionSetup)
     }
 
     func testNewWorkspaceSavesTypedSessionNameAndConnectsExistingServer() async throws {
@@ -1759,7 +1965,7 @@ final class RemuxRootModelTests: XCTestCase {
             identityID: passwordBackedServer.identity.id
         )
         await harness.model.load()
-        await harness.model.beginNewWorkspace(for: server.id)
+        harness.model.beginNewWorkspace(for: server.id)
         harness.model.updateDraft { draft in
             draft.sessionName = "claude"
         }
@@ -1796,7 +2002,7 @@ final class RemuxRootModelTests: XCTestCase {
             identityID: passwordBackedServer.identity.id
         )
         await harness.model.load()
-        await harness.model.beginNewWorkspace(for: server.id)
+        harness.model.beginNewWorkspace(for: server.id)
         harness.model.updateDraft { draft in
             draft.sessionName = "scratch"
             draft.password = ""
@@ -1847,7 +2053,7 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginEditServer(serverID: server.id)
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
@@ -1875,7 +2081,7 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginEditServer(serverID: server.id)
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
@@ -1904,7 +2110,7 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginCredentialRepair(for: workspace.id)
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
@@ -1976,7 +2182,7 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginServerRepair(for: workspace.id)
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
@@ -2046,7 +2252,7 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginEditWorkspace(serverID: server.id, workspaceID: logs.id)
 
-        guard case .setup(let setup) = harness.model.state else {
+        guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
             return
         }
@@ -2163,7 +2369,7 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.saveAndConnect()
 
         let refreshedSession = try XCTUnwrap(harness.model.activeSessions.first)
-        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(harness.model.state, .terminal(workspace.id))
         XCTAssertEqual(refreshedSession.instanceID, originalSession.instanceID)
         XCTAssertEqual(refreshedSession.target.server.host, "updated.example.com")
         XCTAssertEqual(refreshedSession.target.server.username, "deploy")
@@ -2399,7 +2605,7 @@ final class RemuxRootModelTests: XCTestCase {
         try await harness.credentialStore.saveCredential(.password("identity-secret"), identityID: identity.id)
 
         await harness.model.load()
-        await harness.model.beginNewWorkspace(for: server.id)
+        harness.model.beginNewWorkspace(for: server.id)
         harness.model.updateDraft { draft in
             draft.sessionName = "logs"
         }
@@ -2951,7 +3157,7 @@ final class RemuxRootModelTests: XCTestCase {
             trustedKeyType: "ssh-ed25519",
             trustedOpenSSHPublicKey: "ssh-ed25519 trusted",
             receivedKeyType: "ecdsa-sha2-nistp256",
-            receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 received"
+            receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
         )
         let reason = TerminalDisconnectReason(
             kind: .hostKey,
@@ -2973,7 +3179,10 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(identities.count, 1)
         XCTAssertEqual(identities[0].serverID, server.id)
         XCTAssertEqual(identities[0].keyType, "ecdsa-sha2-nistp256")
-        XCTAssertEqual(identities[0].openSSHPublicKey, "ecdsa-sha2-nistp256 received")
+        XCTAssertEqual(
+            identities[0].openSSHPublicKey,
+            "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
+        )
 
         let session = try XCTUnwrap(harness.model.activeSessions.first)
         XCTAssertNotEqual(session.instanceID, oldSession.instanceID)
@@ -3538,8 +3747,8 @@ final class RemuxRootModelTests: XCTestCase {
         }
     }
 
-    private func setupDraft(from state: RemuxRootModel.State) throws -> TmuxConnectionDraft {
-        guard case .setup(let setup) = state else {
+    private func setupDraft(from model: RemuxRootModel) throws -> TmuxConnectionDraft {
+        guard let setup = model.connectionSetup else {
             throw RootModelSetupTestError.expectedSetup
         }
         return setup.draft
@@ -3556,7 +3765,7 @@ final class RemuxRootModelTests: XCTestCase {
             trustedKeyType: nil,
             trustedOpenSSHPublicKey: nil,
             receivedKeyType: "ssh-ed25519",
-            receivedOpenSSHPublicKey: "ssh-ed25519 setup-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 c2V0dXAtaG9zdC1rZXk="
         )
     }
 
@@ -3652,6 +3861,10 @@ private actor RecordingTmuxSessionDiscoverer {
     func discover(_ target: TmuxConnectionTarget) throws -> [String] {
         recordedTargets.append(target)
         return try results.removeFirst().get()
+    }
+
+    func appendResults(_ newResults: [Result<[String], Error>]) {
+        results.append(contentsOf: newResults)
     }
 
     func targets() -> [TmuxConnectionTarget] {

@@ -40,6 +40,12 @@ struct SessionSwitcherProjection: Equatable {
         availableSessions.count - inlineAvailableSessions.count
     }
 
+    func availableSessionNames(on serverID: SavedServer.ID) -> [String] {
+        availableSessions.compactMap { session in
+            session.id.serverID == serverID ? session.id.sessionName : nil
+        }
+    }
+
     init(
         snapshot: ConnectionLibrarySnapshot,
         activeSessions: [ActiveTerminalSession],
@@ -140,12 +146,13 @@ struct SessionSwitcherProjection: Equatable {
     }
 }
 
-struct SessionSwitcherView: View {
-    private static let collapsedRecentSessionCount = 5
+struct SessionSwitcherView<NewSessionContent: View>: View {
+    private static var collapsedRecentSessionCount: Int { 3 }
 
     private enum Route: Hashable {
         case chooseServer
         case availableSessions
+        case newSession
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -158,7 +165,10 @@ struct SessionSwitcherView: View {
     let onResumeSession: (SavedWorkspace.ID) -> Void
     let onResumeAvailableSession: (SavedServer.ID, String) -> Void
     let onDisconnectSession: (SavedWorkspace.ID) -> Void
-    let onCreateSession: (SavedServer.ID) -> Void
+    let isCreatingSession: Bool
+    let onCreateSession: (SavedServer.ID) -> Bool
+    let onCancelCreateSession: () -> Void
+    let newSessionContent: () -> NewSessionContent
     let onRefresh: () -> Void
     let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
 
@@ -189,9 +199,17 @@ struct SessionSwitcherView: View {
                             onRefresh: onRefresh,
                             onSelect: resumeAvailableSession
                         )
+                    case .newSession:
+                        newSessionContent()
                     }
                 }
         }
+        .onChange(of: path) { previousPath, path in
+            guard previousPath.contains(.newSession),
+                  !path.contains(.newSession) else { return }
+            onCancelCreateSession()
+        }
+        .interactiveDismissDisabled(isCreatingSession)
         .presentationDetents([.medium, .large])
         .presentationContentInteraction(.resizes)
         .presentationDragIndicator(.visible)
@@ -227,7 +245,7 @@ struct SessionSwitcherView: View {
                                 DisclosureRowLabel(
                                     title: showsAllRecentSessions
                                         ? "Show fewer"
-                                        : "View all \(projection.recentSessions.count)",
+                                        : "Show more",
                                     systemImage: showsAllRecentSessions
                                         ? "chevron.up"
                                         : "chevron.down"
@@ -448,8 +466,8 @@ struct SessionSwitcherView: View {
     }
 
     private func beginNewSession(_ serverID: SavedServer.ID) {
-        dismiss()
-        onCreateSession(serverID)
+        guard onCreateSession(serverID) else { return }
+        path.append(.newSession)
     }
 
     private var serverDiscoveryStates: [(SavedServer, TmuxSessionDiscoveryState)] {

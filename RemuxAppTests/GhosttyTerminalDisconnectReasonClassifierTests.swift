@@ -173,6 +173,31 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
 }
 
 final class TrustedHostStoreTests: XCTestCase {
+    func testTrustHostKeyRejectsChallengeWithoutFingerprint() throws {
+        let root = temporaryRoot()
+        let store = TrustedHostStore(rootURL: root)
+        let challenge = SSHHostKeyTrustChallenge(
+            kind: .unknown,
+            serverID: UUID(),
+            host: "server.example.com",
+            trustedKeyType: nil,
+            trustedOpenSSHPublicKey: nil,
+            receivedKeyType: "ssh-ed25519",
+            receivedOpenSSHPublicKey: "ssh-ed25519 not-base64"
+        )
+
+        XCTAssertThrowsError(try store.trustHostKey(challenge)) { error in
+            guard case TrustedHostStoreError.invalidHostKey = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("trusted-hosts.json").path
+            )
+        )
+    }
+
     func testValidatorRequiresExplicitTrustForUnknownHostKey() throws {
         let root = temporaryRoot()
         let server = SavedServer(
@@ -242,7 +267,7 @@ final class TrustedHostStoreTests: XCTestCase {
                 trustedKeyType: "ssh-ed25519",
                 trustedOpenSSHPublicKey: "ssh-ed25519 trusted",
                 receivedKeyType: "ecdsa-sha2-nistp256",
-                receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 received"
+                receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
             )
         )
 
@@ -251,7 +276,10 @@ final class TrustedHostStoreTests: XCTestCase {
         XCTAssertEqual(identities[0].serverID, serverID)
         XCTAssertEqual(identities[0].host, "server.example.com")
         XCTAssertEqual(identities[0].keyType, "ecdsa-sha2-nistp256")
-        XCTAssertEqual(identities[0].openSSHPublicKey, "ecdsa-sha2-nistp256 received")
+        XCTAssertEqual(
+            identities[0].openSSHPublicKey,
+            "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
+        )
     }
 
     func testTrustHostKeyRejectsStaleChange() throws {
@@ -277,7 +305,7 @@ final class TrustedHostStoreTests: XCTestCase {
                     trustedKeyType: "ssh-ed25519",
                     trustedOpenSSHPublicKey: "ssh-ed25519 stale",
                     receivedKeyType: "ecdsa-sha2-nistp256",
-                    receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 received"
+                    receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
                 )
             )
         ) { error in

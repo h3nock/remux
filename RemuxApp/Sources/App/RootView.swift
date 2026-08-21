@@ -47,7 +47,7 @@ private struct RemuxRootContentView: View {
                     _ = await (modelLoad, shortcutLoad)
                 }
 
-        case .library, .setup, .terminal:
+        case .library, .terminal:
             RemuxWorkspaceShell(
                 model: model,
                 composer: composer,
@@ -67,6 +67,8 @@ private struct RemuxWorkspaceShell: View {
     let shortcutStore: ShortcutStore
     @State private var retainedTerminalID: SavedWorkspace.ID?
     @State private var isSessionSwitcherPresented = false
+    @State private var presentedServerID: SavedServer.ID?
+    @State private var connectionSetupSheetShowsServerSummary = true
 
     var body: some View {
         ZStack {
@@ -106,12 +108,20 @@ private struct RemuxWorkspaceShell: View {
             retainedTerminalID = ids[0]
         }
         .onChange(of: model.state) { _, state in
-            guard case .terminal = state else {
+            switch state {
+            case .library:
                 isSessionSwitcherPresented = false
-                return
+            case .terminal:
+                presentedServerID = nil
+            case .loading, .failed:
+                isSessionSwitcherPresented = false
+                presentedServerID = nil
             }
         }
-        .sheet(isPresented: $isSessionSwitcherPresented) {
+        .sheet(
+            isPresented: $isSessionSwitcherPresented,
+            onDismiss: cancelSessionSetupIfNeeded
+        ) {
             SessionSwitcherView(
                 projection: SessionSwitcherProjection(
                     snapshot: model.library,
@@ -135,7 +145,20 @@ private struct RemuxWorkspaceShell: View {
                     }
                 },
                 onDisconnectSession: model.disconnectActiveSession,
-                onCreateSession: beginNewWorkspaceFromTerminal,
+                isCreatingSession: terminalNewSessionSetup != nil,
+                onCreateSession: model.beginNewWorkspace,
+                onCancelCreateSession: model.cancelSetup,
+                newSessionContent: {
+                    Group {
+                        if let setup = terminalNewSessionSetup {
+                            connectionSetupView(
+                                setup,
+                                showsServerSummaryForNewSession: true,
+                                onSave: saveSessionFromTerminal
+                            )
+                        }
+                    }
+                },
                 onRefresh: model.refreshTmuxSessions,
                 discoveryStates: model.tmuxSessionDiscoveryStates
             )
@@ -145,6 +168,220 @@ private struct RemuxWorkspaceShell: View {
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
         }
+        .sheet(isPresented: connectionSetupSheetIsPresented) {
+            connectionSetupSheet
+                .interactiveDismissDisabled()
+        }
+    }
+
+    private var connectionSetupSheetIsPresented: Binding<Bool> {
+        Binding(
+            get: { model.connectionSetup != nil && !isSessionSwitcherPresented },
+            set: { _ in }
+        )
+    }
+
+    @ViewBuilder
+    private var connectionSetupSheet: some View {
+        if let setup = model.connectionSetup {
+            NavigationStack {
+                connectionSetupView(
+                    setup,
+                    showsServerSummaryForNewSession: connectionSetupSheetShowsServerSummary,
+                    onSave: saveConnectionSetupSheet
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button {
+                            dismissKeyboard()
+                            model.cancelSetup()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Cancel")
+                        .accessibilityIdentifier("connection.cancel")
+                        .disabled(model.isSetupActionInProgress)
+                    }
+                }
+            }
+            .presentationDetents(presentationDetents(for: setup.mode))
+            .presentationDragIndicator(.visible)
+            .terminalSelectionSheetPresentationBackground()
+            .ghosttyTerminalChromePresentation(
+                model.terminalSettings.theme.terminalChromeColorScheme,
+                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
+            )
+            .alert(
+                setupSubmissionIssueTitle(setup.submissionIssue),
+                isPresented: setupSubmissionIssueIsPresented(setup.submissionIssue),
+                presenting: setup.submissionIssue
+            ) { issue in
+                setupSubmissionIssueActions(
+                    issue,
+                    setupSessionID: model.setupSessionID
+                )
+            } message: { issue in
+                Text(setupSubmissionIssueMessage(issue))
+            }
+        }
+    }
+
+    private func setupSubmissionIssueIsPresented(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue?
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let issue else { return false }
+                return model.connectionSetup?.submissionIssue == issue
+            },
+            set: { isPresented in
+                guard !isPresented, let issue else { return }
+                model.dismissSetupSubmissionIssue(issue)
+            }
+        )
+    }
+
+    private func setupSubmissionIssueTitle(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue?
+    ) -> String {
+        switch issue {
+        case .hostKeyTrustRequired:
+            "Trust This Server?"
+        case .verificationFailed, nil:
+            "Couldn’t Add Server"
+        case .saveFailed:
+            "Server Wasn’t Saved"
+        }
+    }
+
+    @ViewBuilder
+    private func setupSubmissionIssueActions(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue,
+        setupSessionID: UUID?
+    ) -> some View {
+        switch issue {
+        case .hostKeyTrustRequired(let challenge):
+            Button("Cancel", role: .cancel) {
+                model.dismissSetupSubmissionIssue(issue)
+            }
+            if challenge.receivedKeyFingerprint != nil {
+                Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
+                    if model.trustNewServerHostKey(
+                        challenge,
+                        setupSessionID: setupSessionID
+                    ) {
+                        saveConnectionSetupSheet()
+                    }
+                }
+            }
+        case .verificationFailed, .saveFailed:
+            Button("OK", role: .cancel) {
+                model.dismissSetupSubmissionIssue(issue)
+            }
+        }
+    }
+
+    private func setupSubmissionIssueMessage(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue
+    ) -> String {
+        switch issue {
+        case .hostKeyTrustRequired(let challenge):
+            sshHostKeyTrustMessage(for: challenge)
+        case .verificationFailed(let message):
+            message
+        case .saveFailed:
+            "Your details are still here. Try again."
+        }
+    }
+
+    private var terminalNewSessionSetup: RemuxRootModel.ConnectionSetupState? {
+        guard isSessionSwitcherPresented,
+              let setup = model.connectionSetup,
+              case .newWorkspace = setup.mode else {
+            return nil
+        }
+        return setup
+    }
+
+    private func presentationDetents(
+        for mode: RemuxRootModel.SetupMode
+    ) -> Set<PresentationDetent> {
+        switch mode {
+        case .newServer, .editServer:
+            [.large]
+        case .newWorkspace, .editWorkspace:
+            [.medium, .large]
+        }
+    }
+
+    private func connectionSetupView(
+        _ setup: RemuxRootModel.ConnectionSetupState,
+        showsServerSummaryForNewSession: Bool,
+        onSave: @escaping @MainActor () -> Void
+    ) -> some View {
+        let setupSessionID = model.setupSessionID
+        return ConnectionSetupView(
+            draft: setup.draft,
+            validation: setup.validation,
+            mode: setup.mode,
+            setupSessionID: setupSessionID,
+            terminalTheme: model.terminalSettings.theme,
+            isActionInProgress: model.isSetupActionInProgress,
+            showsServerSummaryForNewSession: showsServerSummaryForNewSession,
+            onChange: model.updateDraft,
+            onConnect: onSave,
+            publicKeyInstallTarget: { draft in
+                try model.publicKeyInstallTarget(for: draft)
+            },
+            preflightPublicKeyInstallation: { draft in
+                try await model.preflightPublicKeyInstallation(
+                    draft,
+                    setupSessionID: setupSessionID
+                )
+            },
+            appendPublicKey: { draft, password in
+                try await model.appendPublicKey(
+                    draft,
+                    password: password,
+                    setupSessionID: setupSessionID
+                )
+            },
+            verifyPublicKeyInstallation: { draft in
+                try await model.verifyPublicKeyInstallation(
+                    draft,
+                    setupSessionID: setupSessionID
+                )
+            },
+            trustSetupHostKey: { challenge in
+                try model.trustSetupHostKey(
+                    challenge,
+                    setupSessionID: setupSessionID
+                )
+            }
+        )
+    }
+
+    private func saveConnectionSetupSheet() {
+        Task {
+            if let serverID = await model.saveAndConnect() {
+                presentedServerID = serverID
+            }
+        }
+    }
+
+    private func saveSessionFromTerminal() {
+        Task {
+            _ = await model.saveAndConnect()
+            if model.connectionSetup == nil {
+                isSessionSwitcherPresented = false
+            }
+        }
+    }
+
+    private func cancelSessionSetupIfNeeded() {
+        guard let mode = model.connectionSetup?.mode,
+              case .newWorkspace = mode else { return }
+        model.cancelSetup()
     }
 
     private var selectedTerminalID: SavedWorkspace.ID? {
@@ -172,7 +409,8 @@ private struct RemuxWorkspaceShell: View {
                 ActiveTerminalSessionView(
                     entry: entry,
                     isSelected: isSelected,
-                    isAppSheetPresented: isSessionSwitcherPresented && isSelected,
+                    isAppSheetPresented: (isSessionSwitcherPresented || model.connectionSetup != nil)
+                        && isSelected,
                     composer: composer,
                     shortcutStore: shortcutStore,
                     onReconnect: {
@@ -215,55 +453,6 @@ private struct RemuxWorkspaceShell: View {
         case .library:
             libraryStack
 
-        case .setup(let setup):
-            let setupSessionID = model.setupSessionID
-            NavigationStack {
-                ConnectionSetupView(
-                    draft: setup.draft,
-                    validation: setup.validation,
-                    mode: setup.mode,
-                    setupSessionID: setupSessionID,
-                    terminalTheme: model.terminalSettings.theme,
-                    isActionInProgress: model.isSetupActionInProgress,
-                    onChange: model.updateDraft,
-                    onConnect: {
-                        Task { await model.saveAndConnect() }
-                    },
-                    publicKeyInstallTarget: { draft in
-                        try model.publicKeyInstallTarget(for: draft)
-                    },
-                    preflightPublicKeyInstallation: { draft in
-                        try await model.preflightPublicKeyInstallation(
-                            draft,
-                            setupSessionID: setupSessionID
-                        )
-                    },
-                    appendPublicKey: { draft, password in
-                        try await model.appendPublicKey(
-                            draft,
-                            password: password,
-                            setupSessionID: setupSessionID
-                        )
-                    },
-                    verifyPublicKeyInstallation: { draft in
-                        try await model.verifyPublicKeyInstallation(
-                            draft,
-                            setupSessionID: setupSessionID
-                        )
-                    },
-                    trustSetupHostKey: { challenge in
-                        try model.trustSetupHostKey(
-                            challenge,
-                            setupSessionID: setupSessionID
-                        )
-                    },
-                    onCancel: {
-                        Task { await model.cancelSetup() }
-                    }
-                )
-            }
-            .zIndex(2)
-
         case .terminal(let id):
             if !model.activeSessions.contains(where: { $0.id == id }) {
                 libraryStack
@@ -281,9 +470,11 @@ private struct RemuxWorkspaceShell: View {
                 activeSessions: model.activeSessions,
                 discoveryStates: model.tmuxSessionDiscoveryStates,
                 terminalSettings: terminalSettingsBinding,
+                presentedServerID: $presentedServerID,
                 onAddServer: model.beginNewServer,
-                onAddWorkspace: { serverID in
-                    Task { await model.beginNewWorkspace(for: serverID) }
+                onAddWorkspace: { serverID, showsServerSummary in
+                    connectionSetupSheetShowsServerSummary = showsServerSummary
+                    _ = model.beginNewWorkspace(for: serverID)
                 },
                 onEditServer: { serverID in
                     Task { await model.beginEditServer(serverID: serverID) }
@@ -295,6 +486,18 @@ private struct RemuxWorkspaceShell: View {
                     traceSessionOpenTap(workspaceID)
                     Task { await model.connect(to: workspaceID) }
                 },
+                onConnectAvailableSession: { serverID, sessionName in
+                    Task {
+                        await model.connectToDiscoveredSession(
+                            named: sessionName,
+                            on: serverID
+                        )
+                    }
+                },
+                onRefreshServerSessions: { serverID in
+                    await model.refreshTmuxSessionsAndWait(for: serverID)
+                },
+                onTrustDiscoveryHostKey: model.trustTmuxSessionDiscoveryHostKey,
                 onShowActiveSession: { workspaceID in
                     GhosttyRuntimeTrace.flowBegin(
                         sessionShowFlowID(workspaceID),
@@ -351,16 +554,6 @@ private struct RemuxWorkspaceShell: View {
 
     private func sessionShowFlowID(_ workspaceID: SavedWorkspace.ID) -> String {
         "session.show.\(workspaceID.uuidString)"
-    }
-
-    private func beginNewWorkspaceFromTerminal(on serverID: SavedServer.ID) {
-        guard let selectedTerminalID else { return }
-        Task {
-            await model.beginNewWorkspace(
-                for: serverID,
-                cancelDestination: .terminal(selectedTerminalID)
-            )
-        }
     }
 
 }
@@ -489,11 +682,15 @@ private struct ConnectionLibraryView: View {
     let activeSessions: [ActiveTerminalSession]
     let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
     @Binding var terminalSettings: TerminalSettings
+    @Binding var presentedServerID: SavedServer.ID?
     let onAddServer: () -> Void
-    let onAddWorkspace: (SavedServer.ID) -> Void
+    let onAddWorkspace: (SavedServer.ID, Bool) -> Void
     let onEditServer: (SavedServer.ID) -> Void
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
+    let onConnectAvailableSession: (SavedServer.ID, String) -> Void
+    let onRefreshServerSessions: (SavedServer.ID) async -> Void
+    let onTrustDiscoveryHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
     let onDeleteServer: (SavedServer.ID) -> Void
@@ -503,13 +700,20 @@ private struct ConnectionLibraryView: View {
     @State private var showsAllRecentSessions = false
 
     var body: some View {
+        let sessionProjection = SessionSwitcherProjection(
+            snapshot: snapshot,
+            activeSessions: activeSessions,
+            discoveryStates: discoveryStates,
+            selectedSessionID: nil
+        )
+
         Group {
             if snapshot.servers.isEmpty {
                 LibraryEmptyState(onAddServer: onAddServer)
             } else {
                 List {
                     activeSessionsSection
-                    serversSection
+                    serversSection(sessionProjection: sessionProjection)
                     recentSessionsSection
                 }
                 .listStyle(.insetGrouped)
@@ -543,6 +747,26 @@ private struct ConnectionLibraryView: View {
                 .accessibilityIdentifier("library.add-server")
             }
         }
+        .navigationDestination(isPresented: presentedServerIsActive) {
+            if let presentedServerID,
+               let server = snapshot.server(id: presentedServerID) {
+                serverDetail(
+                    for: server,
+                    availableSessionNames: sessionProjection.availableSessionNames(on: server.id)
+                )
+            }
+        }
+    }
+
+    private var presentedServerIsActive: Binding<Bool> {
+        Binding(
+            get: { presentedServerID != nil },
+            set: { isActive in
+                if !isActive {
+                    presentedServerID = nil
+                }
+            }
+        )
     }
 
     private var terminalRendererWarmupID: String {
@@ -646,23 +870,18 @@ private struct ConnectionLibraryView: View {
         }
     }
 
-    private var serversSection: some View {
+    private func serversSection(
+        sessionProjection: SessionSwitcherProjection
+    ) -> some View {
         Section {
             ForEach(snapshot.servers) { server in
                 let workspaces = visibleWorkspaces(for: server.id)
                 let latest = workspaces.first
 
                 NavigationLink {
-                    ServerDetailView(
-                        server: server,
-                        workspaces: workspaces,
-                        activeSessions: activeSessions.filter { $0.target.server.id == server.id },
-                        onAddWorkspace: onAddWorkspace,
-                        onEditServer: onEditServer,
-                        onEditWorkspace: onEditWorkspace,
-                        onConnect: onConnect,
-                        onDeleteWorkspace: onDeleteWorkspace,
-                        terminalTheme: terminalSettings.theme
+                    serverDetail(
+                        for: server,
+                        availableSessionNames: sessionProjection.availableSessionNames(on: server.id)
                     )
                 } label: {
                     ServerLibraryRow(
@@ -676,7 +895,10 @@ private struct ConnectionLibraryView: View {
                 .accessibilityIdentifier("library.server.row")
                 .contextMenu {
                     Button {
-                        onAddWorkspace(server.id)
+                        beginNewWorkspace(
+                            for: server.id,
+                            showsServerSummary: true
+                        )
                     } label: {
                         Label("New Session", systemImage: "plus.square.on.square")
                     }
@@ -716,7 +938,10 @@ private struct ConnectionLibraryView: View {
                 }
                 .swipeActions(edge: .leading) {
                     Button("New Session") {
-                        onAddWorkspace(server.id)
+                        beginNewWorkspace(
+                            for: server.id,
+                            showsServerSummary: true
+                        )
                     }
                     .tint(LibraryHomePalette.controlAccent)
                 }
@@ -771,6 +996,40 @@ private struct ConnectionLibraryView: View {
         }
     }
 
+    private func serverDetail(
+        for server: SavedServer,
+        availableSessionNames: [String]
+    ) -> some View {
+        ServerDetailView(
+            server: server,
+            workspaces: visibleWorkspaces(for: server.id),
+            activeSessions: activeSessions.filter { $0.target.server.id == server.id },
+            discoveryState: discoveryStates[server.id] ?? .idle,
+            availableSessionNames: availableSessionNames,
+            onAddWorkspace: { serverID in
+                beginNewWorkspace(
+                    for: serverID,
+                    showsServerSummary: false
+                )
+            },
+            onEditServer: onEditServer,
+            onEditWorkspace: onEditWorkspace,
+            onConnect: onConnect,
+            onConnectAvailableSession: onConnectAvailableSession,
+            onRefreshSessions: onRefreshServerSessions,
+            onTrustHostKey: onTrustDiscoveryHostKey,
+            onDeleteWorkspace: onDeleteWorkspace,
+            terminalTheme: terminalSettings.theme
+        )
+    }
+
+    private func beginNewWorkspace(
+        for serverID: SavedServer.ID,
+        showsServerSummary: Bool
+    ) {
+        onAddWorkspace(serverID, showsServerSummary)
+    }
+
     private func disconnectActiveSession(_ sessionID: SavedWorkspace.ID) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -819,6 +1078,29 @@ private extension View {
     func libraryHomeGroupedScrollBackground() -> some View {
         scrollContentBackground(.hidden)
             .background(LibraryHomePalette.background.ignoresSafeArea())
+    }
+
+    @ViewBuilder
+    func connectionSetupListRowSurface(usesLibraryChrome: Bool) -> some View {
+        if usesLibraryChrome {
+            libraryHomeListRowSurface()
+        } else {
+            listRowBackground(Color.clear)
+                .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
+        }
+    }
+
+    @ViewBuilder
+    func connectionSetupChrome(
+        usesLibraryChrome: Bool,
+        theme: TerminalTheme
+    ) -> some View {
+        if usesLibraryChrome {
+            libraryHomeGroupedScrollBackground()
+                .libraryHomeChrome(theme: theme)
+        } else {
+            scrollContentBackground(.hidden)
+        }
     }
 }
 
@@ -913,15 +1195,26 @@ private extension UIColor {
 }
 
 private struct ServerDetailView: View {
+    private static let collapsedWorkspaceCount = 3
+    private static let maximumInlineAvailableSessionCount = 3
+
     let server: SavedServer
     let workspaces: [SavedWorkspace]
     let activeSessions: [ActiveTerminalSession]
+    let discoveryState: TmuxSessionDiscoveryState
+    let availableSessionNames: [String]
     let onAddWorkspace: (SavedServer.ID) -> Void
     let onEditServer: (SavedServer.ID) -> Void
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
+    let onConnectAvailableSession: (SavedServer.ID, String) -> Void
+    let onRefreshSessions: (SavedServer.ID) async -> Void
+    let onTrustHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let terminalTheme: TerminalTheme
+
+    @State private var isReviewingHostKey = false
+    @State private var showsAllWorkspaces = false
 
     var body: some View {
         List {
@@ -958,15 +1251,20 @@ private struct ServerDetailView: View {
 
             Section("Sessions") {
                 if workspaces.isEmpty {
+                    Text("No Sessions Added to Remux")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
                     Button {
                         onAddWorkspace(server.id)
                     } label: {
                         Label("New Session", systemImage: "plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .accessibilityIdentifier("library.server.new-session")
+                    .accessibilityIdentifier("library.server.new-session.empty")
                 } else {
-                    ForEach(workspaces) { workspace in
+                    ForEach(visibleWorkspaces) { workspace in
                         Button {
                             onConnect(workspace.id)
                         } label: {
@@ -991,13 +1289,36 @@ private struct ServerDetailView: View {
                             .tint(.red)
                         }
                     }
+
+                    if workspaces.count > Self.collapsedWorkspaceCount {
+                        Button {
+                            withAnimation(.snappy) {
+                                showsAllWorkspaces.toggle()
+                            }
+                        } label: {
+                            DisclosureRowLabel(
+                                title: showsAllWorkspaces ? "Show fewer" : "Show more",
+                                systemImage: showsAllWorkspaces ? "chevron.up" : "chevron.down"
+                            )
+                        }
+                        .accessibilityIdentifier("library.server.sessions.toggle")
+                    }
                 }
             }
             .libraryHomeListRowSurface()
+
+            availableSessionsSection
         }
         .listStyle(.insetGrouped)
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: terminalTheme)
+        .refreshable {
+            await onRefreshSessions(server.id)
+        }
+        .task(id: server.id) {
+            guard discoveryState.phase == .idle else { return }
+            await onRefreshSessions(server.id)
+        }
         .navigationTitle(server.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("library.server.detail")
@@ -1017,8 +1338,22 @@ private struct ServerDetailView: View {
                     Image(systemName: "plus")
                 }
                 .accessibilityLabel("New Session")
-                .accessibilityIdentifier("library.server.new-session")
+                .accessibilityIdentifier("library.server.new-session.toolbar")
             }
+        }
+        .alert(
+            "Trust This Server?",
+            isPresented: $isReviewingHostKey,
+            presenting: discoveryState.hostKeyChallenge
+        ) { challenge in
+            Button("Cancel", role: .cancel) {}
+            if challenge.receivedKeyFingerprint != nil {
+                Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
+                    onTrustHostKey(challenge)
+                }
+            }
+        } message: { challenge in
+            Text(sshHostKeyTrustMessage(for: challenge))
         }
     }
 
@@ -1028,6 +1363,184 @@ private struct ServerDetailView: View {
 
     private func activeSession(for workspaceID: SavedWorkspace.ID) -> ActiveTerminalSession? {
         activeSessions.first { $0.id == workspaceID }
+    }
+
+    private var visibleWorkspaces: [SavedWorkspace] {
+        guard !showsAllWorkspaces else { return workspaces }
+        return Array(workspaces.prefix(Self.collapsedWorkspaceCount))
+    }
+
+    private var inlineAvailableSessionNames: [String] {
+        Array(availableSessionNames.prefix(Self.maximumInlineAvailableSessionCount))
+    }
+
+    @ViewBuilder
+    private var availableSessionsSection: some View {
+        Section {
+            if discoveryState.isLoading || discoveryState.phase == .idle {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Checking sessions…")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("library.server.available.loading")
+            }
+
+            if discoveryState.phase == .failed {
+                discoveryFailureRow
+            }
+
+            ForEach(inlineAvailableSessionNames, id: \.self) { sessionName in
+                Button {
+                    onConnectAvailableSession(server.id, sessionName)
+                } label: {
+                    AvailableServerSessionRow(sessionName: sessionName)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("library.server.available.session")
+            }
+
+            if availableSessionNames.count > Self.maximumInlineAvailableSessionCount {
+                NavigationLink {
+                    ServerAvailableSessionsView(
+                        sessionNames: availableSessionNames,
+                        terminalTheme: terminalTheme,
+                        onSelect: { sessionName in
+                            onConnectAvailableSession(server.id, sessionName)
+                        }
+                    )
+                } label: {
+                    DisclosureRowLabel(
+                        title: "View all \(availableSessionNames.count)",
+                        systemImage: "magnifyingglass"
+                    )
+                }
+                .accessibilityIdentifier("library.server.available.view-all")
+            } else if discoveryState.phase == .loaded,
+                      availableSessionNames.isEmpty {
+                Text("No other sessions found")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("library.server.available.empty")
+            }
+        } header: {
+            LibraryHomeSectionHeader("Available on Server")
+        } footer: {
+            if !availableSessionNames.isEmpty {
+                Text("Select a session to add it to Remux.")
+            }
+        }
+        .libraryHomeListRowSurface()
+    }
+
+    @ViewBuilder
+    private var discoveryFailureRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(
+                discoveryState.hostKeyChallenge == nil
+                    ? "Couldn’t check sessions"
+                    : "Trust the SSH host key to check sessions",
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.secondary)
+
+            if discoveryState.hostKeyChallenge != nil {
+                Button("Review SSH Host Key") {
+                    isReviewingHostKey = true
+                }
+                .accessibilityIdentifier("library.server.available.review-host-key")
+            } else {
+                Button("Retry") {
+                    Task { await onRefreshSessions(server.id) }
+                }
+                .accessibilityIdentifier("library.server.available.retry")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+}
+
+private func sshHostKeyTrustMessage(for challenge: SSHHostKeyTrustChallenge) -> String {
+    guard let fingerprint = challenge.receivedKeyFingerprint else {
+        return "Remux couldn’t verify the SSH host key for \(challenge.host), so trust is unavailable."
+    }
+    if challenge.kind == .changed {
+        return "The SSH host key for \(challenge.host) changed. Update trust only if this fingerprint is correct:\n\n\(fingerprint)"
+    }
+    return "Trust only if this fingerprint matches \(challenge.host):\n\n\(fingerprint)"
+}
+
+private struct AvailableServerSessionRow: View {
+    let sessionName: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(LibraryHomePalette.rowIconForeground)
+                .frame(width: 30, height: 30)
+                .background(
+                    LibraryHomePalette.rowIconSurface,
+                    in: RoundedRectangle(cornerRadius: 7)
+                )
+
+            Text(sessionName)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sessionName)
+        .accessibilityHint("Add this session to Remux")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+private struct ServerAvailableSessionsView: View {
+    let sessionNames: [String]
+    let terminalTheme: TerminalTheme
+    let onSelect: (String) -> Void
+
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(filteredSessionNames, id: \.self) { sessionName in
+                    Button {
+                        onSelect(sessionName)
+                    } label: {
+                        AvailableServerSessionRow(sessionName: sessionName)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("library.server.available.result")
+                }
+
+                if filteredSessionNames.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                        .listRowSeparator(.hidden)
+                }
+            }
+            .libraryHomeListRowSurface()
+        }
+        .listStyle(.insetGrouped)
+        .libraryHomeGroupedScrollBackground()
+        .libraryHomeChrome(theme: terminalTheme)
+        .navigationTitle("Available Sessions")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, prompt: "Search sessions")
+    }
+
+    private var filteredSessionNames: [String] {
+        guard !query.isEmpty else { return sessionNames }
+        return sessionNames.filter {
+            $0.localizedCaseInsensitiveContains(query)
+        }
     }
 }
 
@@ -1508,6 +2021,7 @@ struct ConnectionSetupView: View {
     let setupSessionID: UUID?
     let terminalTheme: TerminalTheme
     let isActionInProgress: Bool
+    let showsServerSummaryForNewSession: Bool
     let onChange: ((inout TmuxConnectionDraft) -> Void) -> Void
     let onConnect: () -> Void
     let publicKeyInstallTarget: (
@@ -1519,7 +2033,6 @@ struct ConnectionSetupView: View {
     let appendPublicKey: @MainActor (TmuxConnectionDraft, String) async throws -> Void
     let verifyPublicKeyInstallation: @MainActor (TmuxConnectionDraft) async throws -> Void
     let trustSetupHostKey: @MainActor (SSHHostKeyTrustChallenge) throws -> Void
-    let onCancel: () -> Void
 
     enum Field: Hashable {
         case displayName
@@ -1592,14 +2105,14 @@ struct ConnectionSetupView: View {
                         Text(serverSectionFooter)
                     }
                 }
-                .libraryHomeListRowSurface()
+                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
             }
 
             if showsServerSummary {
                 Section("Server") {
                     ConnectionServerSummaryRow(draft: draft)
                 }
-                .libraryHomeListRowSurface()
+                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
             }
 
             if showsAuthenticationFields {
@@ -1620,57 +2133,46 @@ struct ConnectionSetupView: View {
                 } header: {
                     Text("Authentication")
                 }
-                .libraryHomeListRowSurface()
+                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
             }
 
             if showsEditableServerFields {
                 Section {
                     tmuxExecutableInputRow()
-
-                    if showsSessionFields {
-                        sessionNameInputRow(title: "First Session")
-                    }
                 } header: {
                     Text("tmux")
-                } footer: {
-                    if showsSessionFields {
-                        Text("After connecting, Remux attaches to this session or creates it if needed.")
-                    }
                 }
-                .libraryHomeListRowSurface()
+                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
             } else if showsSessionFields {
                 Section {
                     sessionNameInputRow(title: "Name")
                 } header: {
-                    Text(sessionSectionTitle)
+                    Text("Session")
                 } footer: {
                     Text(sessionSectionFooter)
                 }
-                .libraryHomeListRowSurface()
+                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
             }
         })
         .disabled(isActionInProgress)
-        .libraryHomeGroupedScrollBackground()
-        .libraryHomeChrome(theme: terminalTheme)
+        .connectionSetupChrome(
+            usesLibraryChrome: showsEditableServerFields,
+            theme: terminalTheme
+        )
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button {
-                    dismissKeyboard()
-                    onCancel()
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .accessibilityLabel("Cancel")
-                .accessibilityIdentifier("connection.cancel")
-                .disabled(isActionInProgress)
-            }
-
             ToolbarItem(placement: .confirmationAction) {
-                Button(primaryActionTitle) {
+                Button {
                     submitIfPossible()
+                } label: {
+                    if isActionInProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(primaryActionTitle)
+                    }
                 }
                 .fontWeight(.semibold)
                 .disabled(!canSubmit || isActionInProgress)
@@ -1693,27 +2195,37 @@ struct ConnectionSetupView: View {
             allowsMultipleSelection: false,
             onCompletion: handlePrivateKeyImport
         )
-        .sheet(item: $publicKeyInstallRequest) { request in
-            SSHPublicKeyInstallSheet(
-                draft: request.draft,
-                target: request.target,
-                setupSessionID: request.setupSessionID,
-                onPreflight: preflightPublicKeyInstallation,
-                onAppend: appendPublicKey,
-                onVerify: verifyPublicKeyInstallation,
-                onTrustHostKey: trustSetupHostKey,
-                onSuccess: { completion in
-                    acceptPublicKeyInstallCompletion(completion)
-                    publicKeyInstallRequest = nil
-                },
-                onCancel: {
-                    publicKeyInstallRequest = nil
-                }
-            )
+        .navigationDestination(isPresented: publicKeyInstallIsPresented) {
+            if let request = publicKeyInstallRequest {
+                SSHPublicKeyInstallSheet(
+                    draft: request.draft,
+                    target: request.target,
+                    setupSessionID: request.setupSessionID,
+                    onPreflight: preflightPublicKeyInstallation,
+                    onAppend: appendPublicKey,
+                    onVerify: verifyPublicKeyInstallation,
+                    onTrustHostKey: trustSetupHostKey,
+                    onSuccess: { completion in
+                        acceptPublicKeyInstallCompletion(completion)
+                        publicKeyInstallRequest = nil
+                    }
+                )
+            }
         }
     }
 
     @State private var isPrivateKeyImporterPresented = false
+
+    private var publicKeyInstallIsPresented: Binding<Bool> {
+        Binding(
+            get: { publicKeyInstallRequest != nil },
+            set: { isPresented in
+                if !isPresented {
+                    publicKeyInstallRequest = nil
+                }
+            }
+        )
+    }
 
     private func advance(from field: Field) {
         if let next = nextField(after: field) {
@@ -1769,10 +2281,9 @@ struct ConnectionSetupView: View {
     private var canSubmit: Bool {
         switch mode {
         case .newServer:
-            if case .valid = TmuxConnectionDraftValidator.validate(
+            if case .valid = TmuxConnectionDraftValidator.validateServer(
                 draft,
-                existingServerID: nil,
-                existingWorkspaceID: nil
+                existingServerID: nil
             ) {
                 return true
             }
@@ -1856,7 +2367,14 @@ struct ConnectionSetupView: View {
     }
 
     private var showsServerSummary: Bool {
-        !showsEditableServerFields
+        switch mode {
+        case .newServer, .editServer:
+            false
+        case .newWorkspace:
+            showsServerSummaryForNewSession
+        case .editWorkspace:
+            true
+        }
     }
 
     private var showsAuthenticationFields: Bool {
@@ -1870,21 +2388,10 @@ struct ConnectionSetupView: View {
 
     private var showsSessionFields: Bool {
         switch mode {
-        case .newServer, .newWorkspace, .editWorkspace:
-            true
-        case .editServer:
-            false
-        }
-    }
-
-    private var sessionSectionTitle: String {
-        switch mode {
-        case .newServer:
-            "First Session"
         case .newWorkspace, .editWorkspace:
-            "Session"
-        case .editServer:
-            "Session"
+            true
+        case .newServer, .editServer:
+            false
         }
     }
 
@@ -1901,13 +2408,11 @@ struct ConnectionSetupView: View {
 
     private var sessionSectionFooter: String {
         switch mode {
-        case .newServer:
-            "Created or attached after the connection succeeds."
         case .newWorkspace:
             "Names a tmux session on this server. Reuse a name to attach to an existing session."
         case .editWorkspace:
             "Renaming applies the next time you connect."
-        case .editServer:
+        case .newServer, .editServer:
             ""
         }
     }
@@ -1973,7 +2478,7 @@ struct ConnectionSetupView: View {
             validationMessage: validation.tmuxExecutablePath,
             textStyle: .monospaced,
             keyboardType: .URL,
-            submitLabel: showsSessionFields ? .next : .go,
+            submitLabel: .go,
             accessibilityIdentifier: "connection.tmux-executable"
         )
     }
@@ -2502,7 +3007,7 @@ private extension ConnectionSetupView {
     var primaryActionTitle: String {
         switch mode {
         case .newServer:
-            "Connect"
+            "Add"
         case .newWorkspace:
             "Start"
         case .editServer(_, let reconnectWorkspaceID):

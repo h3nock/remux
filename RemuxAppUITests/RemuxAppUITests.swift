@@ -37,12 +37,12 @@ final class RemuxAppUITests: XCTestCase {
         add(attachment)
     }
 
-    func testCreatesSSHServerAndOpensTerminalWithSimulatorTransport() {
+    func testCreatesSSHServerThenStartsFirstSessionWithSimulatorTransport() {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
 
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
     }
 
@@ -52,7 +52,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
 
         let composerToggle = app.buttons["terminal.composer.toggle"]
@@ -186,7 +186,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
 
         let terminal = app.otherElements["terminal.screen"]
@@ -239,7 +239,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
 
         let composerToggle = app.buttons["terminal.composer.toggle"]
@@ -273,7 +273,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
         waitForLiveTerminalInputReady(timeout: 10)
 
@@ -395,7 +395,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
         waitForLiveTerminalInputReady(timeout: 10)
 
@@ -438,7 +438,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
         waitForLiveTerminalInputReady(timeout: 10)
 
@@ -517,7 +517,7 @@ final class RemuxAppUITests: XCTestCase {
         openConnectionSetup()
         fillConnectionForm()
 
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         openHomeFromTerminal()
 
         let firstOpenSession = activeSessionRows.firstMatch
@@ -674,6 +674,34 @@ final class RemuxAppUITests: XCTestCase {
             "yes 'REMUX_RENDER_CHECK ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' | head -120"
         )
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
+    }
+
+    func testLiveNewSessionBackReturnsToPresentingSessionSheetWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("new-session-navigation")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        openSessionSwitcherFromTerminal()
+
+        let sessionSheet = app.otherElements["terminal.sessions.sheet"]
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 5))
+        app.buttons["terminal.sessions.new"].tap()
+        XCTAssertTrue(app.textFields["connection.session"].waitForExistence(timeout: 2))
+        attachScreenshot(named: "live-new-session-in-session-sheet")
+
+        let backButton = app.navigationBars["New Session"].buttons["Sessions"]
+        XCTAssertTrue(backButton.waitForExistence(timeout: 2))
+        backButton.tap()
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
+        attachScreenshot(named: "live-session-sheet-after-new-session-back")
+
+        app.buttons["terminal.sessions.close"].tap()
+        XCTAssertTrue(app.otherElements["terminal.input.ready"].waitForExistence(timeout: 2))
     }
 
     func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
@@ -3346,12 +3374,6 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(password.waitForExistence(timeout: 2))
         password.typeText("demo-password")
 
-        app.swipeUp()
-        let sessionName = app.textFields["connection.session"]
-        XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
-        sessionName.tap()
-        sessionName.typeText("base")
-
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
     }
 
@@ -3372,6 +3394,23 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["connection.save"].tap()
         XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 10))
         dismissPasswordManagerPromptIfPresent()
+    }
+
+    private func saveServerAndStartSession() {
+        app.buttons["connection.save"].tap()
+        dismissPasswordManagerPromptIfPresent()
+
+        let serverDetail = app.descendants(matching: .any)["library.server.detail"]
+        XCTAssertTrue(serverDetail.waitForExistence(timeout: 5))
+        let newSessionButton = app.buttons["library.server.new-session.empty"]
+        XCTAssertTrue(newSessionButton.waitForExistence(timeout: 2))
+        newSessionButton.tap()
+
+        let sessionName = app.textFields["connection.session"]
+        XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
+        sessionName.tap()
+        sessionName.typeText("base")
+        saveConnectionAndWaitForTerminal()
     }
 
     private func openHomeFromTerminal() {
@@ -3503,7 +3542,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func openNewSessionFromLibrary() {
-        let detailButton = app.buttons["library.server.new-session"]
+        let detailButton = app.buttons["library.server.new-session.toolbar"]
         if detailButton.waitForExistence(timeout: 1) {
             detailButton.tap()
             return
@@ -3511,7 +3550,7 @@ final class RemuxAppUITests: XCTestCase {
 
         openFirstServerDetail()
 
-        let serverButton = app.buttons["library.server.new-session"]
+        let serverButton = app.buttons["library.server.new-session.toolbar"]
         XCTAssertTrue(serverButton.waitForExistence(timeout: 2))
         if serverButton.isHittable {
             serverButton.tap()

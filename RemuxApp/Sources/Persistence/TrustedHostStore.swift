@@ -87,6 +87,10 @@ final class TrustedHostStore: @unchecked Sendable {
     }
 
     func trustHostKey(_ challenge: SSHHostKeyTrustChallenge) throws {
+        guard challenge.receivedKeyFingerprint != nil else {
+            throw TrustedHostStoreError.invalidHostKey
+        }
+
         try lock.withLock {
             var identities = try loadLocked()
             let trustedIdentity = Self.identity(challenge: challenge)

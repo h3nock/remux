@@ -131,7 +131,7 @@ struct GhosttySurfaceStatusOverlay: View {
 
     @ViewBuilder
     private func repairActions(for reason: TerminalDisconnectReason?) -> some View {
-        if reason?.hostKeyChallenge != nil {
+        if let challenge = reason?.hostKeyChallenge {
             HStack(spacing: 12) {
                 GhosttyRepairActionButton(
                     title: "Cancel",
@@ -141,14 +141,16 @@ struct GhosttySurfaceStatusOverlay: View {
                     action: onCancel
                 )
 
-                GhosttyRepairActionButton(
-                    title: trustActionTitle(for: reason?.hostKeyChallenge),
-                    systemName: "checkmark.shield",
-                    accessibilityIdentifier: "terminal.status.hostKey.updateTrust",
-                    chromeStyle: chromeStyle,
-                    isPrimary: true,
-                    action: onTrustHostKey
-                )
+                if challenge.receivedKeyFingerprint != nil {
+                    GhosttyRepairActionButton(
+                        title: trustActionTitle(for: challenge),
+                        systemName: "checkmark.shield",
+                        accessibilityIdentifier: "terminal.status.hostKey.updateTrust",
+                        chromeStyle: chromeStyle,
+                        isPrimary: true,
+                        action: onTrustHostKey
+                    )
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if reason?.kind == .authentication {
@@ -281,7 +283,7 @@ struct GhosttySurfaceStatusOverlay: View {
         }
 
         guard let fingerprint = challenge.receivedKeyFingerprint else {
-            return "Received \(challenge.receivedKeyType)"
+            return "Fingerprint unavailable. Trust is unavailable."
         }
 
         return "Received \(challenge.receivedKeyType) \(fingerprint)"

@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SSHPublicKeyInstallSheet: View {
     let onSuccess: (SSHPublicKeyInstallCompletion) -> Void
-    let onCancel: () -> Void
 
     private let target: SSHPublicKeyInstallTarget
     private let setupSessionID: UUID
@@ -27,13 +26,11 @@ struct SSHPublicKeyInstallSheet: View {
         onTrustHostKey: @escaping @MainActor (
             SSHHostKeyTrustChallenge
         ) throws -> Void,
-        onSuccess: @escaping (SSHPublicKeyInstallCompletion) -> Void,
-        onCancel: @escaping () -> Void
+        onSuccess: @escaping (SSHPublicKeyInstallCompletion) -> Void
     ) {
         self.target = target
         self.setupSessionID = setupSessionID
         self.onSuccess = onSuccess
-        self.onCancel = onCancel
         _coordinator = StateObject(
             wrappedValue: SSHPublicKeyInstallCoordinator(
                 draft: draft,
@@ -46,23 +43,13 @@ struct SSHPublicKeyInstallSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    phaseContent
-                }
-            }
-            .navigationTitle("Install on Host")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if !hasTerminalSuccess {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel", action: cancel)
-                            .accessibilityIdentifier("connection.private-key.install-cancel")
-                    }
-                }
+        Form {
+            Section {
+                phaseContent
             }
         }
+        .navigationTitle("Install on Host")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             start {
                 await coordinator.preflight()
@@ -87,10 +74,12 @@ struct SSHPublicKeyInstallSheet: View {
             hostTrustTitle,
             isPresented: hostTrustIsPresented
         ) {
-            Button(hostTrustActionTitle) {
-                confirmHostTrust()
+            if coordinator.pendingTrust?.challenge.receivedKeyFingerprint != nil {
+                Button(hostTrustActionTitle) {
+                    confirmHostTrust()
+                }
+                .accessibilityIdentifier("connection.private-key.host-trust-confirm")
             }
-            .accessibilityIdentifier("connection.private-key.host-trust-confirm")
 
             Button("Cancel", role: .cancel) {
                 coordinator.rejectHostTrust()
@@ -172,15 +161,6 @@ struct SSHPublicKeyInstallSheet: View {
         }
     }
 
-    private var hasTerminalSuccess: Bool {
-        switch coordinator.phase {
-        case .alreadyInstalled, .installed:
-            true
-        default:
-            false
-        }
-    }
-
     private func complete(_ success: SSHPublicKeyInstallSuccess) {
         guard !didComplete else { return }
         didComplete = true
@@ -229,9 +209,10 @@ struct SSHPublicKeyInstallSheet: View {
             return ""
         }
 
-        let verification = challenge.receivedKeyFingerprint.map {
-            "Received \(challenge.receivedKeyType) \($0)"
-        } ?? "Received \(challenge.receivedKeyType)"
+        guard let fingerprint = challenge.receivedKeyFingerprint else {
+            return "Remux couldn’t verify the SSH host key for \(challenge.host), so trust is unavailable."
+        }
+        let verification = "Received \(challenge.receivedKeyType) \(fingerprint)"
 
         switch challenge.kind {
         case .unknown:
@@ -250,10 +231,4 @@ struct SSHPublicKeyInstallSheet: View {
         }
     }
 
-    private func cancel() {
-        operationTask?.cancel()
-        operationTask = nil
-        coordinator.cancel()
-        onCancel()
-    }
 }

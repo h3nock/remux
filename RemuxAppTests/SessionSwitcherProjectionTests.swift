@@ -121,6 +121,8 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertFalse(
             projection.availableSessions.contains { $0.id.sessionName == "recent" }
         )
+        XCTAssertEqual(projection.availableSessionNames(on: production.id), ["remote"])
+        XCTAssertEqual(projection.availableSessionNames(on: staging.id), ["logs"])
     }
 
     func testProjectionKeepsLargeAvailableInventoryOutOfQuickSheet() {
@@ -137,6 +139,10 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(projection.availableSessions.count, 5)
         XCTAssertEqual(projection.inlineAvailableSessions.count, 3)
         XCTAssertEqual(projection.hiddenAvailableSessionCount, 2)
+        XCTAssertEqual(
+            projection.availableSessionNames(on: server.id),
+            projection.availableSessions.map(\.id.sessionName)
+        )
         XCTAssertEqual(
             projection.inlineAvailableSessions.map(\.id.sessionName),
             Array(projection.availableSessions.prefix(3)).map(\.id.sessionName)
