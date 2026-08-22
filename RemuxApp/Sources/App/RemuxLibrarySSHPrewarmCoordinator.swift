@@ -81,10 +81,12 @@ final class RemuxLibrarySSHPrewarmCoordinator {
                         onEligibleTarget: onEligibleTarget
                     )
                 } catch is SSHAuthResolverError {
-                    await self?.traceSkipped(
-                        candidate: candidate,
-                        reason: RemuxLibrarySSHPrewarmSkipReason.missingAuth.rawValue
-                    )
+                    await MainActor.run {
+                        self?.traceSkipped(
+                            candidate: candidate,
+                            reason: RemuxLibrarySSHPrewarmSkipReason.missingAuth.rawValue
+                        )
+                    }
                 } catch is CancellationError {
                     return
                 } catch {

@@ -633,6 +633,25 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Add the public key to your server"].exists)
     }
 
+    func testTailscaleAuthenticationIsExplicitAndHidesPassword() {
+        launchSimulatorApp()
+        openConnectionSetup()
+
+        if !app.buttons["Tailscale"].waitForExistence(timeout: 1) {
+            app.swipeUp()
+        }
+        XCTAssertTrue(app.buttons["Tailscale"].waitForExistence(timeout: 2))
+        app.buttons["Tailscale"].tap()
+
+        XCTAssertFalse(app.secureTextFields["connection.password"].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["connection.authentication.tailscale-info"]
+                .waitForExistence(timeout: 2)
+        )
+        XCTAssertTrue(app.staticTexts["Tailscale SSH"].exists)
+        attachScreenshot(named: "tailscale-authentication-explicit")
+    }
+
     func testAlreadyInstalledPublicKeySkipsPasswordPrompt() {
         app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "alreadyInstalled"
         launchSimulatorApp()

@@ -251,7 +251,7 @@ struct SSHPublicKeyInstaller: Sendable {
                 authenticationMethod: {
                     try SSHAuthenticationMethodFactory.make(
                         username: target.username,
-                        credential: credential
+                        storedCredential: credential
                     )
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),

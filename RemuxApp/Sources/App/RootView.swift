@@ -2120,15 +2120,18 @@ struct ConnectionSetupView: View {
                     Picker("Method", selection: authenticationKindBinding) {
                         Text("Password").tag(SSHAuthenticationKind.password)
                         Text("Private Key").tag(SSHAuthenticationKind.privateKey)
+                        Text("Tailscale").tag(SSHAuthenticationKind.none)
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("connection.authentication.method")
 
                     switch draft.authenticationKind {
-                    case .password, .none:
+                    case .password:
                         passwordInputRow(validationMessage: validation.password)
                     case .privateKey:
                         privateKeyInputRows()
+                    case .none:
+                        tailscaleAuthenticationRow()
                     }
                 } header: {
                     Text("Authentication")
@@ -2502,7 +2505,7 @@ struct ConnectionSetupView: View {
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            SecureField("Optional", text: binding(for: \.password))
+            SecureField("Required", text: binding(for: \.password))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.oneTimeCode)
@@ -2513,10 +2516,6 @@ struct ConnectionSetupView: View {
                 .frame(minHeight: 28)
                 .accessibilityIdentifier("connection.password")
 
-            Text("Leave the password empty if you use Tailscale SSH.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
             fieldValidationMessage(validationMessage)
         }
         .padding(.vertical, 6)
@@ -2524,6 +2523,22 @@ struct ConnectionSetupView: View {
         .onTapGesture {
             focusedField = .password
         }
+    }
+
+    private func tailscaleAuthenticationRow() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Tailscale SSH", systemImage: "network")
+                .font(.footnote.weight(.semibold))
+
+            Text(
+                "Uses your tailnet identity without a password or key. " +
+                "Requires an accept SSH rule; check mode is not supported yet."
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("connection.authentication.tailscale-info")
     }
 
     @ViewBuilder

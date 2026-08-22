@@ -41,9 +41,8 @@ final class SSHAuthResolverTests: XCTestCase {
             username: "deploy",
             identityID: identity.id
         )
-        let resolver = SSHAuthResolver(credentialStore: TestSSHCredentialStore(credentials: [
-            identity.id: .none,
-        ]))
+        let credentialStore = TestSSHCredentialStore()
+        let resolver = SSHAuthResolver(credentialStore: credentialStore)
 
         let auth = try await resolver.resolve(
             server: server,
@@ -54,6 +53,8 @@ final class SSHAuthResolverTests: XCTestCase {
         XCTAssertEqual(auth.username, "deploy")
         XCTAssertEqual(auth.displayLabel, "Tailscale node")
         XCTAssertEqual(auth.credential, .none)
+        let loadedIdentityIDs = await credentialStore.loadedIdentityIDs()
+        XCTAssertEqual(loadedIdentityIDs, [])
     }
 
     func testMissingIdentityFailsExplicitly() async throws {
@@ -175,13 +176,15 @@ final class SSHAuthResolverTests: XCTestCase {
 
 private actor TestSSHCredentialStore: SSHCredentialStore {
     private var credentials: [UUID: SSHCredential]
+    private var loadedIDs: [UUID] = []
 
     init(credentials: [UUID: SSHCredential] = [:]) {
         self.credentials = credentials
     }
 
     func loadCredential(identityID: UUID) async throws -> SSHCredential? {
-        credentials[identityID]
+        loadedIDs.append(identityID)
+        return credentials[identityID]
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: UUID) async throws {
@@ -190,5 +193,9 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
 
     func deleteCredential(identityID: UUID) async throws {
         credentials[identityID] = nil
+    }
+
+    func loadedIdentityIDs() -> [UUID] {
+        loadedIDs
     }
 }

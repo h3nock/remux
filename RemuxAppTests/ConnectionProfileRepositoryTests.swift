@@ -271,15 +271,6 @@ final class ConnectionProfileRepositoryTests: XCTestCase {
         XCTAssertEqual(decoded, credential)
     }
 
-    func testSSHCredentialCodablePreservesNone() throws {
-        let credential = SSHCredential.none
-
-        let encoded = try JSONEncoder().encode(credential)
-        let decoded = try JSONDecoder().decode(SSHCredential.self, from: encoded)
-
-        XCTAssertEqual(decoded, credential)
-    }
-
     func testKeychainSSHCredentialStoreUsesIdentityReference() async throws {
         let store = KeychainSSHCredentialStore(service: "dev.remux.tests.\(UUID().uuidString)")
         let identity = SSHIdentity(

@@ -447,7 +447,7 @@ final class RemuxRootModel: ObservableObject {
         editServerTrustSnapshot = nil
 
         let identity: SSHIdentity
-        let credential: SSHCredential
+        let credential: SSHCredential?
         do {
             (identity, credential) = try await loadDraftIdentityCredential(for: server)
         } catch {
@@ -779,11 +779,13 @@ final class RemuxRootModel: ObservableObject {
         var savedIdentity = false
         var savedServer = false
         do {
-            try await dependencies.credentialStore.saveCredential(
-                identityCredential.credential,
-                identityID: identity.id
-            )
-            savedCredential = true
+            if let credential = identityCredential.credential {
+                try await dependencies.credentialStore.saveCredential(
+                    credential,
+                    identityID: identity.id
+                )
+                savedCredential = true
+            }
             try await dependencies.profileRepository.saveIdentity(identity)
             savedIdentity = true
             try await dependencies.profileRepository.saveServer(server)
@@ -875,7 +877,7 @@ final class RemuxRootModel: ObservableObject {
                     identityID: updatedIdentityCredential.identity.id
                 )
                 guard isCurrentSetupAction(action) else { return }
-                try await dependencies.credentialStore.saveCredential(
+                try await replaceCredential(
                     updatedIdentityCredential.credential,
                     identityID: updatedIdentityCredential.identity.id
                 )
@@ -1628,17 +1630,23 @@ final class RemuxRootModel: ObservableObject {
         identityCredential: SSHIdentityCredentialPair
     ) throws -> ResolvedSSHAuth {
         switch identityCredential.credential {
-        case .password(let password):
+        case .some(.password(let password)):
             return .password(
                 username: draft.username,
                 password: password,
                 identityID: identityCredential.identity.id,
                 displayLabel: identityCredential.identity.name
             )
-        case .privateKey(let credential):
+        case .some(.privateKey(let credential)):
             return try .privateKey(
                 username: draft.username,
                 credential: credential,
+                identityID: identityCredential.identity.id,
+                displayLabel: identityCredential.identity.name
+            )
+        case .none:
+            return .none(
+                username: draft.username,
                 identityID: identityCredential.identity.id,
                 displayLabel: identityCredential.identity.name
             )
@@ -1680,7 +1688,7 @@ final class RemuxRootModel: ObservableObject {
 
     private struct SSHIdentityCredentialPair {
         let identity: SSHIdentity
-        let credential: SSHCredential
+        let credential: SSHCredential?
     }
 
     private func makeIdentityCredentialPair(
@@ -1716,7 +1724,7 @@ final class RemuxRootModel: ObservableObject {
             )
             return SSHIdentityCredentialPair(
                 identity: identity,
-                credential: .none
+                credential: nil
             )
         }
     }
@@ -1758,7 +1766,7 @@ final class RemuxRootModel: ObservableObject {
             )
             return SSHIdentityCredentialPair(
                 identity: identity,
-                credential: .none
+                credential: nil
             )
         }
     }
@@ -1775,9 +1783,12 @@ final class RemuxRootModel: ObservableObject {
 
     private func loadDraftIdentityCredential(
         for server: SavedServer
-    ) async throws -> (SSHIdentity, SSHCredential) {
+    ) async throws -> (SSHIdentity, SSHCredential?) {
         guard let identity = library.identity(id: server.identityID) else {
             throw SSHAuthResolverError.missingIdentity(server.identityID)
+        }
+        if identity.authenticationKind == .none {
+            return (identity, nil)
         }
         guard let credential = try await dependencies.credentialStore.loadCredential(
             identityID: identity.id
@@ -1792,6 +1803,20 @@ final class RemuxRootModel: ObservableObject {
             )
         }
         return (identity, credential)
+    }
+
+    private func replaceCredential(
+        _ credential: SSHCredential?,
+        identityID: SSHIdentity.ID
+    ) async throws {
+        if let credential {
+            try await dependencies.credentialStore.saveCredential(
+                credential,
+                identityID: identityID
+            )
+        } else {
+            try await dependencies.credentialStore.deleteCredential(identityID: identityID)
+        }
     }
 
     private func cleanupCreatedCredential(

@@ -38,6 +38,14 @@ struct SSHAuthResolver: Sendable {
             throw SSHAuthResolverError.missingIdentity(identityID)
         }
 
+        if identity.authenticationKind == .none {
+            return .none(
+                username: server.username,
+                identityID: identity.id,
+                displayLabel: identity.name
+            )
+        }
+
         guard let credential = try await credentialStore.loadCredential(
             identityID: identity.id
         ) else {
@@ -64,12 +72,6 @@ struct SSHAuthResolver: Sendable {
             return try .privateKey(
                 username: server.username,
                 credential: credential,
-                identityID: identity.id,
-                displayLabel: identity.name
-            )
-        case .none:
-            return .none(
-                username: server.username,
                 identityID: identity.id,
                 displayLabel: identity.name
             )

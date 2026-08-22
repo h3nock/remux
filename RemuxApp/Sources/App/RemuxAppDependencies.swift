@@ -11,19 +11,6 @@ enum RemuxConnectionTimeouts {
     static let sftpOperation: TimeAmount = .seconds(15)
 }
 
-private extension ResolvedSSHAuth {
-    var sshCredential: SSHCredential {
-        switch credential {
-        case .password(let password):
-            .password(password)
-        case .privateKey(let privateKey):
-            .privateKey(privateKey)
-        case .none:
-            .none
-        }
-    }
-}
-
 struct RemuxAppDependencies: Sendable {
     let profileRepository: any ConnectionProfileRepository
     let settingsRepository: any TerminalSettingsRepository
@@ -239,7 +226,7 @@ struct RemuxAppDependencies: Sendable {
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: target.sshAuth.sshCredential
+                    credential: target.sshAuth.credential
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
@@ -330,7 +317,7 @@ struct RemuxAppDependencies: Sendable {
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: target.sshAuth.sshCredential
+                    credential: target.sshAuth.credential
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
@@ -366,8 +353,6 @@ struct RemuxAppDependencies: Sendable {
                 if requiresPassword, !didAppend {
                     throw SSHClientError.allAuthenticationOptionsFailed
                 }
-            case .none:
-                break
             }
 
             return RemuxSSHExecResult(

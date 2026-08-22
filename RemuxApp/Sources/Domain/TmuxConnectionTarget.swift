@@ -421,15 +421,15 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         server: SavedServer,
         workspace: SavedWorkspace,
         identity: SSHIdentity,
-        credential: SSHCredential
+        credential: SSHCredential?
     ) {
         self.init(server: server, workspace: workspace)
-        self.authenticationKind = identity.authenticationKind == .none ? .password : identity.authenticationKind
+        self.authenticationKind = identity.authenticationKind
 
         switch credential {
-        case .password(let password):
+        case .some(.password(let password)):
             self.password = password
-        case .privateKey(let credential):
+        case .some(.privateKey(let credential)):
             self.privateKeyPEM = credential.privateKeyPEM
             self.privateKeyPassphrase = credential.passphrase ?? ""
         case .none:
@@ -615,7 +615,10 @@ enum TmuxConnectionDraftValidator {
         let credential: ValidatedTmuxServerDraft.Credential
         switch draft.authenticationKind {
         case .password:
-            credential = password.isEmpty ? .none : .password(password)
+            if password.isEmpty {
+                validation.password = "Password is required."
+            }
+            credential = .password(password)
 
         case .privateKey:
             if privateKeyPEM.isEmpty {

@@ -65,7 +65,7 @@ enum DebugConnectionProfileSeeder {
 
         case .valid(let submission):
             let identity: SSHIdentity
-            let credential: SSHCredential
+            let credential: SSHCredential?
             switch submission.server.credential {
             case .password(let password):
                 identity = SSHIdentity(
@@ -90,13 +90,15 @@ enum DebugConnectionProfileSeeder {
                     name: submission.server.displayName,
                     authenticationKind: .none
                 )
-                credential = .none
+                credential = nil
             }
             let server = submission.server.savedServer(identityID: identity.id)
-            try await credentialStore.saveCredential(
-                credential,
-                identityID: identity.id
-            )
+            if let credential {
+                try await credentialStore.saveCredential(
+                    credential,
+                    identityID: identity.id
+                )
+            }
             try await profileRepository.saveIdentityProfile(
                 identity: identity,
                 server: server,
@@ -128,6 +130,8 @@ private extension TmuxConnectionDraft {
             self.privateKeyPEM = privateKey
             self.privateKeyFileName = "Debug private key"
             self.privateKeyPassphrase = privateKeyPassphrase ?? ""
+        } else if password.isEmpty {
+            self.authenticationKind = .none
         } else {
             self.password = password
         }

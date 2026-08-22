@@ -1398,8 +1398,13 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
     }
 
-    func testSaveAndConnectPersistsNewProfileWithNoneAuthentication() async throws {
-        let harness = makeHarness()
+    func testSaveNewServerPersistsNoneAuthenticationWithoutCredential() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base"])])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
         await harness.model.load()
         harness.model.beginNewServer()
         harness.model.updateDraft { draft in
@@ -1408,24 +1413,25 @@ final class RemuxRootModelTests: XCTestCase {
             draft.port = "22"
             draft.username = "demo"
             draft.authenticationKind = .none
+            draft.password = ""
             draft.sessionName = "base"
         }
 
-        await harness.model.saveAndConnect()
-
-        guard let activeSession = harness.model.activeSessions.first else {
-            XCTFail("expected terminal state")
-            return
-        }
-
-        let target = activeSession.target
-        XCTAssertEqual(target.sshAuth.credential, .none)
+        let savedServerID = await harness.model.saveAndConnect()
+        let serverID = try XCTUnwrap(savedServerID)
 
         let snapshot = try await harness.profileRepository.loadSnapshot()
         let identity = try XCTUnwrap(snapshot.identities.first)
         let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
+        let verifiedTargets = await discoverer.targets()
+        let verifiedTarget = try XCTUnwrap(verifiedTargets.first)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertTrue(harness.model.activeSessions.isEmpty)
+        XCTAssertEqual(snapshot.server(id: serverID)?.identityID, identity.id)
+        XCTAssertTrue(snapshot.workspaces.isEmpty)
         XCTAssertEqual(identity.authenticationKind, .none)
-        XCTAssertEqual(savedCredential, SSHCredential.none)
+        XCTAssertNil(savedCredential)
+        XCTAssertEqual(verifiedTarget.sshAuth.credential, .none)
     }
 
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {
@@ -2093,6 +2099,36 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(setup.mode, .editServer(server.id, reconnectWorkspaceID: nil))
     }
 
+    func testBeginEditServerLoadsNoneIdentityWithoutCredential() async throws {
+        let identity = SSHIdentity(
+            name: "Tailscale Node",
+            authenticationKind: .none
+        )
+        let server = SavedServer(
+            displayName: "Tailscale Node",
+            host: "100.64.0.1",
+            username: "demo",
+            identityID: identity.id
+        )
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [],
+            identities: [identity]
+        )
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: server.id)
+
+        guard let setup = harness.model.connectionSetup else {
+            XCTFail("expected setup state")
+            return
+        }
+        XCTAssertEqual(setup.draft.authenticationKind, .none)
+        XCTAssertEqual(setup.draft.password, "")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .editServer(server.id, reconnectWorkspaceID: nil))
+    }
+
     func testBeginCredentialRepairCapturesReconnectWorkspace() async throws {
         let passwordBackedServer = makePasswordBackedServer()
         let server = passwordBackedServer.server
@@ -2297,6 +2333,70 @@ final class RemuxRootModelTests: XCTestCase {
             identityID: passwordBackedServer.identity.id
         )
         XCTAssertEqual(savedCredential, .password("updated-demo-password"))
+    }
+
+    func testEditServerFromPasswordToNoneDeletesCredential() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [],
+            identities: [passwordBackedServer.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.authenticationKind = .none
+            draft.password = ""
+        }
+
+        await harness.model.saveAndConnect()
+
+        XCTAssertEqual(harness.model.state, .library)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let identity = try XCTUnwrap(snapshot.identity(id: passwordBackedServer.identity.id))
+        let savedCredential = try await harness.credentialStore.loadCredential(
+            identityID: passwordBackedServer.identity.id
+        )
+        XCTAssertEqual(identity.authenticationKind, .none)
+        XCTAssertNil(savedCredential)
+    }
+
+    func testEditServerFromPasswordToNoneRestoresCredentialWhenServerSaveFails() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [],
+            identities: [passwordBackedServer.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.authenticationKind = .none
+            draft.password = ""
+        }
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(server.id)
+        )
+
+        await harness.model.saveAndConnect()
+
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let identity = try XCTUnwrap(snapshot.identity(id: passwordBackedServer.identity.id))
+        let savedCredential = try await harness.credentialStore.loadCredential(
+            identityID: passwordBackedServer.identity.id
+        )
+        XCTAssertEqual(identity, passwordBackedServer.identity)
+        XCTAssertEqual(savedCredential, .password("demo-password"))
     }
 
     func testEditServerRestoresIdentityAndCredentialWhenServerSaveFails() async throws {
@@ -2635,8 +2735,6 @@ final class RemuxRootModelTests: XCTestCase {
             workspaces: [workspace],
             identities: [identity]
         )
-        try await harness.credentialStore.saveCredential(.none, identityID: identity.id)
-
         await harness.model.load()
         await harness.model.connect(to: workspace.id)
 
@@ -2644,6 +2742,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(session.target.sshAuth.credential, .none)
         XCTAssertEqual(session.target.sshAuth.identityID, identity.id)
         XCTAssertEqual(session.target.sshAuth.displayLabel, "Tailscale Node")
+        let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
+        XCTAssertNil(savedCredential)
     }
 
     func testActiveTerminalScreenEntriesPairSessionsWithExactAttemptModels() async throws {

@@ -5,9 +5,8 @@ import NIOCore
 @preconcurrency import NIOSSH
 
 /// Offers SSH's `none` authentication method once, then fails further offers.
-/// Used for hosts reachable only over an already-authenticated tunnel (e.g.
-/// Tailscale/WireGuard) where sshd is configured to accept `none` and no
-/// password or private key is needed.
+/// Used for Tailscale SSH and other servers explicitly configured to accept
+/// SSH `none` authentication without a password or private key.
 final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
     private let username: String
     private var hasOffered = false
@@ -35,7 +34,7 @@ final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegat
 enum SSHAuthenticationMethodFactory {
     static func make(
         username: String,
-        credential: SSHCredential
+        credential: ResolvedSSHAuth.Credential
     ) throws -> SSHAuthenticationMethod {
         switch credential {
         case .password(let password):
@@ -87,6 +86,24 @@ enum SSHAuthenticationMethodFactory {
                     )
                 )
             }
+        }
+    }
+
+    static func make(
+        username: String,
+        storedCredential: SSHCredential
+    ) throws -> SSHAuthenticationMethod {
+        switch storedCredential {
+        case .password(let password):
+            return try make(
+                username: username,
+                credential: ResolvedSSHAuth.Credential.password(password)
+            )
+        case .privateKey(let privateKey):
+            return try make(
+                username: username,
+                credential: ResolvedSSHAuth.Credential.privateKey(privateKey)
+            )
         }
     }
 }
