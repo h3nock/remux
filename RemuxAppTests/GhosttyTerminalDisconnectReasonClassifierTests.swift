@@ -282,6 +282,64 @@ final class TrustedHostStoreTests: XCTestCase {
         )
     }
 
+    func testValidatorRequiresTrustAgainWhenSavedHostnameChangesButKeyDoesNot() throws {
+        let root = temporaryRoot()
+        let server = SavedServer(
+            id: UUID(),
+            displayName: "Server",
+            host: "original.example.com",
+            username: "macbook",
+            identityID: UUID()
+        )
+        let hostKey = try makeHostKey(comment: "same-key")
+        let openSSHPublicKey = String(openSSHPublicKey: hostKey)
+        let store = TrustedHostStore(rootURL: root)
+        try store.replaceIdentities([
+            TrustedHostIdentity(
+                serverID: server.id,
+                host: server.host,
+                keyType: "ssh-ed25519",
+                openSSHPublicKey: openSSHPublicKey,
+                trustedAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+
+        var editedServer = server
+        editedServer.host = "replacement.example.com"
+        let changedHostPromise = MultiThreadedEventLoopGroup.singleton.next().makePromise(of: Void.self)
+        store.validator(for: editedServer).validateHostKey(
+            hostKey: hostKey,
+            validationCompletePromise: changedHostPromise
+        )
+
+        var capturedChallenge: SSHHostKeyTrustChallenge?
+        XCTAssertThrowsError(try changedHostPromise.futureResult.wait()) { error in
+            guard case TrustedHostStoreError.hostKeyTrustRequired(let challenge) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+
+            capturedChallenge = challenge
+            XCTAssertEqual(challenge.kind, .changed)
+            XCTAssertEqual(challenge.serverID, server.id)
+            XCTAssertEqual(challenge.host, editedServer.host)
+            XCTAssertEqual(challenge.trustedOpenSSHPublicKey, openSSHPublicKey)
+            XCTAssertEqual(challenge.receivedOpenSSHPublicKey, openSSHPublicKey)
+        }
+
+        try store.trustHostKey(try XCTUnwrap(capturedChallenge))
+        let trustedIdentity = try XCTUnwrap(store.loadIdentities().first)
+        XCTAssertEqual(trustedIdentity.serverID, editedServer.id)
+        XCTAssertEqual(trustedIdentity.host, editedServer.host)
+        XCTAssertEqual(trustedIdentity.openSSHPublicKey, openSSHPublicKey)
+
+        let acceptedPromise = MultiThreadedEventLoopGroup.singleton.next().makePromise(of: Void.self)
+        store.validator(for: editedServer).validateHostKey(
+            hostKey: hostKey,
+            validationCompletePromise: acceptedPromise
+        )
+        XCTAssertNoThrow(try acceptedPromise.futureResult.wait())
+    }
+
     func testTrustHostKeyRejectsStaleChange() throws {
         let root = temporaryRoot()
         let serverID = UUID()
