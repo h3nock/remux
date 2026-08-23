@@ -652,6 +652,34 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "tailscale-authentication-explicit")
     }
 
+    func testTailscaleCheckOffersToOpenVerificationInBrowser() {
+        app.launchEnvironment["REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"] =
+            "# Tailscale SSH requires an additional check.\n" +
+            "# To authenticate, visit: https://login.tailscale.com/a/5fb81378394f\n"
+        launchSimulatorApp()
+
+        let alert = app.alerts["Verify Tailscale SSH"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            alert.staticTexts[
+                "Tailscale requires verification for this SSH connection. " +
+                "Complete it in your browser, then return to Remux."
+            ].exists
+        )
+        let openBrowser = alert.buttons["Open Browser"]
+        XCTAssertTrue(openBrowser.isHittable)
+        attachScreenshot(named: "tailscale-check-verification")
+
+        openBrowser.tap()
+
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertEqual(
+            safari.wait(for: .runningForeground, timeout: 5),
+            true,
+            "Open Browser should hand the validated Tailscale URL to iOS."
+        )
+    }
+
     func testAlreadyInstalledPublicKeySkipsPasswordPrompt() {
         app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "alreadyInstalled"
         launchSimulatorApp()

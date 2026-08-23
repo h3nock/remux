@@ -62,8 +62,11 @@ instead of silently falling back to SSH.
 Authentication is per-identity and supports password, private key, or
 Tailscale SSH. Tailscale SSH offers SSH's `none` user-auth method and stores no
 credential in Keychain. This path currently supports Tailscale SSH rules with
-the `accept` action. Browser reauthentication for Tailscale SSH `check` rules
-is not yet supported.
+the `accept` action and browser reauthentication for `check` rules. For
+`check`, Remux validates the Tailscale verification URL from the SSH banner,
+offers to open it in the user's browser, and keeps authentication pending while
+the user completes verification. Background prewarming is disabled for this
+authentication method so it cannot produce an unsolicited browser prompt.
 
 WireGuard only supplies a network path. Ordinary SSH servers reached through
 WireGuard still require whatever password or key authentication they normally

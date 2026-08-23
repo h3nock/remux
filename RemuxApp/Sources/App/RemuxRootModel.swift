@@ -1654,6 +1654,10 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private static func newServerVerificationMessage(for error: any Error) -> String {
+        if let tailscaleCheckError = error as? TailscaleSSHCheckError {
+            return tailscaleCheckError.localizedDescription
+        }
+
         if let discoveryError = error as? TmuxSessionDiscoveryError,
            case .remoteExit(let status, let stderr) = discoveryError {
             if status == 127,

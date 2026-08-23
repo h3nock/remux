@@ -6,6 +6,13 @@ enum GhosttyTerminalDisconnectReasonClassifier {
     static func transportStartFailure(_ error: any Error) -> TerminalDisconnectReason {
         let message = String(describing: error)
 
+        if let tailscaleCheckError = error as? TailscaleSSHCheckError {
+            return TerminalDisconnectReason(
+                kind: .authentication,
+                message: tailscaleCheckError.localizedDescription
+            )
+        }
+
         if isServerUnreachable(error) {
             return TerminalDisconnectReason(kind: .serverUnreachable, message: message)
         }

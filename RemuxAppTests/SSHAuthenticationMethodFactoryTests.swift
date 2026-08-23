@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import NIOCore
 import NIOPosix
 @preconcurrency import NIOSSH
@@ -19,7 +20,7 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
 
         let offer = try await firstOffer.futureResult.get()
         XCTAssertEqual(offer?.username, "demo")
-        guard case .none = offer?.offer else {
+        guard let offer, case .none = offer.offer else {
             return XCTFail("expected SSH none authentication")
         }
 

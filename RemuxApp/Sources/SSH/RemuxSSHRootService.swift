@@ -27,19 +27,25 @@ struct RemuxSSHRootConfiguration: Sendable {
     let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
+    let authenticationTimeout: TimeAmount
+    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
 
     init(
         host: String,
         port: Int,
         authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
-        connectTimeout: TimeAmount
+        connectTimeout: TimeAmount,
+        authenticationTimeout: TimeAmount? = nil,
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)? = nil
     ) {
         self.host = host
         self.port = port
         self.authenticationMethod = authenticationMethod
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
+        self.authenticationTimeout = authenticationTimeout ?? connectTimeout
+        self.onTailscaleSSHCheck = onTailscaleSSHCheck
     }
 }
 
@@ -443,6 +449,8 @@ struct RemuxSSHClaimedRoot: Sendable {
 }
 
 actor RemuxSSHRootService {
+    nonisolated let tailscaleSSHCheckChallengeBroker = TailscaleSSHCheckChallengeBroker()
+
     private struct Entry {
         let generation: UUID
         let task: Task<RemuxSSHRoot, Error>
@@ -1168,7 +1176,8 @@ private enum RemuxSSHRootBootstrap {
                 .channelInitializer { channel in
                     let handshake = RemuxSSHRootHandshakeHandler(
                         eventLoop: channel.eventLoop,
-                        timeout: configuration.connectTimeout
+                        timeout: configuration.authenticationTimeout,
+                        onTailscaleSSHCheck: configuration.onTailscaleSSHCheck
                     )
                     let authenticationMethod: SSHAuthenticationMethod
                     do {
@@ -1238,31 +1247,51 @@ private enum RemuxSSHRootBootstrap {
     }
 }
 
-private final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
+final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = Any
 
     private struct Disconnected: Error {}
 
     private let promise: EventLoopPromise<Void>
+    private let tailscaleCheckChallenge = NIOLockedValueBox<TailscaleSSHCheckChallenge?>(nil)
+    private let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
 
     var authenticated: EventLoopFuture<Void> {
         promise.futureResult
     }
 
-    init(eventLoop: EventLoop, timeout: TimeAmount) {
+    init(
+        eventLoop: EventLoop,
+        timeout: TimeAmount,
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)? = nil
+    ) {
         self.promise = eventLoop.makePromise(of: Void.self)
+        self.onTailscaleSSHCheck = onTailscaleSSHCheck
 
-        eventLoop.scheduleTask(deadline: .now() + timeout) { [promise] in
-            promise.fail(ChannelError.connectTimeout(timeout))
+        eventLoop.scheduleTask(in: timeout) { [promise, tailscaleCheckChallenge] in
+            if tailscaleCheckChallenge.withLockedValue({ $0 }) != nil {
+                promise.fail(TailscaleSSHCheckError.verificationTimedOut)
+            } else {
+                promise.fail(ChannelError.connectTimeout(timeout))
+            }
         }
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if event is UserAuthSuccessEvent {
             promise.succeed(())
-        } else {
-            context.fireUserInboundEventTriggered(event)
+        } else if let banner = event as? NIOUserAuthBannerEvent,
+                  let challenge = TailscaleSSHCheckChallenge.parse(from: banner.message) {
+            let shouldPresent = tailscaleCheckChallenge.withLockedValue { current in
+                guard current != challenge else { return false }
+                current = challenge
+                return true
+            }
+            if shouldPresent, let onTailscaleSSHCheck {
+                onTailscaleSSHCheck(challenge)
+            }
         }
+        context.fireUserInboundEventTriggered(event)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {

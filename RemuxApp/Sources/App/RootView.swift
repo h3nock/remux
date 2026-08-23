@@ -25,9 +25,12 @@ struct RootView: View {
 }
 
 private struct RemuxRootContentView: View {
+    @Environment(\.openURL) private var openURL
     @StateObject private var model: RemuxRootModel
     @State private var composer: GhosttyComposerModel
     @State private var shortcutStore: ShortcutStore
+    @State private var tailscaleSSHCheckChallenge: TailscaleSSHCheckChallenge?
+    private let tailscaleSSHCheckChallenges: AsyncStream<TailscaleSSHCheckChallenge>
 
     init(dependencies: RemuxAppDependencies) {
         _model = StateObject(wrappedValue: RemuxRootModel(dependencies: dependencies))
@@ -35,28 +38,62 @@ private struct RemuxRootContentView: View {
         _shortcutStore = State(
             initialValue: ShortcutStore(repository: dependencies.shortcutRepository)
         )
+        _tailscaleSSHCheckChallenge = State(initialValue: nil)
+        tailscaleSSHCheckChallenges = dependencies.tailscaleSSHCheckChallenges
     }
 
     var body: some View {
-        switch model.state {
-        case .loading:
-            ProgressView("Loading Remux")
-                .task {
-                    async let modelLoad: Void = model.load()
-                    async let shortcutLoad: Void = shortcutStore.load()
-                    _ = await (modelLoad, shortcutLoad)
-                }
+        Group {
+            switch model.state {
+            case .loading:
+                ProgressView("Loading Remux")
+                    .task {
+                        async let modelLoad: Void = model.load()
+                        async let shortcutLoad: Void = shortcutStore.load()
+                        _ = await (modelLoad, shortcutLoad)
+                    }
 
-        case .library, .terminal:
-            RemuxWorkspaceShell(
-                model: model,
-                composer: composer,
-                shortcutStore: shortcutStore
-            )
+            case .library, .terminal:
+                RemuxWorkspaceShell(
+                    model: model,
+                    composer: composer,
+                    shortcutStore: shortcutStore
+                )
 
-        case .failed(let message):
-            FailureView(message: message)
+            case .failed(let message):
+                FailureView(message: message)
+            }
         }
+        .task {
+            for await challenge in tailscaleSSHCheckChallenges {
+                tailscaleSSHCheckChallenge = challenge
+            }
+        }
+        .alert(
+            "Verify Tailscale SSH",
+            isPresented: tailscaleSSHCheckIsPresented,
+            presenting: tailscaleSSHCheckChallenge
+        ) { challenge in
+            Button("Open Browser") {
+                openURL(challenge.verificationURL)
+            }
+        } message: { _ in
+            Text(
+                "Tailscale requires verification for this SSH connection. " +
+                "Complete it in your browser, then return to Remux."
+            )
+        }
+    }
+
+    private var tailscaleSSHCheckIsPresented: Binding<Bool> {
+        Binding(
+            get: { tailscaleSSHCheckChallenge != nil },
+            set: { isPresented in
+                if !isPresented {
+                    tailscaleSSHCheckChallenge = nil
+                }
+            }
+        )
     }
 }
 
@@ -2532,7 +2569,8 @@ struct ConnectionSetupView: View {
 
             Text(
                 "Uses your tailnet identity without a password or key. " +
-                "Requires an accept SSH rule; check mode is not supported yet."
+                "If your SSH rule requires a check, Remux will offer to open " +
+                "the verification link in your browser."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
