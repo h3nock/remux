@@ -28,3 +28,6 @@ Mosh is planned, but it is not implemented yet.
 - A Swift-side terminal renderer
 - A raw `tmux attach-session` terminal UI as the product surface
 - An SSH-backed placeholder for mosh
+
+For a phone **spectator** that does not open SSH, see [Build Remote Agent](gbr.md).
+That path is a companion on the Mac (`gbr-agent`), not a Remux SDK.
