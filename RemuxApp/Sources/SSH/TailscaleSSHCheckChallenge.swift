@@ -39,18 +39,28 @@ struct TailscaleSSHCheckChallenge: Equatable, Identifiable, Sendable {
     }
 }
 
-final class TailscaleSSHCheckChallengeBroker: @unchecked Sendable {
-    let challenges: AsyncStream<TailscaleSSHCheckChallenge>
-    private let continuation: AsyncStream<TailscaleSSHCheckChallenge>.Continuation
+struct TailscaleSSHCheckRequest: Equatable, Identifiable, Sendable {
+    let id: UUID
+    let challenge: TailscaleSSHCheckChallenge
+}
+
+enum TailscaleSSHCheckEvent: Equatable, Sendable {
+    case presented(TailscaleSSHCheckRequest)
+    case finished(TailscaleSSHCheckRequest.ID)
+}
+
+final class TailscaleSSHCheckChallengeBroker: Sendable {
+    let events: AsyncStream<TailscaleSSHCheckEvent>
+    private let continuation: AsyncStream<TailscaleSSHCheckEvent>.Continuation
 
     init() {
-        let stream = AsyncStream.makeStream(of: TailscaleSSHCheckChallenge.self)
-        self.challenges = stream.stream
+        let stream = AsyncStream.makeStream(of: TailscaleSSHCheckEvent.self)
+        self.events = stream.stream
         self.continuation = stream.continuation
     }
 
-    func present(_ challenge: TailscaleSSHCheckChallenge) {
-        continuation.yield(challenge)
+    func handle(_ event: TailscaleSSHCheckEvent) {
+        continuation.yield(event)
     }
 
     deinit {
@@ -64,7 +74,7 @@ enum TailscaleSSHCheckError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .verificationTimedOut:
-            "Tailscale SSH verification was not completed. Open the verification link and try again."
+            "Tailscale SSH verification expired before it was completed. Try connecting again to get a new verification link."
         }
     }
 }

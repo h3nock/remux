@@ -11,7 +11,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount?
-    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
+    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
     let controlNoResponseTimeout: TimeAmount
     let sftpOperationTimeout: TimeAmount
     let tmuxExecutable: String
@@ -27,7 +27,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount = .seconds(30),
         authenticationTimeout: TimeAmount? = nil,
-        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)? = nil,
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
         controlNoResponseTimeout: TimeAmount = .seconds(15),
         sftpOperationTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",

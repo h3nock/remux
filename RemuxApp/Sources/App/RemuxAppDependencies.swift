@@ -15,7 +15,7 @@ enum RemuxConnectionTimeouts {
 struct RemuxAppDependencies: Sendable {
     private struct TailscaleSSHCheckConfiguration {
         let authenticationTimeout: TimeAmount?
-        let onChallenge: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
+        let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
     }
 
     let profileRepository: any ConnectionProfileRepository
@@ -167,8 +167,8 @@ struct RemuxAppDependencies: Sendable {
         transportFactory(target, trustedHostStore, sshRootService)
     }
 
-    var tailscaleSSHCheckChallenges: AsyncStream<TailscaleSSHCheckChallenge> {
-        sshRootService.tailscaleSSHCheckChallengeBroker.challenges
+    var tailscaleSSHCheckEvents: AsyncStream<TailscaleSSHCheckEvent> {
+        sshRootService.tailscaleSSHCheckChallengeBroker.events
     }
 
     func prewarmSSHConnection(for target: TmuxConnectionTarget) async {
@@ -253,7 +253,7 @@ struct RemuxAppDependencies: Sendable {
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
             authenticationTimeout: tailscaleSSHCheck.authenticationTimeout,
-            onTailscaleSSHCheck: tailscaleSSHCheck.onChallenge,
+            onTailscaleSSHCheck: tailscaleSSHCheck.onEvent,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
             sessionName: target.workspace.sessionName,
@@ -355,7 +355,7 @@ struct RemuxAppDependencies: Sendable {
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: connectTimeout,
             authenticationTimeout: tailscaleSSHCheck.authenticationTimeout,
-            onTailscaleSSHCheck: tailscaleSSHCheck.onChallenge
+            onTailscaleSSHCheck: tailscaleSSHCheck.onEvent
         )
     }
 
@@ -366,22 +366,22 @@ struct RemuxAppDependencies: Sendable {
         guard credential == .none else {
             return TailscaleSSHCheckConfiguration(
                 authenticationTimeout: nil,
-                onChallenge: nil
+                onEvent: nil
             )
         }
 
-        let onChallenge: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
+        let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
         if let broker {
-            onChallenge = { challenge in
-                broker.present(challenge)
+            onEvent = { event in
+                broker.handle(event)
             }
         } else {
-            onChallenge = nil
+            onEvent = nil
         }
 
         return TailscaleSSHCheckConfiguration(
             authenticationTimeout: RemuxConnectionTimeouts.tailscaleSSHAuthentication,
-            onChallenge: onChallenge
+            onEvent: onEvent
         )
     }
 
@@ -434,8 +434,11 @@ struct RemuxAppDependencies: Sendable {
         let publicKeyInstallState = DebugPublicKeyInstallState(
             requiresPassword: publicKeyInstallOutcome == .passwordRequired
         )
+        let tailscaleSSHCheckChallenge = ProcessInfo.processInfo.environment[
+            "REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"
+        ].flatMap(TailscaleSSHCheckChallenge.parse(from:))
 
-        let dependencies = RemuxAppDependencies(
+        return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
             settingsRepository: InMemoryTerminalSettingsRepository(
                 settings: {
@@ -459,19 +462,29 @@ struct RemuxAppDependencies: Sendable {
                 )
             },
             sshConnectionPrewarmer: { _, _, _ in
+            },
+            tmuxSessionDiscoverer: { target, _, sshRootService in
+                guard target.sshAuth.credential == .none,
+                      let tailscaleSSHCheckChallenge else {
+                    return try await RemuxAppDependencies.liveTmuxSessionDiscoverer(
+                        target: target,
+                        trustedHostStore: trustedHostStore,
+                        sshRootService: sshRootService
+                    )
+                }
+
+                let request = TailscaleSSHCheckRequest(
+                    id: UUID(),
+                    challenge: tailscaleSSHCheckChallenge
+                )
+                sshRootService.tailscaleSSHCheckChallengeBroker.handle(.presented(request))
+                defer {
+                    sshRootService.tailscaleSSHCheckChallengeBroker.handle(.finished(request.id))
+                }
+                try await Task.sleep(for: .seconds(10))
+                return []
             }
         )
-
-        if let banner = ProcessInfo.processInfo.environment[
-            "REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"
-        ], let challenge = TailscaleSSHCheckChallenge.parse(from: banner) {
-            Task {
-                try? await Task.sleep(for: .milliseconds(500))
-                dependencies.sshRootService.tailscaleSSHCheckChallengeBroker.present(challenge)
-            }
-        }
-
-        return dependencies
     }
 
     private static func uiTestingTransportChunks() -> [Data] {

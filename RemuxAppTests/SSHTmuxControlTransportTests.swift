@@ -115,6 +115,53 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(configuration.tmuxExecutable, executablePath)
     }
 
+    func testAppDependenciesUsesExtendedAuthenticationOnlyForTailscale() {
+        let server = SavedServer(
+            displayName: "Tailscale",
+            host: "100.64.0.10",
+            username: "deploy",
+            identityID: UUID()
+        )
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let trustedHostStore = TrustedHostStore(
+            rootURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+        let broker = TailscaleSSHCheckChallengeBroker()
+        let tailscaleTarget = TmuxConnectionTarget(
+            server: server,
+            workspace: workspace,
+            sshAuth: .none(
+                username: server.username,
+                identityID: server.identityID,
+                displayLabel: server.displayName
+            )
+        )
+        let passwordTarget = TmuxConnectionTarget(
+            server: server,
+            workspace: workspace,
+            sshAuth: makePasswordAuth(server: server, password: "pw")
+        )
+
+        let tailscale = RemuxAppDependencies.sshConfiguration(
+            for: tailscaleTarget,
+            trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: broker,
+            traceFlowID: nil
+        )
+        let password = RemuxAppDependencies.sshConfiguration(
+            for: passwordTarget,
+            trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: broker,
+            traceFlowID: nil
+        )
+
+        XCTAssertEqual(tailscale.authenticationTimeout, .minutes(5))
+        XCTAssertNotNil(tailscale.onTailscaleSSHCheck)
+        XCTAssertNil(password.authenticationTimeout)
+        XCTAssertNil(password.onTailscaleSSHCheck)
+    }
+
     func testSFTPLeaseOpenTimeoutReturnsSuccessfulOperation() async throws {
         let value = try await RemuxSFTPTimeout.run(
             timeout: .seconds(1),

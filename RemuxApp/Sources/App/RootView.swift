@@ -1,3 +1,4 @@
+import SafariServices
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -25,12 +26,11 @@ struct RootView: View {
 }
 
 private struct RemuxRootContentView: View {
-    @Environment(\.openURL) private var openURL
     @StateObject private var model: RemuxRootModel
     @State private var composer: GhosttyComposerModel
     @State private var shortcutStore: ShortcutStore
-    @State private var tailscaleSSHCheckChallenge: TailscaleSSHCheckChallenge?
-    private let tailscaleSSHCheckChallenges: AsyncStream<TailscaleSSHCheckChallenge>
+    @State private var tailscaleSSHCheckRequests: [TailscaleSSHCheckRequest]
+    private let tailscaleSSHCheckEvents: AsyncStream<TailscaleSSHCheckEvent>
 
     init(dependencies: RemuxAppDependencies) {
         _model = StateObject(wrappedValue: RemuxRootModel(dependencies: dependencies))
@@ -38,8 +38,8 @@ private struct RemuxRootContentView: View {
         _shortcutStore = State(
             initialValue: ShortcutStore(repository: dependencies.shortcutRepository)
         )
-        _tailscaleSSHCheckChallenge = State(initialValue: nil)
-        tailscaleSSHCheckChallenges = dependencies.tailscaleSSHCheckChallenges
+        _tailscaleSSHCheckRequests = State(initialValue: [])
+        tailscaleSSHCheckEvents = dependencies.tailscaleSSHCheckEvents
     }
 
     var body: some View {
@@ -57,7 +57,8 @@ private struct RemuxRootContentView: View {
                 RemuxWorkspaceShell(
                     model: model,
                     composer: composer,
-                    shortcutStore: shortcutStore
+                    shortcutStore: shortcutStore,
+                    tailscaleSSHCheckRequest: currentTailscaleSSHCheckRequest
                 )
 
             case .failed(let message):
@@ -65,35 +66,30 @@ private struct RemuxRootContentView: View {
             }
         }
         .task {
-            for await challenge in tailscaleSSHCheckChallenges {
-                tailscaleSSHCheckChallenge = challenge
+            for await event in tailscaleSSHCheckEvents {
+                handleTailscaleSSHCheckEvent(event)
             }
-        }
-        .alert(
-            "Verify Tailscale SSH",
-            isPresented: tailscaleSSHCheckIsPresented,
-            presenting: tailscaleSSHCheckChallenge
-        ) { challenge in
-            Button("Open Browser") {
-                openURL(challenge.verificationURL)
-            }
-        } message: { _ in
-            Text(
-                "Tailscale requires verification for this SSH connection. " +
-                "Complete it in your browser, then return to Remux."
-            )
         }
     }
 
-    private var tailscaleSSHCheckIsPresented: Binding<Bool> {
+    private var currentTailscaleSSHCheckRequest: Binding<TailscaleSSHCheckRequest?> {
         Binding(
-            get: { tailscaleSSHCheckChallenge != nil },
-            set: { isPresented in
-                if !isPresented {
-                    tailscaleSSHCheckChallenge = nil
-                }
-            }
+            get: { tailscaleSSHCheckRequests.first },
+            set: { _ in }
         )
+    }
+
+    private func handleTailscaleSSHCheckEvent(_ event: TailscaleSSHCheckEvent) {
+        switch event {
+        case .presented(let request):
+            if let index = tailscaleSSHCheckRequests.firstIndex(where: { $0.id == request.id }) {
+                tailscaleSSHCheckRequests[index] = request
+            } else {
+                tailscaleSSHCheckRequests.append(request)
+            }
+        case .finished(let requestID):
+            tailscaleSSHCheckRequests.removeAll { $0.id == requestID }
+        }
     }
 }
 
@@ -102,6 +98,7 @@ private struct RemuxWorkspaceShell: View {
     @ObservedObject var model: RemuxRootModel
     let composer: GhosttyComposerModel
     let shortcutStore: ShortcutStore
+    @Binding var tailscaleSSHCheckRequest: TailscaleSSHCheckRequest?
     @State private var retainedTerminalID: SavedWorkspace.ID?
     @State private var isSessionSwitcherPresented = false
     @State private var presentedServerID: SavedServer.ID?
@@ -155,6 +152,10 @@ private struct RemuxWorkspaceShell: View {
                 presentedServerID = nil
             }
         }
+        .tailscaleSSHCheckAlert(
+            request: $tailscaleSSHCheckRequest,
+            isActive: !isSessionSwitcherPresented && model.connectionSetup == nil
+        )
         .sheet(
             isPresented: $isSessionSwitcherPresented,
             onDismiss: cancelSessionSetupIfNeeded
@@ -204,10 +205,18 @@ private struct RemuxWorkspaceShell: View {
                 model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
+            .tailscaleSSHCheckAlert(
+                request: $tailscaleSSHCheckRequest,
+                isActive: true
+            )
         }
         .sheet(isPresented: connectionSetupSheetIsPresented) {
             connectionSetupSheet
                 .interactiveDismissDisabled()
+                .tailscaleSSHCheckAlert(
+                    request: $tailscaleSSHCheckRequest,
+                    isActive: true
+                )
         }
     }
 
@@ -593,6 +602,77 @@ private struct RemuxWorkspaceShell: View {
         "session.show.\(workspaceID.uuidString)"
     }
 
+}
+
+private extension View {
+    func tailscaleSSHCheckAlert(
+        request: Binding<TailscaleSSHCheckRequest?>,
+        isActive: Bool
+    ) -> some View {
+        modifier(
+            TailscaleSSHCheckAlertModifier(
+                request: request,
+                isActive: isActive
+            )
+        )
+    }
+}
+
+private struct TailscaleSSHCheckAlertModifier: ViewModifier {
+    @Binding var request: TailscaleSSHCheckRequest?
+    @State private var browserRequest: TailscaleSSHCheckRequest?
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Verify Tailscale SSH",
+            isPresented: isPresented,
+            presenting: request
+        ) { request in
+            Button("Open Browser") {
+                browserRequest = request
+            }
+        } message: { _ in
+            Text(
+                "Tailscale requires verification for this SSH connection. " +
+                "Complete it in your browser, then return to Remux."
+            )
+        }
+        .sheet(item: $browserRequest) { request in
+            TailscaleSSHVerificationBrowser(
+                verificationURL: request.challenge.verificationURL
+            )
+            .ignoresSafeArea()
+            .accessibilityIdentifier("tailscale-check.browser")
+        }
+        .onChange(of: request) { _, currentRequest in
+            guard let browserRequest, browserRequest != currentRequest else { return }
+            self.browserRequest = nil
+        }
+    }
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { isActive && request != nil && browserRequest == nil },
+            set: { _ in }
+        )
+    }
+}
+
+private struct TailscaleSSHVerificationBrowser: UIViewControllerRepresentable {
+    let verificationURL: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: verificationURL)
+        controller.dismissButtonStyle = .done
+        return controller
+    }
+
+    func updateUIViewController(
+        _ uiViewController: SFSafariViewController,
+        context: Context
+    ) {
+    }
 }
 
 struct RemuxAppLifecycleProjection: Equatable {

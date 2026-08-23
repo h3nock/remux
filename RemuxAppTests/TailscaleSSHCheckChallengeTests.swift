@@ -29,13 +29,13 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
     }
 
     func testHandshakePublishesChallengeOnceAndCompletesAfterAuthentication() throws {
-        let challengeRecorder = TailscaleSSHCheckChallengeRecorder()
+        let eventRecorder = TailscaleSSHCheckEventRecorder()
         let eventLoop = EmbeddedEventLoop()
         let handler = RemuxSSHRootHandshakeHandler(
             eventLoop: eventLoop,
             timeout: .minutes(5),
-            onTailscaleSSHCheck: { challenge in
-                challengeRecorder.record(challenge)
+            onTailscaleSSHCheck: { event in
+                eventRecorder.record(event)
             }
         )
         let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
@@ -48,16 +48,29 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         channel.pipeline.fireUserInboundEventTriggered(banner)
         channel.pipeline.fireUserInboundEventTriggered(UserAuthSuccessEvent())
 
-        XCTAssertEqual(challengeRecorder.challenges.count, 1)
+        let events = eventRecorder.events
+        XCTAssertEqual(events.count, 2)
+        guard case .presented(let request) = events[0] else {
+            return XCTFail("expected a presented event")
+        }
+        XCTAssertEqual(request.challenge.verificationURL.absoluteString, "https://login.tailscale.com/a/5fb81378394f")
+        XCTAssertEqual(events[1], .finished(request.id))
         XCTAssertNoThrow(try handler.authenticated.wait())
+
+        eventLoop.advanceTime(by: .minutes(5))
+        XCTAssertEqual(eventRecorder.events, events, "completed handshakes must cancel their timeout")
         XCTAssertNoThrow(try channel.finish())
     }
 
     func testHandshakeReportsVerificationTimeoutAfterChallenge() throws {
+        let eventRecorder = TailscaleSSHCheckEventRecorder()
         let eventLoop = EmbeddedEventLoop()
         let handler = RemuxSSHRootHandshakeHandler(
             eventLoop: eventLoop,
-            timeout: .seconds(1)
+            timeout: .seconds(1),
+            onTailscaleSSHCheck: { event in
+                eventRecorder.record(event)
+            }
         )
         let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
 
@@ -72,21 +85,57 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         XCTAssertThrowsError(try handler.authenticated.wait()) { error in
             XCTAssertEqual(error as? TailscaleSSHCheckError, .verificationTimedOut)
         }
+        let events = eventRecorder.events
+        XCTAssertEqual(events.count, 2)
+        guard case .presented(let request) = events[0] else {
+            return XCTFail("expected a presented event")
+        }
+        XCTAssertEqual(events[1], .finished(request.id))
+        XCTAssertNoThrow(try channel.finish())
+    }
+
+    func testHandshakeDismissesChallengeWhenConnectionCloses() throws {
+        let eventRecorder = TailscaleSSHCheckEventRecorder()
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(
+            eventLoop: eventLoop,
+            timeout: .minutes(5),
+            onTailscaleSSHCheck: { event in
+                eventRecorder.record(event)
+            }
+        )
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+
+        channel.pipeline.fireUserInboundEventTriggered(
+            NIOUserAuthBannerEvent(
+                message: "Authenticate at https://login.tailscale.com/a/5fb81378394f",
+                languageTag: "en"
+            )
+        )
+        channel.pipeline.fireChannelInactive()
+
+        XCTAssertThrowsError(try handler.authenticated.wait())
+        let events = eventRecorder.events
+        XCTAssertEqual(events.count, 2)
+        guard case .presented(let request) = events[0] else {
+            return XCTFail("expected a presented event")
+        }
+        XCTAssertEqual(events[1], .finished(request.id))
         XCTAssertNoThrow(try channel.finish())
     }
 }
 
-private final class TailscaleSSHCheckChallengeRecorder: @unchecked Sendable {
+private final class TailscaleSSHCheckEventRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedChallenges: [TailscaleSSHCheckChallenge] = []
+    private var recordedEvents: [TailscaleSSHCheckEvent] = []
 
-    var challenges: [TailscaleSSHCheckChallenge] {
-        lock.withLock { recordedChallenges }
+    var events: [TailscaleSSHCheckEvent] {
+        lock.withLock { recordedEvents }
     }
 
-    func record(_ challenge: TailscaleSSHCheckChallenge) {
+    func record(_ event: TailscaleSSHCheckEvent) {
         lock.withLock {
-            recordedChallenges.append(challenge)
+            recordedEvents.append(event)
         }
     }
 }

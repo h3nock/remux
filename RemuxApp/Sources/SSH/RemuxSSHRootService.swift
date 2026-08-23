@@ -28,7 +28,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount
-    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
+    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     init(
         host: String,
@@ -37,7 +37,7 @@ struct RemuxSSHRootConfiguration: Sendable {
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
         authenticationTimeout: TimeAmount? = nil,
-        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)? = nil
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
         self.host = host
         self.port = port
@@ -1252,9 +1252,21 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
 
     private struct Disconnected: Error {}
 
+    private struct State {
+        var isComplete = false
+        var challenge: TailscaleSSHCheckChallenge?
+    }
+
+    private enum Completion {
+        case success
+        case failure(any Error)
+        case timeout(TimeAmount)
+    }
+
     private let promise: EventLoopPromise<Void>
-    private let tailscaleCheckChallenge = NIOLockedValueBox<TailscaleSSHCheckChallenge?>(nil)
-    private let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)?
+    private let state: NIOLockedValueBox<State>
+    private let requestID: TailscaleSSHCheckRequest.ID
+    private let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     var authenticated: EventLoopFuture<Void> {
         promise.futureResult
@@ -1263,43 +1275,107 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     init(
         eventLoop: EventLoop,
         timeout: TimeAmount,
-        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckChallenge) -> Void)? = nil
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
-        self.promise = eventLoop.makePromise(of: Void.self)
+        let promise = eventLoop.makePromise(of: Void.self)
+        let state = NIOLockedValueBox(State())
+        let requestID = UUID()
+
+        self.promise = promise
+        self.state = state
+        self.requestID = requestID
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
 
-        eventLoop.scheduleTask(in: timeout) { [promise, tailscaleCheckChallenge] in
-            if tailscaleCheckChallenge.withLockedValue({ $0 }) != nil {
-                promise.fail(TailscaleSSHCheckError.verificationTimedOut)
-            } else {
-                promise.fail(ChannelError.connectTimeout(timeout))
-            }
+        let timeoutTask = eventLoop.scheduleTask(in: timeout) {
+            Self.complete(
+                .timeout(timeout),
+                promise: promise,
+                state: state,
+                requestID: requestID,
+                onTailscaleSSHCheck: onTailscaleSSHCheck
+            )
+        }
+        promise.futureResult.whenComplete { _ in
+            timeoutTask.cancel()
         }
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if event is UserAuthSuccessEvent {
-            promise.succeed(())
+            complete(.success)
         } else if let banner = event as? NIOUserAuthBannerEvent,
                   let challenge = TailscaleSSHCheckChallenge.parse(from: banner.message) {
-            let shouldPresent = tailscaleCheckChallenge.withLockedValue { current in
-                guard current != challenge else { return false }
-                current = challenge
-                return true
+            let request = state.withLockedValue { state -> TailscaleSSHCheckRequest? in
+                guard !state.isComplete, state.challenge != challenge else { return nil }
+                state.challenge = challenge
+                return TailscaleSSHCheckRequest(id: requestID, challenge: challenge)
             }
-            if shouldPresent, let onTailscaleSSHCheck {
-                onTailscaleSSHCheck(challenge)
+            if let request, let onTailscaleSSHCheck {
+                onTailscaleSSHCheck(.presented(request))
             }
         }
         context.fireUserInboundEventTriggered(event)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        promise.fail(error)
+        complete(.failure(error))
         context.fireErrorCaught(error)
     }
 
+    func channelInactive(context: ChannelHandlerContext) {
+        complete(.failure(Disconnected()))
+        context.fireChannelInactive()
+    }
+
+    func handlerRemoved(context: ChannelHandlerContext) {
+        complete(.failure(Disconnected()))
+    }
+
     deinit {
-        promise.fail(Disconnected())
+        complete(.failure(Disconnected()))
+    }
+
+    private func complete(_ completion: Completion) {
+        Self.complete(
+            completion,
+            promise: promise,
+            state: state,
+            requestID: requestID,
+            onTailscaleSSHCheck: onTailscaleSSHCheck
+        )
+    }
+
+    private static func complete(
+        _ completion: Completion,
+        promise: EventLoopPromise<Void>,
+        state: NIOLockedValueBox<State>,
+        requestID: TailscaleSSHCheckRequest.ID,
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
+    ) {
+        let hadChallenge = state.withLockedValue { state -> Bool? in
+            guard !state.isComplete else { return nil }
+            state.isComplete = true
+            let hadChallenge = state.challenge != nil
+            state.challenge = nil
+            return hadChallenge
+        }
+        guard let hadChallenge else { return }
+
+        if hadChallenge {
+            onTailscaleSSHCheck?(.finished(requestID))
+        }
+
+        switch completion {
+        case .success:
+            promise.succeed(())
+        case .failure(let error):
+            promise.fail(error)
+        case .timeout(let timeout):
+            if hadChallenge {
+                promise.fail(TailscaleSSHCheckError.verificationTimedOut)
+            } else {
+                promise.fail(ChannelError.connectTimeout(timeout))
+            }
+        }
     }
 }

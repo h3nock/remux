@@ -657,6 +657,15 @@ final class RemuxAppUITests: XCTestCase {
             "# Tailscale SSH requires an additional check.\n" +
             "# To authenticate, visit: https://login.tailscale.com/a/5fb81378394f\n"
         launchSimulatorApp()
+        openConnectionSetup()
+        fillTailscaleConnectionForm()
+
+        if !app.buttons["Tailscale"].waitForExistence(timeout: 1) {
+            app.swipeUp()
+        }
+        XCTAssertTrue(app.buttons["Tailscale"].waitForExistence(timeout: 2))
+        app.buttons["Tailscale"].tap()
+        app.buttons["connection.save"].tap()
 
         let alert = app.alerts["Verify Tailscale SSH"]
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
@@ -672,12 +681,14 @@ final class RemuxAppUITests: XCTestCase {
 
         openBrowser.tap()
 
-        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        XCTAssertEqual(
-            safari.wait(for: .runningForeground, timeout: 5),
-            true,
-            "Open Browser should hand the validated Tailscale URL to iOS."
+        XCTAssertTrue(
+            app.descendants(matching: .any)["tailscale-check.browser"]
+                .waitForExistence(timeout: 5),
+            "Verification should open in an in-app browser instead of a universal-link handler."
         )
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.state, .runningForeground)
+        attachScreenshot(named: "tailscale-check-browser")
     }
 
     func testAlreadyInstalledPublicKeySkipsPasswordPrompt() {
@@ -3422,6 +3433,17 @@ final class RemuxAppUITests: XCTestCase {
         password.typeText("demo-password")
 
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
+    }
+
+    private func fillTailscaleConnectionForm() {
+        app.textFields["connection.name"].tap()
+        app.textFields["connection.name"].typeText("Tailscale Server")
+
+        app.textFields["connection.host"].tap()
+        app.textFields["connection.host"].typeText("100.64.0.10")
+
+        app.textFields["connection.username"].tap()
+        app.textFields["connection.username"].typeText("demo\n")
     }
 
     private func fillPublicKeyInstallationServerFields() {
