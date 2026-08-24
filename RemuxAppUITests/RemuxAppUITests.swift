@@ -637,7 +637,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
 
-        selectAuthentication("Tailscale")
+        selectAuthentication("Tailscale SSH")
 
         let tailscaleInfo = app.descendants(matching: .any)["connection.authentication.tailscale-info"]
         XCTAssertTrue(tailscaleInfo.waitForExistence(timeout: 2))
@@ -658,7 +658,7 @@ final class RemuxAppUITests: XCTestCase {
         openConnectionSetup()
         fillTailscaleConnectionForm()
 
-        selectAuthentication("Tailscale")
+        selectAuthentication("Tailscale SSH")
         app.buttons["connection.save"].tap()
 
         let alert = app.alerts["Verify Tailscale SSH"]

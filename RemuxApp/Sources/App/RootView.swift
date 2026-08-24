@@ -2237,7 +2237,7 @@ struct ConnectionSetupView: View {
                     Picker("Method", selection: authenticationKindBinding) {
                         Text("Password").tag(SSHAuthenticationKind.password)
                         Text("Private Key").tag(SSHAuthenticationKind.privateKey)
-                        Text("Tailscale").tag(SSHAuthenticationKind.none)
+                        Text("Tailscale SSH").tag(SSHAuthenticationKind.none)
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("connection.authentication.method")
