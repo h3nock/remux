@@ -92,6 +92,31 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
         )
     }
 
+    func testSeedPersistsNoneIdentityWithoutCredential() async throws {
+        let repository = InMemoryConnectionProfileRepository()
+        let credentialStore = InMemorySSHCredentialStore()
+
+        let seeded = try await DebugConnectionProfileSeeder.seedIfRequested(
+            environment: [
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_NAME": "Tailscale Server",
+                "REMUX_DEBUG_SERVER_HOST": "100.64.0.1",
+                "REMUX_DEBUG_SERVER_PORT": "22",
+                "REMUX_DEBUG_SERVER_USERNAME": "demo",
+                "REMUX_DEBUG_TMUX_SESSION": "base",
+            ],
+            profileRepository: repository,
+            credentialStore: credentialStore
+        )
+
+        let snapshot = try await repository.loadSnapshot()
+        let identity = try XCTUnwrap(snapshot.identities.first)
+        let credential = try await credentialStore.loadCredential(identityID: identity.id)
+        XCTAssertTrue(seeded)
+        XCTAssertEqual(identity.authenticationKind, .none)
+        XCTAssertNil(credential)
+    }
+
     private static let ed25519Key = """
     -----BEGIN OPENSSH PRIVATE KEY-----
     b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW

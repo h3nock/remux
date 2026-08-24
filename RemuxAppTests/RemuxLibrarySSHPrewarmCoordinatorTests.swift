@@ -286,6 +286,57 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         XCTAssertTrue(didSkipAndContinue)
     }
 
+    func testTailscaleCandidateSkipsBothPrewarmPathsAndContinues() async {
+        let tailscaleServer = makePrewarmCoordinatorServer(displayName: "Tailscale")
+        let passwordServer = makePrewarmCoordinatorServer(displayName: "Password")
+        let tailscaleWorkspace = makePrewarmCoordinatorWorkspace(
+            serverID: tailscaleServer.id,
+            sessionName: "tailscale",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let passwordWorkspace = makePrewarmCoordinatorWorkspace(
+            serverID: passwordServer.id,
+            sessionName: "password",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let snapshot = ConnectionLibrarySnapshot(
+            servers: [tailscaleServer, passwordServer],
+            workspaces: [tailscaleWorkspace, passwordWorkspace]
+        )
+        let auth = LibraryPrewarmAuthResolver()
+        await auth.setTailscale(for: tailscaleServer.id)
+        await auth.setPassword("secret", for: passwordServer.id)
+        let prewarmer = RecordingLibraryPrewarmer()
+        let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
+        var eligibleTargets: [TmuxConnectionTarget] = []
+
+        coordinator.schedule(
+            snapshot: snapshot,
+            activeServerIDs: [],
+            terminalSettings: .default,
+            currentContext: {
+                RemuxLibrarySSHPrewarmCurrentContext(
+                    snapshot: snapshot,
+                    isLibraryVisible: true,
+                    activeServerIDs: [],
+                    terminalSettings: .default
+                )
+            },
+            onEligibleTarget: { target in
+                eligibleTargets.append(target)
+            }
+        )
+
+        let didContinue = await waitForLibraryPrewarm {
+            await prewarmer.targets().map(\.workspace.id) == [passwordWorkspace.id]
+                && eligibleTargets.map(\.workspace.id) == [passwordWorkspace.id]
+        }
+        XCTAssertTrue(didContinue)
+        let prewarmedWorkspaceIDs = await prewarmer.targets().map(\.workspace.id)
+        XCTAssertEqual(prewarmedWorkspaceIDs, [passwordWorkspace.id])
+        XCTAssertEqual(eligibleTargets.map(\.workspace.id), [passwordWorkspace.id])
+    }
+
     func testFinalEligibilityRejectsCurrentContextDrift() async {
         let server = makePrewarmCoordinatorServer(displayName: "Build")
         let workspace = makePrewarmCoordinatorWorkspace(serverID: server.id, sessionName: "base")
@@ -422,6 +473,13 @@ private func makePrewarmCoordinator(
     RemuxLibrarySSHPrewarmCoordinator(
         limit: limit,
         authResolver: { server, _ in
+            if await auth.isTailscale(server.id) {
+                return .none(
+                    username: server.username,
+                    identityID: server.identityID,
+                    displayLabel: server.displayName
+                )
+            }
             guard let password = await auth.loadPassword(for: server.id) else {
                 throw SSHAuthResolverError.missingIdentity(server.identityID)
             }
@@ -453,6 +511,7 @@ private func waitForLibraryPrewarm(
 
 private actor LibraryPrewarmAuthResolver {
     private var passwords: [SavedServer.ID: String] = [:]
+    private var tailscaleServerIDs: Set<SavedServer.ID> = []
 
     func setPassword(_ password: String, for serverID: SavedServer.ID) {
         passwords[serverID] = password
@@ -460,6 +519,14 @@ private actor LibraryPrewarmAuthResolver {
 
     func loadPassword(for serverID: SavedServer.ID) -> String? {
         passwords[serverID]
+    }
+
+    func setTailscale(for serverID: SavedServer.ID) {
+        tailscaleServerIDs.insert(serverID)
+    }
+
+    func isTailscale(_ serverID: SavedServer.ID) -> Bool {
+        tailscaleServerIDs.contains(serverID)
     }
 }
 

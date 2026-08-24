@@ -29,6 +29,34 @@ final class SSHAuthResolverTests: XCTestCase {
         XCTAssertEqual(auth.credential, .password("secret"))
     }
 
+    func testResolvesNoneIdentityThroughIdentity() async throws {
+        let identity = SSHIdentity(
+            id: UUID(),
+            name: "Tailscale node",
+            authenticationKind: .none
+        )
+        let server = SavedServer(
+            displayName: "Server",
+            host: "server.example.test",
+            username: "deploy",
+            identityID: identity.id
+        )
+        let credentialStore = TestSSHCredentialStore()
+        let resolver = SSHAuthResolver(credentialStore: credentialStore)
+
+        let auth = try await resolver.resolve(
+            server: server,
+            in: ConnectionLibrarySnapshot(servers: [server], workspaces: [], identities: [identity])
+        )
+
+        XCTAssertEqual(auth.identityID, identity.id)
+        XCTAssertEqual(auth.username, "deploy")
+        XCTAssertEqual(auth.displayLabel, "Tailscale node")
+        XCTAssertEqual(auth.credential, .none)
+        let loadedIdentityIDs = await credentialStore.loadedIdentityIDs()
+        XCTAssertEqual(loadedIdentityIDs, [])
+    }
+
     func testMissingIdentityFailsExplicitly() async throws {
         let identityID = UUID()
         let server = SavedServer(
@@ -148,13 +176,15 @@ final class SSHAuthResolverTests: XCTestCase {
 
 private actor TestSSHCredentialStore: SSHCredentialStore {
     private var credentials: [UUID: SSHCredential]
+    private var loadedIDs: [UUID] = []
 
     init(credentials: [UUID: SSHCredential] = [:]) {
         self.credentials = credentials
     }
 
     func loadCredential(identityID: UUID) async throws -> SSHCredential? {
-        credentials[identityID]
+        loadedIDs.append(identityID)
+        return credentials[identityID]
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: UUID) async throws {
@@ -163,5 +193,9 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
 
     func deleteCredential(identityID: UUID) async throws {
         credentials[identityID] = nil
+    }
+
+    func loadedIdentityIDs() -> [UUID] {
+        loadedIDs
     }
 }

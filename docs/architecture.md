@@ -49,7 +49,7 @@ Live builds store app data under the app's application-support root:
 - saved servers in JSON
 - saved workspaces in JSON
 - terminal settings in JSON
-- server passwords in Keychain
+- SSH credentials (password or private key) in Keychain
 - trusted host identities in the trusted-host store
 
 UI tests use in-memory repositories and deterministic transports when possible.
@@ -58,6 +58,19 @@ UI tests use in-memory repositories and deterministic transports when possible.
 
 SSH is the implemented transport. Unsupported transports fail explicitly
 instead of silently falling back to SSH.
+
+Authentication is per-identity and supports password, private key, or
+Tailscale SSH. Tailscale SSH offers SSH's `none` user-auth method and stores no
+credential in Keychain. This path currently supports Tailscale SSH rules with
+the `accept` action and browser reauthentication for `check` rules. For
+`check`, Remux validates the Tailscale verification URL from the SSH banner,
+offers to open it in the user's browser, and keeps authentication pending while
+the user completes verification. Background prewarming is disabled for this
+authentication method so it cannot produce an unsolicited browser prompt.
+
+WireGuard only supplies a network path. Ordinary SSH servers reached through
+WireGuard still require whatever password or key authentication they normally
+use.
 
 The transport boundary is small: prepare/start, write outbound bytes, stream
 inbound bytes, report liveness when available, and close. It deliberately does

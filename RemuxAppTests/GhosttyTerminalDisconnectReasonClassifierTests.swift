@@ -152,6 +152,18 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         XCTAssertEqual(reason.kind, .serverUnreachable)
     }
 
+    func testTailscaleCheckTimeoutIsAuthenticationFailure() {
+        let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+            TailscaleSSHCheckError.verificationTimedOut
+        )
+
+        XCTAssertEqual(reason.kind, .authentication)
+        XCTAssertEqual(
+            reason.message,
+            TailscaleSSHCheckError.verificationTimedOut.localizedDescription
+        )
+    }
+
     func testTransportStartFailureMapsUnknownFallback() {
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
             DescribedError("connection fizzled")

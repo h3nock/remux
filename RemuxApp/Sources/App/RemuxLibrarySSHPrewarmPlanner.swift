@@ -10,6 +10,7 @@ enum RemuxLibrarySSHPrewarmSkipReason: String, Equatable, Sendable {
     case staleContext = "stale_context"
     case staleCandidate = "stale_candidate"
     case activeServer = "active_server"
+    case interactiveAuthentication = "interactive_authentication"
     case missingAuth = "missing_auth"
     case staleTarget = "stale_target"
 }

@@ -100,6 +100,7 @@
 		68F62C41042D69317C5A9FD3 /* GhosttyQuickLookPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FB03D3718F47ECDF15AEC3 /* GhosttyQuickLookPreview.swift */; };
 		6959353E0AAA65D244C5B077 /* JSONFileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C7EBCE00319FF2879275BDD /* JSONFileStore.swift */; };
 		69B6BE62C46DCA6C8CA9BFBD /* PanePreviewLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4748776DB3A0FEF2A152403 /* PanePreviewLayout.swift */; };
+		6FBE9FBDD0C172917B4009F8 /* SSHAuthenticationMethodFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9E3B3B2885A4913A2C32539 /* SSHAuthenticationMethodFactoryTests.swift */; };
 		71929CA0D4AE6FC5FA464C4B /* TerminalPreviewFileLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C60C2A339E149300CA7177 /* TerminalPreviewFileLoader.swift */; };
 		71CC1415715E9ECCD4C80EA2 /* GhosttyTerminalPresentationProjectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4671F22C07201C31912267E9 /* GhosttyTerminalPresentationProjectorTests.swift */; };
 		71F19B3C954665ECD2B7D727 /* GhosttyPendingAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 054929B68D4D41AF41FF0D8D /* GhosttyPendingAttachment.swift */; };
@@ -175,6 +176,7 @@
 		D7E2EF5FBDBD0CC24FC29257 /* ShortcutExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B77D12E9FC8E4FF183EC209 /* ShortcutExecutorTests.swift */; };
 		D90BFAB652BCFFB9901C5E31 /* GhosttyPanePreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F45C3C2EE05C5EE81A6CC979 /* GhosttyPanePreviewSession.swift */; };
 		DBC5F67F490AAC96F4918650 /* GhosttyKitControlSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4BB00F78EE94D58937F98A /* GhosttyKitControlSurfaceTests.swift */; };
+		DE1825D88613AAF3D4AD064A /* TailscaleSSHCheckChallengeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94B9C3AA589342B6CC277832 /* TailscaleSSHCheckChallengeTests.swift */; };
 		DEC0360F7ED54DE71B345B60 /* GhosttyTerminalPresentationProjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D407500AB027C206B65EE7C /* GhosttyTerminalPresentationProjector.swift */; };
 		DED4088C1635F130FC578C91 /* GhosttyTmuxPrefixInputBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A9F4B4B0260131778AB2BA5 /* GhosttyTmuxPrefixInputBufferTests.swift */; };
 		E0787109BFFDE0C211C26BFB /* GhosttyScrollPhysicsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 216C560F444E51EAEA88D748 /* GhosttyScrollPhysicsView.swift */; };
@@ -203,6 +205,7 @@
 		F2272E5730FDD1AFE3583BA5 /* ShortcutPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC76333B637D49B9A27CB798 /* ShortcutPalette.swift */; };
 		F24706372357A5BC3B6868F4 /* GhosttyComposerAudioCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9609462531196C3FE49E751B /* GhosttyComposerAudioCaptureSession.swift */; };
 		F3A21C20385E6E8D75397B15 /* TerminalPreviewSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4494B99A635444622AEC6970 /* TerminalPreviewSessionTests.swift */; };
+		F3D86609FC6D581EA97AB5E9 /* TailscaleSSHCheckChallenge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AB9BF55D587ABEE0AFB5B5F /* TailscaleSSHCheckChallenge.swift */; };
 		F4176AEAA1F4C62E48B7BA4C /* RemuxAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25F0019F1714AE6BD9F41209 /* RemuxAppUITests.swift */; };
 		F449EE977979EE035E476622 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 21B59E540592993567162928 /* PrivacyInfo.xcprivacy */; };
 		F4CB602D5DC2C8F2BA4FFF12 /* GhosttyModifierStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED11F0B6BF0469948945A509 /* GhosttyModifierStateTests.swift */; };
@@ -291,6 +294,7 @@
 		486F770F3A47F522406131B7 /* SSHPublicKeyRemoteInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPublicKeyRemoteInstallerTests.swift; sourceTree = "<group>"; };
 		48AC2CE228C16D7E9DCD09BE /* ConnectionProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionProfileRepository.swift; sourceTree = "<group>"; };
 		49261496FE7B949CF84D913B /* GhosttyComposeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyComposeBar.swift; sourceTree = "<group>"; };
+		4AB9BF55D587ABEE0AFB5B5F /* TailscaleSSHCheckChallenge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleSSHCheckChallenge.swift; sourceTree = "<group>"; };
 		4AD48AB84F508C3391380701 /* SSHAuthenticationMethodFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHAuthenticationMethodFactory.swift; sourceTree = "<group>"; };
 		4B3782AB19C138622144EE40 /* RemuxPreparedTransportCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxPreparedTransportCoordinatorTests.swift; sourceTree = "<group>"; };
 		4D407500AB027C206B65EE7C /* GhosttyTerminalPresentationProjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalPresentationProjector.swift; sourceTree = "<group>"; };
@@ -348,6 +352,7 @@
 		8ECDF46DC2F389505455C283 /* GhosttySingleViewportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttySingleViewportView.swift; sourceTree = "<group>"; };
 		902AC3DF91A828A0CCB5FCB2 /* TerminalSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSettings.swift; sourceTree = "<group>"; };
 		947084E6DA45D9EFB946CF51 /* RemuxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxApp.swift; sourceTree = "<group>"; };
+		94B9C3AA589342B6CC277832 /* TailscaleSSHCheckChallengeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleSSHCheckChallengeTests.swift; sourceTree = "<group>"; };
 		94DD2F30DD98DCF438F312FA /* ShortcutStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutStoreTests.swift; sourceTree = "<group>"; };
 		94F9DD0E0F418199C5E8C0F1 /* GhosttyModifierState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyModifierState.swift; sourceTree = "<group>"; };
 		9586DC1E9C276FB8513E59B4 /* RemuxSSHExecSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxSSHExecSessionTests.swift; sourceTree = "<group>"; };
@@ -390,6 +395,7 @@
 		C7313F7C3049C269572F59B5 /* RemuxLibrarySSHPrewarmCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxLibrarySSHPrewarmCoordinatorTests.swift; sourceTree = "<group>"; };
 		C944FBD600E4357E517F2DD3 /* TrustedHostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustedHostStore.swift; sourceTree = "<group>"; };
 		C97501167D8C7BDC3DDE46DD /* GhosttyComposerDictationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyComposerDictationController.swift; sourceTree = "<group>"; };
+		C9E3B3B2885A4913A2C32539 /* SSHAuthenticationMethodFactoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHAuthenticationMethodFactoryTests.swift; sourceTree = "<group>"; };
 		CBAB7FE3E70E32E69462BBA1 /* GhosttyTmuxActionTargetResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTmuxActionTargetResolver.swift; sourceTree = "<group>"; };
 		CC23D872C331C7574737CCDA /* RemuxSSHRootService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxSSHRootService.swift; sourceTree = "<group>"; };
 		CFE401B861C30DA18E8BE1C9 /* ShortcutsSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsSettingsSheet.swift; sourceTree = "<group>"; };
@@ -563,12 +569,14 @@
 				239B2EF875D42701CDBCC42B /* SessionSwitcherProjectionTests.swift */,
 				8B77D12E9FC8E4FF183EC209 /* ShortcutExecutorTests.swift */,
 				94DD2F30DD98DCF438F312FA /* ShortcutStoreTests.swift */,
+				C9E3B3B2885A4913A2C32539 /* SSHAuthenticationMethodFactoryTests.swift */,
 				5BE8D13A42F5D190C93DF02D /* SSHAuthResolverTests.swift */,
 				F4C925D814F660B71813EB84 /* SSHPrivateKeyInspectorTests.swift */,
 				64049B36D501D0932C56A2D7 /* SSHPublicKeyInstallCoordinatorTests.swift */,
 				E1E986C5E0A55FCDDE19B140 /* SSHPublicKeyInstallerTests.swift */,
 				486F770F3A47F522406131B7 /* SSHPublicKeyRemoteInstallerTests.swift */,
 				F1924BBDC472F66719D23106 /* SSHTmuxControlTransportTests.swift */,
+				94B9C3AA589342B6CC277832 /* TailscaleSSHCheckChallengeTests.swift */,
 				66FB23E143EA43A7AB28A323 /* TerminalPreviewCandidateTests.swift */,
 				0855398F8D7F1E3C0C58F9B9 /* TerminalPreviewFileLoaderTests.swift */,
 				D5437829CC09E381C6615908 /* TerminalPreviewLiveWebTests.swift */,
@@ -600,6 +608,7 @@
 				4AD48AB84F508C3391380701 /* SSHAuthenticationMethodFactory.swift */,
 				23798EF07D4A939CF330686D /* SSHPublicKeyInstaller.swift */,
 				FFD16711790E09A2358816EA /* SSHPublicKeyRemoteInstaller.swift */,
+				4AB9BF55D587ABEE0AFB5B5F /* TailscaleSSHCheckChallenge.swift */,
 				4F74377E4AE057A12E99675E /* TmuxSessionDiscovery.swift */,
 			);
 			path = SSH;
@@ -1027,6 +1036,7 @@
 				036AB1FE9FEBF1EF99159FD1 /* ShortcutStore.swift in Sources */,
 				ED9FB6945BB0CB3D6CDCB3E3 /* ShortcutsSettingsSheet.swift in Sources */,
 				1CC4024F89C0E668AA4682F0 /* StarterShortcuts.swift in Sources */,
+				F3D86609FC6D581EA97AB5E9 /* TailscaleSSHCheckChallenge.swift in Sources */,
 				163B73B2E847BCE0CE08F664 /* TerminalPreviewCandidate.swift in Sources */,
 				71929CA0D4AE6FC5FA464C4B /* TerminalPreviewFileLoader.swift in Sources */,
 				63982077EBCD656F6570F121 /* TerminalPreviewLiveWeb.swift in Sources */,
@@ -1115,6 +1125,7 @@
 				D4D164A1ADCB32103FFDE81E /* RemuxSessionLiveForwardTests.swift in Sources */,
 				44CA2BB4387DB7CC530AC84C /* RemuxSmokeTests.swift in Sources */,
 				4953C981ECFD7B6C78A6CF6D /* SSHAuthResolverTests.swift in Sources */,
+				6FBE9FBDD0C172917B4009F8 /* SSHAuthenticationMethodFactoryTests.swift in Sources */,
 				44D949999FE921E140F6E4D5 /* SSHPrivateKeyInspectorTests.swift in Sources */,
 				BABB38D7FEF52E7E6AA56A3E /* SSHPublicKeyInstallCoordinatorTests.swift in Sources */,
 				4C0D8772601563E95EAE47A0 /* SSHPublicKeyInstallerTests.swift in Sources */,
@@ -1123,6 +1134,7 @@
 				EE3B3FDAFFF5B7FD17855028 /* SessionSwitcherProjectionTests.swift in Sources */,
 				D7E2EF5FBDBD0CC24FC29257 /* ShortcutExecutorTests.swift in Sources */,
 				98F06D0122031E7CF2983E09 /* ShortcutStoreTests.swift in Sources */,
+				DE1825D88613AAF3D4AD064A /* TailscaleSSHCheckChallengeTests.swift in Sources */,
 				B056E6334A9EFBDB7FA305B3 /* TerminalPreviewCandidateTests.swift in Sources */,
 				1A6785BA606FDB321817DB6D /* TerminalPreviewFileLoaderTests.swift in Sources */,
 				6548541B3AD17F7D70BFE8C0 /* TerminalPreviewLiveWebTests.swift in Sources */,

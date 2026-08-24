@@ -5,24 +5,19 @@ import UIKit
 
 enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
+    static let tailscaleSSHAuthentication: TimeAmount = .minutes(5)
     static let publicKeyInstallSSHConnect: TimeAmount = .seconds(10)
     static let tmuxControlNoResponse: TimeAmount = .seconds(15)
     static let sftpSSHConnect: TimeAmount = .seconds(15)
     static let sftpOperation: TimeAmount = .seconds(15)
 }
 
-private extension ResolvedSSHAuth {
-    var sshCredential: SSHCredential {
-        switch credential {
-        case .password(let password):
-            .password(password)
-        case .privateKey(let privateKey):
-            .privateKey(privateKey)
-        }
-    }
-}
-
 struct RemuxAppDependencies: Sendable {
+    private struct TailscaleSSHCheckConfiguration {
+        let authenticationTimeout: TimeAmount
+        let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
+    }
+
     let profileRepository: any ConnectionProfileRepository
     let settingsRepository: any TerminalSettingsRepository
     let shortcutRepository: any ShortcutRepository
@@ -172,6 +167,10 @@ struct RemuxAppDependencies: Sendable {
         transportFactory(target, trustedHostStore, sshRootService)
     }
 
+    var tailscaleSSHCheckEvents: AsyncStream<TailscaleSSHCheckEvent> {
+        sshRootService.tailscaleSSHCheckChallengeBroker.events
+    }
+
     func prewarmSSHConnection(for target: TmuxConnectionTarget) async {
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
     }
@@ -199,6 +198,7 @@ struct RemuxAppDependencies: Sendable {
             configuration: sshConfiguration(
                 for: target,
                 trustedHostStore: trustedHostStore,
+                tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
                 traceFlowID: "session.open.\(target.workspace.id.uuidString)"
             ),
             sshRootService: sshRootService
@@ -210,10 +210,15 @@ struct RemuxAppDependencies: Sendable {
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async {
+        guard target.sshAuth.credential != .none else {
+            return
+        }
+
         let trace = RemuxTransportStartupTrace(flowID: nil)
         let configuration = sshConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
             traceFlowID: nil
         )
         guard let rootKey = configuration.sshRootKey else { return }
@@ -229,19 +234,26 @@ struct RemuxAppDependencies: Sendable {
     static func sshConfiguration(
         for target: TmuxConnectionTarget,
         trustedHostStore: TrustedHostStore,
+        tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil,
         traceFlowID: String?
     ) -> SSHTmuxControlConfiguration {
-        SSHTmuxControlConfiguration(
+        let tailscaleSSHCheck = tailscaleSSHCheckConfiguration(
+            credential: target.sshAuth.credential,
+            broker: tailscaleSSHCheckChallengeBroker
+        )
+        return SSHTmuxControlConfiguration(
             host: target.server.host,
             port: target.server.port,
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: target.sshAuth.sshCredential
+                    credential: target.sshAuth.credential
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
+            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
             sessionName: target.workspace.sessionName,
@@ -252,11 +264,13 @@ struct RemuxAppDependencies: Sendable {
 
     static func attachmentSSHRootConfiguration(
         for target: TmuxConnectionTarget,
-        trustedHostStore: TrustedHostStore
+        trustedHostStore: TrustedHostStore,
+        tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil
     ) -> RemuxSSHRootConfiguration {
         sshRootConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: tailscaleSSHCheckChallengeBroker,
             connectTimeout: RemuxConnectionTimeouts.sftpSSHConnect
         )
     }
@@ -268,7 +282,8 @@ struct RemuxAppDependencies: Sendable {
     ) -> any GhosttyAttachmentTransferService {
         let rootConfiguration = attachmentSSHRootConfiguration(
             for: target,
-            trustedHostStore: trustedHostStore
+            trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker
         )
         let provider = RemuxCitadelSFTPClientProvider(
             sshRootService: sshRootService,
@@ -290,6 +305,7 @@ struct RemuxAppDependencies: Sendable {
         let configuration = sshConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
             traceFlowID: nil
         )
         guard let rootKey = configuration.sshRootKey else {
@@ -320,19 +336,47 @@ struct RemuxAppDependencies: Sendable {
     private static func sshRootConfiguration(
         for target: TmuxConnectionTarget,
         trustedHostStore: TrustedHostStore,
+        tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker?,
         connectTimeout: TimeAmount
     ) -> RemuxSSHRootConfiguration {
-        RemuxSSHRootConfiguration(
+        let tailscaleSSHCheck = tailscaleSSHCheckConfiguration(
+            credential: target.sshAuth.credential,
+            broker: tailscaleSSHCheckChallengeBroker
+        )
+        return RemuxSSHRootConfiguration(
             host: target.server.host,
             port: target.server.port,
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: target.sshAuth.sshCredential
+                    credential: target.sshAuth.credential
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
-            connectTimeout: connectTimeout
+            connectTimeout: connectTimeout,
+            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent
+        )
+    }
+
+    private static func tailscaleSSHCheckConfiguration(
+        credential: ResolvedSSHAuth.Credential,
+        broker: TailscaleSSHCheckChallengeBroker?
+    ) -> TailscaleSSHCheckConfiguration? {
+        guard credential == .none else { return nil }
+
+        let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
+        if let broker {
+            onEvent = { event in
+                broker.handle(event)
+            }
+        } else {
+            onEvent = nil
+        }
+
+        return TailscaleSSHCheckConfiguration(
+            authenticationTimeout: RemuxConnectionTimeouts.tailscaleSSHAuthentication,
+            onEvent: onEvent
         )
     }
 
@@ -385,6 +429,9 @@ struct RemuxAppDependencies: Sendable {
         let publicKeyInstallState = DebugPublicKeyInstallState(
             requiresPassword: publicKeyInstallOutcome == .passwordRequired
         )
+        let tailscaleSSHCheckChallenge = ProcessInfo.processInfo.environment[
+            "REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"
+        ].flatMap(TailscaleSSHCheckChallenge.parse(from:))
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
@@ -410,6 +457,33 @@ struct RemuxAppDependencies: Sendable {
                 )
             },
             sshConnectionPrewarmer: { _, _, _ in
+            },
+            tmuxSessionDiscoverer: { target, _, sshRootService in
+                guard target.sshAuth.credential == .none,
+                      let tailscaleSSHCheckChallenge else {
+                    return try await RemuxAppDependencies.liveTmuxSessionDiscoverer(
+                        target: target,
+                        trustedHostStore: trustedHostStore,
+                        sshRootService: sshRootService
+                    )
+                }
+
+                let suspension = AsyncThrowingStream.makeStream(of: Void.self)
+                let request = TailscaleSSHCheckRequest(
+                    id: UUID(),
+                    challenge: tailscaleSSHCheckChallenge,
+                    cancel: {
+                        suspension.continuation.finish(throwing: CancellationError())
+                    }
+                )
+                sshRootService.tailscaleSSHCheckChallengeBroker.handle(.presented(request))
+                defer {
+                    sshRootService.tailscaleSSHCheckChallengeBroker.handle(.finished(request.id))
+                    suspension.continuation.finish()
+                }
+                for try await _ in suspension.stream {
+                }
+                return []
             }
         )
     }

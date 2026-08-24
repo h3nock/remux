@@ -1,15 +1,46 @@
 @preconcurrency import Citadel
 @preconcurrency import Crypto
 import Foundation
+import NIOCore
+@preconcurrency import NIOSSH
+
+/// Offers SSH's `none` authentication method once, then fails further offers.
+/// Used for Tailscale SSH and other servers explicitly configured to accept
+/// SSH `none` authentication without a password or private key.
+final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
+    private let username: String
+    private var hasOffered = false
+
+    init(username: String) {
+        self.username = username
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        guard !hasOffered else {
+            nextChallengePromise.fail(SSHClientError.allAuthenticationOptionsFailed)
+            return
+        }
+
+        hasOffered = true
+        nextChallengePromise.succeed(
+            NIOSSHUserAuthenticationOffer(username: username, serviceName: "", offer: .none)
+        )
+    }
+}
 
 enum SSHAuthenticationMethodFactory {
     static func make(
         username: String,
-        credential: SSHCredential
+        credential: ResolvedSSHAuth.Credential
     ) throws -> SSHAuthenticationMethod {
         switch credential {
         case .password(let password):
             return .passwordBased(username: username, password: password)
+        case .none:
+            return .custom(NoneSSHAuthenticationDelegate(username: username))
         case .privateKey(let credential):
             let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
             let decryptionKey = credential.passphrase.map { Data($0.utf8) }
@@ -55,6 +86,24 @@ enum SSHAuthenticationMethodFactory {
                     )
                 )
             }
+        }
+    }
+
+    static func make(
+        username: String,
+        storedCredential: SSHCredential
+    ) throws -> SSHAuthenticationMethod {
+        switch storedCredential {
+        case .password(let password):
+            return try make(
+                username: username,
+                credential: ResolvedSSHAuth.Credential.password(password)
+            )
+        case .privateKey(let privateKey):
+            return try make(
+                username: username,
+                credential: ResolvedSSHAuth.Credential.privateKey(privateKey)
+            )
         }
     }
 }

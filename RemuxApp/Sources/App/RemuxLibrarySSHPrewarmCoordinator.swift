@@ -70,6 +70,16 @@ final class RemuxLibrarySSHPrewarmCoordinator {
                         sshAuth: sshAuth,
                         terminalSettings: terminalSettings
                     )
+                    guard target.sshAuth.credential != .none else {
+                        await MainActor.run {
+                            self?.traceSkipped(
+                                candidate: candidate,
+                                reason: RemuxLibrarySSHPrewarmSkipReason
+                                    .interactiveAuthentication.rawValue
+                            )
+                        }
+                        continue
+                    }
                     await sshConnectionPrewarmer(target)
                     guard !Task.isCancelled else { return }
                     await self?.prepareIfStillEligible(
