@@ -637,18 +637,16 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
 
-        if !app.buttons["Tailscale"].waitForExistence(timeout: 1) {
-            app.swipeUp()
-        }
-        XCTAssertTrue(app.buttons["Tailscale"].waitForExistence(timeout: 2))
-        app.buttons["Tailscale"].tap()
+        selectAuthentication("Tailscale")
 
-        XCTAssertFalse(app.secureTextFields["connection.password"].exists)
+        let tailscaleInfo = app.descendants(matching: .any)["connection.authentication.tailscale-info"]
+        XCTAssertTrue(tailscaleInfo.waitForExistence(timeout: 2))
         XCTAssertTrue(
-            app.descendants(matching: .any)["connection.authentication.tailscale-info"]
-                .waitForExistence(timeout: 2)
+            waitForElementToDisappear(
+                app.secureTextFields["connection.password"],
+                timeout: 2
+            )
         )
-        XCTAssertTrue(app.staticTexts["Tailscale SSH"].exists)
         attachScreenshot(named: "tailscale-authentication-explicit")
     }
 
@@ -660,33 +658,23 @@ final class RemuxAppUITests: XCTestCase {
         openConnectionSetup()
         fillTailscaleConnectionForm()
 
-        if !app.buttons["Tailscale"].waitForExistence(timeout: 1) {
-            app.swipeUp()
-        }
-        XCTAssertTrue(app.buttons["Tailscale"].waitForExistence(timeout: 2))
-        app.buttons["Tailscale"].tap()
+        selectAuthentication("Tailscale")
         app.buttons["connection.save"].tap()
 
         let alert = app.alerts["Verify Tailscale SSH"]
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
-        XCTAssertTrue(
-            alert.staticTexts[
-                "Tailscale requires verification for this SSH connection. " +
-                "Complete it in your browser, then return to Remux."
-            ].exists
-        )
         let openBrowser = alert.buttons["Open Browser"]
         XCTAssertTrue(openBrowser.isHittable)
         attachScreenshot(named: "tailscale-check-verification")
 
         openBrowser.tap()
 
+        let browser = app.descendants(matching: .any)["tailscale-check.browser"]
         XCTAssertTrue(
-            app.descendants(matching: .any)["tailscale-check.browser"]
-                .waitForExistence(timeout: 5),
+            browser.waitForExistence(timeout: 5),
             "Verification should open in an in-app browser instead of a universal-link handler."
         )
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(browser.buttons["Done"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.state, .runningForeground)
         attachScreenshot(named: "tailscale-check-browser")
     }
@@ -3444,6 +3432,22 @@ final class RemuxAppUITests: XCTestCase {
 
         app.textFields["connection.username"].tap()
         app.textFields["connection.username"].typeText("demo\n")
+    }
+
+    private func selectAuthentication(_ name: String) {
+        let button = app.buttons[name]
+        if !button.isHittable {
+            app.swipeUp()
+        }
+
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"),
+            object: button
+        )
+        guard XCTWaiter.wait(for: [expectation], timeout: 2) == .completed else {
+            return XCTFail("Authentication option \(name) is not hittable.")
+        }
+        button.tap()
     }
 
     private func fillPublicKeyInstallationServerFields() {

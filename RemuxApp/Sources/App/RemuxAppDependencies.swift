@@ -14,7 +14,7 @@ enum RemuxConnectionTimeouts {
 
 struct RemuxAppDependencies: Sendable {
     private struct TailscaleSSHCheckConfiguration {
-        let authenticationTimeout: TimeAmount?
+        let authenticationTimeout: TimeAmount
         let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
     }
 
@@ -252,8 +252,8 @@ struct RemuxAppDependencies: Sendable {
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
-            authenticationTimeout: tailscaleSSHCheck.authenticationTimeout,
-            onTailscaleSSHCheck: tailscaleSSHCheck.onEvent,
+            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
             sessionName: target.workspace.sessionName,
@@ -354,21 +354,16 @@ struct RemuxAppDependencies: Sendable {
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: connectTimeout,
-            authenticationTimeout: tailscaleSSHCheck.authenticationTimeout,
-            onTailscaleSSHCheck: tailscaleSSHCheck.onEvent
+            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent
         )
     }
 
     private static func tailscaleSSHCheckConfiguration(
         credential: ResolvedSSHAuth.Credential,
         broker: TailscaleSSHCheckChallengeBroker?
-    ) -> TailscaleSSHCheckConfiguration {
-        guard credential == .none else {
-            return TailscaleSSHCheckConfiguration(
-                authenticationTimeout: nil,
-                onEvent: nil
-            )
-        }
+    ) -> TailscaleSSHCheckConfiguration? {
+        guard credential == .none else { return nil }
 
         let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
         if let broker {
@@ -481,7 +476,11 @@ struct RemuxAppDependencies: Sendable {
                 defer {
                     sshRootService.tailscaleSSHCheckChallengeBroker.handle(.finished(request.id))
                 }
-                try await Task.sleep(for: .seconds(10))
+                let suspension = AsyncStream.makeStream(of: Void.self)
+                defer { suspension.continuation.finish() }
+                for await _ in suspension.stream {
+                }
+                try Task.checkCancellation()
                 return []
             }
         )

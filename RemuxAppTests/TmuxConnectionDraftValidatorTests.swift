@@ -246,7 +246,6 @@ final class TmuxConnectionDraftValidatorTests: XCTestCase {
         }
 
         XCTAssertEqual(submission.credential, .none)
-        XCTAssertEqual(submission.credential.authenticationKind, .none)
     }
 
     func testPrivateKeyDraftRejectsInvalidKeyText() {

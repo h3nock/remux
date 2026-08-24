@@ -1,13 +1,13 @@
 @preconcurrency import Citadel
 import NIOCore
-import NIOPosix
+import NIOEmbedded
 @preconcurrency import NIOSSH
 import XCTest
 @testable import Remux
 
 final class SSHAuthenticationMethodFactoryTests: XCTestCase {
     func testNoneDelegateOffersNoneAuthenticationExactlyOnce() async throws {
-        let eventLoop = MultiThreadedEventLoopGroup.singleton.next()
+        let eventLoop = EmbeddedEventLoop()
         let delegate = NoneSSHAuthenticationDelegate(username: "demo")
         let firstOffer = eventLoop.makePromise(
             of: NIOSSHUserAuthenticationOffer?.self

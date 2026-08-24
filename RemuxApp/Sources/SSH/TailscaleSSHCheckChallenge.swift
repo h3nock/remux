@@ -1,11 +1,7 @@
 import Foundation
 
-struct TailscaleSSHCheckChallenge: Equatable, Identifiable, Sendable {
+struct TailscaleSSHCheckChallenge: Equatable, Sendable {
     let verificationURL: URL
-
-    var id: URL {
-        verificationURL
-    }
 
     static func parse(from banner: String) -> Self? {
         guard let range = banner.range(
