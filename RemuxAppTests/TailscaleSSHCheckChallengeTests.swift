@@ -94,6 +94,38 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         XCTAssertNoThrow(try channel.finish())
     }
 
+    func testHandshakeCancellationFinishesChallengeAndFailsAuthentication() throws {
+        let eventRecorder = TailscaleSSHCheckEventRecorder()
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(
+            eventLoop: eventLoop,
+            timeout: .minutes(5),
+            onTailscaleSSHCheck: { event in
+                eventRecorder.record(event)
+            }
+        )
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+
+        channel.pipeline.fireUserInboundEventTriggered(
+            NIOUserAuthBannerEvent(
+                message: "Authenticate at https://login.tailscale.com/a/5fb81378394f",
+                languageTag: "en"
+            )
+        )
+        guard case .presented(let request) = eventRecorder.events.first else {
+            return XCTFail("expected a presented event")
+        }
+
+        request.cancel()
+        eventLoop.run()
+
+        XCTAssertThrowsError(try handler.authenticated.wait()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(eventRecorder.events, [.presented(request), .finished(request.id)])
+        XCTAssertNoThrow(try channel.finish())
+    }
+
     func testHandshakeDismissesChallengeWhenConnectionCloses() throws {
         let eventRecorder = TailscaleSSHCheckEventRecorder()
         let eventLoop = EmbeddedEventLoop()

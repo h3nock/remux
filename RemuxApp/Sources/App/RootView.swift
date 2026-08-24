@@ -632,6 +632,9 @@ private struct TailscaleSSHCheckAlertModifier: ViewModifier {
             Button("Open Browser") {
                 browserRequest = request
             }
+            Button("Cancel Connection", role: .cancel) {
+                request.cancel()
+            }
         } message: { _ in
             Text(
                 "Tailscale requires verification for this SSH connection. " +

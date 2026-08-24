@@ -679,6 +679,32 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "tailscale-check-browser")
     }
 
+    func testTailscaleCheckCanCancelAndReturnToSetup() {
+        app.launchEnvironment["REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"] =
+            "# Tailscale SSH requires an additional check.\n" +
+            "# To authenticate, visit: https://login.tailscale.com/a/5fb81378394f\n"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillTailscaleConnectionForm()
+
+        selectAuthentication("Tailscale SSH")
+        app.buttons["connection.save"].tap()
+
+        let alert = app.alerts["Verify Tailscale SSH"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["Cancel Connection"].tap()
+
+        XCTAssertTrue(waitForElementToDisappear(alert, timeout: 2))
+        XCTAssertTrue(app.textFields["connection.name"].exists)
+        let save = app.buttons["connection.save"]
+        let saveEnabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true"),
+            object: save
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [saveEnabled], timeout: 2), .completed)
+        XCTAssertFalse(app.alerts["Couldn’t Add Server"].exists)
+    }
+
     func testAlreadyInstalledPublicKeySkipsPasswordPrompt() {
         app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "alreadyInstalled"
         launchSimulatorApp()

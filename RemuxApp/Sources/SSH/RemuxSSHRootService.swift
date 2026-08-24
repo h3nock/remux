@@ -1305,10 +1305,19 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             complete(.success)
         } else if let banner = event as? NIOUserAuthBannerEvent,
                   let challenge = TailscaleSSHCheckChallenge.parse(from: banner.message) {
+            let eventLoop = context.eventLoop
             let request = state.withLockedValue { state -> TailscaleSSHCheckRequest? in
                 guard !state.isComplete, state.challenge != challenge else { return nil }
                 state.challenge = challenge
-                return TailscaleSSHCheckRequest(id: requestID, challenge: challenge)
+                return TailscaleSSHCheckRequest(
+                    id: requestID,
+                    challenge: challenge,
+                    cancel: { [weak self] in
+                        eventLoop.execute {
+                            self?.complete(.failure(CancellationError()))
+                        }
+                    }
+                )
             }
             if let request, let onTailscaleSSHCheck {
                 onTailscaleSSHCheck(.presented(request))

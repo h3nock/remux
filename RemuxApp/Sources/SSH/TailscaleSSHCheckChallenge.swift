@@ -35,9 +35,26 @@ struct TailscaleSSHCheckChallenge: Equatable, Sendable {
     }
 }
 
-struct TailscaleSSHCheckRequest: Equatable, Identifiable, Sendable {
+struct TailscaleSSHCheckRequest: Identifiable, Sendable {
     let id: UUID
     let challenge: TailscaleSSHCheckChallenge
+    let cancel: @Sendable () -> Void
+
+    init(
+        id: UUID,
+        challenge: TailscaleSSHCheckChallenge,
+        cancel: @escaping @Sendable () -> Void
+    ) {
+        self.id = id
+        self.challenge = challenge
+        self.cancel = cancel
+    }
+}
+
+extension TailscaleSSHCheckRequest: Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.challenge == rhs.challenge
+    }
 }
 
 enum TailscaleSSHCheckEvent: Equatable, Sendable {

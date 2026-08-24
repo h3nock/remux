@@ -749,6 +749,8 @@ final class RemuxRootModel: ObservableObject {
                     setup: setup,
                     action: action
                 )
+            } catch is CancellationError {
+                return nil
             } catch TrustedHostStoreError.hostKeyTrustRequired(let challenge) {
                 guard isCurrentSetupAction(action) else { return nil }
                 connectionSetup = setupWithSubmissionIssue(

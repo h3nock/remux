@@ -468,19 +468,21 @@ struct RemuxAppDependencies: Sendable {
                     )
                 }
 
+                let suspension = AsyncThrowingStream.makeStream(of: Void.self)
                 let request = TailscaleSSHCheckRequest(
                     id: UUID(),
-                    challenge: tailscaleSSHCheckChallenge
+                    challenge: tailscaleSSHCheckChallenge,
+                    cancel: {
+                        suspension.continuation.finish(throwing: CancellationError())
+                    }
                 )
                 sshRootService.tailscaleSSHCheckChallengeBroker.handle(.presented(request))
                 defer {
                     sshRootService.tailscaleSSHCheckChallengeBroker.handle(.finished(request.id))
+                    suspension.continuation.finish()
                 }
-                let suspension = AsyncStream.makeStream(of: Void.self)
-                defer { suspension.continuation.finish() }
-                for await _ in suspension.stream {
+                for try await _ in suspension.stream {
                 }
-                try Task.checkCancellation()
                 return []
             }
         )
