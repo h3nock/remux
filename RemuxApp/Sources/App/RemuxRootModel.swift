@@ -275,10 +275,16 @@ final class RemuxRootModel: ObservableObject {
         case failed(String)
     }
 
+    enum TerminalSettingsUpdateIssue: Equatable {
+        case saveFailed
+        case applyFailed
+    }
+
     @Published private(set) var state: State = .loading
     @Published private(set) var connectionSetup: ConnectionSetupState?
     @Published private(set) var library: ConnectionLibrarySnapshot = .empty
     @Published private(set) var terminalSettings: TerminalSettings = .default
+    @Published private(set) var terminalSettingsUpdateIssue: TerminalSettingsUpdateIssue?
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
     @Published private(set) var isSetupActionInProgress = false
     @Published private(set) var tmuxSessionDiscoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState] = [:]
@@ -1515,16 +1521,32 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func updateTerminalSettings(_ mutation: (inout TerminalSettings) -> Void) async {
+        var updated = terminalSettings
+        mutation(&updated)
+
         do {
-            var updated = terminalSettings
-            mutation(&updated)
             try await dependencies.settingsRepository.saveSettings(updated)
-            terminalSettings = updated
-            dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
-            try applyTerminalSettingsToActiveSessions(updated)
         } catch {
-            transitionToFailed(error)
+            NSLog("Remux terminal settings save failed: %@", String(describing: error))
+            terminalSettingsUpdateIssue = .saveFailed
+            return
         }
+
+        terminalSettings = updated
+        dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
+
+        do {
+            try applyTerminalSettingsToActiveSessions(updated)
+            terminalSettingsUpdateIssue = nil
+        } catch {
+            NSLog("Remux terminal settings apply failed: %@", String(describing: error))
+            terminalSettingsUpdateIssue = .applyFailed
+        }
+    }
+
+    func dismissTerminalSettingsUpdateIssue(_ issue: TerminalSettingsUpdateIssue) {
+        guard terminalSettingsUpdateIssue == issue else { return }
+        terminalSettingsUpdateIssue = nil
     }
 
     func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {

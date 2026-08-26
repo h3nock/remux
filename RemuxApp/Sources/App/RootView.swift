@@ -218,6 +218,50 @@ private struct RemuxWorkspaceShell: View {
                     isActive: true
                 )
         }
+        .alert(
+            terminalSettingsUpdateIssueTitle,
+            isPresented: terminalSettingsUpdateIssueIsPresented,
+            presenting: model.terminalSettingsUpdateIssue
+        ) { issue in
+            Button("OK", role: .cancel) {
+                model.dismissTerminalSettingsUpdateIssue(issue)
+            }
+        } message: { issue in
+            Text(terminalSettingsUpdateIssueMessage(issue))
+        }
+    }
+
+    private var terminalSettingsUpdateIssueIsPresented: Binding<Bool> {
+        Binding(
+            get: { model.terminalSettingsUpdateIssue != nil },
+            set: { isPresented in
+                guard !isPresented, let issue = model.terminalSettingsUpdateIssue else { return }
+                model.dismissTerminalSettingsUpdateIssue(issue)
+            }
+        )
+    }
+
+    private var terminalSettingsUpdateIssueTitle: String {
+        switch model.terminalSettingsUpdateIssue {
+        case .saveFailed:
+            "Settings Couldn’t Be Saved"
+        case .applyFailed:
+            "Settings Couldn’t Be Applied"
+        case nil:
+            "Settings"
+        }
+    }
+
+    private func terminalSettingsUpdateIssueMessage(
+        _ issue: RemuxRootModel.TerminalSettingsUpdateIssue
+    ) -> String {
+        switch issue {
+        case .saveFailed:
+            "Your previous settings are still in use. Try again."
+        case .applyFailed:
+            "The settings were saved, but couldn’t be applied to every active terminal. "
+                + "Reconnect affected sessions to apply them."
+        }
     }
 
     private var connectionSetupSheetIsPresented: Binding<Bool> {
