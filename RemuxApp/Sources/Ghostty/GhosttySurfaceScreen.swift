@@ -538,7 +538,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     )
             }
             .sheet(isPresented: $isShortcutsSettingsPresented) {
-                ShortcutsSettingsSheet(store: shortcutStore)
+                ShortcutsSettingsSheet(
+                    store: shortcutStore,
+                    theme: presentation.terminalTheme
+                )
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
                     .presentationBackground(.regularMaterial)
@@ -549,7 +552,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     )
             }
             .sheet(item: $shortcutEditorRequest) { request in
-                ShortcutEditorSheet(request: request) { shortcut, favorite in
+                ShortcutEditorSheet(
+                    request: request,
+                    theme: presentation.terminalTheme
+                ) { shortcut, favorite in
                     shortcutStore.update {
                         $0.upsertShortcut(shortcut)
                         if favorite {

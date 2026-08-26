@@ -4,29 +4,28 @@ import UIKit
 #endif
 
 private enum ShortcutsSettingsSheetPalette {
-    static let background = Color(uiColor: .systemGroupedBackground)
-    static let listRowFill = GhosttyShortcutSurfacePalette.contentFill
-    static let listSeparator = GhosttyShortcutSurfacePalette.separator
-    static let iconSurface = Color(uiColor: .tertiarySystemFill)
+    static let iconSurface = RemuxAppPalette.rowIconSurface
 }
 
 private enum ShortcutEditorPalette {
-    static let sectionFill = GhosttyShortcutSurfacePalette.contentFill
-    static let sectionStroke = GhosttyShortcutSurfacePalette.contentStroke
-    static let separator = GhosttyShortcutSurfacePalette.separator
-    static let modeRailFill = Color(uiColor: .tertiarySystemFill)
-    static let modeRailStroke = GhosttyShortcutSurfacePalette.separator
+    static let sectionFill = RemuxAppPalette.rowSurface
+    static let sectionStroke = RemuxAppPalette.separator
+    static let separator = RemuxAppPalette.separator
+    static let modeRailFill = RemuxAppPalette.rowIconSurface
+    static let modeRailStroke = RemuxAppPalette.separator
     static let sectionCornerRadius = GhosttyShortcutSurfacePalette.cornerRadiusLarge
 }
 
 struct ShortcutsSettingsSheet: View {
     @ObservedObject var store: ShortcutStore
+    let theme: TerminalTheme
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ShortcutsSettingsView(
                 store: store,
+                theme: theme,
                 onDismiss: { dismiss() }
             )
         }
@@ -35,6 +34,7 @@ struct ShortcutsSettingsSheet: View {
 
 struct ShortcutsSettingsView: View {
     @ObservedObject var store: ShortcutStore
+    let theme: TerminalTheme
     var onDismiss: (() -> Void)?
 
     @State private var editorRequest: ShortcutEditorRequest?
@@ -44,9 +44,11 @@ struct ShortcutsSettingsView: View {
 
     init(
         store: ShortcutStore,
+        theme: TerminalTheme,
         onDismiss: (() -> Void)? = nil
     ) {
         self.store = store
+        self.theme = theme
         self.onDismiss = onDismiss
     }
 
@@ -72,7 +74,7 @@ struct ShortcutsSettingsView: View {
             } header: {
                 Text("Collections")
                     .font(GhosttyShortcutTypography.sectionLabel)
-                    .foregroundStyle(GhosttySheetPalette.secondary)
+                    .foregroundStyle(RemuxAppPalette.sectionHeader)
             }
 
             if store.snapshot.hasMissingStarterCollections {
@@ -94,8 +96,8 @@ struct ShortcutsSettingsView: View {
         .navigationTitle("Shortcuts")
         .navigationBarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(ShortcutsSettingsSheetPalette.background)
+        .remuxAppGroupedScrollBackground()
+        .remuxAppChrome(theme: theme)
         .toolbar {
             if let onDismiss {
                 ToolbarItem(placement: .cancellationAction) {
@@ -119,7 +121,7 @@ struct ShortcutsSettingsView: View {
         }
         .environment(\.editMode, $editMode)
         .sheet(item: $collectionEditorRequest) { request in
-            ShortcutCollectionEditorSheet(request: request) { collection in
+            ShortcutCollectionEditorSheet(request: request, theme: theme) { collection in
                 store.update { $0.upsertCollection(collection) }
             }
             .presentationDetents([.medium, .large])
@@ -129,7 +131,7 @@ struct ShortcutsSettingsView: View {
             .ghosttyTerminalChromePresentation()
         }
         .sheet(item: $editorRequest) { request in
-            ShortcutEditorSheet(request: request) { shortcut, favorite in
+            ShortcutEditorSheet(request: request, theme: theme) { shortcut, favorite in
                 store.update {
                     $0.upsertShortcut(shortcut)
                     if favorite {
@@ -178,6 +180,7 @@ struct ShortcutsSettingsView: View {
         NavigationLink {
             ShortcutCollectionDetailView(
                 store: store,
+                theme: theme,
                 collectionID: collection.id,
                 addShortcut: {
                     editorRequest = .new(defaultCollection: collection.id, snapshot: store.snapshot)
@@ -211,6 +214,7 @@ struct ShortcutsSettingsView: View {
 
 private struct ShortcutCollectionDetailView: View {
     @ObservedObject var store: ShortcutStore
+    let theme: TerminalTheme
     let collectionID: ShortcutCollectionID
     let addShortcut: () -> Void
     let editShortcut: (Shortcut) -> Void
@@ -285,17 +289,15 @@ private struct ShortcutCollectionDetailView: View {
         .navigationTitle(store.snapshot.collectionTitle(collectionID))
         .navigationBarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(ShortcutsSettingsSheetPalette.background)
+        .remuxAppGroupedScrollBackground()
+        .remuxAppChrome(theme: theme)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 EditButton()
-                    .tint(GhosttySheetPalette.primary)
 
                 Button(action: addShortcut) {
                     Image(systemName: "plus")
                 }
-                .tint(GhosttySheetPalette.primary)
                 .accessibilityLabel("Add Shortcut")
 
                 Menu {
@@ -305,7 +307,6 @@ private struct ShortcutCollectionDetailView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
-                .tint(GhosttySheetPalette.primary)
                 .accessibilityLabel("Collection Actions")
             }
         }
@@ -315,8 +316,7 @@ private struct ShortcutCollectionDetailView: View {
 
 private extension View {
     func shortcutSettingsListRowSurface() -> some View {
-        listRowBackground(ShortcutsSettingsSheetPalette.listRowFill)
-            .listRowSeparatorTint(ShortcutsSettingsSheetPalette.listSeparator)
+        remuxAppListRowSurface()
     }
 }
 
@@ -480,6 +480,7 @@ struct ShortcutCollectionEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let request: ShortcutCollectionEditorRequest
+    let theme: TerminalTheme
     let onSave: (ShortcutCollection) -> Void
 
     @State private var title: String
@@ -488,9 +489,11 @@ struct ShortcutCollectionEditorSheet: View {
 
     init(
         request: ShortcutCollectionEditorRequest,
+        theme: TerminalTheme,
         onSave: @escaping (ShortcutCollection) -> Void
     ) {
         self.request = request
+        self.theme = theme
         self.onSave = onSave
         let initialIcon = request.collection?.icon ?? .folder
         _title = State(initialValue: request.collection?.title ?? "")
@@ -525,7 +528,7 @@ struct ShortcutCollectionEditorSheet: View {
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(ShortcutsSettingsSheetPalette.background.ignoresSafeArea())
+            .background(RemuxAppPalette.background.ignoresSafeArea())
             .navigationTitle(request.collection == nil ? "New Collection" : "Edit Collection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -534,7 +537,6 @@ struct ShortcutCollectionEditorSheet: View {
                         dismiss()
                     } label: {
                         Text("Cancel")
-                            .foregroundStyle(GhosttySheetPalette.primary)
                     }
                 }
 
@@ -543,12 +545,12 @@ struct ShortcutCollectionEditorSheet: View {
                         save()
                     } label: {
                         Text("Save")
-                            .foregroundStyle(canSave ? GhosttySheetPalette.primary : GhosttySheetPalette.tertiary)
                     }
                     .disabled(!canSave)
                 }
             }
         }
+        .remuxAppChrome(theme: theme)
     }
 
     private var iconSuggestions: some View {
@@ -740,6 +742,7 @@ struct ShortcutEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let request: ShortcutEditorRequest
+    let theme: TerminalTheme
     let onSave: (Shortcut, Bool) -> Void
 
     @State private var collection: ShortcutCollectionID
@@ -754,9 +757,11 @@ struct ShortcutEditorSheet: View {
 
     init(
         request: ShortcutEditorRequest,
+        theme: TerminalTheme,
         onSave: @escaping (Shortcut, Bool) -> Void
     ) {
         self.request = request
+        self.theme = theme
         self.onSave = onSave
 
         let shortcut = request.shortcut
@@ -828,7 +833,7 @@ struct ShortcutEditorSheet: View {
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(ShortcutsSettingsSheetPalette.background.ignoresSafeArea())
+            .background(RemuxAppPalette.background.ignoresSafeArea())
             .navigationTitle(request.shortcut == nil ? "New Shortcut" : "Edit Shortcut")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -837,7 +842,6 @@ struct ShortcutEditorSheet: View {
                         dismiss()
                     } label: {
                         Text("Cancel")
-                            .foregroundStyle(GhosttySheetPalette.primary)
                     }
                 }
 
@@ -846,12 +850,12 @@ struct ShortcutEditorSheet: View {
                         save()
                     } label: {
                         Text("Save")
-                            .foregroundStyle(canSave ? GhosttySheetPalette.primary : GhosttySheetPalette.tertiary)
                     }
                     .disabled(!canSave)
                 }
             }
         }
+        .remuxAppChrome(theme: theme)
     }
 
     private var collectionRow: some View {

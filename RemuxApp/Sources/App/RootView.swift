@@ -1900,7 +1900,10 @@ private struct TerminalSettingsView: View {
 
             Section("Keyboard") {
                 NavigationLink {
-                    ShortcutsSettingsView(store: shortcutStore)
+                    ShortcutsSettingsView(
+                        store: shortcutStore,
+                        theme: settings.theme
+                    )
                 } label: {
                     Label("Shortcuts", systemImage: "keyboard")
                 }
