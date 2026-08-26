@@ -22,78 +22,99 @@ private enum ShortcutEditorPalette {
 struct ShortcutsSettingsSheet: View {
     @ObservedObject var store: ShortcutStore
     @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ShortcutsSettingsView(
+                store: store,
+                onDismiss: { dismiss() }
+            )
+        }
+    }
+}
+
+struct ShortcutsSettingsView: View {
+    @ObservedObject var store: ShortcutStore
+    var onDismiss: (() -> Void)?
+
     @State private var editorRequest: ShortcutEditorRequest?
     @State private var collectionEditorRequest: ShortcutCollectionEditorRequest?
     @State private var restoreCollection: ShortcutCollectionID?
     @State private var editMode: EditMode = .inactive
 
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(store.snapshot.orderedCollections) { collection in
-                        collectionRow(collection)
-                            .shortcutSettingsListRowSurface()
-                    }
-                    .onDelete { indexSet in
-                        let collections = store.snapshot.orderedCollections
-                        let collectionIDs = indexSet.map { collections[$0].id }
-                        store.update { snapshot in
-                            for id in collectionIDs {
-                                snapshot.deleteCollection(id: id)
-                            }
-                        }
-                    }
-                    .onMove { source, destination in
-                        store.update { $0.moveCollections(from: source, to: destination) }
-                    }
-                } header: {
-                    Text("Collections")
-                        .font(GhosttyShortcutTypography.sectionLabel)
-                        .foregroundStyle(GhosttySheetPalette.secondary)
-                }
+    init(
+        store: ShortcutStore,
+        onDismiss: (() -> Void)? = nil
+    ) {
+        self.store = store
+        self.onDismiss = onDismiss
+    }
 
-                if store.snapshot.hasMissingStarterCollections {
-                    Section {
-                        Button {
-                            store.update {
-                                $0.restoreMissingStarterCollections(
-                                    StarterShortcuts.collections,
-                                    starters: StarterShortcuts.all
-                                )
-                            }
-                        } label: {
-                            Label("Restore Default Collections", systemImage: "arrow.counterclockwise")
-                        }
+    var body: some View {
+        List {
+            Section {
+                ForEach(store.snapshot.orderedCollections) { collection in
+                    collectionRow(collection)
                         .shortcutSettingsListRowSurface()
+                }
+                .onDelete { indexSet in
+                    let collections = store.snapshot.orderedCollections
+                    let collectionIDs = indexSet.map { collections[$0].id }
+                    store.update { snapshot in
+                        for id in collectionIDs {
+                            snapshot.deleteCollection(id: id)
+                        }
                     }
+                }
+                .onMove { source, destination in
+                    store.update { $0.moveCollections(from: source, to: destination) }
+                }
+            } header: {
+                Text("Collections")
+                    .font(GhosttyShortcutTypography.sectionLabel)
+                    .foregroundStyle(GhosttySheetPalette.secondary)
+            }
+
+            if store.snapshot.hasMissingStarterCollections {
+                Section {
+                    Button {
+                        store.update {
+                            $0.restoreMissingStarterCollections(
+                                StarterShortcuts.collections,
+                                starters: StarterShortcuts.all
+                            )
+                        }
+                    } label: {
+                        Label("Restore Default Collections", systemImage: "arrow.counterclockwise")
+                    }
+                    .shortcutSettingsListRowSurface()
                 }
             }
-            .navigationTitle("Shortcuts")
-            .navigationBarTitleDisplayMode(.inline)
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .background(ShortcutsSettingsSheetPalette.background)
-            .toolbar {
+        }
+        .navigationTitle("Shortcuts")
+        .navigationBarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(ShortcutsSettingsSheetPalette.background)
+        .toolbar {
+            if let onDismiss {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        dismiss()
-                    } label: {
+                    Button(action: onDismiss) {
                         Image(systemName: "xmark")
                     }
                     .accessibilityLabel("Close Shortcuts")
                 }
+            }
 
-                ToolbarItemGroup(placement: .primaryAction) {
-                    EditButton()
+            ToolbarItemGroup(placement: .primaryAction) {
+                EditButton()
 
-                    Button {
-                        collectionEditorRequest = .new(snapshot: store.snapshot)
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel("Add Collection")
+                Button {
+                    collectionEditorRequest = .new(snapshot: store.snapshot)
+                } label: {
+                    Image(systemName: "plus")
                 }
+                .accessibilityLabel("Add Collection")
             }
         }
         .environment(\.editMode, $editMode)
