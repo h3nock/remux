@@ -598,6 +598,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Edit"].exists)
         XCTAssertTrue(app.buttons["Add Collection"].exists)
         XCTAssertFalse(app.buttons["Close Shortcuts"].exists)
+        attachScreenshot(named: "settings-shortcuts-shared-chrome")
     }
 
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {

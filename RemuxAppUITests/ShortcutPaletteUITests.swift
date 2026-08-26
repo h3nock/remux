@@ -27,6 +27,7 @@ final class ShortcutPaletteUITests: XCTestCase {
         app.buttons["terminal.shortcuts.settings"].tap()
         XCTAssertTrue(app.navigationBars["Shortcuts"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["Upload"].exists)
+        attachScreenshot(named: "terminal-shortcuts-shared-chrome")
     }
 
     func testShortcutPaletteFavoritesAndSettingsEditWorkflow() throws {
@@ -89,6 +90,13 @@ final class ShortcutPaletteUITests: XCTestCase {
         session.tap()
 
         XCTAssertTrue(app.buttons["terminal.ctrl"].waitForExistence(timeout: 5))
+    }
+
+    private func attachScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func openShortcutPalette() {
