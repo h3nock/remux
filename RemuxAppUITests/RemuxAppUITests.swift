@@ -581,6 +581,25 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(zoom.value as? String, "1")
     }
 
+    func testSettingsOpenShortcutCollections() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let shortcuts = app.buttons["settings.shortcuts"]
+        if !shortcuts.waitForExistence(timeout: 1) {
+            settingsForm.swipeUp()
+        }
+        XCTAssertTrue(shortcuts.waitForExistence(timeout: 2))
+        shortcuts.tap()
+
+        XCTAssertTrue(app.navigationBars["Shortcuts"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Collections"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Edit"].exists)
+        XCTAssertTrue(app.buttons["Add Collection"].exists)
+        XCTAssertFalse(app.buttons["Close Shortcuts"].exists)
+    }
+
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
         app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "passwordRequired"
         launchSimulatorApp()

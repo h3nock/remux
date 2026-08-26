@@ -560,6 +560,7 @@ private struct RemuxWorkspaceShell: View {
                 activeSessions: model.activeSessions,
                 discoveryStates: model.tmuxSessionDiscoveryStates,
                 terminalSettings: terminalSettingsBinding,
+                shortcutStore: shortcutStore,
                 presentedServerID: $presentedServerID,
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID, showsServerSummary in
@@ -846,6 +847,7 @@ private struct ConnectionLibraryView: View {
     let activeSessions: [ActiveTerminalSession]
     let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
     @Binding var terminalSettings: TerminalSettings
+    let shortcutStore: ShortcutStore
     @Binding var presentedServerID: SavedServer.ID?
     let onAddServer: () -> Void
     let onAddWorkspace: (SavedServer.ID, Bool) -> Void
@@ -896,7 +898,10 @@ private struct ConnectionLibraryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink {
-                    TerminalSettingsView(settings: $terminalSettings)
+                    TerminalSettingsView(
+                        settings: $terminalSettings,
+                        shortcutStore: shortcutStore
+                    )
                 } label: {
                     Image(systemName: "gearshape")
                 }
@@ -1940,10 +1945,15 @@ private func serverSummary(
 
 private struct TerminalSettingsView: View {
     @Binding private var sourceSettings: TerminalSettings
+    private let shortcutStore: ShortcutStore
     @State private var settings: TerminalSettings
 
-    init(settings: Binding<TerminalSettings>) {
+    init(
+        settings: Binding<TerminalSettings>,
+        shortcutStore: ShortcutStore
+    ) {
         _sourceSettings = settings
+        self.shortcutStore = shortcutStore
         _settings = State(initialValue: settings.wrappedValue)
     }
 
@@ -1999,6 +2009,16 @@ private struct TerminalSettingsView: View {
                     "You can override this per window from Panes. Remux normally clears zooms "
                         + "it applied when closing. If one remains on the server, use prefix + z."
                 )
+            }
+            .libraryHomeListRowSurface()
+
+            Section("Keyboard") {
+                NavigationLink {
+                    ShortcutsSettingsView(store: shortcutStore)
+                } label: {
+                    Label("Shortcuts", systemImage: "keyboard")
+                }
+                .accessibilityIdentifier("settings.shortcuts")
             }
             .libraryHomeListRowSurface()
 
