@@ -148,6 +148,7 @@
 		B056E6334A9EFBDB7FA305B3 /* TerminalPreviewCandidateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66FB23E143EA43A7AB28A323 /* TerminalPreviewCandidateTests.swift */; };
 		B3BF6CDA8110A71C8BDF0F85 /* GhosttyTmuxPrefixInputBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A510F3E8FC22231ACA4A8A99 /* GhosttyTmuxPrefixInputBuffer.swift */; };
 		B64AE1F77F8F69A612E230AD /* GhosttyTerminalResponderViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E05107088F3540B7C04D2007 /* GhosttyTerminalResponderViewTests.swift */; };
+		B68637E57C6D9A68925D5C08 /* RemuxAppChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFCB6407CF893F00857381C6 /* RemuxAppChrome.swift */; };
 		B6A5A3D0FFED9CD4D416591E /* GhosttyComposeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49261496FE7B949CF84D913B /* GhosttyComposeBar.swift */; };
 		B781685DD2926C3C37781ACC /* RemuxSSHExecSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 810D178FA878A5BEA4265D7E /* RemuxSSHExecSession.swift */; };
 		B820C559D6A916B1172DE76B /* SSHPublicKeyRemoteInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD16711790E09A2358816EA /* SSHPublicKeyRemoteInstaller.swift */; };
@@ -376,6 +377,7 @@
 		AC550DCE031B69C4EDD3C6F5 /* GhosttyAttachmentImageMarkupEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyAttachmentImageMarkupEditor.swift; sourceTree = "<group>"; };
 		AD50E6815BED6CB2E3B793C9 /* SSHCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHCredentialStore.swift; sourceTree = "<group>"; };
 		AE5B67646A0F14933B3FD8D8 /* ApplicationStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationStorage.swift; sourceTree = "<group>"; };
+		AFCB6407CF893F00857381C6 /* RemuxAppChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxAppChrome.swift; sourceTree = "<group>"; };
 		B1861094273B802BF30CB94A /* TmuxTerminalScreenAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxTerminalScreenAdapterTests.swift; sourceTree = "<group>"; };
 		B1AAF15C6761B24466DD78D6 /* TerminalRuntimeStatusPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalRuntimeStatusPresentationTests.swift; sourceTree = "<group>"; };
 		B38F49B9EC49FF6E9791967C /* GhosttyKeyboardVisibilityProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyKeyboardVisibilityProjection.swift; sourceTree = "<group>"; };
@@ -499,6 +501,7 @@
 				E683A3CF94359C176CCEA22A /* RemuxActiveSessionCollection.swift */,
 				76659C49175055C3E15DB226 /* RemuxActiveSessionRuntimeReducer.swift */,
 				947084E6DA45D9EFB946CF51 /* RemuxApp.swift */,
+				AFCB6407CF893F00857381C6 /* RemuxAppChrome.swift */,
 				2CCD1093451DAA47FF649549 /* RemuxAppDependencies.swift */,
 				2693DBF11402EDAEC946123A /* RemuxLibrarySSHPrewarmCoordinator.swift */,
 				F5AA752EADDB9E6FBA8140A4 /* RemuxLibrarySSHPrewarmPlanner.swift */,
@@ -1003,6 +1006,7 @@
 				9AE92F88C80E1E5758A9C342 /* RemuxActiveSessionCollection.swift in Sources */,
 				9592BA50118FAF15A3B1A792 /* RemuxActiveSessionRuntimeReducer.swift in Sources */,
 				8AEEBAE61E93788016C85F9F /* RemuxApp.swift in Sources */,
+				B68637E57C6D9A68925D5C08 /* RemuxAppChrome.swift in Sources */,
 				C3A8DE373D7176A8536D9523 /* RemuxAppDependencies.swift in Sources */,
 				97E03948DDE68AB3A9057BBF /* RemuxCitadelSFTPClient.swift in Sources */,
 				C5524C488C1300697E572AD5 /* RemuxLibrarySSHPrewarmCoordinator.swift in Sources */,
