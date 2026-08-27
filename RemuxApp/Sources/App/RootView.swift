@@ -200,7 +200,7 @@ private struct RemuxWorkspaceShell: View {
                 onRefresh: model.refreshTmuxSessions,
                 discoveryStates: model.tmuxSessionDiscoveryStates
             )
-            .terminalSelectionSheetPresentationBackground()
+            .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
@@ -296,7 +296,7 @@ private struct RemuxWorkspaceShell: View {
             }
             .presentationDetents(presentationDetents(for: setup.mode))
             .presentationDragIndicator(.visible)
-            .terminalSelectionSheetPresentationBackground()
+            .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle

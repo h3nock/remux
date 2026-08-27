@@ -531,7 +531,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     )
                     .presentationContentInteraction(.scrolls)
                     .presentationDragIndicator(.hidden)
-                    .terminalSelectionSheetPresentationBackground()
+                    .remuxSheetPresentationBackground()
                     .ghosttyTerminalChromePresentation(
                         presentation.terminalTheme.terminalChromeColorScheme,
                         chromeStyle: presentation.terminalTheme.terminalChromeStyle
@@ -544,8 +544,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 )
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
-                    .presentationBackground(.regularMaterial)
-                    .presentationCornerRadius(28)
+                    .remuxSheetPresentationBackground()
                     .ghosttyTerminalChromePresentation(
                         presentation.terminalTheme.terminalChromeColorScheme,
                         chromeStyle: presentation.terminalTheme.terminalChromeStyle
@@ -565,8 +564,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(.regularMaterial)
-                .presentationCornerRadius(28)
+                .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
                     presentation.terminalTheme.terminalChromeColorScheme,
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle
@@ -579,7 +577,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .terminalSelectionSheetPresentationBackground()
+                .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
                     presentation.terminalTheme.terminalChromeColorScheme,
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle

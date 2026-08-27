@@ -217,14 +217,4 @@ extension View {
                     )
             }
     }
-
-    @ViewBuilder
-    func terminalSelectionSheetPresentationBackground() -> some View {
-        if #available(iOS 26.0, *) {
-            self
-        } else {
-            self.presentationBackground(.regularMaterial)
-        }
-    }
-
 }

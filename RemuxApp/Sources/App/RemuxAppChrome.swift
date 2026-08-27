@@ -47,6 +47,15 @@ extension View {
             .background(RemuxAppPalette.background.ignoresSafeArea())
     }
 
+    @ViewBuilder
+    func remuxSheetPresentationBackground() -> some View {
+        if #available(iOS 26.0, *) {
+            self
+        } else {
+            presentationBackground(.regularMaterial)
+        }
+    }
+
     func libraryHomeListRowSurface() -> some View {
         remuxAppListRowSurface()
     }

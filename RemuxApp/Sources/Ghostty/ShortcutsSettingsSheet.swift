@@ -126,8 +126,7 @@ struct ShortcutsSettingsView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
-            .presentationBackground(.regularMaterial)
-            .presentationCornerRadius(28)
+            .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation()
         }
         .sheet(item: $editorRequest) { request in
@@ -141,8 +140,7 @@ struct ShortcutsSettingsView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
-            .presentationBackground(.regularMaterial)
-            .presentationCornerRadius(28)
+            .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation()
         }
         .confirmationDialog(
