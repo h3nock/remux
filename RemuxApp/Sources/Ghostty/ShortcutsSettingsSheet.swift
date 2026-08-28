@@ -356,13 +356,14 @@ private struct ShortcutSettingsEditableRow: View {
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+                .tint(Color(uiColor: .systemRed))
 
                 Button {
                     toggleHidden()
                 } label: {
                     Label(shortcut.isHidden ? "Show" : "Hide", systemImage: shortcut.isHidden ? "eye" : "eye.slash")
                 }
-                .tint(.gray)
+                .tint(Color(uiColor: .systemIndigo))
             }
         }
     }
