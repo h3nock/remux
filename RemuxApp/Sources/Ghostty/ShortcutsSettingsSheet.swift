@@ -39,7 +39,6 @@ struct ShortcutsSettingsView: View {
 
     @State private var editorRequest: ShortcutEditorRequest?
     @State private var collectionEditorRequest: ShortcutCollectionEditorRequest?
-    @State private var restoreCollection: ShortcutCollectionID?
     @State private var editMode: EditMode = .inactive
 
     init(
@@ -143,31 +142,6 @@ struct ShortcutsSettingsView: View {
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation()
         }
-        .confirmationDialog(
-            "Restore Default Shortcuts",
-            isPresented: Binding(
-                get: { restoreCollection != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        restoreCollection = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let collection = restoreCollection {
-                Button("Restore \(store.snapshot.collectionTitle(collection)) Defaults") {
-                    store.update {
-                        $0.restoreMissingStarters(in: collection, starters: StarterShortcuts.all)
-                    }
-                    restoreCollection = nil
-                }
-            }
-        } message: {
-            if let collection = restoreCollection {
-                Text("This re-adds missing default shortcuts for \(store.snapshot.collectionTitle(collection)). Existing edits stay unchanged.")
-            }
-        }
     }
 
     private func favoriteCount(in collection: ShortcutCollectionID) -> Int {
@@ -190,9 +164,6 @@ struct ShortcutsSettingsView: View {
                     if let current = store.snapshot.collection(id: collection.id) {
                         collectionEditorRequest = .edit(current)
                     }
-                },
-                restoreStarters: {
-                    restoreCollection = collection.id
                 }
             )
         } label: {
@@ -217,8 +188,16 @@ private struct ShortcutCollectionDetailView: View {
     let addShortcut: () -> Void
     let editShortcut: (Shortcut) -> Void
     let editCollection: () -> Void
-    let restoreStarters: () -> Void
     @State private var editMode: EditMode = .inactive
+
+    private var hasMissingDefaultShortcuts: Bool {
+        let existingStarterIDs = Set(
+            store.snapshot.shortcuts(in: collectionID).compactMap(\.starterID)
+        )
+        return StarterShortcuts.all.contains {
+            $0.collection == collectionID && !existingStarterIDs.contains($0.id)
+        }
+    }
 
     var body: some View {
         List {
@@ -261,17 +240,21 @@ private struct ShortcutCollectionDetailView: View {
                 Text("Swipe to favorite, hide, or delete. Use Edit to reorder.")
             }
 
-            if StarterShortcuts.collectionIDs.contains(collectionID) {
+            if hasMissingDefaultShortcuts {
                 Section {
                     Button {
-                        restoreStarters()
+                        withAnimation {
+                            store.update {
+                                $0.restoreMissingStarters(in: collectionID, starters: StarterShortcuts.all)
+                            }
+                        }
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "arrow.counterclockwise")
                                 .font(.system(size: 19, weight: .medium))
                                 .frame(width: 24, height: 24)
 
-                            Text("Restore Default Shortcuts")
+                            Text("Restore Missing Defaults")
                                 .font(GhosttyShortcutTypography.rowText)
 
                             Spacer(minLength: 0)
@@ -279,8 +262,9 @@ private struct ShortcutCollectionDetailView: View {
                         .foregroundStyle(GhosttySheetPalette.primary)
                         .padding(.vertical, 4)
                     }
-                    .buttonStyle(.plain)
                     .shortcutSettingsListRowSurface()
+                } footer: {
+                    Text("Re-adds deleted built-in shortcuts. Existing shortcuts and edits stay unchanged.")
                 }
             }
         }
