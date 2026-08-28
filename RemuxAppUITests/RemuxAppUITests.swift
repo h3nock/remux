@@ -768,6 +768,53 @@ final class RemuxAppUITests: XCTestCase {
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
 
+    func testLiveCreatedShortcutExecutesInTmuxWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("shortcut")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        let control = app.buttons["terminal.ctrl"]
+        XCTAssertTrue(control.waitForExistence(timeout: 5))
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
+
+        XCTAssertTrue(app.buttons["terminal.shortcuts.add"].waitForExistence(timeout: 2))
+        app.buttons["terminal.shortcuts.add"].tap()
+        XCTAssertTrue(app.navigationBars["New Shortcut"].waitForExistence(timeout: 2))
+
+        let titleField = app.textFields["Title"].firstMatch
+        XCTAssertTrue(titleField.waitForExistence(timeout: 2))
+        titleField.tap()
+        titleField.typeText("E2E")
+
+        let textField = app.textFields["Text"].firstMatch
+        XCTAssertTrue(textField.waitForExistence(timeout: 2))
+        textField.tap()
+        textField.typeText("echo REMUXS")
+        app.buttons["Save"].tap()
+        XCTAssertFalse(app.navigationBars["New Shortcut"].waitForExistence(timeout: 2))
+
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
+        let shortcut = app.buttons["E2E"]
+        XCTAssertTrue(shortcut.waitForExistence(timeout: 2))
+        shortcut.tap()
+        XCTAssertFalse(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUXS"
+        )
+    }
+
     func testLiveNewSessionBackReturnsToPresentingSessionSheetWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("new-session-navigation")
         defer {
