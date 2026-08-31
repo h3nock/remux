@@ -144,6 +144,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isInteractionLocked: Bool
     let isCompact: Bool
     let isControlArmed: Bool
+    let toolbarKeys: TerminalToolbarKeys
     let selectedWindowIndex: Int?
     let windowCount: Int
     let paneCount: Int
@@ -251,20 +252,18 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var terminalKeyControls: some View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
-                accessoryKey(
-                    title: "ctrl",
-                    accessibilityIdentifier: "terminal.ctrl",
-                    isActive: isControlArmed,
-                    onLongPress: onShowShortcuts
-                ) {
-                    onToggleControl()
-                    return true
-                }
-                accessoryKey(title: "esc", accessibilityIdentifier: "terminal.esc") {
-                    sendKey(.init(keyCode: .escape))
-                }
-                accessoryKey(title: "tab", accessibilityIdentifier: "terminal.tab") {
-                    sendKey(.init(keyCode: .tab))
+                ForEach(Array(toolbarKeys.values.enumerated()), id: \.offset) { index, key in
+                    accessoryKey(
+                        title: key.toolbarTitle,
+                        accessibilityLabel: key.settingsTitle,
+                        accessibilityHint: toolbarKeyAccessibilityHint(key),
+                        accessibilityIdentifier: "terminal.toolbar-key.\(index)",
+                        accessibilityValue: key == .control && isControlArmed ? "Armed" : nil,
+                        isActive: key == .control && isControlArmed,
+                        onLongPress: index == 0 ? onShowShortcuts : nil
+                    ) {
+                        activateToolbarKey(key)
+                    }
                 }
             }
         }
@@ -334,14 +333,20 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     private func accessoryKey(
         title: String,
+        accessibilityLabel: String,
+        accessibilityHint: String? = nil,
         accessibilityIdentifier: String,
+        accessibilityValue: String? = nil,
         isActive: Bool = false,
         onLongPress: (() -> Void)? = nil,
         action: @escaping () -> Bool
     ) -> some View {
         GhosttyKeyboardKeyButton(
             title: title,
+            accessibilityLabel: accessibilityLabel,
+            accessibilityHint: accessibilityHint,
             accessibilityIdentifier: accessibilityIdentifier,
+            accessibilityValue: accessibilityValue,
             chromeStyle: chromeStyle,
             fontSize: 12,
             width: dockButtonWidth,
@@ -351,6 +356,23 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             onLongPress: onLongPress,
             action: action
         )
+    }
+
+    private func activateToolbarKey(_ key: TerminalToolbarKey) -> Bool {
+        if key == .control {
+            onToggleControl()
+            return true
+        }
+
+        guard let keyCode = key.shortcutKey?.ghosttyKeyCode else { return false }
+        return sendKey(.init(keyCode: keyCode))
+    }
+
+    private func toolbarKeyAccessibilityHint(_ key: TerminalToolbarKey) -> String {
+        if key == .control {
+            return "Arms Control for the next terminal input."
+        }
+        return "Sends \(key.settingsTitle) to the terminal."
     }
 
     private var dockButtonWidth: CGFloat {
@@ -450,7 +472,10 @@ private struct GhosttyKeyboardChromeDockButton: View {
 
 private struct GhosttyKeyboardKeyButton: View {
     let title: String
+    let accessibilityLabel: String
+    let accessibilityHint: String?
     let accessibilityIdentifier: String
+    let accessibilityValue: String?
     let chromeStyle: GhosttyTerminalChromeStyle
     var fontSize: CGFloat = 13
     var width: CGFloat = GhosttyKeyboardChromeSizing.dockButtonWidth
@@ -479,9 +504,16 @@ private struct GhosttyKeyboardKeyButton: View {
             .scaleEffect(isPressed && isEnabled ? 0.96 : 1)
             .opacity(isEnabled ? 1 : 0.42)
             .contentShape(Rectangle())
-            .accessibilityLabel(title)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityHint(accessibilityHint ?? "")
+            .accessibilityValue(accessibilityValue ?? "")
             .accessibilityIdentifier(accessibilityIdentifier)
             .accessibilityAddTraits(.isButton)
+            .accessibilityActions {
+                if let onLongPress {
+                    Button("Open Shortcuts", action: onLongPress)
+                }
+            }
             .onTapGesture {
                 guard isEnabled else { return }
                 isPressed = false

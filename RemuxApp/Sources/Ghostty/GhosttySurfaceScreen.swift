@@ -10,6 +10,7 @@ struct GhosttySurfaceScreenPresentation: Equatable {
     let workspaceID: SavedWorkspace.ID
     let sessionName: String
     let terminalTheme: TerminalTheme
+    let toolbarKeys: TerminalToolbarKeys
     let loadingTitle: String
 }
 
@@ -426,6 +427,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isInteractionLocked: composer.isSubmitting,
                             isCompact: chrome.isCompact,
                             isControlArmed: terminalInputController.isControlArmed,
+                            toolbarKeys: presentation.toolbarKeys,
                             selectedWindowIndex: interactionProjection.selectedWindowIndex,
                             windowCount: interactionProjection.windowCount,
                             paneCount: interactionProjection.paneCount,
@@ -468,6 +470,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 GhosttyRuntimeTrace.tmuxViewport(
                     "viewport.bottomChrome old=\(previousHeight.traceLabel) new=\(bottomChromeReservation.settledHeight.traceLabel) rendered=\(renderedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
                 )
+            }
+            .onChange(of: presentation.toolbarKeys) { _, toolbarKeys in
+                terminalInputController.reconcileToolbarKeys(toolbarKeys)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 guard shouldHandleTerminalKeyboardNotification else { return }
