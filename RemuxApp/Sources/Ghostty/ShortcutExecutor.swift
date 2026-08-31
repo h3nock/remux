@@ -63,39 +63,6 @@ struct ShortcutExecutor {
     }
 }
 
-private extension ShortcutKey {
-    var ghosttyKeyCode: GhosttySurfaceKeyEvent.KeyCode {
-        switch self {
-        case .escape:
-            .escape
-        case .tab:
-            .tab
-        case .enter:
-            .enter
-        case .backspace:
-            .backspace
-        case .delete:
-            .delete
-        case .arrowUp:
-            .arrowUp
-        case .arrowDown:
-            .arrowDown
-        case .arrowLeft:
-            .arrowLeft
-        case .arrowRight:
-            .arrowRight
-        case .home:
-            .home
-        case .end:
-            .end
-        case .pageUp:
-            .pageUp
-        case .pageDown:
-            .pageDown
-        }
-    }
-}
-
 private extension ShortcutModifiers {
     var ghosttyModifiers: GhosttySurfaceKeyEvent.Mods {
         var result: GhosttySurfaceKeyEvent.Mods = []

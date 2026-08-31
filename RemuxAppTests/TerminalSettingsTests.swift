@@ -25,6 +25,51 @@ final class TerminalSettingsTests: XCTestCase {
 
         XCTAssertFalse(settings.allowInsecureRSAHostKeys)
         XCTAssertFalse(settings.zoomMultipaneWindowsByDefault)
+        XCTAssertEqual(settings.toolbarKeys, .default)
+    }
+
+    func testToolbarKeysExposeCompactAndAccessibleTitles() {
+        XCTAssertEqual(TerminalToolbarKey.control.toolbarTitle, "ctrl")
+        XCTAssertEqual(TerminalToolbarKey.control.settingsTitle, "Control")
+        XCTAssertEqual(TerminalToolbarKey.pageDown.toolbarTitle, "pgdn")
+        XCTAssertEqual(TerminalToolbarKey.pageDown.settingsTitle, "Page Down")
+    }
+
+    func testToolbarKeysReuseShortcutKeyDomainForTerminalEvents() {
+        let mappings: [(TerminalToolbarKey, ShortcutKey, GhosttySurfaceKeyEvent.KeyCode)] = [
+            (.escape, .escape, .escape),
+            (.tab, .tab, .tab),
+            (.enter, .enter, .enter),
+            (.backspace, .backspace, .backspace),
+            (.delete, .delete, .delete),
+            (.arrowUp, .arrowUp, .arrowUp),
+            (.arrowDown, .arrowDown, .arrowDown),
+            (.arrowLeft, .arrowLeft, .arrowLeft),
+            (.arrowRight, .arrowRight, .arrowRight),
+            (.home, .home, .home),
+            (.end, .end, .end),
+            (.pageUp, .pageUp, .pageUp),
+            (.pageDown, .pageDown, .pageDown),
+        ]
+
+        for (toolbarKey, shortcutKey, keyCode) in mappings {
+            XCTAssertEqual(toolbarKey.shortcutKey, shortcutKey)
+            XCTAssertEqual(shortcutKey.ghosttyKeyCode, keyCode)
+        }
+        XCTAssertNil(TerminalToolbarKey.control.shortcutKey)
+    }
+
+    func testToolbarKeysAllowDuplicatesAndNoControl() {
+        let keys = TerminalToolbarKeys(
+            first: .escape,
+            second: .escape,
+            third: .pageDown
+        )
+
+        XCTAssertEqual(keys.values, [.escape, .escape, .pageDown])
+        XCTAssertFalse(keys.containsControl)
+        XCTAssertEqual(keys.summary, "Escape, Escape, Page Down")
+        XCTAssertEqual(keys.compactSummary, "esc · esc · pgdn")
     }
 
     func testTerminalAppearanceComparisonIgnoresNonAppearanceSettings() {
@@ -41,9 +86,15 @@ final class TerminalSettingsTests: XCTestCase {
             theme: .remuxDark,
             zoomMultipaneWindowsByDefault: true
         )
+        let toolbarKeysChanged = TerminalSettings(
+            fontSize: 13,
+            theme: .remuxDark,
+            toolbarKeys: TerminalToolbarKeys(first: .escape, second: .tab, third: .enter)
+        )
 
         XCTAssertTrue(settings.hasSameTerminalAppearance(as: rsaOnly))
         XCTAssertTrue(settings.hasSameTerminalAppearance(as: multipaneDefaultChanged))
+        XCTAssertTrue(settings.hasSameTerminalAppearance(as: toolbarKeysChanged))
         XCTAssertFalse(settings.hasSameTerminalAppearance(as: fontChanged))
         XCTAssertFalse(settings.hasSameTerminalAppearance(as: themeChanged))
     }
