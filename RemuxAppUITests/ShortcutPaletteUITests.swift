@@ -165,8 +165,15 @@ final class ShortcutPaletteUITests: XCTestCase {
         app.buttons["Key"].tap()
         XCTAssertTrue(app.buttons["Key, Esc"].waitForExistence(timeout: 2))
         app.buttons["Key, Esc"].tap()
-        XCTAssertTrue(app.buttons["Tab"].waitForExistence(timeout: 2))
-        app.buttons["Tab"].tap()
+        let tabOption = app.buttons.matching(
+            NSPredicate(
+                format: "label == %@ AND identifier != %@",
+                "Tab",
+                "terminal.toolbar-key.2"
+            )
+        ).firstMatch
+        XCTAssertTrue(tabOption.waitForExistence(timeout: 2))
+        tabOption.tap()
         app.scrollViews.firstMatch.swipeUp()
         app.switches["Ctrl"].tap()
         XCTAssertTrue(waitForValue(app.switches["Ctrl"], expected: "1"))
@@ -292,7 +299,7 @@ final class ShortcutPaletteUITests: XCTestCase {
         XCTAssertTrue(session.waitForExistence(timeout: 5))
         session.tap()
 
-        XCTAssertTrue(app.buttons["terminal.ctrl"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["terminal.toolbar-key.0"].waitForExistence(timeout: 5))
     }
 
     private func attachScreenshot(named name: String) {
@@ -303,7 +310,7 @@ final class ShortcutPaletteUITests: XCTestCase {
     }
 
     private func openShortcutPalette() {
-        let control = app.buttons["terminal.ctrl"]
+        let control = app.buttons["terminal.toolbar-key.0"]
         XCTAssertTrue(control.waitForExistence(timeout: 5))
         control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
 
