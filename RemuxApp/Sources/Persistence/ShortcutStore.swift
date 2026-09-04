@@ -126,6 +126,17 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
         StarterShortcuts.collections.contains { collection(id: $0.id) == nil }
     }
 
+    func missingStarterShortcuts(
+        in collection: ShortcutCollectionID,
+        from starters: [StarterShortcut]
+    ) -> [StarterShortcut] {
+        guard self.collection(id: collection) != nil else { return [] }
+        let existingStarterIDs = Set(shortcuts.compactMap(\.starterID))
+        return starters.filter {
+            $0.collection == collection && !existingStarterIDs.contains($0.id)
+        }
+    }
+
     @discardableResult
     mutating func installMissingCollections(_ starterCollections: [ShortcutCollection]) -> Bool {
         var changed = false
@@ -205,8 +216,7 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
         deletedStarterIDs.subtract(starterIDs)
 
         var changed = false
-        let existingStarterIDs = Set(shortcuts.compactMap(\.starterID))
-        for starter in collectionStarters where !existingStarterIDs.contains(starter.id) {
+        for starter in missingStarterShortcuts(in: collection, from: starters) {
             shortcuts.append(starter.makeShortcut())
             installedStarterIDs.insert(starter.id)
             changed = true
