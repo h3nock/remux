@@ -41,7 +41,7 @@ enum Haptic {
         chromeSelection?.prepare()
     }
 
-    /// Touch-down feedback for an accessory key (ctrl / esc / tab).
+    /// Touch-down feedback for an accessory key (ctrl / shift / esc / tab).
     /// Audio defaults to OFF: a normal-app view cannot honor iOS Settings >
     /// Keyboard Feedback > Sound, so we ship visual + haptic only and leave
     /// the audio click as an explicit caller opt-in.

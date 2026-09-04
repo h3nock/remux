@@ -616,6 +616,38 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertFalse(controller.isControlArmed)
     }
 
+    func testInputControllerShiftTextSubmitsUppercasedInputAndClearsShift() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleShift()
+
+        XCTAssertEqual(controller.receiveText("a"), .submit("A"))
+
+        XCTAssertFalse(controller.isShiftArmed)
+    }
+
+    func testInputControllerShiftKeyAddsShiftModifierAndClearsShift() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleShift()
+        let event = GhosttySurfaceKeyEvent(keyCode: .tab)
+
+        let action = controller.receiveKeyEvent(event)
+
+        XCTAssertNil(action.pendingPrefixInput)
+        XCTAssertEqual(action.event, GhosttySurfaceKeyEvent(keyCode: .tab, mods: [.shift]))
+        XCTAssertFalse(controller.isShiftArmed)
+    }
+
+    func testInputControllerClearModifiersDisarmsControlAndShift() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleControl()
+        controller.toggleShift()
+
+        controller.clearModifiers()
+
+        XCTAssertFalse(controller.isControlArmed)
+        XCTAssertFalse(controller.isShiftArmed)
+    }
+
     func testInputControllerPrefixArmsFlushWithoutSubmitting() {
         var controller = GhosttyTerminalInputController()
 

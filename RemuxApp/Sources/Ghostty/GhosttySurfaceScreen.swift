@@ -425,7 +425,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isEnabled: interactionProjection.isInputAvailable,
                             isInteractionLocked: composer.isSubmitting,
                             isCompact: chrome.isCompact,
+                            dockButtonWidth: chrome.dockButtonWidth,
                             isControlArmed: terminalInputController.isControlArmed,
+                            isShiftArmed: terminalInputController.isShiftArmed,
                             selectedWindowIndex: interactionProjection.selectedWindowIndex,
                             windowCount: interactionProjection.windowCount,
                             paneCount: interactionProjection.paneCount,
@@ -439,6 +441,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onOpenComposer: openComposer,
                             onToggleKeyboard: toggleKeyboardChrome,
                             onToggleControl: toggleControlModifier,
+                            onToggleShift: toggleShiftModifier,
                             onShowShortcuts: showShortcutPalette,
                             sendKey: sendTerminalKeyEvent
                         ) {
@@ -1388,7 +1391,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showShortcutPalette() {
-        terminalInputController.clearControl()
+        terminalInputController.clearModifiers()
         isShortcutPalettePresented = true
     }
 
@@ -1407,6 +1410,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func toggleControlModifier() {
         terminalInputController.toggleControl()
         if terminalInputController.isControlArmed, inputCoordinator.keyboardMode == .hidden {
+            showSystemKeyboard()
+        }
+    }
+
+    private func toggleShiftModifier() {
+        terminalInputController.toggleShift()
+        if terminalInputController.isShiftArmed, inputCoordinator.keyboardMode == .hidden {
             showSystemKeyboard()
         }
     }
@@ -1601,7 +1611,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 ),
                 makeAttachmentTransferService: attachmentTransferServiceFactory,
                 prepareTerminalInput: {
-                    terminalInputController.clearControl()
+                    terminalInputController.clearModifiers()
                     scrollComposerDestinationToBottom(surfaceID)
                 },
                 sendPaste: { text in
@@ -2427,6 +2437,15 @@ struct GhosttyPhoneChromeLayout: Equatable {
 
     var surfaceHorizontalPadding: CGFloat {
         isCompact ? 8 : 12
+    }
+
+    /// Dock button width that keeps the standard selector row inside the
+    /// screen once the surface padding is applied.
+    var dockButtonWidth: CGFloat {
+        GhosttyKeyboardChromeSizing.fittedDockButtonWidth(
+            availableWidth: screenSize.width - surfaceHorizontalPadding * 2,
+            isCompact: isCompact
+        )
     }
 
     var bottomPadding: CGFloat {

@@ -34,6 +34,52 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         XCTAssertEqual(layout.bottomPadding, 2)
     }
 
+    func testDockButtonWidthShrinksSoStandardRowFitsNarrowPhone() {
+        let layout = GhosttyPhoneChromeLayout(
+            screenSize: CGSize(width: 375, height: 667)
+        )
+
+        XCTAssertEqual(layout.dockButtonWidth, 32)
+        XCTAssertLessThanOrEqual(
+            GhosttyKeyboardChromeSizing.standardRowWidth(
+                dockButtonWidth: layout.dockButtonWidth,
+                isCompact: layout.isCompact
+            ),
+            375 - layout.surfaceHorizontalPadding * 2
+        )
+    }
+
+    func testDockButtonWidthShrinksSoStandardRowFitsExpandedChrome() {
+        let layout = GhosttyPhoneChromeLayout(
+            screenSize: CGSize(width: 430, height: 932)
+        )
+
+        XCTAssertFalse(layout.isCompact)
+        XCTAssertEqual(layout.dockButtonWidth, 34)
+        XCTAssertLessThanOrEqual(
+            GhosttyKeyboardChromeSizing.standardRowWidth(
+                dockButtonWidth: layout.dockButtonWidth,
+                isCompact: layout.isCompact
+            ),
+            430 - layout.surfaceHorizontalPadding * 2
+        )
+    }
+
+    func testDockButtonWidthKeepsPreferredWidthWhenStandardRowFits() {
+        let layout = GhosttyPhoneChromeLayout(
+            screenSize: CGSize(width: 844, height: 390)
+        )
+
+        XCTAssertEqual(layout.dockButtonWidth, GhosttyKeyboardChromeSizing.compactDockButtonWidth)
+    }
+
+    func testDockButtonWidthNeverDropsBelowMinimum() {
+        XCTAssertEqual(
+            GhosttyKeyboardChromeSizing.fittedDockButtonWidth(availableWidth: 200, isCompact: true),
+            GhosttyKeyboardChromeSizing.minimumDockButtonWidth
+        )
+    }
+
     func testKeyboardFrameInsideScreenIsVisible() {
         XCTAssertTrue(
             GhosttySoftwareKeyboardVisibility.isVisible(

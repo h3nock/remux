@@ -138,12 +138,20 @@ struct GhosttyTerminalInputController: Equatable {
         modifierState.isControlArmed
     }
 
+    var isShiftArmed: Bool {
+        modifierState.isShiftArmed
+    }
+
     mutating func toggleControl() {
         modifierState.toggleControl()
     }
 
-    mutating func clearControl() {
-        modifierState.clearControl()
+    mutating func toggleShift() {
+        modifierState.toggleShift()
+    }
+
+    mutating func clearModifiers() {
+        modifierState.clearModifiers()
     }
 
     mutating func receiveText(_ text: String) -> TextAction {

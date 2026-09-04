@@ -34,7 +34,47 @@ enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
     static let compactDockButtonWidth: CGFloat = 35
+    static let minimumDockButtonWidth: CGFloat = 30
     static let controlGroupVerticalPadding: CGFloat = 4
+
+    /// Buttons per control group in the standard selector row: terminal keys
+    /// (ctrl / shift / esc / tab), navigation, and input controls.
+    static let standardRowGroupButtonCounts = [4, 3, 3]
+
+    static func groupSpacing(isCompact: Bool) -> CGFloat {
+        isCompact ? 6 : 10
+    }
+
+    static func buttonSpacing(isCompact: Bool) -> CGFloat {
+        isCompact ? 1 : 2
+    }
+
+    static func groupHorizontalPadding(isCompact: Bool) -> CGFloat {
+        isCompact ? 3 : 5
+    }
+
+    /// Total width of the standard selector row when every dock button is
+    /// `dockButtonWidth` wide.
+    static func standardRowWidth(dockButtonWidth: CGFloat, isCompact: Bool) -> CGFloat {
+        let groupCount = standardRowGroupButtonCounts.count
+        let buttonCount = standardRowGroupButtonCounts.reduce(0, +)
+        return CGFloat(buttonCount) * dockButtonWidth
+            + CGFloat(buttonCount - groupCount) * buttonSpacing(isCompact: isCompact)
+            + CGFloat(groupCount) * 2 * groupHorizontalPadding(isCompact: isCompact)
+            + CGFloat(max(groupCount - 1, 0)) * groupSpacing(isCompact: isCompact)
+    }
+
+    /// Widest dock button, up to the preferred width for the chrome density,
+    /// that still lets the standard selector row fit inside `availableWidth`.
+    static func fittedDockButtonWidth(availableWidth: CGFloat, isCompact: Bool) -> CGFloat {
+        let preferred = isCompact ? compactDockButtonWidth : dockButtonWidth
+        guard availableWidth.isFinite, availableWidth > 0 else { return preferred }
+
+        let buttonCount = standardRowGroupButtonCounts.reduce(0, +)
+        let fixedWidth = standardRowWidth(dockButtonWidth: 0, isCompact: isCompact)
+        let fitted = floor((availableWidth - fixedWidth) / CGFloat(buttonCount))
+        return min(preferred, max(minimumDockButtonWidth, fitted))
+    }
 
     /// Fallback reservation before the bottom chrome reports its intrinsic
     /// height. Settled chrome subsequently owns its full measured footprint.
@@ -143,7 +183,9 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isEnabled: Bool
     let isInteractionLocked: Bool
     let isCompact: Bool
+    let dockButtonWidth: CGFloat
     let isControlArmed: Bool
+    let isShiftArmed: Bool
     let selectedWindowIndex: Int?
     let windowCount: Int
     let paneCount: Int
@@ -155,6 +197,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let onOpenComposer: () -> Void
     let onToggleKeyboard: () -> Void
     let onToggleControl: () -> Void
+    let onToggleShift: () -> Void
     let onShowShortcuts: () -> Void
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
     let composerContent: () -> ComposerContent
@@ -177,7 +220,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     @ViewBuilder
     private var standardSelectorRowContainer: some View {
         if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: isCompact ? 6 : 10) {
+            GlassEffectContainer(spacing: groupSpacing) {
                 standardSelectorRow
             }
         } else {
@@ -186,7 +229,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     }
 
     private var standardSelectorRow: some View {
-        HStack(spacing: isCompact ? 6 : 10) {
+        HStack(spacing: groupSpacing) {
             terminalKeyControls
             navigationControls
             inputControls
@@ -202,7 +245,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     private var navigationControls: some View {
         controlGroup {
-            HStack(spacing: isCompact ? 1 : 2) {
+            HStack(spacing: buttonSpacing) {
                 GhosttyKeyboardChromeDockButton(
                     systemName: "rectangle.stack",
                     badge: nil,
@@ -250,7 +293,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     private var terminalKeyControls: some View {
         controlGroup {
-            HStack(spacing: isCompact ? 1 : 2) {
+            HStack(spacing: buttonSpacing) {
                 accessoryKey(
                     title: "ctrl",
                     accessibilityIdentifier: "terminal.ctrl",
@@ -258,6 +301,14 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     onLongPress: onShowShortcuts
                 ) {
                     onToggleControl()
+                    return true
+                }
+                accessoryKey(
+                    title: "shift",
+                    accessibilityIdentifier: "terminal.shift",
+                    isActive: isShiftArmed
+                ) {
+                    onToggleShift()
                     return true
                 }
                 accessoryKey(title: "esc", accessibilityIdentifier: "terminal.esc") {
@@ -272,7 +323,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     private var inputControls: some View {
         controlGroup {
-            HStack(spacing: isCompact ? 1 : 2) {
+            HStack(spacing: buttonSpacing) {
                 GhosttyKeyboardChromeDockButton(
                     systemName: "house",
                     badge: nil,
@@ -327,7 +378,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     private func controlGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-            .padding(.horizontal, isCompact ? 3 : 5)
+            .padding(.horizontal, groupHorizontalPadding)
             .padding(.vertical, GhosttyKeyboardChromeSizing.controlGroupVerticalPadding)
             .ghosttyToolbarGroupSurface()
     }
@@ -353,10 +404,16 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         )
     }
 
-    private var dockButtonWidth: CGFloat {
-        isCompact
-            ? GhosttyKeyboardChromeSizing.compactDockButtonWidth
-            : GhosttyKeyboardChromeSizing.dockButtonWidth
+    private var groupSpacing: CGFloat {
+        GhosttyKeyboardChromeSizing.groupSpacing(isCompact: isCompact)
+    }
+
+    private var buttonSpacing: CGFloat {
+        GhosttyKeyboardChromeSizing.buttonSpacing(isCompact: isCompact)
+    }
+
+    private var groupHorizontalPadding: CGFloat {
+        GhosttyKeyboardChromeSizing.groupHorizontalPadding(isCompact: isCompact)
     }
 
     private var windowDetail: String? {
