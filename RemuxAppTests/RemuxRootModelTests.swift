@@ -3112,11 +3112,11 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(harness.model.hasTerminalScreenModel(for: session))
         XCTAssertTrue(harness.model.terminalScreenModel(for: session) === terminalModel)
         XCTAssertNotNil(terminalModel.session)
-        XCTAssertEqual(harness.model.terminalSettingsUpdateIssue, .saveFailed)
+        XCTAssertTrue(harness.model.terminalSettingsSaveFailed)
 
-        harness.model.dismissTerminalSettingsUpdateIssue(.saveFailed)
+        harness.model.dismissTerminalSettingsSaveFailure()
 
-        XCTAssertNil(harness.model.terminalSettingsUpdateIssue)
+        XCTAssertFalse(harness.model.terminalSettingsSaveFailed)
     }
 
     func testRuntimeDisconnectMarksActiveSessionDisconnected() async throws {
