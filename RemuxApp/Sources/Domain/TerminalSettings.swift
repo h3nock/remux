@@ -126,7 +126,7 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
 }
 
 struct TerminalSettings: Equatable, Codable, Sendable {
-    static let minimumFontSize: Float32 = 8
+    static let minimumFontSize: Float32 = 5
     static let maximumFontSize: Float32 = 24
     static let defaultExplicitFontSize: Float32 = 10
     static let `default` = TerminalSettings(fontSize: nil, theme: .ghosttyDefault)
