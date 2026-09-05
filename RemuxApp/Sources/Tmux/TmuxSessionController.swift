@@ -1293,8 +1293,10 @@ final class TmuxSessionController: @unchecked Sendable {
               !hasOutstandingViewportClaim
         else { return false }
 
+        // Resolve the current window on tmux so a viewport claim cannot
+        // undo navigation while our topology snapshot is still stale.
         let (result, token) = enqueueCommandTokenOnWriter(
-            "select-window -t @\(activeWindowID.rawValue)",
+            "select-window",
             client: client
         )
         guard result == GHOSTTY_TMUX_RESULT_OK else {
