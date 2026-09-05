@@ -689,7 +689,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private var isTransientInputOwnerPresented: Bool {
-        isAttachmentInputOwnerPresented || terminalCoverPhase.ownsTerminalInput
+        isAttachmentInputOwnerPresented
+            || isShortcutsSettingsPresented
+            || shortcutEditorRequest != nil
+            || terminalCoverPhase.ownsTerminalInput
     }
 
     private var selectionSheetBinding: Binding<GhosttySurfaceSelectionSheet?> {
