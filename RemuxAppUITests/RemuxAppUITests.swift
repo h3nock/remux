@@ -598,9 +598,6 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTAssertTrue(settingsForm.waitForExistence(timeout: 2))
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 2))
-        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
-        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
-        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
         tapFontDefaultToggle()
         let fontSize = app.descendants(matching: .any)["settings.font-size"]
         XCTAssertTrue(fontSize.waitForExistence(timeout: 2))
@@ -613,6 +610,13 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings.theme.preview"].waitForExistence(timeout: 2))
         app.buttons["Mocha"].tap()
         XCTAssertTrue(app.staticTexts["Catppuccin Mocha"].waitForExistence(timeout: 2))
+
+        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
+        for _ in 0..<3 where !legacyRSAHostKeys.exists {
+            settingsForm.swipeUp()
+        }
+        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
+        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
     }
 
     func testFreshPhoneInstallShowsMultipaneZoomDefaultEnabled() {

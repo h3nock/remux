@@ -191,12 +191,10 @@ private struct ShortcutCollectionDetailView: View {
     @State private var editMode: EditMode = .inactive
 
     private var hasMissingDefaultShortcuts: Bool {
-        let existingStarterIDs = Set(
-            store.snapshot.shortcuts(in: collectionID).compactMap(\.starterID)
-        )
-        return StarterShortcuts.all.contains {
-            $0.collection == collectionID && !existingStarterIDs.contains($0.id)
-        }
+        !store.snapshot.missingStarterShortcuts(
+            in: collectionID,
+            from: StarterShortcuts.all
+        ).isEmpty
     }
 
     var body: some View {

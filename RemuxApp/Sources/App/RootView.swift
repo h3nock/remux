@@ -219,49 +219,25 @@ private struct RemuxWorkspaceShell: View {
                 )
         }
         .alert(
-            terminalSettingsUpdateIssueTitle,
-            isPresented: terminalSettingsUpdateIssueIsPresented,
-            presenting: model.terminalSettingsUpdateIssue
-        ) { issue in
+            "Settings Couldn’t Be Saved",
+            isPresented: terminalSettingsSaveFailureIsPresented
+        ) {
             Button("OK", role: .cancel) {
-                model.dismissTerminalSettingsUpdateIssue(issue)
+                model.dismissTerminalSettingsSaveFailure()
             }
-        } message: { issue in
-            Text(terminalSettingsUpdateIssueMessage(issue))
+        } message: {
+            Text("Your previous settings are still in use. Try again.")
         }
     }
 
-    private var terminalSettingsUpdateIssueIsPresented: Binding<Bool> {
+    private var terminalSettingsSaveFailureIsPresented: Binding<Bool> {
         Binding(
-            get: { model.terminalSettingsUpdateIssue != nil },
+            get: { model.terminalSettingsSaveFailed },
             set: { isPresented in
-                guard !isPresented, let issue = model.terminalSettingsUpdateIssue else { return }
-                model.dismissTerminalSettingsUpdateIssue(issue)
+                guard !isPresented else { return }
+                model.dismissTerminalSettingsSaveFailure()
             }
         )
-    }
-
-    private var terminalSettingsUpdateIssueTitle: String {
-        switch model.terminalSettingsUpdateIssue {
-        case .saveFailed:
-            "Settings Couldn’t Be Saved"
-        case .applyFailed:
-            "Settings Couldn’t Be Applied"
-        case nil:
-            "Settings"
-        }
-    }
-
-    private func terminalSettingsUpdateIssueMessage(
-        _ issue: RemuxRootModel.TerminalSettingsUpdateIssue
-    ) -> String {
-        switch issue {
-        case .saveFailed:
-            "Your previous settings are still in use. Try again."
-        case .applyFailed:
-            "The settings were saved, but couldn’t be applied to every active terminal. "
-                + "Reconnect affected sessions to apply them."
-        }
     }
 
     private var connectionSetupSheetIsPresented: Binding<Bool> {

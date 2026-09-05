@@ -318,6 +318,25 @@ final class ShortcutStoreTests: XCTestCase {
         XCTAssertFalse(snapshot.deletedStarterIDs.contains("claude.compact"))
     }
 
+    func testMovedStarterIsNotMissingFromItsOriginalCollection() {
+        let starter = StarterShortcut(
+            id: "shell.interrupt",
+            collection: .shell,
+            title: "^C",
+            hint: "interrupt",
+            sequence: .control("c"),
+            sortIndex: 0
+        )
+        var movedShortcut = starter.makeShortcut()
+        movedShortcut.collection = .claude
+        var snapshot = ShortcutStoreSnapshot(shortcuts: [movedShortcut])
+
+        XCTAssertTrue(
+            snapshot.missingStarterShortcuts(in: .shell, from: [starter]).isEmpty
+        )
+        XCTAssertFalse(snapshot.restoreMissingStarters(in: .shell, starters: [starter]))
+    }
+
     func testFavoritesResolveOrderedVisibleShortcuts() {
         let first = Shortcut(
             id: UUID(),
