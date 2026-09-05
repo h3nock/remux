@@ -279,6 +279,7 @@ final class RemuxRootModel: ObservableObject {
     @Published private(set) var connectionSetup: ConnectionSetupState?
     @Published private(set) var library: ConnectionLibrarySnapshot = .empty
     @Published private(set) var terminalSettings: TerminalSettings = .default
+    @Published private(set) var terminalSettingsSaveFailed = false
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
     @Published private(set) var isSetupActionInProgress = false
     @Published private(set) var tmuxSessionDiscoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState] = [:]
@@ -1515,23 +1516,32 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func updateTerminalSettings(_ mutation: (inout TerminalSettings) -> Void) async {
+        var updated = terminalSettings
+        mutation(&updated)
+
         do {
-            var updated = terminalSettings
-            mutation(&updated)
             try await dependencies.settingsRepository.saveSettings(updated)
-            terminalSettings = updated
-            dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
-            try applyTerminalSettingsToActiveSessions(updated)
         } catch {
-            transitionToFailed(error)
+            NSLog("Remux terminal settings save failed: %@", String(describing: error))
+            terminalSettingsSaveFailed = true
+            return
         }
+
+        terminalSettingsSaveFailed = false
+        terminalSettings = updated
+        dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
+        applyTerminalSettingsToActiveSessions(updated)
+    }
+
+    func dismissTerminalSettingsSaveFailure() {
+        terminalSettingsSaveFailed = false
     }
 
     func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
         preparedTransportCoordinator.claimOrCreateTransport(for: target)
     }
 
-    private func applyTerminalSettingsToActiveSessions(_ settings: TerminalSettings) throws {
+    private func applyTerminalSettingsToActiveSessions(_ settings: TerminalSettings) {
         RemuxActiveSessionCollection.refreshTerminalSettings(
             settings,
             in: &activeSessions
@@ -1540,7 +1550,11 @@ final class RemuxRootModel: ObservableObject {
         for session in activeSessions {
             let key = TerminalRuntimeAttemptKey(session: session)
             guard let model = terminalScreenModels[key] else { continue }
-            try model.applyTerminalSettings(settings)
+            do {
+                try model.applyTerminalSettings(settings)
+            } catch {
+                NSLog("Remux terminal settings apply failed: %@", String(describing: error))
+            }
         }
     }
 

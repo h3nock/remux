@@ -3070,7 +3070,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNil(credential)
     }
 
-    func testFailedStateStopsOwnedTerminalModels() async throws {
+    func testFailedSettingsSaveKeepsActiveTerminalAndPreviousSettings() async throws {
         let server = SavedServer(
             displayName: "Build Host",
             host: "build.example.test",
@@ -3099,19 +3099,24 @@ final class RemuxRootModelTests: XCTestCase {
         let session = try XCTUnwrap(harness.model.activeSessions.first)
         let terminalModel = harness.model.terminalScreenModel(for: session)
         await waitForConnecting(terminalModel)
+        let previousSettings = harness.model.terminalSettings
 
         await harness.model.updateTerminalSettings { settings in
             settings.fontSize = 19
         }
 
-        guard case .failed = harness.model.state else {
-            XCTFail("expected failed state")
-            return
-        }
-        XCTAssertTrue(harness.model.activeSessions.isEmpty)
-        XCTAssertTrue(harness.model.activeTerminalScreenEntries.isEmpty)
-        XCTAssertFalse(harness.model.hasTerminalScreenModel(for: session))
-        await waitForStopped(terminalModel)
+        XCTAssertEqual(harness.model.state, .terminal(workspace.id))
+        XCTAssertEqual(harness.model.terminalSettings, previousSettings)
+        XCTAssertEqual(harness.model.activeSessions.map(\.id), [workspace.id])
+        XCTAssertEqual(harness.model.activeTerminalScreenEntries.map(\.id), [workspace.id])
+        XCTAssertTrue(harness.model.hasTerminalScreenModel(for: session))
+        XCTAssertTrue(harness.model.terminalScreenModel(for: session) === terminalModel)
+        XCTAssertNotNil(terminalModel.session)
+        XCTAssertTrue(harness.model.terminalSettingsSaveFailed)
+
+        harness.model.dismissTerminalSettingsSaveFailure()
+
+        XCTAssertFalse(harness.model.terminalSettingsSaveFailed)
     }
 
     func testRuntimeDisconnectMarksActiveSessionDisconnected() async throws {

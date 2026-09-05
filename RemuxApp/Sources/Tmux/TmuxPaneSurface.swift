@@ -409,7 +409,7 @@ final class TmuxPaneSurface {
         guard lifecycle == .active, let renderer else { return false }
         let result = ghostty_terminal_surface_update_config(renderer.handle)
         guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
-            GhosttyRuntimeTrace.diagnostics(
+            NSLog(
                 "tmuxPane.configUpdate failed pane=\(paneID) result=\(String(describing: result))"
             )
             return false

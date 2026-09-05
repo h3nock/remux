@@ -531,25 +531,30 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     )
                     .presentationContentInteraction(.scrolls)
                     .presentationDragIndicator(.hidden)
-                    .terminalSelectionSheetPresentationBackground()
+                    .remuxSheetPresentationBackground()
                     .ghosttyTerminalChromePresentation(
                         presentation.terminalTheme.terminalChromeColorScheme,
                         chromeStyle: presentation.terminalTheme.terminalChromeStyle
                     )
             }
             .sheet(isPresented: $isShortcutsSettingsPresented) {
-                ShortcutsSettingsSheet(store: shortcutStore)
+                ShortcutsSettingsSheet(
+                    store: shortcutStore,
+                    theme: presentation.terminalTheme
+                )
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
-                    .presentationBackground(.regularMaterial)
-                    .presentationCornerRadius(28)
+                    .remuxSheetPresentationBackground()
                     .ghosttyTerminalChromePresentation(
                         presentation.terminalTheme.terminalChromeColorScheme,
                         chromeStyle: presentation.terminalTheme.terminalChromeStyle
                     )
             }
             .sheet(item: $shortcutEditorRequest) { request in
-                ShortcutEditorSheet(request: request) { shortcut, favorite in
+                ShortcutEditorSheet(
+                    request: request,
+                    theme: presentation.terminalTheme
+                ) { shortcut, favorite in
                     shortcutStore.update {
                         $0.upsertShortcut(shortcut)
                         if favorite {
@@ -559,8 +564,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(.regularMaterial)
-                .presentationCornerRadius(28)
+                .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
                     presentation.terminalTheme.terminalChromeColorScheme,
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle
@@ -573,7 +577,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .terminalSelectionSheetPresentationBackground()
+                .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
                     presentation.terminalTheme.terminalChromeColorScheme,
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle

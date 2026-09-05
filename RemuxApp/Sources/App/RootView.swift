@@ -200,7 +200,7 @@ private struct RemuxWorkspaceShell: View {
                 onRefresh: model.refreshTmuxSessions,
                 discoveryStates: model.tmuxSessionDiscoveryStates
             )
-            .terminalSelectionSheetPresentationBackground()
+            .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
@@ -218,6 +218,26 @@ private struct RemuxWorkspaceShell: View {
                     isActive: true
                 )
         }
+        .alert(
+            "Settings Couldn’t Be Saved",
+            isPresented: terminalSettingsSaveFailureIsPresented
+        ) {
+            Button("OK", role: .cancel) {
+                model.dismissTerminalSettingsSaveFailure()
+            }
+        } message: {
+            Text("Your previous settings are still in use. Try again.")
+        }
+    }
+
+    private var terminalSettingsSaveFailureIsPresented: Binding<Bool> {
+        Binding(
+            get: { model.terminalSettingsSaveFailed },
+            set: { isPresented in
+                guard !isPresented else { return }
+                model.dismissTerminalSettingsSaveFailure()
+            }
+        )
     }
 
     private var connectionSetupSheetIsPresented: Binding<Bool> {
@@ -252,7 +272,7 @@ private struct RemuxWorkspaceShell: View {
             }
             .presentationDetents(presentationDetents(for: setup.mode))
             .presentationDragIndicator(.visible)
-            .terminalSelectionSheetPresentationBackground()
+            .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
@@ -516,6 +536,7 @@ private struct RemuxWorkspaceShell: View {
                 activeSessions: model.activeSessions,
                 discoveryStates: model.tmuxSessionDiscoveryStates,
                 terminalSettings: terminalSettingsBinding,
+                shortcutStore: shortcutStore,
                 presentedServerID: $presentedServerID,
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID, showsServerSummary in
@@ -802,6 +823,7 @@ private struct ConnectionLibraryView: View {
     let activeSessions: [ActiveTerminalSession]
     let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
     @Binding var terminalSettings: TerminalSettings
+    let shortcutStore: ShortcutStore
     @Binding var presentedServerID: SavedServer.ID?
     let onAddServer: () -> Void
     let onAddWorkspace: (SavedServer.ID, Bool) -> Void
@@ -852,7 +874,10 @@ private struct ConnectionLibraryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink {
-                    TerminalSettingsView(settings: $terminalSettings)
+                    TerminalSettingsView(
+                        settings: $terminalSettings,
+                        shortcutStore: shortcutStore
+                    )
                 } label: {
                     Image(systemName: "gearshape")
                 }
@@ -1160,50 +1185,11 @@ private struct ConnectionLibraryView: View {
     }
 }
 
-private enum LibraryHomePalette {
-    static let background = Color(uiColor: .libraryHomeBackground)
-    static let rowSurface = Color(uiColor: .libraryHomeRowSurface)
-    static let separator = Color(uiColor: .libraryHomeSeparator)
-    static let sectionHeader = Color(uiColor: .libraryHomeSectionHeader)
-    static let toolbarTint = Color(uiColor: .libraryHomeToolbarTint)
-    static let controlAccent = Color(uiColor: .libraryHomeControlAccent)
-    static let rowIconForeground = Color(uiColor: .libraryHomeRowIconForeground)
-    static let rowIconSurface = Color(uiColor: .libraryHomeRowIconSurface)
-}
-
-private extension TerminalTheme {
-    var libraryColorScheme: ColorScheme {
-        switch self {
-        case .remuxLight:
-            .light
-        case .ghosttyDefault, .remuxDark:
-            .dark
-        }
-    }
-}
-
 private extension View {
-    func libraryHomeListRowSurface() -> some View {
-        listRowBackground(LibraryHomePalette.rowSurface)
-            .listRowSeparatorTint(LibraryHomePalette.separator)
-    }
-
-    func libraryHomeChrome(theme: TerminalTheme) -> some View {
-        preferredColorScheme(theme.libraryColorScheme)
-            .tint(LibraryHomePalette.toolbarTint)
-            .toolbarBackground(LibraryHomePalette.background, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-    }
-
-    func libraryHomeGroupedScrollBackground() -> some View {
-        scrollContentBackground(.hidden)
-            .background(LibraryHomePalette.background.ignoresSafeArea())
-    }
-
     @ViewBuilder
     func connectionSetupListRowSurface(usesLibraryChrome: Bool) -> some View {
         if usesLibraryChrome {
-            libraryHomeListRowSurface()
+            remuxAppListRowSurface()
         } else {
             listRowBackground(Color.clear)
                 .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
@@ -1216,8 +1202,8 @@ private extension View {
         theme: TerminalTheme
     ) -> some View {
         if usesLibraryChrome {
-            libraryHomeGroupedScrollBackground()
-                .libraryHomeChrome(theme: theme)
+            remuxAppGroupedScrollBackground()
+                .remuxAppChrome(theme: theme)
         } else {
             scrollContentBackground(.hidden)
         }
@@ -1237,81 +1223,6 @@ private struct LibraryHomeSectionHeader: View {
             .foregroundStyle(LibraryHomePalette.sectionHeader)
             .textCase(nil)
     }
-}
-
-private extension UIColor {
-    static let libraryHomeBackground = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.15, green: 0.17, blue: 0.21, alpha: 1.0)
-        default:
-            .systemGroupedBackground
-        }
-    }
-
-    static let libraryHomeRowSurface = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.21, green: 0.23, blue: 0.28, alpha: 1.0)
-        default:
-            .secondarySystemGroupedBackground
-        }
-    }
-
-    static let libraryHomeSeparator = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor.white.withAlphaComponent(0.08)
-        default:
-            .separator
-        }
-    }
-
-    static let libraryHomeSectionHeader = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.72, green: 0.74, blue: 0.80, alpha: 1.0)
-        default:
-            .secondaryLabel
-        }
-    }
-
-    static let libraryHomeToolbarTint = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.91, green: 0.93, blue: 0.98, alpha: 1.0)
-        default:
-            .label
-        }
-    }
-
-    static let libraryHomeControlAccent = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.39, green: 0.64, blue: 1.0, alpha: 1.0)
-        default:
-            .systemBlue
-        }
-    }
-
-    static let libraryHomeRowIconForeground = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.79, green: 0.83, blue: 0.91, alpha: 1.0)
-        default:
-            .secondaryLabel
-        }
-    }
-
-    static let libraryHomeRowIconSurface = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor.white.withAlphaComponent(0.07)
-        default:
-            .tertiarySystemFill
-        }
-    }
-
 }
 
 private struct ServerDetailView: View {
@@ -1896,10 +1807,15 @@ private func serverSummary(
 
 private struct TerminalSettingsView: View {
     @Binding private var sourceSettings: TerminalSettings
+    private let shortcutStore: ShortcutStore
     @State private var settings: TerminalSettings
 
-    init(settings: Binding<TerminalSettings>) {
+    init(
+        settings: Binding<TerminalSettings>,
+        shortcutStore: ShortcutStore
+    ) {
         _sourceSettings = settings
+        self.shortcutStore = shortcutStore
         _settings = State(initialValue: settings.wrappedValue)
     }
 
@@ -1955,6 +1871,19 @@ private struct TerminalSettingsView: View {
                     "You can override this per window from Panes. Remux normally clears zooms "
                         + "it applied when closing. If one remains on the server, use prefix + z."
                 )
+            }
+            .libraryHomeListRowSurface()
+
+            Section("Keyboard") {
+                NavigationLink {
+                    ShortcutsSettingsView(
+                        store: shortcutStore,
+                        theme: settings.theme
+                    )
+                } label: {
+                    Label("Shortcuts", systemImage: "keyboard")
+                }
+                .accessibilityIdentifier("settings.shortcuts")
             }
             .libraryHomeListRowSurface()
 

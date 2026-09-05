@@ -554,9 +554,6 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTAssertTrue(settingsForm.waitForExistence(timeout: 2))
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 2))
-        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
-        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
-        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
         tapFontDefaultToggle()
         let fontSize = app.descendants(matching: .any)["settings.font-size"]
         XCTAssertTrue(fontSize.waitForExistence(timeout: 2))
@@ -569,6 +566,13 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings.theme.preview"].waitForExistence(timeout: 2))
         app.buttons["Mocha"].tap()
         XCTAssertTrue(app.staticTexts["Catppuccin Mocha"].waitForExistence(timeout: 2))
+
+        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
+        for _ in 0..<3 where !legacyRSAHostKeys.exists {
+            settingsForm.swipeUp()
+        }
+        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
+        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
     }
 
     func testFreshPhoneInstallShowsMultipaneZoomDefaultEnabled() {
@@ -579,6 +583,26 @@ final class RemuxAppUITests: XCTestCase {
         let zoom = app.switches["settings.zoom-multipane-windows-by-default"]
         XCTAssertTrue(zoom.waitForExistence(timeout: 2))
         XCTAssertEqual(zoom.value as? String, "1")
+    }
+
+    func testSettingsOpenShortcutCollections() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let shortcuts = app.buttons["settings.shortcuts"]
+        if !shortcuts.waitForExistence(timeout: 1) {
+            settingsForm.swipeUp()
+        }
+        XCTAssertTrue(shortcuts.waitForExistence(timeout: 2))
+        shortcuts.tap()
+
+        XCTAssertTrue(app.navigationBars["Shortcuts"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Collections"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Edit"].exists)
+        XCTAssertTrue(app.buttons["Add Collection"].exists)
+        XCTAssertFalse(app.buttons["Close Shortcuts"].exists)
+        attachScreenshot(named: "settings-shortcuts-shared-chrome")
     }
 
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
@@ -746,6 +770,53 @@ final class RemuxAppUITests: XCTestCase {
             "yes 'REMUX_RENDER_CHECK ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' | head -120"
         )
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
+    }
+
+    func testLiveCreatedShortcutExecutesInTmuxWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("shortcut")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        let control = app.buttons["terminal.ctrl"]
+        XCTAssertTrue(control.waitForExistence(timeout: 5))
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
+
+        XCTAssertTrue(app.buttons["terminal.shortcuts.add"].waitForExistence(timeout: 2))
+        app.buttons["terminal.shortcuts.add"].tap()
+        XCTAssertTrue(app.navigationBars["New Shortcut"].waitForExistence(timeout: 2))
+
+        let titleField = app.textFields["Title"].firstMatch
+        XCTAssertTrue(titleField.waitForExistence(timeout: 2))
+        titleField.tap()
+        titleField.typeText("E2E")
+
+        let textField = app.textFields["Text"].firstMatch
+        XCTAssertTrue(textField.waitForExistence(timeout: 2))
+        textField.tap()
+        textField.typeText("echo REMUXS")
+        app.buttons["Save"].tap()
+        XCTAssertFalse(app.navigationBars["New Shortcut"].waitForExistence(timeout: 2))
+
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
+        let shortcut = app.buttons["E2E"]
+        XCTAssertTrue(shortcut.waitForExistence(timeout: 2))
+        shortcut.tap()
+        XCTAssertFalse(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUXS"
+        )
     }
 
     func testLiveNewSessionBackReturnsToPresentingSessionSheetWhenConfigured() throws {
