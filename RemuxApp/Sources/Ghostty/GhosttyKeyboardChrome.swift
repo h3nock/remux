@@ -510,7 +510,7 @@ private struct GhosttyKeyboardKeyButton: View {
             .accessibilityIdentifier(accessibilityIdentifier)
             .accessibilityAddTraits(.isButton)
             .accessibilityActions {
-                if let onLongPress {
+                if isEnabled, let onLongPress {
                     Button("Open Shortcuts", action: onLongPress)
                 }
             }
@@ -534,12 +534,13 @@ private struct GhosttyKeyboardKeyButton: View {
                     isPressed = pressing
                 },
                 perform: {
-                    guard let onLongPress else { return }
+                    guard isEnabled, let onLongPress else { return }
                     didLongPress = true
                     Haptic.tap(.medium)
                     onLongPress()
                 }
             )
+            .disabled(!isEnabled)
     }
 }
 
