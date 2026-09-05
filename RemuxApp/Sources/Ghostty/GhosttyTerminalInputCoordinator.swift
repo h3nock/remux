@@ -146,6 +146,12 @@ struct GhosttyTerminalInputController: Equatable {
         modifierState.clearControl()
     }
 
+    mutating func reconcileToolbarKeys(_ toolbarKeys: TerminalToolbarKeys) {
+        if !toolbarKeys.containsControl {
+            clearControl()
+        }
+    }
+
     mutating func receiveText(_ text: String) -> TextAction {
         let outbound = modifierState.apply(to: text)
         switch tmuxPrefixInputBuffer.handleText(outbound) {

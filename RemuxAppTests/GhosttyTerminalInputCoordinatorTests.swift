@@ -616,6 +616,29 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertFalse(controller.isControlArmed)
     }
 
+    func testInputControllerClearsArmedControlWhenToolbarNoLongerContainsControl() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleControl()
+
+        controller.reconcileToolbarKeys(
+            TerminalToolbarKeys(first: .escape, second: .tab, third: .arrowUp)
+        )
+
+        XCTAssertFalse(controller.isControlArmed)
+        XCTAssertEqual(controller.receiveText("c"), .submit("c"))
+    }
+
+    func testInputControllerKeepsArmedControlWhenToolbarStillContainsControl() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleControl()
+
+        controller.reconcileToolbarKeys(
+            TerminalToolbarKeys(first: .escape, second: .control, third: .tab)
+        )
+
+        XCTAssertTrue(controller.isControlArmed)
+    }
+
     func testInputControllerPrefixArmsFlushWithoutSubmitting() {
         var controller = GhosttyTerminalInputController()
 

@@ -1876,6 +1876,24 @@ private struct TerminalSettingsView: View {
 
             Section("Keyboard") {
                 NavigationLink {
+                    TerminalToolbarKeysSettingsView(
+                        toolbarKeys: toolbarKeysBinding,
+                        theme: settings.theme
+                    )
+                } label: {
+                    Label {
+                        LabeledContent("Toolbar Keys") {
+                            Text(settings.toolbarKeys.compactSummary)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "keyboard.badge.ellipsis")
+                    }
+                }
+                .accessibilityIdentifier("settings.toolbar-keys")
+                .accessibilityValue(settings.toolbarKeys.summary)
+
+                NavigationLink {
                     ShortcutsSettingsView(
                         store: shortcutStore,
                         theme: settings.theme
@@ -1965,6 +1983,91 @@ private struct TerminalSettingsView: View {
             set: { value in
                 settings.zoomMultipaneWindowsByDefault = value
                 sourceSettings = settings
+            }
+        )
+    }
+
+    private var toolbarKeysBinding: Binding<TerminalToolbarKeys> {
+        Binding(
+            get: { settings.toolbarKeys },
+            set: { value in
+                settings.toolbarKeys = value
+                sourceSettings = settings
+            }
+        )
+    }
+}
+
+private struct TerminalToolbarKeysSettingsView: View {
+    @Binding var toolbarKeys: TerminalToolbarKeys
+    let theme: TerminalTheme
+
+    var body: some View {
+        Form {
+            Section {
+                toolbarKeyPicker(
+                    "First Key",
+                    selection: binding(for: \.first),
+                    identifier: "settings.toolbar-keys.slot.0"
+                )
+                toolbarKeyPicker(
+                    "Second Key",
+                    selection: binding(for: \.second),
+                    identifier: "settings.toolbar-keys.slot.1"
+                )
+                toolbarKeyPicker(
+                    "Third Key",
+                    selection: binding(for: \.third),
+                    identifier: "settings.toolbar-keys.slot.2"
+                )
+            } header: {
+                Text("Key Layout")
+            } footer: {
+                Text(
+                    "These keys appear on the left side of the terminal toolbar. "
+                        + "Touch and hold the first key to open Shortcuts."
+                )
+            }
+            .libraryHomeListRowSurface()
+
+            if toolbarKeys != .default {
+                Section {
+                    Button("Reset to Defaults") {
+                        toolbarKeys = .default
+                    }
+                    .accessibilityIdentifier("settings.toolbar-keys.reset")
+                }
+                .libraryHomeListRowSurface()
+            }
+        }
+        .libraryHomeGroupedScrollBackground()
+        .libraryHomeChrome(theme: theme)
+        .navigationTitle("Toolbar Keys")
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("settings.toolbar-keys.form")
+    }
+
+    private func toolbarKeyPicker(
+        _ title: String,
+        selection: Binding<TerminalToolbarKey>,
+        identifier: String
+    ) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(TerminalToolbarKey.allCases, id: \.self) { key in
+                Text(key.settingsTitle).tag(key)
+            }
+        }
+        .pickerStyle(.navigationLink)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func binding(
+        for keyPath: WritableKeyPath<TerminalToolbarKeys, TerminalToolbarKey>
+    ) -> Binding<TerminalToolbarKey> {
+        Binding(
+            get: { toolbarKeys[keyPath: keyPath] },
+            set: { value in
+                toolbarKeys[keyPath: keyPath] = value
             }
         )
     }
