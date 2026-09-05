@@ -18,6 +18,15 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertNil(TerminalSettings(fontSize: .nan, theme: .ghosttyDefault).fontSize)
     }
 
+    func testSettingsAcceptBoundaryFontSizesWithoutClamping() {
+        XCTAssertEqual(TerminalSettings.minimumFontSize, 5)
+        XCTAssertEqual(TerminalSettings(fontSize: 5, theme: .ghosttyDefault).fontSize, 5)
+        XCTAssertEqual(
+            TerminalSettings(fontSize: TerminalSettings.maximumFontSize, theme: .ghosttyDefault).fontSize,
+            TerminalSettings.maximumFontSize
+        )
+    }
+
     func testDecodingOlderSettingsDefaultsLegacyRSAHostKeysToDisabled() throws {
         let data = Data(#"{"fontSize":16,"theme":"remuxLight"}"#.utf8)
 
