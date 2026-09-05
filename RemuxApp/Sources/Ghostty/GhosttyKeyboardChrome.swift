@@ -486,7 +486,6 @@ private struct GhosttyKeyboardKeyButton: View {
     let action: () -> Bool
 
     @State private var isPressed = false
-    @State private var didLongPress = false
 
     var body: some View {
         Text(title)
@@ -517,10 +516,6 @@ private struct GhosttyKeyboardKeyButton: View {
             .onTapGesture {
                 guard isEnabled else { return }
                 isPressed = false
-                if didLongPress {
-                    didLongPress = false
-                    return
-                }
                 _ = action()
             }
             .onLongPressGesture(
@@ -535,7 +530,6 @@ private struct GhosttyKeyboardKeyButton: View {
                 },
                 perform: {
                     guard isEnabled, let onLongPress else { return }
-                    didLongPress = true
                     Haptic.tap(.medium)
                     onLongPress()
                 }
