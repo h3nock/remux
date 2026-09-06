@@ -44,7 +44,12 @@ final class TerminalSettingsRepositoryTests: XCTestCase {
             fontSize: 16,
             theme: .remuxLight,
             allowInsecureRSAHostKeys: true,
-            zoomMultipaneWindowsByDefault: true
+            zoomMultipaneWindowsByDefault: true,
+            toolbarKeys: TerminalToolbarKeys(
+                first: .pageDown,
+                second: .control,
+                third: .pageDown
+            )
         )
 
         try await repository.saveSettings(saved)
