@@ -46,6 +46,50 @@ final class RemuxAppUITests: XCTestCase {
         _ = waitForTerminalHomeButton()
     }
 
+    func testToolbarKeysUpdateRetainedSimulatorTerminalAndFirstSlotOpensShortcuts() {
+        launchSeededSimulatorTerminal()
+
+        XCTAssertEqual(app.buttons["terminal.toolbar-key.0"].label, "Control")
+        openHomeFromTerminal()
+        app.buttons["library.settings"].tap()
+        let toolbarKeys = app.buttons["settings.toolbar-keys"]
+        if !toolbarKeys.waitForExistence(timeout: 1) {
+            settingsForm.swipeUp()
+        }
+        toolbarKeys.tap()
+        app.buttons["settings.toolbar-keys.slot.0"].tap()
+        selectToolbarKey("Page Down")
+        app.buttons["settings.toolbar-keys.slot.1"].tap()
+        selectToolbarKey("Control")
+        app.buttons["settings.toolbar-keys.slot.2"].tap()
+        selectToolbarKey("Home")
+        app.navigationBars["Toolbar Keys"].buttons.firstMatch.tap()
+        app.navigationBars["Settings"].buttons.firstMatch.tap()
+
+        let retainedSession = app.buttons["library.active-session.show"].firstMatch
+        XCTAssertTrue(retainedSession.waitForExistence(timeout: 5))
+        retainedSession.tap()
+
+        let first = app.buttons["terminal.toolbar-key.0"]
+        let control = app.buttons["terminal.toolbar-key.1"]
+        let third = app.buttons["terminal.toolbar-key.2"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        XCTAssertEqual(first.label, "Page Down")
+        XCTAssertEqual(control.label, "Control")
+        XCTAssertEqual(third.label, "Home")
+
+        attachScreenshot(named: "toolbar-keys-control-moved")
+
+        first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+        attachScreenshot(named: "toolbar-keys-first-slot-shortcuts")
+        app.otherElements["terminal.screen"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+            .tap()
+        XCTAssertFalse(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 1))
+    }
+
     func testComposerDictationStopAndCancelFlow() {
         let transcript = "Review the current changes and run the focused tests"
         app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = transcript
@@ -605,6 +649,57 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "settings-shortcuts-shared-chrome")
     }
 
+    func testSettingsConfigureAndResetToolbarKeys() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let toolbarKeys = app.buttons["settings.toolbar-keys"]
+        if !toolbarKeys.waitForExistence(timeout: 1) {
+            settingsForm.swipeUp()
+        }
+        XCTAssertTrue(toolbarKeys.waitForExistence(timeout: 2))
+        XCTAssertEqual(toolbarKeys.value as? String, "Control, Escape, Tab")
+        attachScreenshot(named: "settings-toolbar-keys-row-default")
+        toolbarKeys.tap()
+
+        XCTAssertTrue(app.navigationBars["Toolbar Keys"].waitForExistence(timeout: 2))
+        let first = app.buttons["settings.toolbar-keys.slot.0"]
+        let second = app.buttons["settings.toolbar-keys.slot.1"]
+        let third = app.buttons["settings.toolbar-keys.slot.2"]
+        XCTAssertEqual(first.value as? String, "Control")
+        XCTAssertEqual(second.value as? String, "Escape")
+        XCTAssertEqual(third.value as? String, "Tab")
+        attachScreenshot(named: "settings-toolbar-keys-default")
+
+        first.tap()
+        XCTAssertTrue(app.navigationBars["First Key"].waitForExistence(timeout: 2))
+        attachScreenshot(named: "settings-toolbar-keys-picker")
+        selectToolbarKey("Page Down")
+        XCTAssertEqual(first.value as? String, "Page Down")
+
+        second.tap()
+        XCTAssertTrue(app.navigationBars["Second Key"].waitForExistence(timeout: 2))
+        selectToolbarKey("Page Down")
+        XCTAssertEqual(second.value as? String, "Page Down")
+
+        third.tap()
+        XCTAssertTrue(app.navigationBars["Third Key"].waitForExistence(timeout: 2))
+        selectToolbarKey("Home")
+        XCTAssertEqual(third.value as? String, "Home")
+        attachScreenshot(named: "settings-toolbar-keys-customized")
+
+        let reset = app.buttons["settings.toolbar-keys.reset"]
+        XCTAssertTrue(reset.waitForExistence(timeout: 2))
+        reset.tap()
+
+        XCTAssertEqual(first.value as? String, "Control")
+        XCTAssertEqual(second.value as? String, "Escape")
+        XCTAssertEqual(third.value as? String, "Tab")
+        XCTAssertFalse(reset.exists)
+        attachScreenshot(named: "settings-toolbar-keys-reset")
+    }
+
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
         app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "passwordRequired"
         launchSimulatorApp()
@@ -783,7 +878,7 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 60)
         waitForLiveTerminalInputReady(timeout: 10)
 
-        let control = app.buttons["terminal.ctrl"]
+        let control = app.buttons["terminal.toolbar-key.0"]
         XCTAssertTrue(control.waitForExistence(timeout: 5))
         control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 1.2)
@@ -816,6 +911,133 @@ final class RemuxAppUITests: XCTestCase {
             sessionName: sessionName,
             paneIndex: 1,
             marker: "REMUXS"
+        )
+    }
+
+    func testLiveCustomizedToolbarKeysExecuteAndRetainSessionWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("toolbar-keys")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+
+        let initialFirst = app.buttons["terminal.toolbar-key.0"]
+        XCTAssertTrue(initialFirst.waitForExistence(timeout: 5))
+        XCTAssertEqual(initialFirst.label, "Control")
+
+        openHomeFromTerminal()
+        app.buttons["library.settings"].tap()
+        let toolbarKeys = app.buttons["settings.toolbar-keys"]
+        if !toolbarKeys.waitForExistence(timeout: 1) {
+            settingsForm.swipeUp()
+        }
+        XCTAssertTrue(toolbarKeys.waitForExistence(timeout: 2))
+        toolbarKeys.tap()
+
+        let firstSetting = app.buttons["settings.toolbar-keys.slot.0"]
+        let secondSetting = app.buttons["settings.toolbar-keys.slot.1"]
+        let thirdSetting = app.buttons["settings.toolbar-keys.slot.2"]
+        firstSetting.tap()
+        selectToolbarKey("Escape")
+        secondSetting.tap()
+        selectToolbarKey("Control")
+        thirdSetting.tap()
+        selectToolbarKey("Up Arrow")
+
+        app.navigationBars["Toolbar Keys"].buttons.firstMatch.tap()
+        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        let retainedSession = app.buttons["library.active-session.show"].firstMatch
+        XCTAssertTrue(retainedSession.waitForExistence(timeout: 5))
+        retainedSession.tap()
+        waitForLiveTerminalReady(timeout: 10)
+
+        let escape = app.buttons["terminal.toolbar-key.0"]
+        let control = app.buttons["terminal.toolbar-key.1"]
+        let arrowUp = app.buttons["terminal.toolbar-key.2"]
+        XCTAssertTrue(escape.waitForExistence(timeout: 5))
+        XCTAssertEqual(escape.label, "Escape")
+        XCTAssertEqual(control.label, "Control")
+        XCTAssertEqual(arrowUp.label, "Up Arrow")
+
+        sendTerminalCommand(
+            "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); r=select.select([f],[],[],3)[0]; b=os.read(f,1) if r else b\"\"; termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_LONG_PRESS_OK\" if not b else \"REMUX_LONG_PRESS_BAD\")'"
+        )
+        escape.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+        app.otherElements["terminal.screen"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+            .tap()
+        XCTAssertFalse(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 1))
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_LONG_PRESS_OK"
+        )
+
+        sendTerminalCommand(
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_OK\" if b and b[0]==27 else \"REMUX_ESCAPE_BAD\")'"
+        )
+        escape.tap()
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_ESCAPE_OK"
+        )
+
+        sendTerminalCommand("sleep 10")
+        control.tap()
+        waitForLiveTerminalInputReady(timeout: 10)
+        app.typeText("c")
+        sendTerminalCommand("echo REMUX_CTRL_MOVED_OK")
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_CTRL_MOVED_OK"
+        )
+
+        sendTerminalCommand("echo REMUX_ARROW_UP_OK")
+        sendTerminalCommand("clear")
+        arrowUp.tap()
+        arrowUp.tap()
+        waitForLiveTerminalInputReady(timeout: 10)
+        app.typeText("\n")
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_ARROW_UP_OK"
+        )
+
+        sendTerminalCommand(
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_OK\" if b and b[0]==99 else \"REMUX_PLAIN_C_BAD\")'"
+        )
+        control.tap()
+        openHomeFromTerminal()
+        app.buttons["library.settings"].tap()
+        let changedToolbarKeys = app.buttons["settings.toolbar-keys"]
+        if !changedToolbarKeys.waitForExistence(timeout: 1) {
+            settingsForm.swipeUp()
+        }
+        changedToolbarKeys.tap()
+        app.buttons["settings.toolbar-keys.slot.1"].tap()
+        selectToolbarKey("Tab")
+        app.navigationBars["Toolbar Keys"].buttons.firstMatch.tap()
+        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        app.buttons["library.active-session.show"].firstMatch.tap()
+        waitForLiveTerminalReady(timeout: 10)
+        waitForLiveTerminalInputReady(timeout: 10)
+        app.typeText("c")
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_PLAIN_C_OK"
         )
     }
 
@@ -2317,7 +2539,7 @@ final class RemuxAppUITests: XCTestCase {
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
 
-        let ctrl = app.buttons["terminal.ctrl"]
+        let ctrl = app.buttons["terminal.toolbar-key.0"]
         XCTAssertTrue(ctrl.waitForExistence(timeout: 5))
         ctrl.tap()
         waitForLiveTerminalInputReady(timeout: 10)
@@ -2797,6 +3019,33 @@ final class RemuxAppUITests: XCTestCase {
     private func launchSimulatorApp() {
         app.launchEnvironment["REMUX_UI_TESTING"] = "1"
         app.launch()
+    }
+
+    private func launchSeededSimulatorTerminal() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+                "REMUX_DEBUG_TMUX_SESSION": "ui-test",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+
+        let session = app.descendants(matching: .any)["library.session.resume"].firstMatch
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        session.tap()
+        XCTAssertTrue(app.buttons["terminal.toolbar-key.0"].waitForExistence(timeout: 5))
+    }
+
+    private func selectToolbarKey(_ title: String) {
+        let option = app.collectionViews.buttons[title].firstMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 2))
+        option.tap()
     }
 
     private func launchLiveSSHAppIfConfigured(
@@ -4299,7 +4548,7 @@ final class RemuxAppUITests: XCTestCase {
         attach(name: "23-grouped-terminal-dock-keyboard")
 
         // Capture the grouped dock with ctrl armed (modifier feedback).
-        let ctrlButton = app.buttons["terminal.ctrl"]
+        let ctrlButton = app.buttons["terminal.toolbar-key.0"]
         if ctrlButton.exists, ctrlButton.isHittable {
             ctrlButton.tap()
             sleep(1)

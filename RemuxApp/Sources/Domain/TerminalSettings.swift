@@ -125,6 +125,122 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
+    case control
+    case escape
+    case tab
+    case enter
+    case backspace
+    case delete
+    case arrowUp
+    case arrowDown
+    case arrowLeft
+    case arrowRight
+    case home
+    case end
+    case pageUp
+    case pageDown
+
+    var settingsTitle: String {
+        switch self {
+        case .control:
+            "Control"
+        case .escape:
+            "Escape"
+        case .tab:
+            "Tab"
+        case .enter:
+            "Enter"
+        case .backspace:
+            "Backspace"
+        case .delete:
+            "Delete"
+        case .arrowUp:
+            "Up Arrow"
+        case .arrowDown:
+            "Down Arrow"
+        case .arrowLeft:
+            "Left Arrow"
+        case .arrowRight:
+            "Right Arrow"
+        case .home:
+            "Home"
+        case .end:
+            "End"
+        case .pageUp:
+            "Page Up"
+        case .pageDown:
+            "Page Down"
+        }
+    }
+
+    var toolbarTitle: String {
+        switch self {
+        case .control:
+            "ctrl"
+        case .escape:
+            "esc"
+        case .tab:
+            "tab"
+        case .enter:
+            "enter"
+        case .backspace:
+            "⌫"
+        case .delete:
+            "del"
+        case .arrowUp:
+            "↑"
+        case .arrowDown:
+            "↓"
+        case .arrowLeft:
+            "←"
+        case .arrowRight:
+            "→"
+        case .home:
+            "home"
+        case .end:
+            "end"
+        case .pageUp:
+            "pgup"
+        case .pageDown:
+            "pgdn"
+        }
+    }
+
+    var shortcutKey: ShortcutKey? {
+        guard self != .control else { return nil }
+        return ShortcutKey(rawValue: rawValue)
+    }
+}
+
+struct TerminalToolbarKeys: Equatable, Codable, Sendable {
+    static let `default` = Self(
+        first: .control,
+        second: .escape,
+        third: .tab
+    )
+
+    var first: TerminalToolbarKey
+    var second: TerminalToolbarKey
+    var third: TerminalToolbarKey
+
+    var values: [TerminalToolbarKey] {
+        [first, second, third]
+    }
+
+    var summary: String {
+        values.map(\.settingsTitle).joined(separator: ", ")
+    }
+
+    var compactSummary: String {
+        values.map(\.toolbarTitle).joined(separator: " · ")
+    }
+
+    var containsControl: Bool {
+        values.contains(.control)
+    }
+}
+
 struct TerminalSettings: Equatable, Codable, Sendable {
     static let minimumFontSize: Float32 = 5
     static let maximumFontSize: Float32 = 24
@@ -143,16 +259,22 @@ struct TerminalSettings: Equatable, Codable, Sendable {
     /// or this global preference changes.
     var zoomMultipaneWindowsByDefault: Bool
 
+    /// The three configurable keys shown on the leading side of the terminal
+    /// toolbar. The first key owns the long-press shortcut-palette gesture.
+    var toolbarKeys: TerminalToolbarKeys
+
     init(
         fontSize: Float32?,
         theme: TerminalTheme,
         allowInsecureRSAHostKeys: Bool = false,
-        zoomMultipaneWindowsByDefault: Bool = false
+        zoomMultipaneWindowsByDefault: Bool = false,
+        toolbarKeys: TerminalToolbarKeys = .default
     ) {
         self.fontSize = Self.normalizedFontSize(fontSize)
         self.theme = theme
         self.allowInsecureRSAHostKeys = allowInsecureRSAHostKeys
         self.zoomMultipaneWindowsByDefault = zoomMultipaneWindowsByDefault
+        self.toolbarKeys = toolbarKeys
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -160,6 +282,7 @@ struct TerminalSettings: Equatable, Codable, Sendable {
         case theme
         case allowInsecureRSAHostKeys
         case zoomMultipaneWindowsByDefault
+        case toolbarKeys
     }
 
     // Custom decoding keeps older persisted settings (written before these keys
@@ -173,7 +296,11 @@ struct TerminalSettings: Equatable, Codable, Sendable {
             zoomMultipaneWindowsByDefault: try container.decodeIfPresent(
                 Bool.self,
                 forKey: .zoomMultipaneWindowsByDefault
-            ) ?? decoder.userInfo[.terminalSettingsDefaultMultipaneZoom] as? Bool ?? false
+            ) ?? decoder.userInfo[.terminalSettingsDefaultMultipaneZoom] as? Bool ?? false,
+            toolbarKeys: try container.decodeIfPresent(
+                TerminalToolbarKeys.self,
+                forKey: .toolbarKeys
+            ) ?? .default
         )
     }
 

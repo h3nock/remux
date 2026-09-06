@@ -3670,8 +3670,26 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(rsaRefreshedSession.instanceID, originalSession.instanceID)
         XCTAssertEqual(rsaRefreshedSession.target.terminalSettings, rsaUpdated)
         XCTAssertTrue(originalModel === harness.model.terminalScreenModel(for: rsaRefreshedSession))
+
+        var toolbarUpdated = rsaUpdated
+        toolbarUpdated.toolbarKeys = TerminalToolbarKeys(
+            first: .pageDown,
+            second: .control,
+            third: .home
+        )
+        await harness.model.updateTerminalSettings { settings in
+            settings = toolbarUpdated
+        }
+
+        let toolbarRefreshedSession = try XCTUnwrap(harness.model.activeSessions.first)
+        let toolbarEntry = try XCTUnwrap(harness.model.activeTerminalScreenEntries.first)
+        XCTAssertEqual(toolbarRefreshedSession.instanceID, originalSession.instanceID)
+        XCTAssertEqual(toolbarEntry.runtimeAttemptKey, originalKey)
+        XCTAssertEqual(toolbarEntry.presentation.toolbarKeys, toolbarUpdated.toolbarKeys)
+        XCTAssertTrue(originalModel === harness.model.terminalScreenModel(for: toolbarRefreshedSession))
+        XCTAssertEqual(factory.createdKeys, [originalKey])
         let savedSettings = try await harness.settingsRepository.loadSettings()
-        XCTAssertEqual(savedSettings, rsaUpdated)
+        XCTAssertEqual(savedSettings, toolbarUpdated)
     }
 
     private func makeHarness(
