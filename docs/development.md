@@ -105,6 +105,12 @@ REMUX_DEBUG_SERVER_PASSWORD="<password>"
 REMUX_DEBUG_TMUX_SESSION="base"
 ```
 
+To seed a private key, set `REMUX_DEBUG_CREDENTIALS_FILE` to the path of a
+JSON file with `privateKeyPEM` and an optional `privateKeyPassphrase`, or with
+`password`. The credential then comes only from that file. The app never reads
+a key from its launch environment, because XCTest records that environment in
+result bundles.
+
 ## Local Files
 
 Keep developer-only notes and machine-specific working files in `.local/`.

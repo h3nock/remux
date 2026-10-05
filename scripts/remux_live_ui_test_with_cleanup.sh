@@ -4,12 +4,23 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/remux_live_ui_test_with_cleanup.sh [--configuration Debug|Release] [--development-team <team-id>] [--derived-data-path <path>] --only-testing <test-id> [--only-testing <test-id> ...]
+  scripts/remux_live_ui_test_with_cleanup.sh [options] --only-testing <test-id> [--only-testing <test-id> ...]
   scripts/remux_live_ui_test_with_cleanup.sh --dry-run-cleanup <manifest-file>
 
-Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
-remotely removes only the exact allowlisted remux-latency-* tmux sessions that
-the UI tests record in their cleanup manifest.
+Options:
+  --config <path>              Live SSH configuration (default /tmp/remux-live-ssh.json)
+  --destination <spec>         xcodebuild destination (default "platform=iOS Simulator,name=iPhone 17,OS=latest")
+  --configuration Debug|Release
+                               Build configuration (default Debug)
+  --development-team <team-id> Sign with this team, with automatic provisioning
+  --derived-data-path <path>   xcodebuild derived data path
+  --only-testing <test-id>     Test to run, e.g. RemuxUITests/RemuxAppUITests/testLiveSSHTmuxActionCycleWhenConfigured
+  --dry-run-cleanup <file>     Print the sessions a manifest would remove, then exit
+  -h, --help                   Show this help
+
+Runs selected Remux live SSH UI tests and remotely removes only the exact
+allowlisted remux-latency-* tmux sessions that the UI tests record in their
+cleanup manifest.
 
 The tests are built once and run in one xcodebuild invocation, each in its own
 tmux session, so no test inherits another test's windows, panes or running
@@ -19,8 +30,13 @@ name. As soon as a test finishes, the harness verifies the tmux expectations
 it recorded, whatever its outcome, and removes its sessions, so later tests
 never see them.
 
-This script reads live SSH details from /tmp/remux-live-ssh.json but does not
-store credentials in the repository or print secrets.
+The config is a JSON object with "host", "username", optional "port",
+"displayName", "sessionName" and "tmuxExecutablePath", and either "password" or
+"privateKeyPEM" with an optional "privateKeyPassphrase". The app reads the
+credential from the config itself, and the harness keeps a private key only in
+its own ssh-agent, so no copy of it is written anywhere else. Everything the
+harness shares with the tests lives in a temporary directory of its own, so
+runs do not share state.
 
 An optional "tmuxExecutablePath" in the config is used by both the app and the
 fixture/cleanup commands, e.g. a wrapper that runs `tmux -L <socket> "$@"` so
@@ -88,17 +104,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The tests and the app read the config from other working directories.
+if [[ "$config" != /* ]]; then
+  config="$PWD/$config"
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 session_allowlist='^remux-latency-[A-Za-z0-9._-]+$'
-
-require_tool() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    printf 'missing required tool: %s\n' "$1" >&2
-    exit 127
-  fi
-}
 
 validate_manifest() {
   local manifest="$1"
@@ -159,19 +173,36 @@ if [[ ! -f "$config" ]]; then
   exit 2
 fi
 
-require_tool ruby
-require_tool ssh
-require_tool ssh-keygen
-require_tool xcodebuild
+# Every tool the harness runs locally. The remote ones are checked once SSH
+# details are known.
+missing_tools=""
+for tool in awk cat chmod date dirname grep mkdir mktemp mv rm ruby sed sleep sort \
+  ssh ssh-add ssh-agent ssh-keygen tee xcodebuild; do
+  command -v "$tool" >/dev/null 2>&1 || missing_tools+=" $tool"
+done
+if [[ -n "$missing_tools" ]]; then
+  printf 'Missing local tools the live UI test harness needs:%s\n' "$missing_tools" >&2
+  exit 127
+fi
 
+# Prints a string field of the config; a missing optional field prints
+# nothing. Errors never quote the config, which may hold a private key.
 json_string() {
   ruby -rjson -e '
-    data = JSON.parse(File.read(ARGV.fetch(0)))
-    value = data[ARGV.fetch(1)]
-    if value.nil?
-      exit(ARGV.fetch(2) == "optional" ? 0 : 2)
+    path, key, presence = ARGV
+    reject = ->(message) { warn message; exit 2 }
+    begin
+      data = JSON.parse(File.read(path))
+    rescue JSON::ParserError
+      reject.("#{path} is not valid JSON.")
     end
-    exit 1 unless value.is_a?(String)
+    reject.("#{path} must hold a JSON object.") unless data.is_a?(Hash)
+    value = data[key]
+    if value.nil?
+      exit 0 if presence == "optional"
+      reject.("#{path} has no \"#{key}\".")
+    end
+    reject.("\"#{key}\" in #{path} must be a string, e.g. \"port\": \"22\".") unless value.is_a?(String)
     print value
   ' "$config" "$1" "${2:-required}"
 }
@@ -194,7 +225,8 @@ known_host_lookup="$host"
 if [[ "$port" != "22" ]]; then
   known_host_lookup="[$host]:$port"
 fi
-known_host_line="$(ssh-keygen -F "$known_host_lookup" 2>/dev/null | awk '!/^#/ { print; exit }')"
+# ssh-keygen fails when there is no entry; the checks below report that.
+known_host_line="$(ssh-keygen -F "$known_host_lookup" 2>/dev/null | awk '!/^#/ { print; exit }' || true)"
 if [[ -z "$known_host_line" ]]; then
   printf 'No trusted OpenSSH host key found for %s; refusing automated Remux trust.\n' "$known_host_lookup" >&2
   exit 2
@@ -203,23 +235,27 @@ expected_host_key_type="$(printf '%s\n' "$known_host_line" | awk '{ print $(NF -
 expected_host_key_fingerprint="$(
   printf '%s\n' "$known_host_line" |
     ssh-keygen -lf - -E sha256 2>/dev/null |
-    awk '{ print $2 }'
+    awk '{ print $2 }' || true
 )"
 if [[ -z "$expected_host_key_type" || -z "$expected_host_key_fingerprint" ]]; then
   printf 'Could not derive the trusted OpenSSH host fingerprint for %s.\n' "$known_host_lookup" >&2
   exit 2
 fi
 expected_host_key="$expected_host_key_type $expected_host_key_fingerprint"
-live_ssh_configuration_base64="$(base64 <"$config" | tr -d '\r\n')"
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui-cleanup.XXXXXX")"
+if [[ -z "$private_key" && -z "$password" ]]; then
+  printf '%s must include password or privateKeyPEM.\n' "$config" >&2
+  exit 2
+fi
+
+# Everything this run shares with the tests lives here; its path reaches the
+# test runner as TEST_RUNNER_REMUX_LIVE_RUN_DIR.
+run_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui.XXXXXX")"
 # Each test records its generated sessions and tmux expectations here, in
 # <test>.sessions and <test>.expectations.
-records_dir="/tmp/remux-live-tests"
-harness_file="/tmp/remux-live-cleanup-harness.txt"
-expected_host_key_file="/tmp/remux-live-expected-host-key.txt"
-askpass="$work_dir/askpass.sh"
-private_key_file="$work_dir/live_ssh_key"
+records_dir="$run_dir/tests"
+harness_file="$run_dir/harness.txt"
+askpass="$run_dir/askpass.sh"
 log_dir=".local/logs"
 mkdir -p "$log_dir"
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
@@ -228,6 +264,7 @@ log="$log_dir/live-ui-cleanup-${stamp}.log"
 result_bundle="$log_dir/live-ui-cleanup-${stamp}.xcresult"
 cleanup_done=0
 marker_refresh_pid=""
+ssh_agent_pid=""
 
 stop_harness_marker_refresh() {
   if [[ -n "$marker_refresh_pid" ]]; then
@@ -239,48 +276,57 @@ stop_harness_marker_refresh() {
 
 cleanup_local_files() {
   stop_harness_marker_refresh
-  rm -rf "$work_dir"
-  rm -rf "$records_dir"
-  rm -f "$harness_file" "$harness_file.tmp"
-  rm -f "$expected_host_key_file"
+  if [[ -n "$ssh_agent_pid" ]]; then
+    kill "$ssh_agent_pid" 2>/dev/null || true
+    ssh_agent_pid=""
+  fi
+  rm -rf "$run_dir"
 }
-
-ssh_askpass_secret=""
-declare -a ssh_auth_args=()
-if [[ -n "$private_key" ]]; then
-  printf '%s\n' "$private_key" >"$private_key_file"
-  chmod 600 "$private_key_file"
-  ssh_askpass_secret="$private_key_passphrase"
-  ssh_auth_args=(
-    -i "$private_key_file"
-    -o IdentitiesOnly=yes
-    -o PreferredAuthentications=publickey
-  )
-elif [[ -n "$password" ]]; then
-  ssh_askpass_secret="$password"
-  ssh_auth_args=(
-    -o PreferredAuthentications=password,keyboard-interactive
-  )
-else
-  printf '%s must include password or privateKeyPEM.\n' "$config" >&2
-  exit 2
-fi
 
 finish_before_remote_cleanup() {
   local status=$?
   cleanup_local_files
   exit "$status"
 }
+trap finish_before_remote_cleanup EXIT
 
+mkdir "$records_dir"
 cat >"$askpass" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$REMUX_LIVE_SSH_SECRET"
 EOF
 chmod 700 "$askpass"
-rm -rf "$records_dir"
-mkdir "$records_dir"
-rm -f "$harness_file"
-rm -f "$expected_host_key_file"
+
+ssh_askpass_secret=""
+declare -a ssh_auth_args=()
+if [[ -n "$private_key" ]]; then
+  # The key goes into this run's own ssh-agent, not a file, so the config
+  # stays its only copy.
+  ssh_agent_socket="$run_dir/ssh-agent.sock"
+  ssh_agent_pid="$(
+    ssh-agent -a "$ssh_agent_socket" -s |
+      sed -n 's/^SSH_AGENT_PID=\([0-9][0-9]*\);.*/\1/p'
+  )"
+  printf '%s\n' "$private_key" |
+    SSH_AUTH_SOCK="$ssh_agent_socket" \
+    REMUX_LIVE_SSH_SECRET="$private_key_passphrase" \
+    SSH_ASKPASS="$askpass" \
+    SSH_ASKPASS_REQUIRE=force \
+    DISPLAY=remux \
+    ssh-add -q -
+  SSH_AUTH_SOCK="$ssh_agent_socket" ssh-add -L >"$run_dir/live_ssh_key.pub"
+  ssh_auth_args=(
+    -o "IdentityAgent=$ssh_agent_socket"
+    -i "$run_dir/live_ssh_key.pub"
+    -o IdentitiesOnly=yes
+    -o PreferredAuthentications=publickey
+  )
+else
+  ssh_askpass_secret="$password"
+  ssh_auth_args=(
+    -o PreferredAuthentications=password,keyboard-interactive
+  )
+fi
 
 # Tests that need a known session or a prepared fixture get their own, assigned
 # here by test method name. Every other test generates a uniquely named session
@@ -316,14 +362,16 @@ for target in "${only_testing[@]}"; do
   fi
 done
 
-# The marker tells the UI tests that this harness will clean up after them, and
-# carries each assigned test's session and fixture as session.<test>=<session>
-# and fixture.<test>=<fixture>. The tests treat a marker older than 30 minutes
-# as stale, so it is refreshed while they run.
+# The marker tells the UI tests that this harness will clean up after them,
+# where the config is and which host key to trust, and carries each assigned
+# test's session and fixture as session.<test>=<session> and
+# fixture.<test>=<fixture>. The tests treat a marker older than 30 minutes as
+# stale, so it is refreshed while they run.
 write_harness_marker() {
   local i
   {
     printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)"
+    printf 'config=%s\nexpectedHostKey=%s\n' "$config" "$expected_host_key"
     for name in \
       REMUX_LIVE_AGENT_TUI_SESSION \
       REMUX_PROFILE_PANE_SWITCH_COUNT \
@@ -357,32 +405,12 @@ refresh_harness_marker() {
 }
 
 write_harness_marker
-printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
-trap finish_before_remote_cleanup EXIT
 
-prepare_dense_mixed_fixture() {
-  local session="$1"
-
-  if [[ ! "$session" =~ $session_allowlist ]]; then
-    printf 'refusing non-allowlisted dense mixed fixture session: %s\n' "$session" >&2
-    return 1
-  fi
-
-  printf 'Preparing dense mixed tmux fixture: %s\n' "$session"
-  REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-    SSH_ASKPASS="$askpass" \
-    SSH_ASKPASS_REQUIRE=force \
-    DISPLAY=remux \
-    ssh \
-      -p "$port" \
-      -o BatchMode=no \
-      -o NumberOfPasswordPrompts=1 \
-      -o ConnectTimeout=10 \
-      "${ssh_auth_args[@]}" \
-      "$username@$host" \
-      "$remote_tmux_env" sh -s -- "$session" <<'REMOTE'
-set -eu
-session="$1"
+# Everything the harness runs on the remote host, as sh functions that
+# `remote` calls one at a time. They find the remote tmux in $tmux_bin: the
+# config's tmuxExecutablePath, else tmux on PATH, else Homebrew's.
+remote_script() {
+  cat <<'REMOTE'
 tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
@@ -392,98 +420,102 @@ if [ -z "$tmux_bin" ]; then
   exit 127
 fi
 
-"$tmux_bin" kill-session -t "$session" 2>/dev/null || true
-"$tmux_bin" new-session -d -s "$session" -n remuxw1
-
-i=2
-while [ "$i" -le 8 ]; do
-  "$tmux_bin" new-window -d -t "$session:" -n "remuxw$i"
-  i=$((i + 1))
-done
-
-win9="$("$tmux_bin" new-window -d -t "$session:" -P -F '#{window_id}' -n remuxw9)"
-w9p1="$("$tmux_bin" list-panes -t "$win9" -F '#{pane_id}' | sed -n '1p')"
-"$tmux_bin" split-window -d -h -t "$w9p1"
-"$tmux_bin" split-window -d -v -t "$w9p1"
-
-win10="$("$tmux_bin" new-window -d -t "$session:" -P -F '#{window_id}' -n remuxw10)"
-w10p1="$("$tmux_bin" list-panes -t "$win10" -F '#{pane_id}' | sed -n '1p')"
-w10p2="$("$tmux_bin" split-window -d -h -P -F '#{pane_id}' -t "$w10p1")"
-"$tmux_bin" split-window -d -v -t "$w10p1"
-"$tmux_bin" split-window -d -v -t "$w10p2"
-
-pane4="$("$tmux_bin" list-panes -t "$win10" -F '#{pane_id}' | sed -n '4p')"
-if [ -z "$pane4" ]; then
-  echo 'dense mixed fixture did not create pane 4' >&2
-  exit 1
-fi
-"$tmux_bin" send-keys -t "$pane4" "printf 'REMUX_DENSE_MIXED_READY_P4\n'" C-m
-"$tmux_bin" select-window -t "$session:1"
-REMOTE
+check_tools() {
+  missing=""
+  for tool in "$tmux_bin" "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  if [ -n "$missing" ]; then
+    echo "missing tools on remote host:$missing" >&2
+    exit 127
+  fi
 }
 
-prepare_relative_file_preview_fixture() {
-  local session="$1"
-
-  if [[ ! "$session" =~ $session_allowlist ]]; then
-    printf 'refusing non-allowlisted relative file preview fixture session: %s\n' "$session" >&2
+# Prints the id of a session's <index>th window.
+window_id_at() {
+  window_id="$("$tmux_bin" list-windows -t "$1" -F '#{window_id}' 2>/dev/null | sed -n "${2}p")"
+  if [ -z "$window_id" ]; then
+    echo 'expected window index not found' >&2
     return 1
   fi
+  printf '%s\n' "$window_id"
+}
 
-  printf 'Preparing relative file preview tmux fixture: %s\n' "$session"
-  REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-    SSH_ASKPASS="$askpass" \
-    SSH_ASKPASS_REQUIRE=force \
-    DISPLAY=remux \
-    ssh \
-      -p "$port" \
-      -o BatchMode=no \
-      -o NumberOfPasswordPrompts=1 \
-      -o ConnectTimeout=10 \
-      "${ssh_auth_args[@]}" \
-      "$username@$host" \
-      "$remote_tmux_env" sh -s -- "$session" <<'REMOTE'
-set -eu
-session="$1"
-fixture_suffix="${session#remux-latency-pv-}"
-fixture_dir="/tmp/rpv-$fixture_suffix"
-fixture_path="$fixture_dir/README.md"
-html_path="$fixture_dir/index.html"
-css_path="$fixture_dir/preview.css"
-image_path="$fixture_dir/preview.svg"
-script_path="$fixture_dir/preview.js"
-tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
-if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
-  tmux_bin=/opt/homebrew/bin/tmux
-fi
-if [ -z "$tmux_bin" ]; then
-  echo 'tmux not found on remote host' >&2
-  exit 127
-fi
+# Prints the id of a session's or window's <index>th pane.
+pane_id_at() {
+  pane_id="$("$tmux_bin" list-panes -t "$1" -F '#{pane_id}' 2>/dev/null | sed -n "${2}p")"
+  if [ -z "$pane_id" ]; then
+    echo 'expected pane index not found' >&2
+    return 1
+  fi
+  printf '%s\n' "$pane_id"
+}
 
-cleanup_failed_fixture() {
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
-    if [ -f "$fixture_dir/server.pid" ]; then
-      kill "$(cat "$fixture_dir/server.pid")" 2>/dev/null || true
+dense_mixed_fixture() {
+  set -eu
+  session="$1"
+
+  "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
+  "$tmux_bin" new-session -d -s "$session" -n remuxw1
+
+  i=2
+  while [ "$i" -le 8 ]; do
+    "$tmux_bin" new-window -d -t "$session:" -n "remuxw$i"
+    i=$((i + 1))
+  done
+
+  win9="$("$tmux_bin" new-window -d -t "$session:" -P -F '#{window_id}' -n remuxw9)"
+  w9p1="$("$tmux_bin" list-panes -t "$win9" -F '#{pane_id}' | sed -n '1p')"
+  "$tmux_bin" split-window -d -h -t "$w9p1"
+  "$tmux_bin" split-window -d -v -t "$w9p1"
+
+  win10="$("$tmux_bin" new-window -d -t "$session:" -P -F '#{window_id}' -n remuxw10)"
+  w10p1="$("$tmux_bin" list-panes -t "$win10" -F '#{pane_id}' | sed -n '1p')"
+  w10p2="$("$tmux_bin" split-window -d -h -P -F '#{pane_id}' -t "$w10p1")"
+  "$tmux_bin" split-window -d -v -t "$w10p1"
+  "$tmux_bin" split-window -d -v -t "$w10p2"
+
+  pane4="$("$tmux_bin" list-panes -t "$win10" -F '#{pane_id}' | sed -n '4p')"
+  if [ -z "$pane4" ]; then
+    echo 'dense mixed fixture did not create pane 4' >&2
+    exit 1
+  fi
+  "$tmux_bin" send-keys -t "$pane4" "printf 'REMUX_DENSE_MIXED_READY_P4\n'" C-m
+  "$tmux_bin" select-window -t "$session:1"
+}
+
+relative_file_preview_dir() {
+  printf '/tmp/rpv-%s\n' "${1#remux-latency-pv-}"
+}
+
+relative_file_preview_fixture() {
+  set -eu
+  session="$1"
+  fixture_dir="$(relative_file_preview_dir "$session")"
+  fixture_path="$fixture_dir/README.md"
+  html_path="$fixture_dir/index.html"
+  css_path="$fixture_dir/preview.css"
+  image_path="$fixture_dir/preview.svg"
+  script_path="$fixture_dir/preview.js"
+
+  cleanup_failed_fixture() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      remove_session "$session" relative-file-preview
     fi
-    rm -f -- "$fixture_path" "$html_path" "$css_path" "$image_path" "$script_path" "$fixture_dir/server.pid"
-    rmdir -- "$fixture_dir" 2>/dev/null || true
-  fi
-  exit "$status"
-}
-trap cleanup_failed_fixture EXIT
+    exit "$status"
+  }
+  trap cleanup_failed_fixture EXIT
 
-"$tmux_bin" kill-session -t "$session" 2>/dev/null || true
-rm -f -- "$fixture_path"
-mkdir -p -- "$fixture_dir"
-cat >"$fixture_path" <<'PREVIEW_FILE'
+  "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
+  rm -f -- "$fixture_path"
+  mkdir -p -- "$fixture_dir"
+  cat >"$fixture_path" <<'PREVIEW_FILE'
 REMUX_PREVIEW_FILE_CONTENT_ALPHA
 REMUX_PREVIEW_FILE_CONTENT_BETA
 REMUX_PREVIEW_FILE_CONTENT_GAMMA
 PREVIEW_FILE
-cat >"$html_path" <<'PREVIEW_HTML'
+  cat >"$html_path" <<'PREVIEW_HTML'
 <!doctype html>
 <html>
 <head>
@@ -493,7 +525,7 @@ cat >"$html_path" <<'PREVIEW_HTML'
 <body><img src="preview.svg" alt="Relative preview resource loaded"></body>
 </html>
 PREVIEW_HTML
-cat >"$script_path" <<'PREVIEW_JS'
+  cat >"$script_path" <<'PREVIEW_JS'
 document.addEventListener('DOMContentLoaded', function () {
   var reloadCount = Number(sessionStorage.getItem('remuxReloadCount') || '0') + 1;
   sessionStorage.setItem('remuxReloadCount', String(reloadCount));
@@ -505,27 +537,27 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 PREVIEW_JS
 
-# Serve the same fixture over loopback HTTP so the live-localhost preview
-# scenario exercises the direct-TCPIP forward end to end. The port is fixed
-# because the UI test types the URL token verbatim.
-live_server_port=18923
-live_server_pid_path="$fixture_dir/server.pid"
-if [ -f "$live_server_pid_path" ]; then
-  kill "$(cat "$live_server_pid_path")" 2>/dev/null || true
-  rm -f -- "$live_server_pid_path"
-fi
-(
-  cd "$fixture_dir"
-  nohup python3 -m http.server "$live_server_port" --bind 127.0.0.1 \
-    >/dev/null 2>&1 &
-  echo $! >"$live_server_pid_path"
-)
-cat >"$css_path" <<'PREVIEW_CSS'
+  # Serve the same fixture over loopback HTTP so the live-localhost preview
+  # scenario exercises the direct-TCPIP forward end to end. The port is fixed
+  # because the UI test types the URL token verbatim.
+  live_server_port=18923
+  live_server_pid_path="$fixture_dir/server.pid"
+  if [ -f "$live_server_pid_path" ]; then
+    kill "$(cat "$live_server_pid_path")" 2>/dev/null || true
+    rm -f -- "$live_server_pid_path"
+  fi
+  (
+    cd "$fixture_dir"
+    nohup python3 -m http.server "$live_server_port" --bind 127.0.0.1 \
+      >/dev/null 2>&1 &
+    echo $! >"$live_server_pid_path"
+  )
+  cat >"$css_path" <<'PREVIEW_CSS'
 html, body { margin: 0; min-height: 100%; background: #123047; }
 body { display: grid; place-items: center; }
 img { width: min(72vw, 420px); }
 PREVIEW_CSS
-cat >"$image_path" <<'PREVIEW_SVG'
+  cat >"$image_path" <<'PREVIEW_SVG'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 240">
   <rect width="400" height="240" rx="28" fill="#14b8a6"/>
   <circle cx="100" cy="120" r="54" fill="#f59e0b"/>
@@ -533,13 +565,142 @@ cat >"$image_path" <<'PREVIEW_SVG'
 </svg>
 PREVIEW_SVG
 
-# Match normal shell output: the pane's current directory contains README.md,
-# and `ls` prints only that bare filename at a stable top-row position. Each
-# subsequent input line replaces it so the UI test can exercise other path
-# forms at the same terminal coordinate without shell prompts or extra output.
-"$tmux_bin" new-session -d -s "$session" -n preview -c "$fixture_dir" \
-  "ls -1 README.md; while IFS= read -r token; do printf '\\033[2J\\033[H%s\\n' \"\$token\"; done"
+  # Match normal shell output: the pane's current directory contains README.md,
+  # and `ls` prints only that bare filename at a stable top-row position. Each
+  # subsequent input line replaces it so the UI test can exercise other path
+  # forms at the same terminal coordinate without shell prompts or extra output.
+  "$tmux_bin" new-session -d -s "$session" -n preview -c "$fixture_dir" \
+    "ls -1 README.md; while IFS= read -r token; do printf '\\033[2J\\033[H%s\\n' \"\$token\"; done"
+}
+
+# Removes a session and, given its fixture, what the fixture left outside tmux.
+remove_session() {
+  "$tmux_bin" kill-session -t "$1" 2>/dev/null || true
+  if [ "${2:-}" = relative-file-preview ]; then
+    fixture_dir="$(relative_file_preview_dir "$1")"
+    if [ -f "$fixture_dir/server.pid" ]; then
+      kill "$(cat "$fixture_dir/server.pid")" 2>/dev/null || true
+    fi
+    rm -f -- "$fixture_dir/README.md" "$fixture_dir/index.html" "$fixture_dir/preview.css" "$fixture_dir/preview.svg" "$fixture_dir/preview.js" "$fixture_dir/server.pid"
+    rmdir -- "$fixture_dir" 2>/dev/null || true
+  fi
+}
+
+window_count() {
+  "$tmux_bin" list-windows -t "$1" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' '
+}
+
+window_pane_count() {
+  window_id="$(window_id_at "$1" "$2")" || exit 1
+  "$tmux_bin" list-panes -t "$window_id" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '
+}
+
+pane_count() {
+  count=0
+  for window_id in $("$tmux_bin" list-windows -t "$1" -F '#{window_id}' 2>/dev/null); do
+    window_panes=$("$tmux_bin" list-panes -t "$window_id" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' ')
+    count=$((count + window_panes))
+  done
+  printf '%s\n' "$count"
+}
+
+pane_mode() {
+  pane_id="$(pane_id_at "$1" "$2")" || exit 1
+  "$tmux_bin" display-message -p -t "$pane_id" '#{pane_in_mode}' 2>/dev/null
+}
+
+# Looks for a marker on the screen of a session's <index>th pane, or with
+# "history" also in its scrollback.
+pane_contains() {
+  pane_id="$(pane_id_at "$1" "$2")" || exit 1
+  if [ "$4" = history ]; then
+    capture="$("$tmux_bin" capture-pane -p -e -S - -t "$pane_id" 2>/dev/null)"
+  else
+    capture="$("$tmux_bin" capture-pane -p -e -t "$pane_id" 2>/dev/null)"
+  fi
+  if printf '%s\n' "$capture" | grep -F -- "$3" >/dev/null; then
+    exit 0
+  fi
+  echo "--- pane $pane_id capture tail ---" >&2
+  printf '%s\n' "$capture" | grep -v '^$' | tail -40 >&2
+  exit 1
+}
+
+# Looks for a marker on the screen of the active pane of a session's
+# <index>th window.
+window_contains() {
+  window_id="$(window_id_at "$1" "$2")" || exit 1
+  pane_id="$("$tmux_bin" display-message -p -t "$window_id" '#{pane_id}' 2>/dev/null)"
+  if [ -z "$pane_id" ]; then
+    echo 'expected window active pane not found' >&2
+    exit 1
+  fi
+  "$tmux_bin" capture-pane -p -e -t "$pane_id" 2>/dev/null | grep -F -- "$3" >/dev/null
+}
+
+# Looks for a marker on the screen of a pane given by window and pane index.
+window_pane_contains() {
+  set -eu
+  session="$1"
+  window_index="$2"
+  pane_index="$3"
+  marker="$4"
+
+  window_id="$(window_id_at "$session" "$window_index")" || exit 1
+  pane_id="$(pane_id_at "$window_id" "$pane_index")" || exit 1
+
+  if "$tmux_bin" capture-pane -p -e -t "$pane_id" 2>/dev/null | grep -F -- "$marker" >/dev/null; then
+    exit 0
+  fi
+
+  echo "target marker not found in resolved tmux pane" >&2
+  echo "session=$session window_index=$window_index pane_index=$pane_index window_id=$window_id pane_id=$pane_id marker=$marker" >&2
+  echo '--- panes in resolved window ---' >&2
+  "$tmux_bin" list-panes -t "$window_id" -F 'pane_index=#{pane_index} pane_id=#{pane_id} left=#{pane_left} top=#{pane_top} active=#{pane_active}' >&2 || true
+  echo '--- target pane capture tail ---' >&2
+  "$tmux_bin" capture-pane -p -e -S -80 -t "$pane_id" 2>/dev/null | tail -40 >&2 || true
+  echo '--- marker scan across resolved window panes ---' >&2
+  "$tmux_bin" list-panes -t "$window_id" -F '#{pane_id}' 2>/dev/null | while IFS= read -r candidate_pane_id; do
+    if "$tmux_bin" capture-pane -p -e -S -200 -t "$candidate_pane_id" 2>/dev/null | grep -F -- "$marker" >&2; then
+      echo "marker found in pane $candidate_pane_id" >&2
+    fi
+  done
+  exit 1
+}
+
+"$@"
 REMOTE
+}
+
+# Runs one function of remote_script on the remote host, with this run's SSH
+# credentials. The script goes in on stdin, so the caller's stdin is untouched.
+remote() {
+  REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
+    SSH_ASKPASS="$askpass" \
+    SSH_ASKPASS_REQUIRE=force \
+    DISPLAY=remux \
+    ssh \
+      -p "$port" \
+      -o BatchMode=no \
+      -o NumberOfPasswordPrompts=1 \
+      -o ConnectTimeout=10 \
+      "${ssh_auth_args[@]}" \
+      "$username@$host" \
+      "$remote_tmux_env" sh -s -- "$@" < <(remote_script)
+}
+
+# Prepares a fixture's session with the remote <fixture>_fixture function.
+prepare_fixture() {
+  local fixture="$1"
+  local session="$2"
+
+  if [[ ! "$session" =~ $session_allowlist ]]; then
+    printf 'refusing non-allowlisted %s fixture session: %s\n' "${fixture//-/ }" "$session" >&2
+    return 1
+  fi
+
+  printf 'Preparing %s tmux fixture: %s\n' "${fixture//-/ }" "$session"
+  remote "${fixture//-/_}_fixture" "$session"
 }
 
 assigned_fixture_for_session() {
@@ -568,29 +729,43 @@ cleanup_generated_sessions() {
   while IFS= read -r session; do
     [[ -n "$session" ]] || continue
     printf 'Cleaning generated tmux session: %s\n' "$session"
-    local remote_command
-    remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
-    if [[ "$(assigned_fixture_for_session "$session")" == "relative-file-preview" ]]; then
-      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; if [ -f \"\$fixture_dir/server.pid\" ]; then kill \"\$(cat \"\$fixture_dir/server.pid\")\" 2>/dev/null || true; fi; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\" \"\$fixture_dir/server.pid\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
-    fi
-
-    if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-      SSH_ASKPASS="$askpass" \
-      SSH_ASKPASS_REQUIRE=force \
-      DISPLAY=remux \
-      ssh \
-        -p "$port" \
-        -o BatchMode=no \
-        -o NumberOfPasswordPrompts=1 \
-        -o ConnectTimeout=10 \
-        "${ssh_auth_args[@]}" \
-        "$username@$host" \
-        "$remote_command" </dev/null; then
-      status=1
-    fi
+    remote remove_session "$session" "$(assigned_fixture_for_session "$session")" || status=1
   done < <(manifest_sessions "$manifest")
 
   return "$status"
+}
+
+# Checks that a remote function prints the expected value.
+expect_remote_value() {
+  local kind="$1"
+  local subject="$2"
+  local expected="$3"
+  local actual
+  shift 3
+
+  if ! actual="$(remote "$@")"; then
+    printf 'failed to verify tmux %s for %s\n' "${kind//-/ }" "$subject" >&2
+    return 1
+  fi
+
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'tmux %s expectation failed for %s: expected %s, got %s\n' "$kind" "$subject" "$expected" "$actual" >&2
+    return 1
+  fi
+  printf 'Verified tmux %s expectation for %s: %s\n' "$kind" "$subject" "$expected"
+}
+
+# Checks that a remote function succeeds.
+expect_remote_success() {
+  local kind="$1"
+  local subject="$2"
+  shift 2
+
+  if ! remote "$@"; then
+    printf 'tmux %s expectation failed for %s\n' "$kind" "$subject" >&2
+    return 1
+  fi
+  printf 'Verified tmux %s expectation for %s\n' "$kind" "$subject"
 }
 
 verify_tmux_expectations() {
@@ -630,33 +805,7 @@ verify_tmux_expectations() {
           continue
         fi
 
-        local remote_command
-        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' '"
-
-        local actual
-        if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$remote_command" </dev/null)"; then
-          printf 'failed to verify tmux window count for %s\n' "$session" >&2
-          status=1
-          continue
-        fi
-
-        if [[ "$actual" != "$arg1" ]]; then
-          printf 'tmux window-count expectation failed for %s: expected %s, got %s\n' "$session" "$arg1" "$actual" >&2
-          status=1
-        else
-          printf 'Verified tmux window-count expectation for %s: %s\n' "$session" "$arg1"
-        fi
+        expect_remote_value "$kind" "$session" "$arg1" window_count "$session" || status=1
         ;;
       window-pane-count)
         if [[ ! "$arg1" =~ ^[0-9]+$ || "$arg1" -eq 0 ]]; then
@@ -671,33 +820,8 @@ verify_tmux_expectations() {
           continue
         fi
 
-        local remote_command
-        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; \"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '"
-
-        local actual
-        if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$remote_command" </dev/null)"; then
-          printf 'failed to verify tmux window pane count for %s window %s\n' "$session" "$arg1" >&2
-          status=1
-          continue
-        fi
-
-        if [[ "$actual" != "$arg2" ]]; then
-          printf 'tmux window-pane-count expectation failed for %s window %s: expected %s, got %s\n' "$session" "$arg1" "$arg2" "$actual" >&2
-          status=1
-        else
-          printf 'Verified tmux window-pane-count expectation for %s window %s: %s\n' "$session" "$arg1" "$arg2"
-        fi
+        expect_remote_value "$kind" "$session window $arg1" "$arg2" \
+          window_pane_count "$session" "$arg1" || status=1
         ;;
       pane-count)
         if [[ -n "${arg2:-}" ]]; then
@@ -712,33 +836,7 @@ verify_tmux_expectations() {
           continue
         fi
 
-        local remote_command
-        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; count=0; for window_id in \$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null); do window_count=\$(\"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '); count=\$((count + window_count)); done; printf '%s\n' \"\$count\""
-
-        local actual
-        if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$remote_command" </dev/null)"; then
-          printf 'failed to verify tmux pane count for %s\n' "$session" >&2
-          status=1
-          continue
-        fi
-
-        if [[ "$actual" != "$arg1" ]]; then
-          printf 'tmux pane-count expectation failed for %s: expected %s, got %s\n' "$session" "$arg1" "$actual" >&2
-          status=1
-        else
-          printf 'Verified tmux pane-count expectation for %s: %s\n' "$session" "$arg1"
-        fi
+        expect_remote_value "$kind" "$session" "$arg1" pane_count "$session" || status=1
         ;;
       pane-mode)
         if [[ ! "$arg1" =~ ^[0-9]+$ || "$arg1" -eq 0 ]]; then
@@ -753,33 +851,8 @@ verify_tmux_expectations() {
           continue
         fi
 
-        local remote_command
-        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" display-message -p -t \"\$pane_id\" '#{pane_in_mode}' 2>/dev/null"
-
-        local actual
-        if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$remote_command" </dev/null)"; then
-          printf 'failed to verify tmux pane mode for %s pane %s\n' "$session" "$arg1" >&2
-          status=1
-          continue
-        fi
-
-        if [[ "$actual" != "$arg2" ]]; then
-          printf 'tmux pane-mode expectation failed for %s pane %s: expected %s, got %s\n' "$session" "$arg1" "$arg2" "$actual" >&2
-          status=1
-        else
-          printf 'Verified tmux pane-mode expectation for %s pane %s: %s\n' "$session" "$arg1" "$arg2"
-        fi
+        expect_remote_value "$kind" "$session pane $arg1" "$arg2" \
+          pane_mode "$session" "$arg1" || status=1
         ;;
       pane-index-contains|pane-index-history-contains)
         if [[ ! "$arg1" =~ ^[0-9]+$ || "$arg1" -eq 0 ]]; then
@@ -796,31 +869,13 @@ verify_tmux_expectations() {
 
         # pane-index-contains checks the screen as the test left it;
         # pane-index-history-contains also searches the pane's scrollback.
-        local capture_range=""
+        local capture_range=screen
         if [[ "$kind" == "pane-index-history-contains" ]]; then
-          capture_range="-S - "
+          capture_range=history
         fi
 
-        local capture_command
-        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; capture=\$(\"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null); if printf \"%s\n\" \"\$capture\" | grep -F -- \"\$marker\" >/dev/null; then exit 0; fi; echo \"--- pane \$pane_id capture tail ---\" >&2; printf \"%s\n\" \"\$capture\" | grep -v \"^\$\" | tail -40 >&2; exit 1"
-
-        if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$capture_command" </dev/null; then
-          printf 'tmux %s expectation failed for %s pane %s marker %s\n' "$kind" "$session" "$arg1" "$arg2" >&2
-          status=1
-        else
-          printf 'Verified tmux %s expectation for %s pane %s marker %s\n' "$kind" "$session" "$arg1" "$arg2"
-        fi
+        expect_remote_success "$kind" "$session pane $arg1 marker $arg2" \
+          pane_contains "$session" "$arg1" "$arg2" "$capture_range" || status=1
         ;;
       window-index-contains)
         if [[ ! "$arg1" =~ ^[0-9]+$ || "$arg1" -eq 0 ]]; then
@@ -835,26 +890,8 @@ verify_tmux_expectations() {
           continue
         fi
 
-        local capture_command
-        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; pane_id=\$(\"\$tmux_bin\" display-message -p -t \"\$window_id\" '#{pane_id}' 2>/dev/null); if [ -z \"\$pane_id\" ]; then echo 'expected window active pane not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
-
-        if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$capture_command" </dev/null; then
-          printf 'tmux window-index-contains expectation failed for %s window %s marker %s\n' "$session" "$arg1" "$arg2" >&2
-          status=1
-        else
-          printf 'Verified tmux window-index-contains expectation for %s window %s marker %s\n' "$session" "$arg1" "$arg2"
-        fi
+        expect_remote_success "$kind" "$session window $arg1 marker $arg2" \
+          window_contains "$session" "$arg1" "$arg2" || status=1
         ;;
       window-pane-index-contains)
         if [[ ! "$arg1" =~ ^[0-9]+[.][0-9]+$ ]]; then
@@ -877,69 +914,8 @@ verify_tmux_expectations() {
           continue
         fi
 
-        if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
-          SSH_ASKPASS="$askpass" \
-          SSH_ASKPASS_REQUIRE=force \
-          DISPLAY=remux \
-          ssh \
-            -p "$port" \
-            -o BatchMode=no \
-            -o NumberOfPasswordPrompts=1 \
-            -o ConnectTimeout=10 \
-            "${ssh_auth_args[@]}" \
-            "$username@$host" \
-            "$remote_tmux_env" sh -s -- "$session" "$window_index" "$pane_index" "$arg2" <<'REMOTE_EXPECTATION'
-set -eu
-session="$1"
-window_index="$2"
-pane_index="$3"
-marker="$4"
-
-tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
-if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
-  tmux_bin=/opt/homebrew/bin/tmux
-fi
-if [ -z "$tmux_bin" ]; then
-  echo 'tmux not found on remote host' >&2
-  exit 127
-fi
-
-window_id="$("$tmux_bin" list-windows -t "$session" -F '#{window_id}' 2>/dev/null | sed -n "${window_index}p")"
-if [ -z "$window_id" ]; then
-  echo 'expected window index not found' >&2
-  exit 1
-fi
-
-pane_id="$("$tmux_bin" list-panes -t "$window_id" -F '#{pane_id}' 2>/dev/null | sed -n "${pane_index}p")"
-if [ -z "$pane_id" ]; then
-  echo 'expected pane index not found' >&2
-  exit 1
-fi
-
-if "$tmux_bin" capture-pane -p -e -t "$pane_id" 2>/dev/null | grep -F -- "$marker" >/dev/null; then
-  exit 0
-fi
-
-echo "target marker not found in resolved tmux pane" >&2
-echo "session=$session window_index=$window_index pane_index=$pane_index window_id=$window_id pane_id=$pane_id marker=$marker" >&2
-echo '--- panes in resolved window ---' >&2
-"$tmux_bin" list-panes -t "$window_id" -F 'pane_index=#{pane_index} pane_id=#{pane_id} left=#{pane_left} top=#{pane_top} active=#{pane_active}' >&2 || true
-echo '--- target pane capture tail ---' >&2
-"$tmux_bin" capture-pane -p -e -S -80 -t "$pane_id" 2>/dev/null | tail -40 >&2 || true
-echo '--- marker scan across resolved window panes ---' >&2
-"$tmux_bin" list-panes -t "$window_id" -F '#{pane_id}' 2>/dev/null | while IFS= read -r candidate_pane_id; do
-  if "$tmux_bin" capture-pane -p -e -S -200 -t "$candidate_pane_id" 2>/dev/null | grep -F -- "$marker" >&2; then
-    echo "marker found in pane $candidate_pane_id" >&2
-  fi
-done
-exit 1
-REMOTE_EXPECTATION
-        then
-          printf 'tmux window-pane-index-contains expectation failed for %s window %s pane %s marker %s\n' "$session" "$window_index" "$pane_index" "$arg2" >&2
-          status=1
-        else
-          printf 'Verified tmux window-pane-index-contains expectation for %s window %s pane %s marker %s\n' "$session" "$window_index" "$pane_index" "$arg2"
-        fi
+        expect_remote_success "$kind" "$session window $window_index pane $pane_index marker $arg2" \
+          window_pane_contains "$session" "$window_index" "$pane_index" "$arg2" || status=1
         ;;
       *)
         printf 'unknown tmux expectation: %s\n' "$kind" >&2
@@ -950,6 +926,18 @@ REMOTE_EXPECTATION
 
   return "$status"
 }
+
+# Every tool the harness runs on the remote host besides sh and tmux, which
+# every remote command checks for. The relative file preview fixture's pane
+# also runs ls, and python3 serves its files.
+declare -a remote_tools=(cat grep mkdir rm rmdir sed tail tr wc)
+if [[ " ${assigned_fixtures[*]-} " == *" relative-file-preview "* ]]; then
+  remote_tools+=(ls nohup python3)
+fi
+if ! remote check_tools "${remote_tools[@]}"; then
+  printf 'Cannot run the live UI test harness against %s@%s.\n' "$username" "$host" >&2
+  exit 2
+fi
 
 # Checks one finished test's tmux expectations, then removes its sessions.
 finish_test() {
@@ -1027,14 +1015,9 @@ fi
 # session and fixture is prepared before it starts.
 for i in "${!assigned_sessions[@]}"; do
   printf '%s\n' "${assigned_sessions[$i]}" >>"$records_dir/${assigned_tests[$i]}.sessions"
-  case "${assigned_fixtures[$i]}" in
-    dense-mixed)
-      prepare_dense_mixed_fixture "${assigned_sessions[$i]}"
-      ;;
-    relative-file-preview)
-      prepare_relative_file_preview_fixture "${assigned_sessions[$i]}"
-      ;;
-  esac
+  if [[ -n "${assigned_fixtures[$i]}" ]]; then
+    prepare_fixture "${assigned_fixtures[$i]}" "${assigned_sessions[$i]}"
+  fi
 done
 
 declare -a test_args=()
@@ -1052,11 +1035,7 @@ finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|sk
 
 # No failure diagnostics: collecting them takes up to ten minutes per failure.
 set +e
-REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
-REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
-GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
-REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
-REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
+TEST_RUNNER_REMUX_LIVE_RUN_DIR="$run_dir" \
 xcodebuild test-without-building "${common_args[@]}" \
   "${test_args[@]}" \
   -collect-test-diagnostics never \

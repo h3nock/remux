@@ -4,14 +4,13 @@ import UIKit
 import XCTest
 
 final class RemuxAppUITests: XCTestCase {
+    /// The connection fields of the harness's live SSH configuration. The app
+    /// reads the credential from the same file itself.
     private struct LiveSSHConfiguration: Decodable {
         var displayName: String?
         let host: String
         var port: String?
         let username: String
-        var password: String?
-        var privateKeyPEM: String?
-        var privateKeyPassphrase: String?
         var sessionName: String?
         var tmuxExecutablePath: String?
     }
@@ -2638,22 +2637,35 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func liveGeneratedSessionManifestPath() throws -> String {
-        guard liveCleanupHarnessEnabled() else {
+        guard liveCleanupHarnessEnabled(), let path = liveHarnessTestRecordPath("sessions") else {
             throw LiveSSHCleanupHarnessError(
                 description: "Live SSH UI tests that create remux-latency-* tmux sessions must run through scripts/remux_live_ui_test_with_cleanup.sh; refusing to create a remote tmux session without remote kill-session cleanup."
             )
         }
 
-        return liveHarnessTestRecordPath("sessions")
+        return path
     }
 
     private func liveCleanupHarnessEnabled() -> Bool {
         liveCleanupHarnessFieldsIfEnabled() != nil
     }
 
-    private func liveCleanupHarnessFieldsIfEnabled() -> [String: String]? {
-        let url = URL(fileURLWithPath: "/tmp/remux-live-cleanup-harness.txt")
+    /// The cleanup harness gives each run its own directory, which reaches the
+    /// test runner as TEST_RUNNER_REMUX_LIVE_RUN_DIR. It holds the harness
+    /// marker and each test's records.
+    private var liveHarnessRunDirectory: URL? {
         guard
+            let path = ProcessInfo.processInfo.environment["REMUX_LIVE_RUN_DIR"],
+            !path.isEmpty
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private func liveCleanupHarnessFieldsIfEnabled() -> [String: String]? {
+        guard
+            let url = liveHarnessRunDirectory?.appendingPathComponent("harness.txt"),
             let data = try? Data(contentsOf: url),
             let value = String(data: data, encoding: .utf8)
         else {
@@ -2701,24 +2713,26 @@ final class RemuxAppUITests: XCTestCase {
         return errno == EPERM
     }
 
+    /// The live SSH configuration file the cleanup harness was given.
+    private func liveSSHConfigurationPath() throws -> String {
+        guard liveHarnessRunDirectory != nil else {
+            throw XCTSkip("Run live SSH UI tests through scripts/remux_live_ui_test_with_cleanup.sh.")
+        }
+        guard let path = liveCleanupHarnessFieldsIfEnabled()?["config"] else {
+            throw LiveSSHCleanupHarnessError(
+                description: "The live UI test cleanup harness marker is missing, stale or has no config."
+            )
+        }
+        return path
+    }
+
     private func requireLiveSSHConfigurationExists() throws {
-        if liveSSHConfigurationDataFromEnvironment() != nil {
-            return
-        }
-        let configurationPath = "/tmp/remux-live-ssh.json"
-        guard FileManager.default.fileExists(atPath: configurationPath) else {
-            throw XCTSkip("Create \(configurationPath) inside the simulator to run live SSH UI testing.")
-        }
+        _ = try liveSSHConfigurationPath()
     }
 
     private func liveAgentTUISessionName() throws -> String {
         try requireLiveSSHConfigurationExists()
-        guard let sessionName = liveCleanupHarnessOverride("REMUX_LIVE_AGENT_TUI_SESSION") ??
-            liveHarnessValue(
-                environmentKey: "REMUX_LIVE_AGENT_TUI_SESSION",
-                fallbackPath: "/tmp/remux-live-agent-tui-session.txt"
-            )
-        else {
+        guard let sessionName = liveCleanupHarnessOverride("REMUX_LIVE_AGENT_TUI_SESSION") else {
             let description = "Set REMUX_LIVE_AGENT_TUI_SESSION to an existing two-pane tmux session running real agent TUIs."
             if liveCleanupHarnessEnabled() {
                 throw LiveSSHCleanupHarnessError(description: description)
@@ -2757,26 +2771,10 @@ final class RemuxAppUITests: XCTestCase {
     /// Each test records its generated tmux sessions and tmux expectations in
     /// its own files, which the cleanup harness checks and cleans up as soon
     /// as the test ends.
-    private func liveHarnessTestRecordPath(_ kind: String) -> String {
-        "/tmp/remux-live-tests/\(liveHarnessTestMethod).\(kind)"
-    }
-
-    private func liveHarnessValue(environmentKey: String, fallbackPath: String) -> String? {
-        if let environmentValue = ProcessInfo.processInfo.environment[environmentKey],
-           !environmentValue.isEmpty {
-            return environmentValue
-        }
-
-        let url = URL(fileURLWithPath: fallbackPath)
-        guard
-            let data = try? Data(contentsOf: url),
-            let rawValue = String(data: data, encoding: .utf8)
-        else {
-            return nil
-        }
-
-        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
+    private func liveHarnessTestRecordPath(_ kind: String) -> String? {
+        liveHarnessRunDirectory?
+            .appendingPathComponent("tests/\(liveHarnessTestMethod).\(kind)")
+            .path
     }
 
     private func recordGeneratedLiveLatencySession(_ sessionName: String, manifestPath: String) {
@@ -2891,7 +2889,10 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func recordLiveTmuxExpectation(fields: [String]) {
-        let manifestPath = liveHarnessTestRecordPath("expectations")
+        guard let manifestPath = liveHarnessTestRecordPath("expectations") else {
+            XCTFail("Live tmux expectations need the cleanup harness's run directory.")
+            return
+        }
 
         for field in fields {
             XCTAssertFalse(field.contains("\t"), "Live tmux expectation fields cannot contain tabs.")
@@ -3073,7 +3074,11 @@ final class RemuxAppUITests: XCTestCase {
         traceRuntime: Bool = false,
         sessionNameOverride: String? = nil
     ) throws {
-        let configuration = try liveSSHConfiguration()
+        let configurationPath = try liveSSHConfigurationPath()
+        let configuration = try JSONDecoder().decode(
+            LiveSSHConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: configurationPath))
+        )
         let displayName = configuration.displayName ?? "Live SSH"
         let sessionName = sessionNameOverride ?? configuration.sessionName ?? "remux-live-e2e"
 
@@ -3085,18 +3090,9 @@ final class RemuxAppUITests: XCTestCase {
         if let tmuxExecutablePath = configuration.tmuxExecutablePath {
             app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = tmuxExecutablePath
         }
-        if let privateKeyPEM = configuration.privateKeyPEM, !privateKeyPEM.isEmpty {
-            app.launchEnvironment["REMUX_DEBUG_PRIVATE_KEY"] = privateKeyPEM
-            if let passphrase = configuration.privateKeyPassphrase {
-                app.launchEnvironment["REMUX_DEBUG_PRIVATE_KEY_PASSPHRASE"] = passphrase
-            }
-        } else if let password = configuration.password, !password.isEmpty {
-            app.launchEnvironment["REMUX_DEBUG_SERVER_PASSWORD"] = password
-        } else {
-            throw LiveSSHCleanupHarnessError(
-                description: "/tmp/remux-live-ssh.json must include password or privateKeyPEM."
-            )
-        }
+        // XCTest records the launch environment in the result bundle, so the
+        // app reads the password or private key from the file itself.
+        app.launchEnvironment["REMUX_DEBUG_CREDENTIALS_FILE"] = configurationPath
         app.launchEnvironment["REMUX_DEBUG_TMUX_SESSION"] = sessionName
         app.launchEnvironment["REMUX_DEBUG_EPHEMERAL_STORAGE"] = "1"
         if traceRuntime {
@@ -3133,28 +3129,6 @@ final class RemuxAppUITests: XCTestCase {
             }
             app.launchEnvironment[key] = value
         }
-    }
-
-    private func liveSSHConfiguration() throws -> LiveSSHConfiguration {
-        if let data = liveSSHConfigurationDataFromEnvironment() {
-            return try JSONDecoder().decode(LiveSSHConfiguration.self, from: data)
-        }
-        let configurationURL = URL(fileURLWithPath: "/tmp/remux-live-ssh.json")
-        guard FileManager.default.fileExists(atPath: configurationURL.path) else {
-            throw XCTSkip("Create /tmp/remux-live-ssh.json inside the simulator to run live SSH UI testing.")
-        }
-
-        let data = try Data(contentsOf: configurationURL)
-        return try JSONDecoder().decode(LiveSSHConfiguration.self, from: data)
-    }
-
-    private func liveSSHConfigurationDataFromEnvironment() -> Data? {
-        guard let encoded = ProcessInfo.processInfo.environment[
-            "REMUX_LIVE_SSH_CONFIGURATION_BASE64"
-        ], !encoded.isEmpty else {
-            return nil
-        }
-        return Data(base64Encoded: encoded)
     }
 
     private func waitForLiveTerminalReady(timeout: TimeInterval) {
@@ -3197,12 +3171,8 @@ final class RemuxAppUITests: XCTestCase {
     private func trustExpectedUnknownLiveHostKeyIfNeeded() -> Bool {
         let verifyTitle = app.staticTexts["Verify Server"]
         guard verifyTitle.exists else { return false }
-        guard let expectedHostKey = liveHarnessValue(
-            environmentKey: "REMUX_LIVE_EXPECTED_HOST_KEY",
-            fallbackPath: "/tmp/remux-live-expected-host-key.txt"
-        )
-        else {
-            XCTFail("Live SSH host-key verification requires REMUX_LIVE_EXPECTED_HOST_KEY.")
+        guard let expectedHostKey = liveCleanupHarnessFieldsIfEnabled()?["expectedHostKey"] else {
+            XCTFail("Live SSH host-key verification requires the cleanup harness's expected host key.")
             return false
         }
 

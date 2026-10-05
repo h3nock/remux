@@ -52,10 +52,15 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
         XCTAssertEqual(credential, .password("debug-password"))
     }
 
-    func testSeedPersistsPrivateKeyProfileAndCredential() async throws {
+    func testSeedPersistsPrivateKeyProfileAndCredentialFromCredentialsFile() async throws {
         let repository = InMemoryConnectionProfileRepository()
         let credentialStore = InMemorySSHCredentialStore()
         let inspection = try SSHPrivateKeyInspector.inspect(Self.ed25519Key)
+        let credentialsFile = try writeCredentialsFile([
+            "host": "ignored.example.com",
+            "privateKeyPEM": Self.ed25519Key,
+            "privateKeyPassphrase": "debug-passphrase",
+        ])
 
         let seeded = try await DebugConnectionProfileSeeder.seedIfRequested(
             environment: [
@@ -64,8 +69,7 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
                 "REMUX_DEBUG_SERVER_HOST": "server.example.com",
                 "REMUX_DEBUG_SERVER_PORT": "22",
                 "REMUX_DEBUG_SERVER_USERNAME": "demo",
-                "REMUX_DEBUG_PRIVATE_KEY": Self.ed25519Key,
-                "REMUX_DEBUG_PRIVATE_KEY_PASSPHRASE": "debug-passphrase",
+                "REMUX_DEBUG_CREDENTIALS_FILE": credentialsFile.path,
                 "REMUX_DEBUG_TMUX_SESSION": "base",
             ],
             profileRepository: repository,
@@ -78,6 +82,7 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
         let identity = try XCTUnwrap(snapshot.identity(id: server.identityID))
         let credential = try await credentialStore.loadCredential(identityID: identity.id)
         XCTAssertTrue(seeded)
+        XCTAssertEqual(server.host, "server.example.com")
         XCTAssertEqual(identity.name, "Example Server")
         XCTAssertEqual(identity.authenticationKind, .privateKey)
         XCTAssertEqual(identity.publicFingerprint, inspection.publicFingerprint)
@@ -90,6 +95,28 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
                 )
             )
         )
+    }
+
+    func testSeedFailsWhenCredentialsFileIsMissing() async throws {
+        let repository = InMemoryConnectionProfileRepository()
+        let missingFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString).json")
+
+        do {
+            try await DebugConnectionProfileSeeder.seedIfRequested(
+                environment: [
+                    "REMUX_DEBUG_SEED_CONNECTION": "1",
+                    "REMUX_DEBUG_SERVER_HOST": "server.example.com",
+                    "REMUX_DEBUG_SERVER_USERNAME": "demo",
+                    "REMUX_DEBUG_CREDENTIALS_FILE": missingFile.path,
+                ],
+                profileRepository: repository,
+                credentialStore: InMemorySSHCredentialStore()
+            )
+            XCTFail("Seeding must fail when the credentials file cannot be read.")
+        } catch {}
+        let profile = try await repository.loadProfile()
+        XCTAssertNil(profile)
     }
 
     func testSeedPersistsNoneIdentityWithoutCredential() async throws {
@@ -127,6 +154,15 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
     -----END OPENSSH PRIVATE KEY-----
     """
 
+    private func writeCredentialsFile(_ fields: [String: String]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("credentials-\(UUID().uuidString).json")
+        try JSONEncoder().encode(fields).write(to: url)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return url
+    }
 }
 
 private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {

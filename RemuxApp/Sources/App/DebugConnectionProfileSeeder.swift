@@ -31,10 +31,19 @@ enum DebugConnectionProfileSeeder {
         static let port = "REMUX_DEBUG_SERVER_PORT"
         static let username = "REMUX_DEBUG_SERVER_USERNAME"
         static let password = "REMUX_DEBUG_SERVER_PASSWORD"
-        static let privateKey = "REMUX_DEBUG_PRIVATE_KEY"
-        static let privateKeyPassphrase = "REMUX_DEBUG_PRIVATE_KEY_PASSPHRASE"
+        static let credentialsFile = "REMUX_DEBUG_CREDENTIALS_FILE"
         static let sessionName = "REMUX_DEBUG_TMUX_SESSION"
         static let tmuxExecutablePath = "REMUX_DEBUG_TMUX_EXECUTABLE_PATH"
+    }
+
+    /// A JSON file holding the credential, such as the live UI tests' SSH
+    /// configuration. When given, it replaces REMUX_DEBUG_SERVER_PASSWORD. A
+    /// private key is only read from a file, because XCTest records the app's
+    /// launch environment in every result bundle.
+    private struct CredentialsFile: Decodable {
+        var password: String?
+        var privateKeyPEM: String?
+        var privateKeyPassphrase: String?
     }
 
     @discardableResult
@@ -45,15 +54,21 @@ enum DebugConnectionProfileSeeder {
     ) async throws -> Bool {
         guard environment[Key.enabled] == "1" else { return false }
 
+        let credentials = try environment[Key.credentialsFile].map {
+            try JSONDecoder().decode(
+                CredentialsFile.self,
+                from: Data(contentsOf: URL(fileURLWithPath: $0))
+            )
+        } ?? CredentialsFile(password: environment[Key.password])
         let existingProfile = try await profileRepository.loadProfile()
         let draft = TmuxConnectionDraft(
             displayName: environment[Key.displayName] ?? "Example Server",
             host: environment[Key.host] ?? "",
             port: environment[Key.port] ?? "22",
             username: environment[Key.username] ?? "",
-            password: environment[Key.password] ?? "",
-            privateKey: environment[Key.privateKey],
-            privateKeyPassphrase: environment[Key.privateKeyPassphrase],
+            password: credentials.password ?? "",
+            privateKey: credentials.privateKeyPEM,
+            privateKeyPassphrase: credentials.privateKeyPassphrase,
             sessionName: environment[Key.sessionName] ?? "base",
             tmuxExecutablePath: environment[Key.tmuxExecutablePath] ?? ""
         )
