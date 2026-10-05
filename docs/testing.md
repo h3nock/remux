@@ -37,8 +37,9 @@ to install a public key on a server. It runs without Xcode.
 ## Simulated UI Tests
 
 Most UI tests launch the app with `REMUX_UI_TESTING=1`. The app then keeps its
-data in memory and runs tmux sessions over a scripted in-app connection, so
-these tests don't need a server. The others are the live tests: the
+data in memory and runs tmux over a scripted in-app connection instead of SSH.
+Adding a server and listing a server's tmux sessions still open real SSH
+connections in this mode. The other UI tests are the live tests: the
 `testLive*` tests and `testCaptureDesignReviewScreens`.
 
 Run one:
@@ -48,7 +49,7 @@ xcodebuild test \
   -project Remux.xcodeproj \
   -scheme RemuxUIOnly \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
-  -only-testing:RemuxUITests/RemuxAppUITests/testCreatesSSHServerThenStartsFirstSessionWithSimulatorTransport
+  -only-testing:RemuxUITests/RemuxAppUITests/testSettingsExposeFontAndThemeControls
 ```
 
 Run them all:
