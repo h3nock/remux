@@ -66,8 +66,8 @@ only run through the live test script.
 
 ## Live UI Tests
 
-Live tests run the app in the simulator against a real SSH server and tmux.
-Use them to check changes to terminal behavior end to end.
+Live tests run the app in the simulator against a real SSH server and tmux,
+and check terminal behavior end to end.
 `testCaptureDesignReviewScreens` also needs the live setup; it saves
 screenshots of the main screens in the result bundle.
 `scripts/remux_live_ui_test_with_cleanup.sh` builds the UI tests, runs the
@@ -86,7 +86,7 @@ and removes those sessions as each test finishes.
 
 Use a dedicated test account, or at least a key you made only for these tests.
 The test run copies the credential into the app's launch environment, and it
-ends up in the run's logs (see [Logs and Results](#logs-and-results)).
+ends up in the run's result bundle (see [Logs and Results](#logs-and-results)).
 
 ### Isolated tmux Server
 
@@ -115,8 +115,9 @@ and the script both use it. When you're done, stop that server:
 ### Host Key
 
 The script trusts the server only if its host key is in your
-`~/.ssh/known_hosts`. Connect once with `ssh` and accept the key, then check
-that this prints an entry:
+`~/.ssh/known_hosts`. Without an entry, it stops right away with status 1 and
+prints nothing. Connect once with `ssh` and accept the key, then check that
+this prints an entry:
 
 ```bash
 ssh-keygen -F <host>
@@ -231,8 +232,7 @@ rm -rf .local/logs/live-ui-cleanup-*
 ### Why Live Tests Aren't in CI
 
 They need a reachable SSH server with tmux and a credential for it, and the
-whole suite takes over 20 minutes. Run the live tests that cover your change
-locally and include the result in your pull request.
+whole suite takes over 20 minutes.
 
 ## What CI Runs
 
@@ -247,7 +247,8 @@ macOS 26 runner and:
    simulator with the newest iOS runtime on the runner.
 
 CI doesn't build or run the UI tests. Pull requests that only change `docs/`,
-`README.md`, `LICENSE`, or `remux-site/` skip the App job.
+`README.md`, `LICENSE`, or `remux-site/` skip the App job. A separate Site job
+checks `remux-site/`.
 
 ## Troubleshooting
 
@@ -255,10 +256,9 @@ CI doesn't build or run the UI tests. Pull requests that only change `docs/`,
 | --- | --- |
 | `Unable to find a device matching the provided destination specifier` | No simulator has that name. Pick one from `xcrun simctl list devices available`. |
 | `Missing /tmp/remux-live-ssh.json; cannot run live SSH UI tests.` | Create the [config file](#config-file). |
-| `No trusted OpenSSH host key found for <host>; refusing automated Remux trust.` | Add the server's host key to `~/.ssh/known_hosts` ([Host Key](#host-key)). |
 | `Refusing live SSH host trust because Remux did not display the expected fingerprint.` | The script expects the host key in the first `ssh-keygen -F <host>` entry, and Remux received a different one. Remux asks for the server's Ed25519 host key first, so make that the first entry. |
 | `tmuxExecutablePath in /tmp/remux-live-ssh.json must be an absolute path of [A-Za-z0-9._/-] characters.` | Use an absolute path with only those characters. |
 | `/tmp/remux-live-ssh.json must include password or privateKeyPEM.` | Add one of them. |
-| The live script exits at once with status 1 and no message. | A config value isn't a string, often `port`. Write `"22"`, not `22`. |
+| The live script exits at once with status 1 and prints nothing. | `~/.ssh/known_hosts` has no entry for the host and port ([Host Key](#host-key)), or a config value isn't a string, often `port`: write `"22"`, not `22`. |
 | `Create /tmp/remux-live-ssh.json inside the simulator to run live SSH UI testing.` | A live test was skipped because there is no config file. |
 | `Live SSH UI tests that create remux-latency-* tmux sessions must run through scripts/remux_live_ui_test_with_cleanup.sh; ...` | Run live tests through the script, not directly with `xcodebuild`. |

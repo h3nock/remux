@@ -55,7 +55,6 @@ You can also build from source.
 
 See [docs/development.md](docs/development.md) to set up, build, and run
 Remux, and [docs/testing.md](docs/testing.md) to run the tests.
-[CONTRIBUTING.md](CONTRIBUTING.md) covers pull requests.
 
 ## Acknowledgments
 

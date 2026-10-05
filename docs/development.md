@@ -31,6 +31,10 @@ build, so it works for Debug and Release builds. Run the script again after
 pulling a change that updates the pin. It keeps a framework you built yourself
 unless you pass `--force`.
 
+If a build fails with `There is no XCFramework found at
+'.../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework'`, GhosttyKit
+isn't installed; run `scripts/fetch_ghosttykit.sh`.
+
 ### Building GhosttyKit Yourself
 
 You only need this when you change libghostty. You need
@@ -103,9 +107,9 @@ REMUX_DEBUG_TMUX_SESSION="base"
 
 ## Local Files
 
-Keep developer-only notes, live test configuration, and machine-specific
-working files in `.local/`. Git ignores it. The live UI test script writes its
-logs and result bundles to `.local/logs/`.
+Keep developer-only notes and machine-specific working files in `.local/`.
+Git ignores it. The live UI test script writes its logs and result bundles to
+`.local/logs/`.
 
 Don't commit credentials, live SSH host details, result bundles, or build
 products.
