@@ -61,9 +61,8 @@ xcodebuild test \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
 ```
 
-This also runs the live tests in the scheme. Without
-`/tmp/remux-live-ssh.json` they skip. With it, most of them fail, because live
-tests only run through the live test script.
+This also runs the live tests in the scheme. They skip, because they only run
+through the live test script.
 
 ## Live UI Tests
 
@@ -85,9 +84,13 @@ and removes those sessions as each test finishes.
 - `zsh`, `python3`, `vim`, and `less`. The file preview test also starts a
   web server on `127.0.0.1:18923` on the server, so that port must be free.
 
+Before building, the script connects to the server and checks for tmux and the
+tools its own commands use there. It doesn't check for the programs the tests
+type into the terminal, such as `zsh`, `vim`, and `less`.
+
 Use a dedicated test account, or at least a key you made only for these tests.
-The test run copies the credential into the app's launch environment, and it
-ends up in the run's result bundle (see [Logs and Results](#logs-and-results)).
+The tests run commands on the server as that account, and the config file
+holds the key in plain text.
 
 ### Isolated tmux Server
 
@@ -123,9 +126,8 @@ pkill -f 'tmux -L remux-test'
 ### Host Key
 
 The script trusts the server only if its host key is in your
-`~/.ssh/known_hosts`. Without an entry, it stops right away with status 1 and
-prints nothing. Connect once with `ssh` and accept the key, then check that
-this prints an entry:
+`~/.ssh/known_hosts`. Connect once with `ssh` and accept the key, then check
+that this prints an entry:
 
 ```bash
 ssh-keygen -F <host>
@@ -135,8 +137,9 @@ For a port other than 22, look up `'[<host>]:<port>'` instead.
 
 ### Config File
 
-The script and the tests read `/tmp/remux-live-ssh.json`. Every value is a
-JSON string.
+The config is a JSON file. Pass its path with `--config`; a relative path is
+taken from the directory you run the script in. Without `--config`, the script
+reads `/tmp/remux-live-ssh.json`. Every value is a JSON string.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -150,33 +153,42 @@ JSON string.
 | `displayName` | No | Server name shown in the app. Defaults to `Live SSH`. |
 | `sessionName` | No | tmux session for `testCaptureDesignReviewScreens`. Defaults to `remux-live-e2e`. The script doesn't remove it. |
 
-Create it readable only by you, for example with a key:
+The credential stays in this file. The tests give the app only the file's
+path, and the app reads the credential from it. For its own SSH commands, the
+script loads a private key into an `ssh-agent` that runs only for the run.
+
+Create the config readable only by you. For example, with a key, in `.local/`,
+which Git ignores:
 
 ```bash
+mkdir -p .local
 (umask 077 && ruby -rjson -e 'puts JSON.pretty_generate(
   "host" => "server.example.com",
   "port" => "22",
   "username" => "remux-test",
   "privateKeyPEM" => File.read(File.expand_path("~/.ssh/remux_test_ed25519")),
   "tmuxExecutablePath" => "/home/remux-test/bin/remux-test-tmux"
-)' > /tmp/remux-live-ssh.json)
+)' > .local/live-ssh.json)
 ```
 
 Delete it when you're done testing:
 
 ```bash
-rm /tmp/remux-live-ssh.json
+rm .local/live-ssh.json
 ```
 
 ### Running
 
-The script needs `ruby`, `ssh`, `ssh-keygen`, and `xcodebuild`. macOS includes
-the first three.
+Before it builds, the script checks that the tools it runs on your Mac are
+installed, including `ruby`, `ssh`, `ssh-agent`, `ssh-add`, `ssh-keygen`, and
+`xcodebuild`, and lists any that are missing. Run `scripts/remux_live_ui_test_with_cleanup.sh --help`
+for every option and the config's fields.
 
 Run one test:
 
 ```bash
 scripts/remux_live_ui_test_with_cleanup.sh \
+  --config .local/live-ssh.json \
   --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
   --only-testing RemuxUITests/RemuxAppUITests/testLiveSSHSeededServerOpensReadyTerminalWhenConfigured
 ```
@@ -190,19 +202,21 @@ for test in $(grep -o 'func testLive[A-Za-z]*' RemuxAppUITests/RemuxAppUITests.s
   tests+=(--only-testing "RemuxUITests/RemuxAppUITests/$test")
 done
 scripts/remux_live_ui_test_with_cleanup.sh \
+  --config .local/live-ssh.json \
   --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
   "${tests[@]}"
 ```
 
-The loop leaves out `testLiveAgentTUIPaneSwitchProfileWhenConfigured`, which
-needs `REMUX_LIVE_AGENT_TUI_SESSION` set to an existing two-pane tmux session
-running real agent TUIs.
+The loop leaves out `testLiveAgentTUIPaneSwitchProfileWhenConfigured`. To run
+it, set `REMUX_LIVE_AGENT_TUI_SESSION` when you run the script, naming an
+existing two-pane tmux session that runs real agent TUIs.
 
 With the app already built, one test takes about 2 minutes and the whole suite
 of 26 tests about 25 minutes.
 
 Other options:
 
+- `--config` defaults to `/tmp/remux-live-ssh.json`.
 - `--destination` defaults to `platform=iOS Simulator,name=iPhone 17,OS=latest`.
 - `--configuration Release` builds Release with the debug hooks the tests
   need. The default is `Debug`.
@@ -229,13 +243,15 @@ Each run writes to `.local/logs/` in your checkout:
 - `live-ui-cleanup-<stamp>.log`: the test output.
 - `live-ui-cleanup-<stamp>.xcresult`: the result bundle, with screenshots.
 
-The result bundle contains the private key or password from your config. Read
-what you need, then delete it, and never attach it to an issue or pull
-request:
+They hold screenshots and terminal output from your server, and its host name
+and user, so check them before you share them. To delete them:
 
 ```bash
 rm -rf .local/logs/live-ui-cleanup-*
 ```
+
+The script keeps the rest of a run's state in a temporary directory and
+removes it when the run ends.
 
 ### Why Live Tests Aren't in CI
 
