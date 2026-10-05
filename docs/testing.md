@@ -62,8 +62,8 @@ xcodebuild test \
 ```
 
 This also runs the live tests in the scheme. Without
-`/tmp/remux-live-ssh.json` they skip. With it, they fail, because live tests
-only run through the live test script.
+`/tmp/remux-live-ssh.json` they skip. With it, most of them fail, because live
+tests only run through the live test script.
 
 ## Live UI Tests
 
@@ -113,6 +113,13 @@ and the script both use it. When you're done, stop that server:
 ~/bin/remux-test-tmux kill-server
 ```
 
+If that prints `server exited unexpectedly`, the server and some `tmux -C`
+clients from the run are still running but no longer answer. End them:
+
+```bash
+pkill -f 'tmux -L remux-test'
+```
+
 ### Host Key
 
 The script trusts the server only if its host key is in your
@@ -141,7 +148,7 @@ JSON string.
 | `privateKeyPassphrase` | No | Passphrase for an encrypted key. |
 | `tmuxExecutablePath` | No | Absolute path of tmux, or of the wrapper above, on the server. Only letters, digits, `.`, `_`, `-` and `/`. |
 | `displayName` | No | Server name shown in the app. Defaults to `Live SSH`. |
-| `sessionName` | No | tmux session for `testCaptureDesignReviewScreens`. Defaults to `remux-live-e2e`. |
+| `sessionName` | No | tmux session for `testCaptureDesignReviewScreens`. Defaults to `remux-live-e2e`. The script doesn't remove it. |
 
 Create it readable only by you, for example with a key:
 
@@ -191,8 +198,8 @@ The loop leaves out `testLiveAgentTUIPaneSwitchProfileWhenConfigured`, which
 needs `REMUX_LIVE_AGENT_TUI_SESSION` set to an existing two-pane tmux session
 running real agent TUIs.
 
-One test takes a few minutes, most of it building. The whole suite of 26 tests
-took about 23 minutes after the build on an iPhone 17 simulator.
+With the app already built, one test takes about 2 minutes and the whole suite
+of 26 tests about 25 minutes.
 
 Other options:
 
