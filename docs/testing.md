@@ -181,8 +181,12 @@ rm .local/live-ssh.json
 
 Before it builds, the script checks that the tools it runs on your Mac are
 installed, including `ruby`, `ssh`, `ssh-agent`, `ssh-add`, `ssh-keygen`, and
-`xcodebuild`, and lists any that are missing. Run `scripts/remux_live_ui_test_with_cleanup.sh --help`
-for every option and the config's fields.
+`xcodebuild`, and lists any that are missing. For every option and the
+config's fields, run:
+
+```bash
+scripts/remux_live_ui_test_with_cleanup.sh --help
+```
 
 Run one test:
 
@@ -279,10 +283,23 @@ checks `remux-site/`.
 | Message | Fix |
 | --- | --- |
 | `Unable to find a device matching the provided destination specifier` | No simulator has that name. Pick one from `xcrun simctl list devices available`. |
-| `Missing /tmp/remux-live-ssh.json; cannot run live SSH UI tests.` | Create the [config file](#config-file). |
+
+### Live Tests
+
+The live test script exits with status 2 for the config and server problems
+below, and 127 for missing local tools. `<config>` is the config's absolute
+path.
+
+| Message | Fix |
+| --- | --- |
+| `Missing <config>; cannot run live SSH UI tests.` | Create the [config file](#config-file), or pass its path with `--config`. |
+| `<config> is not valid JSON.` | Fix the JSON. The message doesn't quote the file, which may hold a key. |
+| `<config> has no "host".` | Add the field. The same message names `username` when that is missing. |
+| `"port" in <config> must be a string, e.g. "port": "22".` | Quote the value. Every field is a string. |
+| `<config> must include password or privateKeyPEM.` | Add one of them. |
+| `tmuxExecutablePath in <config> must be an absolute path of [A-Za-z0-9._/-] characters.` | Use an absolute path with only those characters. |
+| `No trusted OpenSSH host key found for <host>; refusing automated Remux trust.` | Add the server's host key to `~/.ssh/known_hosts` ([Host Key](#host-key)). For a port other than 22, `<host>` reads `[<host>]:<port>`. |
+| `Missing local tools the live UI test harness needs: <tools>` | Install the listed tools. |
+| `Cannot run the live UI test harness against <user>@<host>.` | The script couldn't use the server. The line before it says why, such as ssh's `Permission denied`, or `missing tools on remote host: <tools>`, which can also name a `tmuxExecutablePath` that doesn't exist. |
 | `Refusing live SSH host trust because Remux did not display the expected fingerprint.` | The script expects the host key in the first `ssh-keygen -F <host>` entry, and Remux received a different one. Remux asks for the server's Ed25519 host key first, so make that the first entry. |
-| `tmuxExecutablePath in /tmp/remux-live-ssh.json must be an absolute path of [A-Za-z0-9._/-] characters.` | Use an absolute path with only those characters. |
-| `/tmp/remux-live-ssh.json must include password or privateKeyPEM.` | Add one of them. |
-| The live script exits at once with status 1 and prints nothing. | `~/.ssh/known_hosts` has no entry for the host and port ([Host Key](#host-key)), or a config value isn't a string, often `port`: write `"22"`, not `22`. |
-| `Create /tmp/remux-live-ssh.json inside the simulator to run live SSH UI testing.` | A live test was skipped because there is no config file. |
-| `Live SSH UI tests that create remux-latency-* tmux sessions must run through scripts/remux_live_ui_test_with_cleanup.sh; ...` | Run live tests through the script, not directly with `xcodebuild`. |
+| `Test skipped - Run live SSH UI tests through scripts/remux_live_ui_test_with_cleanup.sh.` | Live tests run only through the script, not directly with `xcodebuild`. |
