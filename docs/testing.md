@@ -120,8 +120,11 @@ If that prints `server exited unexpectedly`, the server and some `tmux -C`
 clients from the run are still running but no longer answer. End them:
 
 ```bash
-pkill -f 'tmux -L remux-test'
+pkill -f 'tmux -L remux-test( |$)'
 ```
+
+The `( |$)` limits it to the `remux-test` socket, so a socket such as
+`remux-test-other` is left alone.
 
 ### Host Key
 
@@ -224,8 +227,13 @@ Other options:
 - `--destination` defaults to `platform=iOS Simulator,name=iPhone 17,OS=latest`.
 - `--configuration Release` builds Release with the debug hooks the tests
   need. The default is `Debug`.
-- `--development-team <team-id>` signs the build for a device destination.
 - `--derived-data-path <path>` passes `-derivedDataPath` to `xcodebuild`.
+
+Live tests run only on a simulator. The tests read the run's files and the
+config from the Mac's disk, and check that the script's process is still
+running on the Mac. A simulator shares the Mac's files and processes; a device
+doesn't, so the script's `--development-team` option doesn't make the tests
+work on a device.
 
 The script prints each test's result and ends with:
 
