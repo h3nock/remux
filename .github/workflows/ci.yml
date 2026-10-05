@@ -5,6 +5,8 @@ on:
     branches:
       - main
   pull_request:
+  schedule:
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
@@ -87,7 +89,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.app == 'true'
     runs-on: macos-26
-    timeout-minutes: 25
+    # Pull requests skip the UI tests.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 75 }}
 
     steps:
       - name: Check out Remux
@@ -170,6 +173,21 @@ jobs:
           set -euo pipefail
           rm -rf "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
           xcodebuild test -project Remux.xcodeproj -scheme Remux -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxTests -resultBundlePath "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
+
+      - name: Run UI tests
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Live UI tests need a real SSH server and run only through
+          # scripts/remux_live_ui_test_with_cleanup.sh.
+          skip_live=()
+          while IFS= read -r test_name; do
+            skip_live+=("-skip-testing:RemuxUITests/RemuxAppUITests/${test_name}")
+          done < <(grep -oE 'func (testLive[A-Za-z0-9]*|testCaptureDesignReviewScreens)\(' RemuxAppUITests/RemuxAppUITests.swift | sed -E 's/^func ([A-Za-z0-9]+)\($/\1/')
+          rm -rf "${RUNNER_TEMP}/RemuxUITests.xcresult"
+          xcodebuild test-without-building -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -collect-test-diagnostics never -resultBundlePath "${RUNNER_TEMP}/RemuxUITests.xcresult" "${skip_live[@]}"
 
       - name: Delete simulator
         if: always() && steps.simulator.outputs.udid != ''
