@@ -1,34 +1,59 @@
 # Development
 
-Remux uses XcodeGen. The checked-in project definition is `project.yml`.
+This page covers setting up, building, and running Remux. Tests are covered in
+[testing.md](testing.md).
 
 ## Requirements
 
-- Xcode with iOS 18 SDK support
-- XcodeGen on `PATH`
-- Zig and the Ghostty source checkout at the relative path configured in
-  [project.yml](../project.yml)
+- A Mac with Xcode 26.4.1 or later and an iOS simulator runtime. CI builds
+  with Xcode 26.4.1. The app targets iOS 18 and builds with Swift 6.
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
+- Network access to GitHub, to download GhosttyKit and the Swift packages.
 
-## Build GhosttyKit
+## Set Up
 
-Build the XCFramework used by Release and performance profiling with:
-
-```bash
-scripts/build_release_ghosttykit.sh
-```
-
-Set `GHOSTTY_SOURCE_DIR` when the Ghostty checkout is not the configured
-sibling directory. The script always builds `ReleaseFast`, and Remux Release
-builds independently query the resulting XCFramework and fail on any other
-mode. The app also validates the selected iOS slice at launch.
-
-## Generate Project
+Remux uses GhosttyKit, the Ghostty terminal library built from
+[h3nock/remux-ghostty](https://github.com/h3nock/remux-ghostty). The project
+expects it next to your Remux checkout, at
+`../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework` (set in
+[project.yml](../project.yml)), so clone Remux into a directory you own:
 
 ```bash
+git clone https://github.com/h3nock/remux.git
+cd remux
+scripts/fetch_ghosttykit.sh
 xcodegen generate
 ```
 
-Run this after changing [project.yml](../project.yml).
+`scripts/fetch_ghosttykit.sh` downloads the GhosttyKit release pinned in the
+script, checks its SHA-256, and installs it at that path. It is a ReleaseFast
+build, so it works for Debug and Release builds. Run the script again after
+pulling a change that updates the pin. It keeps a framework you built yourself
+unless you pass `--force`.
+
+### Building GhosttyKit Yourself
+
+You only need this when you change libghostty. You need
+[Zig](https://ziglang.org/download/) at the version in the checkout's
+`build.zig.zon` (`minimum_zig_version`). Clone remux-ghostty to the path above
+(remove a fetched copy there first) and build:
+
+```bash
+git clone https://github.com/h3nock/remux-ghostty.git ../ghostty-remux-upstream-rebuild
+scripts/build_release_ghosttykit.sh
+```
+
+The script builds a ReleaseFast XCFramework in the checkout's `macos/`
+directory, where Remux finds it. Release builds of Remux check that GhosttyKit
+is a ReleaseFast build and fail otherwise. To go back to the pinned release,
+run `scripts/fetch_ghosttykit.sh --force`.
+
+## Generate the Project
+
+`Remux.xcodeproj` is generated from [project.yml](../project.yml) and checked
+in. Run `xcodegen generate` after you edit `project.yml` or add, remove, or
+rename files, and commit the updated project with your change. CI fails when
+`xcodegen generate` changes the checked-in project.
 
 ## Build
 
@@ -39,22 +64,28 @@ xcodebuild build \
   -destination 'generic/platform=iOS Simulator'
 ```
 
-## Test
+## Run
 
-```bash
-xcodebuild test \
-  -project Remux.xcodeproj \
-  -scheme Remux \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
-```
+### Simulator
 
-## Local Files
+Open `Remux.xcodeproj` in Xcode, choose the `Remux` scheme and an iPhone
+simulator, and run.
 
-Keep developer-only notes, live validation configuration, and machine-specific
-working files in `.local/`. The directory is ignored by Git.
+### Device
 
-Do not commit local credentials, live SSH host details, machine-specific result
-bundles, or generated build products.
+The project sets no signing team. In Xcode, select the `Remux` target, open
+Signing & Capabilities, choose your team, and change the bundle identifier
+if Xcode reports that `dev.remux.app` is unavailable. Don't commit these
+changes; `xcodegen generate` resets them.
+
+### Connecting to a Server
+
+Remux connects over SSH and attaches to tmux in control mode. The server needs
+tmux 3.1 or later. With an older tmux, the terminal shows
+`unsupported tmux version <version> (requires 3.1+)`. Remux looks for `tmux`
+on the server's `PATH` and in `/opt/homebrew/bin`, `/usr/local/bin`,
+`/usr/bin`, and `/bin`. If tmux is somewhere else, set its absolute path in the
+server's Executable Path field.
 
 ## Debug Seeding
 
@@ -70,15 +101,11 @@ REMUX_DEBUG_SERVER_PASSWORD="<password>"
 REMUX_DEBUG_TMUX_SESSION="base"
 ```
 
-Live validation should stay opt-in and local. Keep any real host, username,
-password, or test-control files out of the tracked repository.
+## Local Files
 
-When running generated live UI tests, use the tracked host-side wrapper so the
-app runs with ephemeral debug storage, the test records the exact disposable
-`remux-latency-*` tmux sessions it creates, and the wrapper removes only those
-allowlisted sessions after the run:
+Keep developer-only notes, live test configuration, and machine-specific
+working files in `.local/`. Git ignores it. The live UI test script writes its
+logs and result bundles to `.local/logs/`.
 
-```bash
-scripts/remux_live_ui_test_with_cleanup.sh \
-  --only-testing RemuxUITests/RemuxAppUITests/testLiveSSHTmuxActionCycleWhenConfigured
-```
+Don't commit credentials, live SSH host details, result bundles, or build
+products.
