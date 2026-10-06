@@ -53,40 +53,8 @@ You can also build from source.
 
 ## Building from Source
 
-Requirements:
-
-- Xcode with iOS 18 SDK support
-- XcodeGen
-
-Fetch the prebuilt GhosttyKit framework:
-
-```bash
-scripts/fetch_ghosttykit.sh
-```
-
-Generate the Xcode project and build:
-
-```bash
-xcodegen generate
-
-xcodebuild build \
-  -project Remux.xcodeproj \
-  -scheme Remux \
-  -destination 'generic/platform=iOS Simulator'
-```
-
-Run the tests:
-
-```bash
-xcodebuild test \
-  -project Remux.xcodeproj \
-  -scheme Remux \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
-```
-
-To build GhosttyKit yourself instead of fetching it, see
-[remux-ghostty](https://github.com/h3nock/remux-ghostty) and
-[scripts/build_release_ghosttykit.sh](scripts/build_release_ghosttykit.sh).
+See [docs/development.md](docs/development.md) to set up, build, and run
+Remux, and [docs/testing.md](docs/testing.md) to run the tests.
 
 ## Acknowledgments
 
