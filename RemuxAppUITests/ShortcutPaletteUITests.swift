@@ -151,8 +151,8 @@ final class ShortcutPaletteUITests: XCTestCase {
 
         let autoSend = app.switches["Auto-send Enter"]
         XCTAssertTrue(autoSend.exists)
-        autoSend.tap()
-        XCTAssertTrue(app.staticTexts["x"].exists)
+        tapWhenSettled(autoSend)
+        XCTAssertTrue(app.staticTexts["x"].waitForExistence(timeout: 5))
 
         app.buttons["Ctrl"].tap()
         let controlField = editorActionField()
@@ -176,7 +176,7 @@ final class ShortcutPaletteUITests: XCTestCase {
         XCTAssertTrue(tabOption.waitForExistence(timeout: 2))
         tabOption.tap()
         app.scrollViews.firstMatch.swipeUp()
-        app.switches["Ctrl"].tap()
+        tapWhenSettled(app.switches["Ctrl"])
         XCTAssertTrue(waitForValue(app.switches["Ctrl"], expected: "1"))
         app.switches["Opt"].tap()
         XCTAssertTrue(waitForValue(app.switches["Opt"], expected: "1"))
@@ -384,6 +384,32 @@ final class ShortcutPaletteUITests: XCTestCase {
         field.tap()
         field.typeText(text)
         XCTAssertTrue(waitForValue(field, expected: expected))
+    }
+
+    /// Taps a control once it holds still. A control behind the keyboard is
+    /// scrolled into view first, and a tap that lands while the form is still
+    /// scrolling only stops the scroll.
+    private func tapWhenSettled(_ element: XCUIElement) {
+        XCTAssertTrue(element.waitForExistence(timeout: 2))
+        if !element.isHittable {
+            app.scrollViews.firstMatch.swipeUp()
+        }
+        XCTAssertTrue(waitForElementToSettle(element), "\(element) kept moving.")
+        element.tap()
+    }
+
+    private func waitForElementToSettle(_ element: XCUIElement, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousFrame = element.frame
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            let frame = element.frame
+            if frame == previousFrame, element.isHittable {
+                return true
+            }
+            previousFrame = frame
+        }
+        return false
     }
 
     private func editorActionField() -> XCUIElement {
