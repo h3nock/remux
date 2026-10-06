@@ -129,9 +129,12 @@ final class GhosttyDebugComposerDictationBackend:
                 run.handler(.completed)
             }
             run.completionWork = completionWork
+            // With a transcript, stay in Transcribing… long enough for a UI
+            // test to see it: XCUITest's first existence check lands about a
+            // second after a tap, later on a slow CI runner.
             let delay: DispatchTimeInterval = configuration.transcript == nil
                 ? .milliseconds(250)
-                : .milliseconds(1_250)
+                : .seconds(3)
             queue.asyncAfter(deadline: .now() + delay, execute: completionWork)
         }
     }

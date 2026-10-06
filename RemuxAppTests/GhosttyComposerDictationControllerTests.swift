@@ -307,7 +307,7 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         await waitUntil { transcripts == ["Please \(transcript)"] }
 
         controller.finish { completionCount += 1 }
-        await waitUntil(timeout: .seconds(2)) { controller.phase == .idle }
+        await waitUntil(timeout: .seconds(5)) { controller.phase == .idle }
 
         XCTAssertEqual(completionCount, 1)
         XCTAssertEqual(transcripts, ["Please \(transcript)"])

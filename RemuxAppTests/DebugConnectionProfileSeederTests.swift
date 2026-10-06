@@ -18,6 +18,23 @@ final class DebugConnectionProfileSeederTests: XCTestCase {
         XCTAssertNil(profile)
     }
 
+    func testSeededSessionNameFollowsSeedingRequest() {
+        XCTAssertNil(DebugConnectionProfileSeeder.seededSessionName(environment: [:]))
+        XCTAssertEqual(
+            DebugConnectionProfileSeeder.seededSessionName(
+                environment: ["REMUX_DEBUG_SEED_CONNECTION": "1"]
+            ),
+            "base"
+        )
+        XCTAssertEqual(
+            DebugConnectionProfileSeeder.seededSessionName(environment: [
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_TMUX_SESSION": "work",
+            ]),
+            "work"
+        )
+    }
+
     func testSeedPersistsConnectionProfileAndCredential() async throws {
         let repository = InMemoryConnectionProfileRepository()
         let credentialStore = InMemorySSHCredentialStore()

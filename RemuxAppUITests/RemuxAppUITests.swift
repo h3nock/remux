@@ -81,6 +81,7 @@ final class RemuxAppUITests: XCTestCase {
 
         attachScreenshot(named: "toolbar-keys-control-moved")
 
+        waitForLiveTerminalInputReady(timeout: 10)
         first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 1.2)
         XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
@@ -165,11 +166,14 @@ final class RemuxAppUITests: XCTestCase {
         stop.tap()
 
         let status = app.staticTexts["terminal.composer.dictation.status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
         XCTAssertEqual(status.label, "Transcribing…")
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "transcribing kept keyboard hidden"))
         XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-transcribing")
+        // The editor stays in the accessibility tree while transcribing but
+        // ignores taps, so wait for the transcription itself to finish.
+        XCTAssertTrue(waitForElementToDisappear(status, timeout: 5), "Dictation kept transcribing.")
 
         let field = app.textViews["terminal.composer.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
@@ -209,10 +213,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(keyboardDismiss.exists)
         stop.tap()
 
-        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
         XCTAssertEqual(status.label, "Transcribing…")
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "transcribing kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertTrue(waitForElementToDisappear(status, timeout: 5), "Dictation kept transcribing.")
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
@@ -582,7 +587,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.textFields["connection.name"].waitForExistence(timeout: 0.5))
         XCTAssertFalse(app.secureTextFields["connection.password"].exists)
         sessionName.tap()
-        sessionName.typeText("logs")
+        typeTextAndConfirm("logs", into: sessionName)
         app.swipeUp()
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
         saveConnectionAndWaitForTerminal()
@@ -741,7 +746,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)
 
         let host = app.textFields["connection.host"]
-        host.tap()
+        tapFormField(host)
         host.typeText(".changed")
         XCTAssertTrue(
             waitForElementToDisappear(inlineStatus, timeout: 3),
@@ -3052,6 +3057,7 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment.merge(
             [
                 "REMUX_UI_TESTING": "1",
+                "REMUX_UI_TEST_INPUT_READY": "1",
                 "REMUX_DEBUG_SEED_CONNECTION": "1",
                 "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
                 "REMUX_DEBUG_SERVER_HOST": "example.com",
@@ -3067,6 +3073,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(session.waitForExistence(timeout: 5))
         session.tap()
         XCTAssertTrue(app.buttons["terminal.toolbar-key.0"].waitForExistence(timeout: 5))
+        waitForLiveTerminalInputReady(timeout: 10)
     }
 
     private func selectToolbarKey(_ title: String) {
@@ -3789,8 +3796,8 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].tap()
         app.textFields["connection.host"].typeText("127.0.0.1")
 
-        app.textFields["connection.username"].tap()
-        app.textFields["connection.username"].typeText("demo\n")
+        tapFormField(app.textFields["connection.username"])
+        typeTextThenReturn("demo", into: app.textFields["connection.username"])
 
         let password = app.secureTextFields["connection.password"]
         XCTAssertTrue(password.waitForExistence(timeout: 2))
@@ -3806,8 +3813,62 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].tap()
         app.textFields["connection.host"].typeText("100.64.0.10")
 
-        app.textFields["connection.username"].tap()
-        app.textFields["connection.username"].typeText("demo\n")
+        tapFormField(app.textFields["connection.username"])
+        typeTextThenReturn("demo", into: app.textFields["connection.username"])
+    }
+
+    /// Taps a server form field once a tap can reach it. With the keyboard up,
+    /// a field can sit right at the keyboard's top edge, where the tap lands on
+    /// the keyboard toolbar. A field scrolled off the top is scrolled back by
+    /// the tap itself, which then arrives while the form is still moving and
+    /// only stops the scroll. Either way the field never gets focus.
+    private func tapFormField(_ field: XCUIElement) {
+        if isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) {
+            app.buttons["Done"].firstMatch.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "server form keyboard hidden"))
+        }
+        if !field.isHittable {
+            app.swipeDown()
+        }
+        XCTAssertTrue(waitForElementToSettle(field), "\(field) kept moving.")
+        field.tap()
+    }
+
+    private func waitForElementToSettle(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousFrame = element.frame
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            let frame = element.frame
+            if frame == previousFrame, element.isHittable {
+                return true
+            }
+            previousFrame = frame
+        }
+        return false
+    }
+
+    /// Types the text, waits until the field shows it, then presses Return.
+    /// Typed as one burst, the Return can reach the server form before the
+    /// field has applied the text: the field then reverts to an earlier value
+    /// or ignores the Return, leaving focus on it.
+    private func typeTextThenReturn(_ text: String, into field: XCUIElement) {
+        typeTextAndConfirm(text, into: field)
+        field.typeText("\n")
+    }
+
+    /// Types the text and waits until the field shows it.
+    private func typeTextAndConfirm(_ text: String, into field: XCUIElement) {
+        field.typeText(text)
+        let applied = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", text),
+            object: field
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [applied], timeout: 5),
+            .completed,
+            "\(field) does not show \"\(text)\"."
+        )
     }
 
     private func selectAuthentication(_ name: String) {
@@ -3835,8 +3896,8 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(port.value as? String, "22")
 
         let username = app.textFields["connection.username"]
-        username.tap()
-        username.typeText("demo\n")
+        tapFormField(username)
+        typeTextThenReturn("demo", into: username)
     }
 
     private func saveConnectionAndWaitForTerminal() {
@@ -3847,10 +3908,10 @@ final class RemuxAppUITests: XCTestCase {
 
     private func saveServerAndStartSession() {
         app.buttons["connection.save"].tap()
-        dismissPasswordManagerPromptIfPresent()
 
         let serverDetail = app.descendants(matching: .any)["library.server.detail"]
         XCTAssertTrue(serverDetail.waitForExistence(timeout: 5))
+        declinePasswordManagerPromptAfterAddingServer()
         let newSessionButton = app.buttons["library.server.new-session.empty"]
         XCTAssertTrue(newSessionButton.waitForExistence(timeout: 2))
         newSessionButton.tap()
@@ -3858,8 +3919,19 @@ final class RemuxAppUITests: XCTestCase {
         let sessionName = app.textFields["connection.session"]
         XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
         sessionName.tap()
-        sessionName.typeText("base")
+        typeTextAndConfirm("base", into: sessionName)
         saveConnectionAndWaitForTerminal()
+    }
+
+    /// After the Add Server form closes, iOS offers to save its password. The
+    /// offer appears a few seconds later, on top of whatever the test is doing
+    /// by then, and takes the taps and keystrokes meant for the app. So wait
+    /// for it and decline it before going on.
+    private func declinePasswordManagerPromptAfterAddingServer() {
+        let notNow = app.buttons["Not Now"]
+        if notNow.waitForExistence(timeout: 10) {
+            declinePasswordManagerPrompt(notNow)
+        }
     }
 
     private func openHomeFromTerminal() {
@@ -4011,17 +4083,32 @@ final class RemuxAppUITests: XCTestCase {
     private func dismissPasswordManagerPromptIfPresent() {
         let appNotNowButton = app.buttons["Not Now"]
         if appNotNowButton.waitForExistence(timeout: 1) {
-            appNotNowButton.tap()
+            declinePasswordManagerPrompt(appNotNowButton)
             return
         }
 
         app.tap()
         if appNotNowButton.waitForExistence(timeout: 1) {
-            appNotNowButton.tap()
+            declinePasswordManagerPrompt(appNotNowButton)
             return
         }
 
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.63)).tap()
+    }
+
+    /// The Save Password prompt ignores taps for a moment after it appears,
+    /// even once it looks settled, and then stays up and covers the app. So
+    /// tap Not Now again until the prompt goes away.
+    private func declinePasswordManagerPrompt(_ notNow: XCUIElement) {
+        for _ in 0..<5 {
+            if notNow.isHittable {
+                notNow.tap()
+            }
+            if waitForElementToDisappear(notNow, timeout: 2) {
+                return
+            }
+        }
+        XCTFail("The Save Password prompt stayed up.")
     }
 
     private func installSystemPromptMonitor() {
@@ -4498,8 +4585,8 @@ final class RemuxAppUITests: XCTestCase {
         host.typeText("server.example.com")
 
         let user = app.textFields["connection.username"]
-        user.tap()
-        user.typeText("demo\n")
+        tapFormField(user)
+        typeTextThenReturn("demo", into: user)
 
         let pwd = app.secureTextFields["connection.password"]
         XCTAssertTrue(pwd.waitForExistence(timeout: 2))

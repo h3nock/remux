@@ -459,13 +459,11 @@ struct RemuxAppDependencies: Sendable {
             sshConnectionPrewarmer: { _, _, _ in
             },
             tmuxSessionDiscoverer: { target, _, sshRootService in
+                // UI tests reach no real server: discovery answers like a
+                // server whose tmux has only the seeded session, if any.
                 guard target.sshAuth.credential == .none,
                       let tailscaleSSHCheckChallenge else {
-                    return try await RemuxAppDependencies.liveTmuxSessionDiscoverer(
-                        target: target,
-                        trustedHostStore: trustedHostStore,
-                        sshRootService: sshRootService
-                    )
+                    return DebugConnectionProfileSeeder.seededSessionName().map { [$0] } ?? []
                 }
 
                 let suspension = AsyncThrowingStream.makeStream(of: Void.self)
@@ -493,7 +491,10 @@ struct RemuxAppDependencies: Sendable {
             return []
         }
 
-        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16\n"
+        // Answers GhosttyKit's `list-panes -s -F` request. The line needs every
+        // field of that format, through pane_current_command and
+        // pane_current_path, or the client rejects the attach.
+        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/home/demo\n"
         let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
         let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
             + "%begin 2 2 1\n3.1\n%end 2 2 1\n"
