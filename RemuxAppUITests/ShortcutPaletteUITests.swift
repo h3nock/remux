@@ -236,7 +236,7 @@ final class ShortcutPaletteUITests: XCTestCase {
 
         XCTAssertLessThan(shortcutRow(named: "R").frame.midY, shortcutRow(named: "S").frame.midY)
         app.buttons["Edit"].tap()
-        dragShortcutRow(named: "R", to: "S")
+        dragFirstShortcutBelowSecond()
         app.buttons["Done"].tap()
         XCTAssertGreaterThan(shortcutRow(named: "R").frame.midY, shortcutRow(named: "S").frame.midY)
 
@@ -443,16 +443,21 @@ final class ShortcutPaletteUITests: XCTestCase {
             )
     }
 
-    private func dragShortcutRow(named source: String, to destination: String) {
-        let sourceHandle = app.buttons["Reorder \(source)"]
-        let destinationHandle = app.buttons["Reorder \(destination)"]
-        XCTAssertTrue(sourceHandle.waitForExistence(timeout: 2), "Missing source shortcut \(source)")
-        XCTAssertTrue(destinationHandle.waitForExistence(timeout: 2), "Missing destination shortcut \(destination)")
+    /// Drags the first of a collection's two shortcuts below the second.
+    /// iOS names each reorder handle after its row, but iOS 26 names the
+    /// handle of a row that shows only a title after the row's delete control
+    /// ("Reorder Remove"), so the handles are found by position.
+    private func dragFirstShortcutBelowSecond() {
+        let handles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reorder "))
+        XCTAssertTrue(handles.element(boundBy: 1).waitForExistence(timeout: 2), "Missing reorder handles")
+        let ordered = handles.allElementsBoundByIndex.sorted { $0.frame.minY < $1.frame.minY }
+        XCTAssertEqual(ordered.count, 2, "Expected the reorder handles of two shortcuts.")
+        guard ordered.count == 2 else { return }
 
-        sourceHandle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        ordered[0].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(
                 forDuration: 0.8,
-                thenDragTo: destinationHandle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1.25))
+                thenDragTo: ordered[1].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1.25))
             )
     }
 
