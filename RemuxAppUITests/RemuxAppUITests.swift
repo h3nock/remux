@@ -3881,7 +3881,8 @@ final class RemuxAppUITests: XCTestCase {
             predicate: NSPredicate(format: "exists == true AND hittable == true"),
             object: button
         )
-        guard XCTWaiter.wait(for: [expectation], timeout: 2) == .completed else {
+        // One hittability check can take 2 s on a slow runner.
+        guard XCTWaiter.wait(for: [expectation], timeout: 10) == .completed else {
             return XCTFail("Authentication option \(name) is not hittable.")
         }
         button.tap()
