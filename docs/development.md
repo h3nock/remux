@@ -70,6 +70,11 @@ REMUX_DEBUG_SERVER_PASSWORD="<password>"
 REMUX_DEBUG_TMUX_SESSION="base"
 ```
 
+To seed a private key, set `REMUX_DEBUG_CREDENTIALS_FILE` to a JSON file with
+`privateKeyPEM` and an optional `privateKeyPassphrase` (or `password`); the
+credential then comes only from that file. A key is never read from the launch
+environment, which XCTest records in result bundles.
+
 Live validation should stay opt-in and local. Keep any real host, username,
 password, or test-control files out of the tracked repository.
 
@@ -80,5 +85,9 @@ allowlisted sessions after the run:
 
 ```bash
 scripts/remux_live_ui_test_with_cleanup.sh \
+  --config .local/live-ssh.json \
   --only-testing RemuxUITests/RemuxAppUITests/testLiveSSHTmuxActionCycleWhenConfigured
 ```
+
+`--config` defaults to `/tmp/remux-live-ssh.json`; `--help` lists every option
+and the config's fields.
