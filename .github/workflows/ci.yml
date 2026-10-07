@@ -198,6 +198,9 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: macos-26
     timeout-minutes: 50
+    env:
+      # Pinned so the tests stay on iOS 26 when the runner image adds newer runtimes.
+      IOS_SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
 
     steps:
       - name: Check out Remux
@@ -216,9 +219,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime_id="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable == true and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last.identifier')"
-          test -n "${runtime_id}"
-          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${runtime_id}")"
+          if ! xcrun simctl list runtimes --json | jq -e --arg id "${IOS_SIMULATOR_RUNTIME}" '.runtimes[] | select(.identifier == $id and .isAvailable == true)' > /dev/null; then
+            printf 'Simulator runtime %s is not available on this runner. Installed iOS runtimes:\n' "${IOS_SIMULATOR_RUNTIME}" >&2
+            xcrun simctl list runtimes iOS >&2
+            exit 1
+          fi
+          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${IOS_SIMULATOR_RUNTIME}")"
           printf 'udid=%s\n' "${udid}" >> "${GITHUB_OUTPUT}"
           xcrun simctl boot "${udid}"
 
