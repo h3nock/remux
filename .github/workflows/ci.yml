@@ -6,6 +6,7 @@ on:
       - main
   pull_request:
   schedule:
+    # Nightly runs only the UI tests.
     - cron: "17 7 * * *"
   workflow_dispatch:
 
@@ -23,6 +24,7 @@ env:
 jobs:
   changes:
     name: Changes
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -65,6 +67,7 @@ jobs:
 
   site:
     name: Site
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -90,8 +93,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.app == 'true'
     runs-on: macos-26
-    # Pull requests skip the UI tests.
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 75 }}
+    timeout-minutes: 25
 
     steps:
       - name: Check out Remux
@@ -175,9 +177,64 @@ jobs:
           rm -rf "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
           xcodebuild test -project Remux.xcodeproj -scheme Remux -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxTests -resultBundlePath "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
 
+      - name: Delete simulator
+        if: always() && steps.simulator.outputs.udid != ''
+        shell: bash
+        run: xcrun simctl delete "${{ steps.simulator.outputs.udid }}"
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: remux-test-results-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ui-tests:
+    # Tracks the simulated UI tests on main without gating anything: this job
+    # is not a required check and never runs on pull requests.
+    name: UI tests
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 50
+
+    steps:
+      - name: Check out Remux
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "${XCODE_DEVELOPER_DIR}"
+          sudo xcode-select --switch "${XCODE_DEVELOPER_DIR}"
+          xcodebuild -version
+
+      - name: Create simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_id="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable == true and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last.identifier')"
+          test -n "${runtime_id}"
+          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${runtime_id}")"
+          printf 'udid=%s\n' "${udid}" >> "${GITHUB_OUTPUT}"
+          xcrun simctl boot "${udid}"
+
+      - name: Fetch GhosttyKit
+        shell: bash
+        run: scripts/fetch_ghosttykit.sh
+
+      - name: Build UI tests
+        shell: bash
+        run: xcodebuild build-for-testing -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}"
+
+      - name: Wait for simulator
+        shell: bash
+        run: xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
+
       - name: Run UI tests
-        if: github.event_name != 'pull_request'
-        timeout-minutes: 45
         shell: bash
         run: |
           set -euo pipefail
@@ -195,11 +252,11 @@ jobs:
         shell: bash
         run: xcrun simctl delete "${{ steps.simulator.outputs.udid }}"
 
-      - name: Upload test results
+      - name: Upload UI test results
         if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: remux-test-results-${{ github.run_attempt }}
+          name: remux-ui-test-results-${{ github.run_attempt }}
           path: ${{ runner.temp }}/*.xcresult
           if-no-files-found: ignore
           retention-days: 7
