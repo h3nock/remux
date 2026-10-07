@@ -258,11 +258,12 @@ jobs:
         shell: bash
         run: xcrun simctl delete "${{ steps.simulator.outputs.udid }}"
 
+      # Kept for passing runs too, so runs can be compared over time.
       - name: Upload UI test results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: remux-ui-test-results-${{ github.run_attempt }}
           path: ${{ runner.temp }}/*.xcresult
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30
