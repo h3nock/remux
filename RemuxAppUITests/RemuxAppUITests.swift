@@ -3958,17 +3958,22 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func selectAuthentication(_ name: String) {
-        let button = app.buttons[name]
-        if !button.isHittable {
-            app.swipeUp()
+        // With the keyboard up the form may still be scrolling the focused
+        // field into view, and XCUITest can't work out a tap point for a
+        // control that is moving. Hide the keyboard and let the form settle.
+        if isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) {
+            app.buttons["Done"].firstMatch.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "server form keyboard hidden"))
         }
 
-        let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true AND hittable == true"),
-            object: button
-        )
-        guard XCTWaiter.wait(for: [expectation], timeout: 2) == .completed else {
-            return XCTFail("Authentication option \(name) is not hittable.")
+        let button = app.buttons[name]
+        XCTAssertTrue(button.waitForExistence(timeout: 5))
+        // One hittability check can take 2 s on a slow runner.
+        if !waitForElementToSettle(button, timeout: 10) {
+            app.swipeUp()
+            guard waitForElementToSettle(button, timeout: 10) else {
+                return XCTFail("Authentication option \(name) is not hittable.")
+            }
         }
         button.tap()
     }

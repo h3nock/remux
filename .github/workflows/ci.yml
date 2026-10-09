@@ -5,13 +5,17 @@ on:
     branches:
       - main
   pull_request:
+  schedule:
+    # Nightly runs only the UI tests.
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Nightly runs get their own group so they and pushes to main don't cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-schedule' || '' }}
   cancel-in-progress: true
 
 env:
@@ -20,6 +24,7 @@ env:
 jobs:
   changes:
     name: Changes
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -62,6 +67,7 @@ jobs:
 
   site:
     name: Site
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -184,3 +190,80 @@ jobs:
           path: ${{ runner.temp }}/*.xcresult
           if-no-files-found: ignore
           retention-days: 7
+
+  ui-tests:
+    # Tracks the simulated UI tests on main without gating anything: this job
+    # is not a required check and never runs on pull requests.
+    name: UI tests
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 50
+    env:
+      # Pinned so the tests stay on iOS 26 when the runner image adds newer runtimes.
+      IOS_SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
+
+    steps:
+      - name: Check out Remux
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "${XCODE_DEVELOPER_DIR}"
+          sudo xcode-select --switch "${XCODE_DEVELOPER_DIR}"
+          xcodebuild -version
+
+      - name: Create simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! xcrun simctl list runtimes --json | jq -e --arg id "${IOS_SIMULATOR_RUNTIME}" '.runtimes[] | select(.identifier == $id and .isAvailable == true)' > /dev/null; then
+            printf 'Simulator runtime %s is not available on this runner. Installed iOS runtimes:\n' "${IOS_SIMULATOR_RUNTIME}" >&2
+            xcrun simctl list runtimes iOS >&2
+            exit 1
+          fi
+          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${IOS_SIMULATOR_RUNTIME}")"
+          printf 'udid=%s\n' "${udid}" >> "${GITHUB_OUTPUT}"
+          xcrun simctl boot "${udid}"
+
+      - name: Fetch GhosttyKit
+        shell: bash
+        run: scripts/fetch_ghosttykit.sh
+
+      - name: Build UI tests
+        shell: bash
+        run: xcodebuild build-for-testing -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}"
+
+      - name: Wait for simulator
+        shell: bash
+        run: xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
+
+      - name: Run UI tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Live UI tests need a real SSH server and run only through
+          # scripts/remux_live_ui_test_with_cleanup.sh.
+          skip_live=()
+          while IFS= read -r test_name; do
+            skip_live+=("-skip-testing:RemuxUITests/RemuxAppUITests/${test_name}")
+          done < <(grep -oE 'func (testLive[A-Za-z0-9]*|testCaptureDesignReviewScreens)\(' RemuxAppUITests/RemuxAppUITests.swift | sed -E 's/^func ([A-Za-z0-9]+)\($/\1/')
+          rm -rf "${RUNNER_TEMP}/RemuxUITests.xcresult"
+          xcodebuild test-without-building -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -collect-test-diagnostics never -resultBundlePath "${RUNNER_TEMP}/RemuxUITests.xcresult" "${skip_live[@]}"
+
+      - name: Delete simulator
+        if: always() && steps.simulator.outputs.udid != ''
+        shell: bash
+        run: xcrun simctl delete "${{ steps.simulator.outputs.udid }}"
+
+      # Kept for passing runs too, so runs can be compared over time.
+      - name: Upload UI test results
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: remux-ui-test-results-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 30
