@@ -271,7 +271,14 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
     func prepare() async {
         guard !isClosed, preparedRoot == nil, connection == nil, !hasStarted else { return }
 
-        preparedRoot = await makePreparedRoot()
+        let preparedRoot = await makePreparedRoot()
+        guard !isClosed, self.preparedRoot == nil, connection == nil, !hasStarted else {
+            Task {
+                await preparedRoot.cancelAndCleanup()
+            }
+            return
+        }
+        self.preparedRoot = preparedRoot
     }
 
     func start(initialViewport: TmuxControlViewport?) async throws {
@@ -288,6 +295,12 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             preparedRoot = existingPreparedRoot
         } else {
             preparedRoot = await makePreparedRoot()
+        }
+        guard !isClosed else {
+            Task {
+                await preparedRoot.cancelAndCleanup()
+            }
+            throw SSHTmuxControlTransportError.closed
         }
         self.preparedRoot = preparedRoot
         let startupTrace = preparedRoot.trace
