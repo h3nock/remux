@@ -16,10 +16,18 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         )
         let channel = EmbeddedChannel(handler: handler)
 
-        _ = try channel.writeInbound(sshData(type: .channel, string: "stdout"))
+        let stdout = Data([0x00, 0x7F, 0x80, 0xFF])
+        var stdoutBuffer = ByteBufferAllocator().buffer(capacity: 2 + stdout.count)
+        stdoutBuffer.writeBytes([0xAA, 0xBB])
+        stdoutBuffer.writeBytes(stdout)
+        stdoutBuffer.moveReaderIndex(forwardBy: 2)
+
+        _ = try channel.writeInbound(
+            SSHChannelData(type: .channel, data: .byteBuffer(stdoutBuffer))
+        )
         _ = try channel.writeInbound(sshData(type: .stdErr, string: "stderr"))
 
-        XCTAssertEqual(dataRecorder.stdout, Data("stdout".utf8))
+        XCTAssertEqual(dataRecorder.stdout, stdout)
         XCTAssertEqual(dataRecorder.stderr, Data("stderr".utf8))
         XCTAssertNoThrow(try channel.finish())
     }

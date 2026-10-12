@@ -563,14 +563,13 @@ final class RemuxSSHExecChannelHandler: ChannelInboundHandler, @unchecked Sendab
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let channelData = unwrapInboundIn(data)
-        guard case .byteBuffer(var buffer) = channelData.data,
-              let bytes = buffer.readBytes(length: buffer.readableBytes),
-              !bytes.isEmpty
+        guard case .byteBuffer(let buffer) = channelData.data,
+              buffer.readableBytes > 0
         else {
             return
         }
 
-        onData(channelData.type, Data(bytes))
+        onData(channelData.type, Data(buffer.readableBytesView))
     }
 
     func channelInactive(context: ChannelHandlerContext) {
