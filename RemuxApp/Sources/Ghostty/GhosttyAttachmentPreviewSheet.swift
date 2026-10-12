@@ -186,7 +186,7 @@ struct GhosttyAttachmentPreviewSheet: View {
     private func attachmentPreviewBody(_ attachment: GhosttyPendingAttachment) -> some View {
         switch attachment.previewPayload {
         case .imageData(let data):
-            imagePreview(data)
+            imagePreview(data, attachmentID: attachment.id)
         case .file(let url):
             filePreview(url)
         case .securityScopedFile(let file):
@@ -200,17 +200,20 @@ struct GhosttyAttachmentPreviewSheet: View {
         }
     }
 
-    @ViewBuilder
-    private func imagePreview(_ data: Data) -> some View {
-        if let image = UIImage(data: data) {
-            GhosttyAttachmentInteractiveImagePreview(image: image)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ghosttyAttachmentPreviewContentSurface(
-                    fill: GhosttyAttachmentPreviewStyle.mediaFill
-                )
-        } else {
-            unavailablePreview
+    private func imagePreview(_ data: Data, attachmentID: UUID) -> some View {
+        GhosttyAttachmentImagePreview(data: data) { image in
+            if let image {
+                GhosttyAttachmentInteractiveImagePreview(image: image)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ghosttyAttachmentPreviewContentSurface(
+                        fill: GhosttyAttachmentPreviewStyle.mediaFill
+                    )
+            } else {
+                unavailablePreview
+            }
         }
+        .id(data)
+        .id(attachmentID)
     }
 
     private func filePreview(_ url: URL) -> some View {
@@ -557,6 +560,29 @@ struct GhosttyAttachmentPreviewSheet: View {
         GhosttyAttachmentStagingStore.cleanup([previousAttachment])
     }
 
+}
+
+private struct GhosttyAttachmentImagePreview<Content: View>: View {
+    @StateObject private var previewImage: GhosttyAttachmentPreviewImage
+    private let content: (UIImage?) -> Content
+
+    init(data: Data, @ViewBuilder content: @escaping (UIImage?) -> Content) {
+        // Keep construction lazy so repeated view initialization preserves the image and zoom.
+        _previewImage = StateObject(wrappedValue: GhosttyAttachmentPreviewImage(data: data))
+        self.content = content
+    }
+
+    var body: some View {
+        content(previewImage.image)
+    }
+}
+
+private final class GhosttyAttachmentPreviewImage: ObservableObject {
+    let image: UIImage?
+
+    init(data: Data) {
+        image = UIImage(data: data)
+    }
 }
 
 private struct GhosttyAttachmentMarkupRequest: Identifiable, Equatable {
