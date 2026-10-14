@@ -313,15 +313,24 @@ extension HerdrWireTests {
             let scroll: Bool
         }
 
+        /// The reference presentation's committed surface after the whole recording.
+        struct Final: Decodable {
+            let cells: String?
+            let surface_revision: UInt64?
+            let rejected_patches: Int
+        }
+
         let server: [GoldenServerEntry]
         let clientMessages: [GoldenClientEntry]?
         /// The surface encodings the recording's hello asked for; absent for picked messages.
         let negotiated: Negotiated?
+        let final: Final?
 
         private enum CodingKeys: String, CodingKey {
             case server
             case clientMessages = "client_messages"
             case negotiated
+            case final
         }
     }
 

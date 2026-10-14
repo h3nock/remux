@@ -36,7 +36,8 @@ enum HerdrWireError: Error, Equatable, LocalizedError {
     /// A tag outside generation 1's frozen message set.
     case unknownMessage(tag: UInt32)
     case invalidControl(kind: String)
-    /// A screen update that doesn't fit the decoder's baseline.
+    /// A screen update Remux can't apply: it doesn't fit the decoder's baseline, or its grid can't be
+    /// indexed.
     case invalidSurfaceUpdate(String)
 
     var errorDescription: String? {

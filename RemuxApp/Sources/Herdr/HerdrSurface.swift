@@ -118,7 +118,7 @@ struct HerdrFrame: Equatable, Sendable, Decodable {
     var cells: [HerdrCell]
     let width: UInt16
     let height: UInt16
-    let cursor: HerdrCursor?
+    var cursor: HerdrCursor?
     let hyperlinks: [String]
     /// Empty on shell surfaces; images travel in the surface's graphics scene.
     let graphics: [UInt8]
@@ -545,9 +545,9 @@ struct HerdrPaneSurfaceFrame: Equatable, Sendable, Decodable {
     /// The snapshot revision this surface was rendered against.
     let projectionRevision: UInt64
     /// Per connection; +1 for every surface message.
-    let surfaceRevision: UInt64
+    var surfaceRevision: UInt64
     var frame: HerdrFrame
-    let panes: [HerdrSurfacePane]
+    var panes: [HerdrSurfacePane]
     let splits: [HerdrSurfaceSplit]
     var popup: HerdrPopupSurface?
     let graphics: HerdrGraphicsScene
