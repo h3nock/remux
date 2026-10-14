@@ -41,7 +41,7 @@ final class HerdrSurfaceDecoderTests: XCTestCase {
                 checked += 1
             }
         }
-        XCTAssertEqual(checked, 71)
+        XCTAssertEqual(checked, 107)
     }
 
     // MARK: - Baseline rules

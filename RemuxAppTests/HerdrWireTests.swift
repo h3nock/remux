@@ -8,7 +8,7 @@ final class HerdrWireTests: XCTestCase {
 
     func testDecodesEveryRecordedServerMessage() throws {
         let fixtures = try Self.goldenFixtures()
-        XCTAssertEqual(fixtures.count, 23)
+        XCTAssertEqual(fixtures.count, 24)
         var checked = 0
         for fixture in fixtures {
             var splitter = HerdrFrameSplitter()
@@ -25,7 +25,7 @@ final class HerdrWireTests: XCTestCase {
             }
             XCTAssertNil(try splitter.nextPayload(), fixture.name)
         }
-        XCTAssertEqual(checked, 259)
+        XCTAssertEqual(checked, 303)
     }
 
     func testEncodesEveryRecordedClientMessage() throws {
@@ -57,7 +57,7 @@ final class HerdrWireTests: XCTestCase {
                 checked += 1
             }
         }
-        XCTAssertEqual(checked, 47)
+        XCTAssertEqual(checked, 58)
         // Six hellos with options Remux doesn't use (no or only some encodings, generation 2, a missing
         // codec, zero columns, invalid JSON), the presentation fence, an unknown control, and Detach (a
         // closed stream ends the client the same way; `HerdrConnection.close()`).
@@ -345,6 +345,15 @@ extension HerdrWireTests {
         let rows: String?
     }
 
+    /// One pane painted by the reference painter against what was last painted for it: which pane rows
+    /// and the SHA-256 of the bytes.
+    struct GoldenPainted: Decodable {
+        /// nil: every row (a first paint, or a new size); empty: nothing changed.
+        let rows: [Int]?
+        /// nil when nothing is painted.
+        let digest: String?
+    }
+
     enum GoldenScalar: Decodable, Equatable {
         case string(String)
         case integer(Int64)
@@ -402,9 +411,11 @@ extension HerdrWireTests {
         let scroll: GoldenScroll?
         let reuse: HerdrSurfaceReuse?
         let decoded: GoldenDecoded?
+        /// The reference painter's output for each pane, by pane id.
+        let painted: [String: GoldenPainted]?
 
         private enum CodingKeys: String, CodingKey {
-            case offset, length, tag, message, delta, scroll, reuse, decoded
+            case offset, length, tag, message, delta, scroll, reuse, decoded, painted
         }
 
         init(from decoder: Decoder) throws {
@@ -421,6 +432,7 @@ extension HerdrWireTests {
             scroll = try container.decodeIfPresent(GoldenScroll.self, forKey: .scroll)
             reuse = try container.decodeIfPresent(HerdrSurfaceReuse.self, forKey: .reuse)
             decoded = try container.decodeIfPresent(GoldenDecoded.self, forKey: .decoded)
+            painted = try container.decodeIfPresent([String: GoldenPainted].self, forKey: .painted)
         }
     }
 

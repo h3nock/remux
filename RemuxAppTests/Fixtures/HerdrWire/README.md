@@ -13,7 +13,14 @@ own `HOME` and XDG directories. One file pair per recorded client:
   scroll flags; on each surface message, `decoded` is what that decoder's baseline expansion produced,
   as SHA-256 digests of the cells or patch rows (the layout is in `HerdrSurfaceDecoderTests.digest`).
   `final` is the reference presentation's committed surface after the whole recording and its
-  count of rejected patches.
+  count of rejected patches. `painted` is the reference painter's output for each pane of a
+  surface or applied patch, against what was last painted for that pane: every row on a first paint
+  or a new size, otherwise only the rows that changed, as SHA-256 digests (the bytes are described in
+  `HerdrPanePainterTests`). The reference painter is a Python port, not Herdr's encoder.
+
+`herdr-wide-cells-patch-A` draws CJK, emoji, ZWJ sequences, flags, skin tones, VS16 and VS15,
+combining marks, voiced halfwidth kana and a link in one pane of a split, through full surfaces and
+patches.
 
 `herdr-graphics-placements-A` holds two single messages from a recording of a PNG shown with the kitty
 graphics protocol: a delta and a full surface that place the picture without carrying its bytes (the

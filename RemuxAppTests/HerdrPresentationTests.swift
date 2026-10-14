@@ -39,7 +39,7 @@ final class HerdrPresentationTests: XCTestCase {
             }
             checked += 1
         }
-        XCTAssertEqual(checked, 22)
+        XCTAssertEqual(checked, 23)
     }
 
     // MARK: - Ordering
