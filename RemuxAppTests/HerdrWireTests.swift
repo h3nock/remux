@@ -57,10 +57,11 @@ final class HerdrWireTests: XCTestCase {
                 checked += 1
             }
         }
-        XCTAssertEqual(checked, 48)
+        XCTAssertEqual(checked, 47)
         // Six hellos with options Remux doesn't use (no or only some encodings, generation 2, a missing
-        // codec, zero columns, invalid JSON), the presentation fence, and an unknown control.
-        XCTAssertEqual(notSentByRemux, 8)
+        // codec, zero columns, invalid JSON), the presentation fence, an unknown control, and Detach (a
+        // closed stream ends the client the same way; `HerdrConnection.close()`).
+        XCTAssertEqual(notSentByRemux, 9)
     }
 
     func testDecodesTheRecordedWelcomeAndSnapshot() throws {
@@ -455,8 +456,6 @@ extension HerdrWireTests {
             hex = try container.decode(String.self, forKey: .hex)
             let fields = try container.nestedContainer(keyedBy: MessageKeys.self, forKey: .message)
             switch try fields.decode(UInt32.self, forKey: .tag) {
-            case 4:
-                message = .binary(.detach)
             case 12:
                 let size = try fields.decode(GoldenSize.self, forKey: .surfaceSize)
                 // Remux never turns pixel mouse on.
