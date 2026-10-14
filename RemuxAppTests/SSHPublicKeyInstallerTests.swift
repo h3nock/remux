@@ -587,6 +587,13 @@ private struct SSHPublicKeyReflectedCommandError: LocalizedError {
     }
 }
 
+/// One write an exec channel makes after `delay` from the previous step.
+struct SSHPublicKeyLiveExecStep: Sendable {
+    let type: SSHChannelData.DataType
+    let data: Data
+    var delay: TimeAmount = .zero
+}
+
 final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
     let port: Int
     let openSSHPublicKey: String
@@ -595,6 +602,7 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
     private let serverChannel: Channel
     private let authenticationDelegate: SSHPublicKeyLiveAuthenticationDelegate
     private let rootRecorder: SSHPublicKeyLiveRootRecorder
+    private let connections: SSHPublicKeyLiveConnections
 
     var recordedRoots: SSHPublicKeyLiveRootRecorder.Snapshot {
         rootRecorder.snapshot()
@@ -604,7 +612,8 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         serverChannel: Channel,
         hostPublicKey: NIOSSHPublicKey,
         authenticationDelegate: SSHPublicKeyLiveAuthenticationDelegate,
-        rootRecorder: SSHPublicKeyLiveRootRecorder
+        rootRecorder: SSHPublicKeyLiveRootRecorder,
+        connections: SSHPublicKeyLiveConnections
     ) throws {
         guard let port = serverChannel.localAddress?.port else {
             throw SSHPublicKeyLiveTestServerError.missingPort
@@ -623,13 +632,20 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         self.serverChannel = serverChannel
         self.authenticationDelegate = authenticationDelegate
         self.rootRecorder = rootRecorder
+        self.connections = connections
     }
 
+    /// With `execOutput`, each accepted exec sends those bytes on stdout right away; with `execSteps`,
+    /// it makes those writes in order.
     static func start(
         username: String,
         suspendAuthentication: Bool = false,
+        execOutput: Data? = nil,
+        execSteps: [SSHPublicKeyLiveExecStep] = [],
         hostKey: NIOSSHPrivateKey = NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey())
     ) async throws -> SSHPublicKeyLiveTestServer {
+        let steps = execOutput.map { [SSHPublicKeyLiveExecStep(type: .channel, data: $0)] } ?? execSteps
+        let connections = SSHPublicKeyLiveConnections()
         let authenticationDelegate = SSHPublicKeyLiveAuthenticationDelegate(
             username: username,
             suspendAuthentication: suspendAuthentication
@@ -639,6 +655,7 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
             .childChannelInitializer { channel in
                 let rootID = UUID()
                 rootRecorder.open(rootID)
+                connections.add(channel)
                 channel.closeFuture.whenComplete { _ in
                     rootRecorder.close(rootID)
                 }
@@ -659,7 +676,7 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
                             .setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
                             .flatMap {
                                 childChannel.pipeline.addHandler(
-                                    SSHPublicKeyLiveExecHandler(rootRecorder: rootRecorder)
+                                    SSHPublicKeyLiveExecHandler(rootRecorder: rootRecorder, execSteps: steps)
                                 )
                             }
                     }
@@ -679,8 +696,17 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
             serverChannel: serverChannel,
             hostPublicKey: hostKey.publicKey,
             authenticationDelegate: authenticationDelegate,
-            rootRecorder: rootRecorder
+            rootRecorder: rootRecorder,
+            connections: connections
         )
+    }
+
+    /// Stops reading from every client connection, as a dead network path would: nothing the client
+    /// sends, a channel close included, is answered any more.
+    func stopReadingFromClients() async throws {
+        for channel in connections.all {
+            try await channel.setOption(ChannelOptions.autoRead, value: false).get()
+        }
     }
 
     func waitForSuspendedAuthentication() async -> Bool {
@@ -778,10 +804,12 @@ private final class SSHPublicKeyLiveExecHandler: ChannelInboundHandler, @uncheck
     typealias InboundIn = SSHChannelData
 
     private let rootRecorder: SSHPublicKeyLiveRootRecorder
+    private let execSteps: [SSHPublicKeyLiveExecStep]
     private var didAcceptExec = false
 
-    init(rootRecorder: SSHPublicKeyLiveRootRecorder) {
+    init(rootRecorder: SSHPublicKeyLiveRootRecorder, execSteps: [SSHPublicKeyLiveExecStep] = []) {
         self.rootRecorder = rootRecorder
+        self.execSteps = execSteps
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -791,6 +819,16 @@ private final class SSHPublicKeyLiveExecHandler: ChannelInboundHandler, @uncheck
             rootRecorder.recordExecRequest()
             if request.wantReply {
                 context.channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: nil)
+            }
+            let channel = context.channel
+            var delay = TimeAmount.zero
+            for step in execSteps {
+                delay = delay + step.delay
+                channel.eventLoop.scheduleTask(in: delay) {
+                    var buffer = channel.allocator.buffer(capacity: step.data.count)
+                    buffer.writeBytes(step.data)
+                    channel.writeAndFlush(SSHChannelData(type: step.type, data: .byteBuffer(buffer)), promise: nil)
+                }
             }
         case ChannelEvent.inputClosed:
             guard didAcceptExec else {
@@ -814,6 +852,19 @@ private final class SSHPublicKeyLiveErrorHandler: ChannelInboundHandler, @unchec
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         context.close(promise: nil)
+    }
+}
+
+final class SSHPublicKeyLiveConnections: @unchecked Sendable {
+    private let lock = NSLock()
+    private var channels: [Channel] = []
+
+    var all: [Channel] {
+        lock.withLock { channels }
+    }
+
+    func add(_ channel: Channel) {
+        lock.withLock { channels.append(channel) }
     }
 }
 

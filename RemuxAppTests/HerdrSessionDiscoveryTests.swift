@@ -33,7 +33,7 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         let sessions = try HerdrSessionDiscovery.sessions(
             from: result(
                 exitStatus: 127,
-                stderr: "\(HerdrSessionDiscovery.herdrNotFoundMarker): herdr\n"
+                stderr: "\(HerdrRemoteCommand.notFoundMarker): herdr\n"
             )
         )
 
@@ -41,7 +41,7 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
     }
 
     func testHerdrThatCannotRunIsAnError() {
-        let stderr = "\(HerdrSessionDiscovery.herdrNotExecutableMarker): /opt/herdr\n"
+        let stderr = "\(HerdrRemoteCommand.notExecutableMarker): /opt/herdr\n"
 
         XCTAssertThrowsError(
             try HerdrSessionDiscovery.sessions(from: result(exitStatus: 126, stderr: stderr))
@@ -90,6 +90,24 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         }
     }
 
+    /// What the server's startup files print before the ready marker is not the command's output.
+    func testStartupOutputBeforeTheReadyMarkerIsSkipped() throws {
+        let sessions = try HerdrSessionDiscovery.sessions(
+            from: result(stdout: "Welcome, last login yesterday\nherdr 0.1.0\n", readyThen: "herdr 0.9.3\n\(sessionListJSON)\n")
+        )
+        XCTAssertEqual(sessions.map(\.name), ["default", "probe"])
+    }
+
+    func testOutputWithoutTheReadyMarkerIsAnError() {
+        XCTAssertThrowsError(
+            try HerdrSessionDiscovery.sessions(
+                from: RemuxSSHExecResult(exitStatus: 0, stdout: Data("herdr 0.9.3\n\(sessionListJSON)\n".utf8), stderr: Data())
+            )
+        ) { error in
+            XCTAssertEqual(error as? HerdrSessionDiscoveryError, .incompleteOutput)
+        }
+    }
+
     func testInvalidSessionListIsAnError() {
         XCTAssertThrowsError(
             try HerdrSessionDiscovery.sessions(from: result(stdout: "herdr 0.9.3\nnot json\n"))
@@ -98,14 +116,19 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         }
     }
 
+    /// A run whose stdout is `stdout` (startup output), the ready marker line, then `readyThen`, or
+    /// with `stdout` alone after the marker.
     private func result(
         exitStatus: Int = 0,
         stdout: String = "",
+        readyThen: String? = nil,
         stderr: String = ""
     ) -> RemuxSSHExecResult {
-        RemuxSSHExecResult(
+        let output = readyThen.map { stdout + "\n\(HerdrRemoteCommand.readyMarker)\n" + $0 }
+            ?? "\n\(HerdrRemoteCommand.readyMarker)\n" + stdout
+        return RemuxSSHExecResult(
             exitStatus: exitStatus,
-            stdout: Data(stdout.utf8),
+            stdout: Data(output.utf8),
             stderr: Data(stderr.utf8)
         )
     }

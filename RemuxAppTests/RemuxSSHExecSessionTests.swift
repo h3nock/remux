@@ -404,6 +404,60 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         XCTAssertEqual(server.recordedRoots.execRequestCount, 0)
     }
 
+    /// With reads on demand the server's bytes wait in the SSH window until `requestRead()`.
+    func testReadsOnDemandDeliverDataOnlyAfterARead() async throws {
+        let output = Data("herdr bridge bytes".utf8)
+        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux", execOutput: output)
+        defer { server.stop() }
+        let recorder = RemuxSSHExecDataRecorder()
+        let trace = RemuxTransportStartupTrace(flowID: "reads-on-demand-test")
+        let connection = try await RemuxSSHExecSession.open(
+            using: try await claimedLoopbackRoot(server: server, trace: trace),
+            command: "bridge",
+            pseudoTerminal: false,
+            readsOnDemand: true,
+            trace: trace,
+            onData: { recorder.record(type: $0, data: $1) },
+            onFinish: { _, _ in }
+        )
+
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(recorder.stdout, Data())
+        connection.requestRead()
+        let received = await Self.waitForStdout(output, in: recorder)
+        XCTAssertEqual(received, output)
+        await connection.close(disposition: .reusable)
+    }
+
+    /// The same server's bytes arrive unasked on an ordinary channel, so the test above isn't vacuous.
+    func testAutomaticReadsDeliverDataUnasked() async throws {
+        let output = Data("unasked bytes".utf8)
+        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux", execOutput: output)
+        defer { server.stop() }
+        let recorder = RemuxSSHExecDataRecorder()
+        let trace = RemuxTransportStartupTrace(flowID: "automatic-reads-test")
+        let connection = try await RemuxSSHExecSession.open(
+            using: try await claimedLoopbackRoot(server: server, trace: trace),
+            command: "bridge",
+            pseudoTerminal: false,
+            trace: trace,
+            onData: { recorder.record(type: $0, data: $1) },
+            onFinish: { _, _ in }
+        )
+
+        let received = await Self.waitForStdout(output, in: recorder)
+        XCTAssertEqual(received, output)
+        await connection.close(disposition: .reusable)
+    }
+
+    private static func waitForStdout(_ expected: Data, in recorder: RemuxSSHExecDataRecorder) async -> Data {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while recorder.stdout != expected, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return recorder.stdout
+    }
+
     private func sshData(
         type: SSHChannelData.DataType,
         string: String
@@ -614,5 +668,62 @@ private final class RemuxSSHExecOutboundRecorder: ChannelOutboundHandler, @unche
             recordedEvents.append(event)
         }
         context.close(mode: mode, promise: promise)
+    }
+}
+
+extension XCTestCase {
+    /// A dedicated SSH root to the in-process test server, trusted for this test only.
+    func claimedLoopbackRoot(
+        server: SSHPublicKeyLiveTestServer,
+        trace: RemuxTransportStartupTrace
+    ) async throws -> RemuxSSHClaimedRoot {
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519(comment: "loopback-exec-test")
+        let serverID = UUID()
+        let trustedHostRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemuxSSHExecSessionLoopback-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: trustedHostRoot) }
+        let trustedHostStore = TrustedHostStore(rootURL: trustedHostRoot)
+        try trustedHostStore.trustHostKey(
+            SSHHostKeyTrustChallenge(
+                kind: .unknown,
+                serverID: serverID,
+                host: "127.0.0.1",
+                trustedKeyType: nil,
+                trustedOpenSSHPublicKey: nil,
+                receivedKeyType: server.hostKeyType,
+                receivedOpenSSHPublicKey: server.openSSHPublicKey
+            )
+        )
+        let savedServer = SavedServer(
+            id: serverID,
+            displayName: "loopback",
+            host: "127.0.0.1",
+            port: server.port,
+            username: "remux",
+            identityID: serverID
+        )
+        let privateKey = SSHPrivateKeyCredential(privateKeyPEM: generatedKey.privateKeyPEM)
+        let prepared = RemuxSSHPreparedRoot.dedicated(
+            configuration: RemuxSSHRootConfiguration(
+                host: "127.0.0.1",
+                port: server.port,
+                authenticationMethod: {
+                    try SSHAuthenticationMethodFactory.make(
+                        username: "remux",
+                        credential: .privateKey(privateKey)
+                    )
+                },
+                hostKeyValidator: trustedHostStore.validator(for: savedServer),
+                connectTimeout: .seconds(10)
+            ),
+            trace: trace
+        )
+        do {
+            let root = try await prepared.sshRoot()
+            return try await prepared.claim(root, trace: trace)
+        } catch {
+            await prepared.cancelAndCleanup()
+            throw error
+        }
     }
 }

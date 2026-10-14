@@ -134,8 +134,13 @@ final class RemuxSSHRoot: @unchecked Sendable {
         }
     }
 
-    func openSessionChannel(trace: RemuxTransportStartupTrace) async throws -> Channel {
-        try await childChannelOpener.openSessionChannel(on: rootChannel, trace: trace)
+    /// With `readsOnDemand`, the channel delivers data only after `read()`. It is set before the
+    /// channel activates, because activation already issues a read when reads are automatic.
+    func openSessionChannel(
+        trace: RemuxTransportStartupTrace,
+        readsOnDemand: Bool = false
+    ) async throws -> Channel {
+        try await childChannelOpener.openSessionChannel(on: rootChannel, trace: trace, readsOnDemand: readsOnDemand)
     }
 
     func openDirectTCPIPChannel(
@@ -163,7 +168,8 @@ private final class RemuxSSHChildChannelOpener: @unchecked Sendable {
 
     func openSessionChannel(
         on rootChannel: Channel,
-        trace: RemuxTransportStartupTrace
+        trace: RemuxTransportStartupTrace,
+        readsOnDemand: Bool
     ) async throws -> Channel {
         try await openChildChannel(
             on: rootChannel,
@@ -171,7 +177,9 @@ private final class RemuxSSHChildChannelOpener: @unchecked Sendable {
             trace: trace,
             traceStage: "sessionChannel.open",
             channelInitializer: { channel in
-                channel.eventLoop.makeSucceededFuture(())
+                readsOnDemand
+                    ? channel.setOption(ChannelOptions.autoRead, value: false)
+                    : channel.eventLoop.makeSucceededFuture(())
             }
         )
     }

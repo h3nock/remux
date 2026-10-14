@@ -44,6 +44,9 @@ struct HerdrVersion: Comparable, Sendable, CustomStringConvertible {
 enum HerdrSessionDiscoveryError: Error, Equatable, LocalizedError {
     case unsupportedVersion(HerdrVersion)
     case unreadableVersion(String)
+    /// The command ended before the ready marker, so nothing it printed can be told apart from the
+    /// server's startup files.
+    case incompleteOutput
     case invalidSessionList
     case invalidUTF8
     case remoteExit(status: Int, stderr: String)
@@ -54,6 +57,8 @@ enum HerdrSessionDiscoveryError: Error, Equatable, LocalizedError {
             return "Herdr \(version) is older than \(HerdrVersion.minimumSupported). Update Herdr on this server."
         case .unreadableVersion(let output):
             return "Couldn't read the Herdr version from \"\(output)\"."
+        case .incompleteOutput:
+            return "The Herdr command on this server ended before its output."
         case .invalidSessionList:
             return "The Herdr session list couldn't be read."
         case .invalidUTF8:
@@ -68,14 +73,6 @@ enum HerdrSessionDiscoveryError: Error, Equatable, LocalizedError {
 }
 
 enum HerdrSessionDiscovery {
-    static let herdrNotFoundMarker = "remux: herdr executable not found"
-    static let herdrNotExecutableMarker = "remux: herdr executable cannot be executed"
-
-    // Herdr's install script puts it in ~/.local/bin, which non-interactive SSH
-    // shells often leave off PATH.
-    private static let fallbackRemotePath =
-        "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
     static func discover(
         using claimedRoot: RemuxSSHClaimedRoot,
         herdrExecutable: String,
@@ -91,13 +88,15 @@ enum HerdrSessionDiscovery {
     }
 
     /// One exec prints the first line of `herdr --version`, then the
-    /// `session list --json` document. The executable stays out of the login
-    /// shell, as in the tmux commands.
+    /// `session list --json` document (`HerdrRemoteCommand`).
     static func listSessionsCommand(herdrExecutable: String) -> String {
-        [
-            "exec /bin/sh -c '\(discoveryScript)' remux",
-            RemoteShellArgument.octalEncoded(herdrExecutable),
-        ].joined(separator: " ")
+        HerdrRemoteCommand.command(herdrExecutable: herdrExecutable, body: [
+            "LC_ALL=C",
+            "export LC_ALL",
+            #"version=$("$resolved" --version) || exit $?"#,
+            #"printf "%s\n" "$version" | head -n 1"#,
+            #"exec "$resolved" session list --json"#,
+        ])
     }
 
     /// A server without Herdr has no Herdr sessions. A Herdr that fails, or is
@@ -105,12 +104,15 @@ enum HerdrSessionDiscovery {
     static func sessions(from result: RemuxSSHExecResult) throws -> [HerdrDiscoveredSession] {
         let stderr = String(decoding: result.stderr, as: UTF8.self)
         guard result.exitStatus == 0 else {
-            if result.exitStatus == 127, stderr.contains(herdrNotFoundMarker) {
+            if result.exitStatus == 127, stderr.contains(HerdrRemoteCommand.notFoundMarker) {
                 return []
             }
             throw HerdrSessionDiscoveryError.remoteExit(status: result.exitStatus, stderr: stderr)
         }
-        guard let text = String(data: result.stdout, encoding: .utf8) else {
+        var readyLine = HerdrRemoteCommand.ReadyLine()
+        let output = readyLine.output(from: result.stdout)
+        guard readyLine.isFound else { throw HerdrSessionDiscoveryError.incompleteOutput }
+        guard let text = String(data: Data(output), encoding: .utf8) else {
             throw HerdrSessionDiscoveryError.invalidUTF8
         }
 
@@ -141,16 +143,4 @@ enum HerdrSessionDiscovery {
         let sessions: [Session]
     }
 
-    private static let discoveryScript = [
-        #"PATH="${PATH:+$PATH:}\#(fallbackRemotePath)""#,
-        "export PATH",
-        "LC_ALL=C",
-        "export LC_ALL",
-        #"herdr=$(printf %b "$1")"#,
-        #"resolved=$(command -v "$herdr" 2> /dev/null)"#,
-        #"if [ ! -x "$resolved" ]; then if [ -e "$herdr" ]; then echo "\#(herdrNotExecutableMarker): $herdr" >&2; exit 126; fi; echo "\#(herdrNotFoundMarker): $herdr" >&2; exit 127; fi"#,
-        #"version=$("$resolved" --version) || exit $?"#,
-        #"printf "%s\n" "$version" | head -n 1"#,
-        #"exec "$resolved" session list --json"#,
-    ].joined(separator: "; ")
 }
