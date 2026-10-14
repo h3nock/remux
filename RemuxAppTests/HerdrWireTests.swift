@@ -308,13 +308,31 @@ extension HerdrWireTests {
     }
 
     struct GoldenFile: Decodable {
+        struct Negotiated: Decodable {
+            let delta: Bool
+            let scroll: Bool
+        }
+
         let server: [GoldenServerEntry]
         let clientMessages: [GoldenClientEntry]?
+        /// The surface encodings the recording's hello asked for; absent for picked messages.
+        let negotiated: Negotiated?
 
         private enum CodingKeys: String, CodingKey {
             case server
             case clientMessages = "client_messages"
+            case negotiated
         }
+    }
+
+    /// What the reference decoder made of a surface message, as SHA-256 digests.
+    struct GoldenDecoded: Decodable {
+        let kind: String
+        let projection_revision: UInt64?
+        let surface_revision: UInt64
+        let cells: String?
+        let popup_cells: String?
+        let rows: String?
     }
 
     enum GoldenScalar: Decodable, Equatable {
@@ -373,9 +391,10 @@ extension HerdrWireTests {
         let delta: GoldenDelta?
         let scroll: GoldenScroll?
         let reuse: HerdrSurfaceReuse?
+        let decoded: GoldenDecoded?
 
         private enum CodingKeys: String, CodingKey {
-            case offset, length, tag, message, delta, scroll, reuse
+            case offset, length, tag, message, delta, scroll, reuse, decoded
         }
 
         init(from decoder: Decoder) throws {
@@ -391,6 +410,7 @@ extension HerdrWireTests {
             delta = try container.decodeIfPresent(GoldenDelta.self, forKey: .delta)
             scroll = try container.decodeIfPresent(GoldenScroll.self, forKey: .scroll)
             reuse = try container.decodeIfPresent(HerdrSurfaceReuse.self, forKey: .reuse)
+            decoded = try container.decodeIfPresent(GoldenDecoded.self, forKey: .decoded)
         }
     }
 

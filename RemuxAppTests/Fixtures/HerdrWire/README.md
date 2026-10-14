@@ -9,7 +9,9 @@ own `HOME` and XDG directories. One file pair per recorded client:
 - `herdr-<scenario>-<client>.expected.json`: each server message's offset, payload length, tag and
   decoded fields in Herdr's serde JSON layout (`delta`, `scroll` and `reuse` add the decoded surface
   encodings), and each client message with its exact bytes. Decoded by an independent reference
-  decoder whose rebuilt screens matched Herdr's own `pane.read`.
+  decoder whose rebuilt screens matched Herdr's own `pane.read`. `negotiated` is the hello's delta and
+  scroll flags; on each surface message, `decoded` is what that decoder's baseline expansion produced,
+  as SHA-256 digests of the cells or patch rows (the layout is in `HerdrSurfaceDecoderTests.digest`).
 
 `herdr-graphics-placements-A` holds two single messages from a recording of a PNG shown with the kitty
 graphics protocol: a delta and a full surface that place the picture without carrying its bytes (the

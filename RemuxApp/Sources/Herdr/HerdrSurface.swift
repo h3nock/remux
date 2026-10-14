@@ -115,7 +115,7 @@ struct HerdrCursor: Equatable, Sendable, Decodable {
 
 struct HerdrFrame: Equatable, Sendable, Decodable {
     /// Row-major; `width * height` cells, or none in a delta's metadata.
-    let cells: [HerdrCell]
+    var cells: [HerdrCell]
     let width: UInt16
     let height: UInt16
     let cursor: HerdrCursor?
@@ -300,7 +300,7 @@ struct HerdrPopupSurface: Equatable, Sendable, Decodable {
     let title: String
     let width: HerdrPopupSize?
     let height: HerdrPopupSize?
-    let frame: HerdrFrame
+    var frame: HerdrFrame
     let mouseReporting: Bool
     let sgrPixelMouse: Bool
     let pixelWidth: UInt32
@@ -546,10 +546,10 @@ struct HerdrPaneSurfaceFrame: Equatable, Sendable, Decodable {
     let projectionRevision: UInt64
     /// Per connection; +1 for every surface message.
     let surfaceRevision: UInt64
-    let frame: HerdrFrame
+    var frame: HerdrFrame
     let panes: [HerdrSurfacePane]
     let splits: [HerdrSurfaceSplit]
-    let popup: HerdrPopupSurface?
+    var popup: HerdrPopupSurface?
     let graphics: HerdrGraphicsScene
 
     init(wire reader: inout HerdrWireReader) throws {
@@ -577,6 +577,12 @@ struct HerdrPatchRow: Equatable, Sendable, Decodable {
     let y: UInt16
     let cells: [HerdrCell]
 
+    init(x: UInt16, y: UInt16, cells: [HerdrCell]) {
+        self.x = x
+        self.y = y
+        self.cells = cells
+    }
+
     init(wire reader: inout HerdrWireReader) throws {
         x = try reader.u16()
         y = try reader.u16()
@@ -589,7 +595,7 @@ struct HerdrPaneSurfacePatch: Equatable, Sendable, Decodable {
     let projectionRevision: UInt64
     let baseSurfaceRevision: UInt64
     let surfaceRevision: UInt64
-    let rows: [HerdrPatchRow]
+    var rows: [HerdrPatchRow]
     /// New metadata for the panes whose content changed; other panes keep theirs.
     let panes: [HerdrSurfacePane]
     /// Replaces the frame cursor, `nil` included.

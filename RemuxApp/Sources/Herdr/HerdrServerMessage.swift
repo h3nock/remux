@@ -283,6 +283,20 @@ struct HerdrSurfaceDelta: Equatable, Sendable {
     let rows: [HerdrPatchRow]
     let popupCells: PopupCells?
 
+    init(
+        baseProjectionRevision: UInt64,
+        baseSurfaceRevision: UInt64,
+        surface: HerdrPaneSurfaceFrame,
+        rows: [HerdrPatchRow],
+        popupCells: PopupCells?
+    ) {
+        self.baseProjectionRevision = baseProjectionRevision
+        self.baseSurfaceRevision = baseSurfaceRevision
+        self.surface = surface
+        self.rows = rows
+        self.popupCells = popupCells
+    }
+
     init(base64: String) throws {
         var reader = HerdrWireReader(try HerdrBase64.decodeUnpadded(base64))
         baseProjectionRevision = try reader.u64()
@@ -314,6 +328,11 @@ struct HerdrSurfaceScroll: Equatable, Sendable {
 
     let regions: [Region]
     let patch: HerdrPaneSurfacePatch
+
+    init(regions: [Region], patch: HerdrPaneSurfacePatch) {
+        self.regions = regions
+        self.patch = patch
+    }
 
     init(base64: String) throws {
         let raw = try HerdrBase64.decodeUnpadded(base64)
