@@ -39,6 +39,9 @@ terminal, and uploads photos and files, with markup for images.
   running on the remote machine, hot reload and WebSockets included.
 - **Cursor control**: Hold the space bar or long-press in the terminal,
   then drag to place the cursor.
+- **Links**: Open a session, window, or pane from a `remux://` link,
+  for example from Shortcuts or a notification. Long-press a session
+  in the library or session list to copy its link. See [docs/deep-links.md](docs/deep-links.md).
 - **Direct SSH**: Remux connects straight to the server, with no relay and
   no account. Passwords and private keys are stored in the iOS Keychain,
   and trusted host keys are remembered.

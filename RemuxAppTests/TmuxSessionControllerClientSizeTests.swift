@@ -586,6 +586,87 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         ])
     }
 
+    func testResolveTargetAsksTmuxForWindowAndPaneIDs() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let received = expectation(description: "resolved target")
+        let resolved = ResolvedTargetBox()
+        let selection = TmuxTargetSelection(sessionName: "dev", window: "2", pane: "1")
+
+        harness.controller.requestResolveTarget(selection) { result in
+            resolved.value = result
+            received.fulfill()
+        }
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["\(selection.resolveCommand)\n"])
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber,
+            body: "@0 %1 dev\n"
+        ).utf8))
+        await fulfillment(of: [received], timeout: 1)
+
+        XCTAssertEqual(
+            resolved.value,
+            .success(TmuxSessionController.ResolvedTarget(windowID: 0, paneID: 1))
+        )
+    }
+
+    func testResolveTargetReportsTmuxError() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let received = expectation(description: "resolution failure")
+        let resolved = ResolvedTargetBox()
+
+        harness.controller.requestResolveTarget(
+            TmuxTargetSelection(sessionName: "dev", window: "9", pane: nil)
+        ) { result in
+            resolved.value = result
+            received.fulfill()
+        }
+        await drain(harness.controller)
+        _ = harness.recorder.takeStrings()
+        harness.controller.pump(Data(errorBlock(
+            commandNumber: &nextCommandNumber,
+            body: "can't find window: 9"
+        ).utf8))
+        await fulfillment(of: [received], timeout: 1)
+
+        XCTAssertEqual(resolved.value, .failure(.commandFailed("can't find window: 9")))
+    }
+
+    func testResolveTargetRejectsPaneInAnotherSession() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let received = expectation(description: "resolution failure")
+        let resolved = ResolvedTargetBox()
+
+        harness.controller.requestResolveTarget(
+            TmuxTargetSelection(sessionName: "dev", window: nil, pane: "%7")
+        ) { result in
+            resolved.value = result
+            received.fulfill()
+        }
+        await drain(harness.controller)
+        _ = harness.recorder.takeStrings()
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber,
+            body: "@5 %7 other\n"
+        ).utf8))
+        await fulfillment(of: [received], timeout: 1)
+
+        XCTAssertEqual(resolved.value, .failure(.outsideSession))
+    }
+
     func testForgettingZoomMarksLeavesTheZoomAlone() async throws {
         let owner = Self.zoomOwner
         let harness = try await readyController(
@@ -1880,4 +1961,11 @@ private final class ControllerTopologyRecorder: @unchecked Sendable {
 
 private final class MarksBox: @unchecked Sendable {
     var value: [TmuxZoomMark] = []
+}
+
+private final class ResolvedTargetBox: @unchecked Sendable {
+    var value: Result<
+        TmuxSessionController.ResolvedTarget,
+        TmuxSessionController.TargetResolutionError
+    >?
 }

@@ -485,6 +485,7 @@ final class RemuxRootModel: ObservableObject {
     @Published private(set) var connectionSetup: ConnectionSetupState?
     @Published private(set) var library: ConnectionLibrarySnapshot = .empty
     @Published private(set) var serverOrderSaveFailed = false
+    @Published private(set) var deepLinkFailure: String?
     @Published private(set) var terminalSettings: TerminalSettings = .default
     @Published private(set) var terminalSettingsSaveFailed = false
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
@@ -519,6 +520,7 @@ final class RemuxRootModel: ObservableObject {
     private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
     private var sessionRefreshes: [SavedServer.ID: SessionRefresh] = [:]
+    private var pendingDeepLink: RemuxDeepLink?
     // Keep the user's order across library reloads, including reads started before a move.
     private var preferredServerOrder: [SavedServer.ID]?
     private var pendingServerOrder: [SavedServer.ID]?
@@ -573,6 +575,10 @@ final class RemuxRootModel: ObservableObject {
             // Each launch check is registered before load returns, so a later
             // request for the same server joins it instead of repeating it.
             refreshSessions()
+            if let link = pendingDeepLink {
+                pendingDeepLink = nil
+                await open(link)
+            }
         } catch {
             guard setupAllowsLibraryReload else { return }
             transitionToFailed(error)
@@ -611,6 +617,57 @@ final class RemuxRootModel: ObservableObject {
         preferredServerOrder = ids
         updateLibrary(library)
         retryServerOrderSave()
+    }
+
+    /// Opens a `remux://` link. A link that arrives before the library has
+    /// loaded opens once it has.
+    func handleOpenURL(_ url: URL) async {
+        do {
+            await open(try RemuxDeepLink(url: url))
+        } catch {
+            deepLinkFailure = error.localizedDescription
+        }
+    }
+
+    func open(_ link: RemuxDeepLink) async {
+        if case .loading = state {
+            pendingDeepLink = link
+            return
+        }
+        guard setupAllowsLibraryReload else {
+            deepLinkFailure = "Finish or cancel the server setup, then open the link again."
+            return
+        }
+        let server: SavedServer
+        do {
+            server = try link.resolveServer(in: library.servers)
+        } catch {
+            deepLinkFailure = error.localizedDescription
+            return
+        }
+
+        let locator = SessionLocator(backend: .tmux, name: link.sessionName)
+        func linkedSession() -> ActiveTerminalSession? {
+            activeSessions.first {
+                $0.target.server.id == server.id && $0.target.locator == locator
+            }
+        }
+        if let active = linkedSession() {
+            showActiveSession(active.id)
+        } else {
+            await connectToDiscoveredSession(locator, on: server.id)
+        }
+
+        guard let selection = link.paneTarget,
+              let session = linkedSession(),
+              hasTerminalRuntime(for: session),
+              case .tmux(let model) = terminalRuntime(for: session)
+        else { return }
+        model.selectTarget(selection)
+    }
+
+    func dismissDeepLinkFailure() {
+        deepLinkFailure = nil
     }
 
     func dismissServerOrderSaveFailure() {
