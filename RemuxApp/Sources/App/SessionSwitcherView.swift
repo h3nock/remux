@@ -747,6 +747,7 @@ private struct AvailableSessionsBrowserView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .copyLinkContextMenu(session.link)
                             .sessionSwitcherListRow(
                                 accessibilityIdentifier: "terminal.sessions.available-result"
                             )

@@ -106,12 +106,14 @@ struct RemuxDeepLink: Equatable, Sendable {
         }
     }
 
-    /// How a link should name `server`: its display name when no other saved
-    /// server shares it, otherwise its id.
+    /// How a link should name `server`: its display name when that resolves
+    /// back to `server`, otherwise its id.
     static func serverReference(for server: SavedServer, among servers: [SavedServer]) -> String {
-        let name = server.displayName.lowercased()
-        let sharesName = servers.contains { $0.id != server.id && $0.displayName.lowercased() == name }
-        return sharesName || server.displayName.isEmpty ? server.id.uuidString : server.displayName
+        let name = server.displayName
+        guard !name.isEmpty,
+              (try? RemuxDeepLink(server: name, sessionName: "").resolveServer(in: servers).id) == server.id
+        else { return server.id.uuidString }
+        return name
     }
 
     /// A link to `sessionName` on `server`.

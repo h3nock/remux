@@ -1500,6 +1500,7 @@ private struct ServerDetailView: View {
                 NavigationLink {
                     ServerAvailableSessionsView(
                         sessionNames: availableSessionNames,
+                        sessionLink: sessionLink,
                         terminalTheme: terminalTheme,
                         onSelect: { sessionName in
                             onConnectAvailableSession(server.id, sessionName)
@@ -1601,6 +1602,7 @@ private struct AvailableServerSessionRow: View {
 
 private struct ServerAvailableSessionsView: View {
     let sessionNames: [String]
+    let sessionLink: (String) -> URL
     let terminalTheme: TerminalTheme
     let onSelect: (String) -> Void
 
@@ -1616,6 +1618,7 @@ private struct ServerAvailableSessionsView: View {
                         AvailableServerSessionRow(sessionName: sessionName)
                     }
                     .buttonStyle(.plain)
+                    .copyLinkContextMenu(sessionLink(sessionName))
                     .accessibilityIdentifier("library.server.available.result")
                 }
 
