@@ -383,6 +383,7 @@ final class TmuxSessionController: @unchecked Sendable {
             guard !shuttingDown else { return }
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
+            failOutstandingTargetResolutions()
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
@@ -404,6 +405,7 @@ final class TmuxSessionController: @unchecked Sendable {
             guard !shuttingDown else { return }
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
+            failOutstandingTargetResolutions()
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
@@ -421,9 +423,11 @@ final class TmuxSessionController: @unchecked Sendable {
             outboundSink = nil
             let directoryQueries = outstandingPaneDirectoryQueries()
             let trackedInputCompletions = outstandingTrackedInputCompletions()
+            let targetResolutions = outstandingTargetResolutionCompletions()
             requestsByToken.removeAll()
             directoryQueries.forEach { $0(.failure(.sessionUnavailable)) }
             trackedInputCompletions.forEach { $0(false) }
+            targetResolutions.forEach { $0(.failure(.sessionUnavailable)) }
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
@@ -503,6 +507,7 @@ final class TmuxSessionController: @unchecked Sendable {
         case GHOSTTY_TMUX_ACTION_EXIT:
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
+            failOutstandingTargetResolutions()
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
@@ -1054,7 +1059,8 @@ final class TmuxSessionController: @unchecked Sendable {
 
     /// Asks tmux which window and pane a target names, so links can use any
     /// tmux target syntax (index, name, `@id`, `%id`). Completes on the
-    /// writer queue; a client that shuts down first never completes.
+    /// writer queue, with `.sessionUnavailable` if the client detaches or
+    /// shuts down first.
     func requestResolveTarget(
         _ selection: TmuxTargetSelection,
         completion: @escaping @Sendable (Result<ResolvedTarget, TargetResolutionError>) -> Void
@@ -1785,6 +1791,7 @@ final class TmuxSessionController: @unchecked Sendable {
         guard !shuttingDown else { return }
         failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
         failOutstandingTrackedInput()
+        failOutstandingTargetResolutions()
         deferredNavigationIntent = nil
         deferredWindowZoomIntent = nil
         successfulMutationRequiredAfterRevision = nil
@@ -1895,6 +1902,25 @@ final class TmuxSessionController: @unchecked Sendable {
             return false
         }
         completions.forEach { $0(false) }
+    }
+
+    private func outstandingTargetResolutionCompletions() -> [
+        @Sendable (Result<ResolvedTarget, TargetResolutionError>) -> Void
+    ] {
+        requestsByToken.values.compactMap {
+            guard case .targetResolution(_, let completion) = $0 else { return nil }
+            return completion
+        }
+    }
+
+    private func failOutstandingTargetResolutions() {
+        preconditionOnWriterQueue()
+        let completions = outstandingTargetResolutionCompletions()
+        requestsByToken = requestsByToken.filter {
+            guard case .targetResolution = $0.value else { return true }
+            return false
+        }
+        completions.forEach { $0(.failure(.sessionUnavailable)) }
     }
 
     private func preconditionOnWriterQueue() {

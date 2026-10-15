@@ -641,6 +641,50 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(resolved.value, .failure(.commandFailed("can't find window: 9")))
     }
 
+    func testTransportCloseFailsOutstandingTargetResolution() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        let received = expectation(description: "resolution failure")
+        let resolved = ResolvedTargetBox()
+
+        harness.controller.requestResolveTarget(
+            TmuxTargetSelection(sessionName: "dev", window: "1", pane: nil)
+        ) { result in
+            resolved.value = result
+            received.fulfill()
+        }
+        await drain(harness.controller)
+        _ = harness.recorder.takeStrings()
+        harness.controller.transportClosed()
+        await fulfillment(of: [received], timeout: 1)
+
+        XCTAssertEqual(resolved.value, .failure(.sessionUnavailable))
+    }
+
+    func testShutdownFailsOutstandingTargetResolution() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        let received = expectation(description: "resolution failure")
+        let resolved = ResolvedTargetBox()
+
+        harness.controller.requestResolveTarget(
+            TmuxTargetSelection(sessionName: "dev", window: "1", pane: nil)
+        ) { result in
+            resolved.value = result
+            received.fulfill()
+        }
+        await drain(harness.controller)
+        _ = harness.recorder.takeStrings()
+        await shutDown(harness.controller)
+        await fulfillment(of: [received], timeout: 1)
+
+        XCTAssertEqual(resolved.value, .failure(.sessionUnavailable))
+    }
+
     func testResolveTargetRejectsPaneInAnotherSession() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.threePaneZoomedWindow,
