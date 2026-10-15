@@ -6,6 +6,7 @@ struct ActiveSessionSwitcherItem: Identifiable, Equatable {
     let serverName: String
     let runtimeState: TerminalRuntimeState
     let isSelected: Bool
+    let link: URL
 }
 
 struct RemoteSessionIdentity: Hashable {
@@ -16,6 +17,7 @@ struct RemoteSessionIdentity: Hashable {
 struct AvailableSessionSwitcherItem: Identifiable, Equatable {
     let id: RemoteSessionIdentity
     let serverName: String
+    let link: URL
 }
 
 struct RecentSessionSwitcherItem: Identifiable, Equatable {
@@ -23,6 +25,7 @@ struct RecentSessionSwitcherItem: Identifiable, Equatable {
     let sessionName: String
     let serverName: String
     let lastOpenedAt: Date
+    let link: URL
 }
 
 struct SessionSwitcherProjection: Equatable {
@@ -60,7 +63,12 @@ struct SessionSwitcherProjection: Equatable {
                     sessionName: session.target.workspace.sessionName,
                     serverName: session.target.server.displayName,
                     runtimeState: session.runtimeState,
-                    isSelected: session.id == selectedSessionID
+                    isSelected: session.id == selectedSessionID,
+                    link: RemuxDeepLink.sessionURL(
+                        server: session.target.server,
+                        sessionName: session.target.workspace.sessionName,
+                        among: snapshot.servers
+                    )
                 )
             }
 
@@ -97,7 +105,12 @@ struct SessionSwitcherProjection: Equatable {
                     id: workspace.id,
                     sessionName: workspace.sessionName,
                     serverName: server.displayName,
-                    lastOpenedAt: workspace.lastOpenedAt
+                    lastOpenedAt: workspace.lastOpenedAt,
+                    link: RemuxDeepLink.sessionURL(
+                        server: server,
+                        sessionName: workspace.sessionName,
+                        among: snapshot.servers
+                    )
                 )
             }
 
@@ -111,7 +124,12 @@ struct SessionSwitcherProjection: Equatable {
                             serverID: server.id,
                             locator: SessionLocator(backend: .tmux, name: sessionName)
                         ),
-                        serverName: server.displayName
+                        serverName: server.displayName,
+                        link: RemuxDeepLink.sessionURL(
+                            server: server,
+                            sessionName: sessionName,
+                            among: snapshot.servers
+                        )
                     )
                 } ?? []
             }
@@ -357,6 +375,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             }
             .accessibilityIdentifier("terminal.sessions.disconnect")
         }
+        .copyLinkContextMenu(session.link)
         .accessibilityAction(named: Text("Disconnect from Remux")) {
             onDisconnectSession(session.id)
         }
@@ -369,6 +388,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             AvailableSessionSwitcherRow(session: session)
         }
         .buttonStyle(.plain)
+        .copyLinkContextMenu(session.link)
         .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.available-session")
     }
 
@@ -431,6 +451,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             RecentSessionSwitcherRow(session: session)
         }
         .buttonStyle(.plain)
+        .copyLinkContextMenu(session.link)
         .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.recent-session")
     }
 
@@ -877,5 +898,18 @@ private extension View {
             .listRowSeparator(.visible)
             .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
             .listRowBackground(Color.clear)
+    }
+}
+
+extension View {
+    /// A long-press menu that copies a `remux://` link to the session.
+    func copyLinkContextMenu(_ link: URL) -> some View {
+        contextMenu {
+            Button {
+                UIPasteboard.general.url = link
+            } label: {
+                Label("Copy Link", systemImage: "link")
+            }
+        }
     }
 }

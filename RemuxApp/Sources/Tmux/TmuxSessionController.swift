@@ -215,6 +215,35 @@ final class TmuxSessionController: @unchecked Sendable {
         )
         case trackedInput(@Sendable (Bool) -> Void)
         case zoomMarks(@Sendable ([TmuxZoomMark]) -> Void)
+        case targetResolution(
+            TmuxTargetSelection,
+            @Sendable (Result<ResolvedTarget, TargetResolutionError>) -> Void
+        )
+    }
+
+    struct ResolvedTarget: Equatable, Sendable {
+        let windowID: TmuxWindowID
+        let paneID: TmuxPaneID
+    }
+
+    enum TargetResolutionError: LocalizedError, Equatable, Sendable {
+        case sessionUnavailable
+        case commandFailed(String)
+        case outsideSession
+        case invalidResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .sessionUnavailable:
+                "The terminal session is no longer available."
+            case .outsideSession:
+                "That pane is in a different tmux session."
+            case .commandFailed(let detail):
+                detail.isEmpty ? "tmux could not find that window or pane." : "tmux: \(detail)"
+            case .invalidResponse:
+                "tmux returned an unexpected reply."
+            }
+        }
     }
 
     let queue: DispatchQueue
@@ -593,6 +622,9 @@ final class TmuxSessionController: @unchecked Sendable {
             }
             completionHandler(zoomOwner.marks(fromQueryReply: decodeTmuxString(completion.body)))
             return
+        case .targetResolution(let selection, let completionHandler):
+            completionHandler(targetResolutionResult(for: completion, selection: selection))
+            return
         case .action(let request, let topologyRevisionAtSubmission, let onSuccess):
             handleActionCompletion(
                 completion,
@@ -938,6 +970,28 @@ final class TmuxSessionController: @unchecked Sendable {
                 return
             }
             requestsByToken[token] = .zoomMarks(completion)
+            _ = drainOutbound()
+        }
+    }
+
+    /// Asks tmux which window and pane a target names, so links can use any
+    /// tmux target syntax (index, name, `@id`, `%id`). Completes on the
+    /// writer queue; a client that shuts down first never completes.
+    func requestResolveTarget(
+        _ selection: TmuxTargetSelection,
+        completion: @escaping @Sendable (Result<ResolvedTarget, TargetResolutionError>) -> Void
+    ) {
+        queue.async { [self] in
+            guard let client, outboundSink != nil, !shuttingDown else {
+                completion(.failure(.sessionUnavailable))
+                return
+            }
+            let (result, token) = enqueueCommandTokenOnWriter(selection.resolveCommand, client: client)
+            guard result == GHOSTTY_TMUX_RESULT_OK else {
+                completion(.failure(.commandFailed(String(describing: result))))
+                return
+            }
+            requestsByToken[token] = .targetResolution(selection, completion)
             _ = drainOutbound()
         }
     }
@@ -1681,6 +1735,27 @@ final class TmuxSessionController: @unchecked Sendable {
             let detail = decodeTmuxString(completion.body)
                 .trimmingCharacters(in: .newlines)
             return .failure(.commandFailed(detail))
+        default:
+            return .failure(.invalidResponse)
+        }
+    }
+
+    private func targetResolutionResult(
+        for completion: ghostty_tmux_command_completion_s,
+        selection: TmuxTargetSelection
+    ) -> Result<ResolvedTarget, TargetResolutionError> {
+        let body = decodeTmuxString(completion.body).trimmingCharacters(in: .newlines)
+        switch completion.status {
+        case GHOSTTY_TMUX_COMMAND_SUCCESS:
+            guard let (windowID, paneID) = selection.parseResolveReply(body) else {
+                let ids = body.split(separator: " ", maxSplits: 2)
+                return ids.count == 3 && ids[0].hasPrefix("@") && ids[1].hasPrefix("%")
+                    ? .failure(.outsideSession)
+                    : .failure(.invalidResponse)
+            }
+            return .success(ResolvedTarget(windowID: windowID, paneID: paneID))
+        case GHOSTTY_TMUX_COMMAND_ERROR_BLOCK:
+            return .failure(.commandFailed(body))
         default:
             return .failure(.invalidResponse)
         }

@@ -70,6 +70,17 @@ private struct RemuxRootContentView: View {
                 handleTailscaleSSHCheckEvent(event)
             }
         }
+        .onOpenURL { url in
+            Task { await model.handleOpenURL(url) }
+        }
+        .alert("Couldn’t Open Link", isPresented: Binding(
+            get: { model.deepLinkFailure != nil },
+            set: { if !$0 { model.dismissDeepLinkFailure() } }
+        )) {
+            Button("OK", role: .cancel, action: model.dismissDeepLinkFailure)
+        } message: {
+            Text(model.deepLinkFailure ?? "")
+        }
     }
 
     private var currentTailscaleSSHCheckRequest: Binding<TailscaleSSHCheckRequest?> {
@@ -949,6 +960,11 @@ private struct ConnectionLibraryView: View {
                             .accessibilityIdentifier("library.active-session.show")
                     }
                     .buttonStyle(.plain)
+                    .copyLinkContextMenu(RemuxDeepLink.sessionURL(
+                        server: session.target.server,
+                        sessionName: session.target.workspace.sessionName,
+                        among: snapshot.servers
+                    ))
                     .swipeActions(edge: .trailing) {
                         Button("Disconnect") {
                             disconnectActiveSession(session.id)
@@ -996,6 +1012,11 @@ private struct ConnectionLibraryView: View {
                             .accessibilityIdentifier("library.session.resume")
                         }
                         .buttonStyle(.plain)
+                        .copyLinkContextMenu(RemuxDeepLink.sessionURL(
+                            server: server,
+                            sessionName: workspace.sessionName,
+                            among: snapshot.servers
+                        ))
                         .swipeActions(edge: .trailing) {
                             Button("Edit") {
                                 onEditWorkspace(server.id, workspace.id)
@@ -1182,6 +1203,7 @@ private struct ConnectionLibraryView: View {
     ) -> some View {
         ServerDetailView(
             server: server,
+            linkServers: snapshot.servers,
             workspaces: visibleWorkspaces(for: server.id),
             activeSessions: activeSessions.filter { $0.target.server.id == server.id },
             discoveryState: discoveryStates[server.id] ?? .idle,
@@ -1265,6 +1287,8 @@ private struct ServerDetailView: View {
     private static let maximumInlineAvailableSessionCount = 3
 
     let server: SavedServer
+    /// Every saved server, so links name this one unambiguously.
+    let linkServers: [SavedServer]
     let workspaces: [SavedWorkspace]
     let activeSessions: [ActiveTerminalSession]
     let discoveryState: TmuxSessionDiscoveryState
@@ -1281,6 +1305,10 @@ private struct ServerDetailView: View {
 
     @State private var isReviewingHostKey = false
     @State private var showsAllWorkspaces = false
+
+    private func sessionLink(_ sessionName: String) -> URL {
+        RemuxDeepLink.sessionURL(server: server, sessionName: sessionName, among: linkServers)
+    }
 
     var body: some View {
         List {
@@ -1343,6 +1371,7 @@ private struct ServerDetailView: View {
                             .accessibilityIdentifier("library.session.resume")
                         }
                         .buttonStyle(.plain)
+                        .copyLinkContextMenu(sessionLink(workspace.sessionName))
                         .swipeActions(edge: .trailing) {
                             Button("Edit") {
                                 onEditWorkspace(server.id, workspace.id)
@@ -1463,6 +1492,7 @@ private struct ServerDetailView: View {
                     AvailableServerSessionRow(sessionName: sessionName)
                 }
                 .buttonStyle(.plain)
+                .copyLinkContextMenu(sessionLink(sessionName))
                 .accessibilityIdentifier("library.server.available.session")
             }
 
