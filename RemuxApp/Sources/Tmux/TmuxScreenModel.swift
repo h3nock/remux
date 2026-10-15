@@ -388,6 +388,9 @@ final class TmuxScreenModel: ObservableObject {
                     switch result {
                     case .success(let target):
                         adapter.focusResolvedTarget(target)
+                    case .failure(.sessionUnavailable):
+                        // The disconnect is already on screen.
+                        break
                     case .failure(let error):
                         adapter.presentCommandFailure(
                             message: error.errorDescription ?? "tmux could not open that window or pane."
