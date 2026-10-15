@@ -59,6 +59,10 @@ targets:
         NSMicrophoneUsageDescription: Remux uses the microphone so you can dictate messages.
         NSSpeechRecognitionUsageDescription: Remux uses on-device speech recognition to turn your dictation into text.
         UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.remux.app
+            CFBundleURLSchemes:
+              - remux
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
