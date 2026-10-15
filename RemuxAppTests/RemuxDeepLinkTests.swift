@@ -104,6 +104,27 @@ final class RemuxDeepLinkTests: XCTestCase {
         }
     }
 
+    func testServerReferenceAvoidsNameThatIsAnotherServersID() {
+        let identity = UUID()
+        let target = SavedServer(displayName: "Target", host: "t.test", username: "u", identityID: identity)
+        let impostor = SavedServer(
+            displayName: target.id.uuidString.lowercased(),
+            host: "i.test",
+            username: "u",
+            identityID: identity
+        )
+        let servers = [target, impostor]
+
+        XCTAssertEqual(RemuxDeepLink.serverReference(for: impostor, among: servers), impostor.id.uuidString)
+        XCTAssertEqual(
+            try RemuxDeepLink(
+                server: RemuxDeepLink.serverReference(for: impostor, among: servers),
+                sessionName: "s"
+            ).resolveServer(in: servers).id,
+            impostor.id
+        )
+    }
+
     func testTmuxTargetQualifiesBySessionUnlessPaneIsGlobalID() {
         XCTAssertEqual(
             TmuxTargetSelection(sessionName: "dev", window: "2", pane: "1").tmuxTarget,

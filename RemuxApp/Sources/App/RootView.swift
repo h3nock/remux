@@ -1724,6 +1724,7 @@ private struct ServerAvailableSessionsView: View {
                         AvailableServerSessionRow(session: session)
                     }
                     .buttonStyle(.plain)
+                    .copyLinkContextMenu(session.link)
                     .accessibilityIdentifier("library.server.available.result")
                 }
 
