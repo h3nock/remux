@@ -193,6 +193,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     func prewarmSSHConnection(for target: SessionTarget) async {
+        guard !target.sshAuth.requiresInteractiveAuthentication else { return }
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
     }
 
@@ -237,7 +238,7 @@ struct RemuxAppDependencies: Sendable {
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async {
-        guard target.sshAuth.credential != .none else {
+        guard !target.sshAuth.requiresInteractiveAuthentication else {
             return
         }
 
@@ -271,15 +272,16 @@ struct RemuxAppDependencies: Sendable {
         return SSHTmuxControlConfiguration(
             host: target.server.host,
             port: target.server.port,
-            authenticationMethod: {
+            authenticationMethod: { connectionClosed in
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: target.sshAuth.credential
+                    credential: target.sshAuth.credential,
+                    connectionClosed: connectionClosed
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
-            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            authenticationTimeout: target.sshAuth.usesSecureEnclaveKey ? .seconds(120) : tailscaleSSHCheck?.authenticationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
@@ -416,15 +418,16 @@ struct RemuxAppDependencies: Sendable {
         return RemuxSSHRootConfiguration(
             host: target.server.host,
             port: target.server.port,
-            authenticationMethod: {
+            authenticationMethod: { connectionClosed in
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: target.sshAuth.credential
+                    credential: target.sshAuth.credential,
+                    connectionClosed: connectionClosed
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: connectTimeout,
-            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            authenticationTimeout: target.sshAuth.usesSecureEnclaveKey ? .seconds(120) : tailscaleSSHCheck?.authenticationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent
         )
     }

@@ -56,6 +56,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSFaceIDUsageDescription: Remux uses Face ID to authorize SSH connections with your Secure Enclave key.
         NSMicrophoneUsageDescription: Remux uses the microphone so you can dictate messages.
         NSSpeechRecognitionUsageDescription: Remux uses on-device speech recognition to turn your dictation into text.
         UILaunchScreen: {}

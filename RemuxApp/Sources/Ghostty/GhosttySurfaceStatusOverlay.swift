@@ -153,6 +153,15 @@ struct GhosttySurfaceStatusOverlay: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        } else if reason?.kind == .keyUnlock {
+            GhosttyRepairActionButton(
+                title: "Unlock Key",
+                systemName: "lock.open",
+                accessibilityIdentifier: "terminal.status.keyUnlock.retry",
+                chromeStyle: chromeStyle,
+                isPrimary: true,
+                action: onReconnect
+            )
         } else if reason?.kind == .authentication {
             HStack {
                 GhosttyRepairActionButton(
@@ -209,6 +218,10 @@ struct GhosttySurfaceStatusOverlay: View {
             case .changed:
                 return "Host Key Changed"
             }
+        }
+
+        if reason?.kind == .keyUnlock {
+            return "Key Locked"
         }
 
         if reason?.kind == .authentication {
