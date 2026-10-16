@@ -60,7 +60,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let defaultConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
+            authenticationMethod: { _ in
                 .passwordBased(username: server.username, password: "pw")
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
@@ -72,7 +72,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let tracedConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
+            authenticationMethod: { _ in
                 .passwordBased(username: server.username, password: "pw")
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
@@ -1512,7 +1512,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let transport = SSHTmuxControlTransport(
             configuration: SSHTmuxControlConfiguration(
                 host: server.host,
-                authenticationMethod: {
+                authenticationMethod: { _ in
                     .passwordBased(username: server.username, password: "pw")
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),
@@ -1715,7 +1715,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         SSHTmuxControlConfiguration(
             host: loopback.server.host,
             port: loopback.server.port,
-            authenticationMethod: { .passwordBased(username: "remux", password: "pw") },
+            authenticationMethod: { _ in .passwordBased(username: "remux", password: "pw") },
             hostKeyValidator: loopback.trustedHostStore.validator(for: loopback.server),
             connectTimeout: .seconds(5),
             controlNoResponseTimeout: .milliseconds(300),
@@ -1734,7 +1734,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         return RemuxSSHRootConfiguration(
             host: server.host,
             port: server.port,
-            authenticationMethod: { .passwordBased(username: "tester", password: "pw") },
+            authenticationMethod: { _ in .passwordBased(username: "tester", password: "pw") },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(2)
         )

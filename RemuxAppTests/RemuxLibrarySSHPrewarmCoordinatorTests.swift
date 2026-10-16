@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import XCTest
 @testable import Remux
 
@@ -337,6 +338,60 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         XCTAssertEqual(eligibleTargets.map(\.workspace.id), [passwordWorkspace.id])
     }
 
+    func testSecureEnclaveCandidateSkipsBothPrewarmPathsAndContinues() async {
+        let enclaveServer = makePrewarmCoordinatorServer(displayName: "Secure Enclave")
+        let passwordServer = makePrewarmCoordinatorServer(displayName: "Password")
+        let enclaveWorkspace = makePrewarmCoordinatorWorkspace(
+            serverID: enclaveServer.id,
+            sessionName: "enclave",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let passwordWorkspace = makePrewarmCoordinatorWorkspace(
+            serverID: passwordServer.id,
+            sessionName: "password",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let snapshot = ConnectionLibrarySnapshot(
+            servers: [enclaveServer, passwordServer],
+            workspaces: [enclaveWorkspace, passwordWorkspace]
+        )
+        let auth = LibraryPrewarmAuthResolver()
+        await auth.setEnclave(SecureEnclaveSSHKey(
+            representation: Data([1]),
+            publicKey: P256.Signing.PrivateKey().publicKey.x963Representation
+        ), for: enclaveServer.id)
+        await auth.setPassword("secret", for: passwordServer.id)
+        let prewarmer = RecordingLibraryPrewarmer()
+        let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
+        var eligibleTargets: [SessionTarget] = []
+
+        coordinator.schedule(
+            snapshot: snapshot,
+            activeServerIDs: [],
+            terminalSettings: .default,
+            currentContext: {
+                RemuxLibrarySSHPrewarmCurrentContext(
+                    snapshot: snapshot,
+                    isLibraryVisible: true,
+                    activeServerIDs: [],
+                    terminalSettings: .default
+                )
+            },
+            onEligibleTarget: { target in
+                eligibleTargets.append(target)
+            }
+        )
+
+        let didContinue = await waitForLibraryPrewarm {
+            await prewarmer.targets().map(\.workspace.id) == [passwordWorkspace.id]
+                && eligibleTargets.map(\.workspace.id) == [passwordWorkspace.id]
+        }
+        XCTAssertTrue(didContinue)
+        let prewarmedWorkspaceIDs = await prewarmer.targets().map(\.workspace.id)
+        XCTAssertEqual(prewarmedWorkspaceIDs, [passwordWorkspace.id])
+        XCTAssertEqual(eligibleTargets.map(\.workspace.id), [passwordWorkspace.id])
+    }
+
     func testFinalEligibilityRejectsCurrentContextDrift() async {
         let server = makePrewarmCoordinatorServer(displayName: "Build")
         let workspace = makePrewarmCoordinatorWorkspace(serverID: server.id, sessionName: "base")
@@ -473,6 +528,13 @@ private func makePrewarmCoordinator(
     RemuxLibrarySSHPrewarmCoordinator(
         limit: limit,
         authResolver: { server, _ in
+            if let key = await auth.enclave(for: server.id) {
+                return try .privateKey(
+                    username: server.username,
+                    credential: SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key),
+                    identityID: server.identityID, displayLabel: server.displayName
+                )
+            }
             if await auth.isTailscale(server.id) {
                 return .none(
                     username: server.username,
@@ -510,6 +572,16 @@ private func waitForLibraryPrewarm(
 }
 
 private actor LibraryPrewarmAuthResolver {
+    private var enclaveKeys: [SavedServer.ID: SecureEnclaveSSHKey] = [:]
+
+    func setEnclave(_ key: SecureEnclaveSSHKey, for serverID: SavedServer.ID) {
+        enclaveKeys[serverID] = key
+    }
+
+    func enclave(for serverID: SavedServer.ID) -> SecureEnclaveSSHKey? {
+        enclaveKeys[serverID]
+    }
+
     private var passwords: [SavedServer.ID: String] = [:]
     private var tailscaleServerIDs: Set<SavedServer.ID> = []
 

@@ -74,13 +74,13 @@ struct ResolvedSSHAuth: Equatable, Sendable {
         identityID: UUID,
         displayLabel: String
     ) throws -> ResolvedSSHAuth {
-        let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+        let inspection = try credential.inspect()
         return ResolvedSSHAuth(
             identityID: identityID,
             username: username,
             displayLabel: displayLabel,
             authFingerprint: [
-                "private-key",
+                credential.secureEnclaveKey == nil ? "private-key" : "secure-enclave",
                 inspection.publicFingerprint,
                 fingerprint(credential.passphrase ?? ""),
             ].joined(separator: ":"),
@@ -323,6 +323,7 @@ struct TerminalDisconnectReason: Equatable, Sendable {
         case verificationExpired
         /// The session is gone from the server: it was ended or killed, or it never existed.
         case sessionEnded
+        case keyUnlock
         case hostKey
         case profile
         /// The session's program isn't installed on the server, or can't be run there.
@@ -338,6 +339,8 @@ struct TerminalDisconnectReason: Equatable, Sendable {
                 "transport_io"
             case .serverUnreachable:
                 "server_unreachable"
+            case .keyUnlock:
+                "key_unlock"
             case .authentication:
                 "authentication"
             case .verificationExpired:
@@ -390,6 +393,7 @@ struct TerminalDisconnectReason: Equatable, Sendable {
              .authentication,
              .verificationExpired,
              .sessionEnded,
+             .keyUnlock,
              .hostKey,
              .profile,
              .backendUnavailable,
@@ -532,6 +536,7 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var herdrExecutablePath: String = ""
     var authenticationKind: SSHAuthenticationKind = .password
     var password: String = ""
+    var secureEnclaveKey: SecureEnclaveSSHKey?
     var privateKeyPEM: String = ""
     var privateKeyFileName: String = ""
     var privateKeyPassphrase: String = ""
@@ -567,6 +572,7 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         case .some(.password(let password)):
             self.password = password
         case .some(.privateKey(let credential)):
+            self.secureEnclaveKey = credential.secureEnclaveKey
             self.privateKeyPEM = credential.privateKeyPEM
             self.privateKeyPassphrase = credential.passphrase ?? ""
         case .none:
@@ -785,11 +791,11 @@ enum TmuxConnectionDraftValidator {
             credential = .password(password)
 
         case .privateKey:
-            if privateKeyPEM.isEmpty {
+            if privateKeyPEM.isEmpty && draft.secureEnclaveKey == nil {
                 validation.privateKey = "Private key is required."
             } else {
                 do {
-                    let inspection = try SSHPrivateKeyInspector.inspect(privateKeyPEM)
+                    let inspection = try SSHPrivateKeyCredential(privateKeyPEM: privateKeyPEM, secureEnclaveKey: draft.secureEnclaveKey).inspect()
                     if inspection.isEncrypted && privateKeyPassphrase == nil {
                         validation.privateKeyPassphrase = "Passphrase is required for encrypted private keys."
                     }
@@ -804,7 +810,8 @@ enum TmuxConnectionDraftValidator {
             credential = .privateKey(
                 SSHPrivateKeyCredential(
                     privateKeyPEM: privateKeyPEM,
-                    passphrase: privateKeyPassphrase
+                    passphrase: privateKeyPassphrase,
+                    secureEnclaveKey: draft.secureEnclaveKey
                 )
             )
 
@@ -908,5 +915,20 @@ private extension TmuxConnectionDraftValidation {
         privateKey = privateKey ?? other.privateKey
         privateKeyPassphrase = privateKeyPassphrase ?? other.privateKeyPassphrase
         sessionName = sessionName ?? other.sessionName
+    }
+}
+
+extension ResolvedSSHAuth {
+    var usesSecureEnclaveKey: Bool {
+        if case .privateKey(let key) = credential { return key.secureEnclaveKey != nil }
+        return false
+    }
+
+    var requiresInteractiveAuthentication: Bool {
+        switch credential {
+        case .none: true
+        case .password: false
+        case .privateKey(let key): key.secureEnclaveKey != nil
+        }
     }
 }

@@ -166,7 +166,7 @@ final class HerdrLiveFixture: @unchecked Sendable {
             configuration: RemuxSSHRootConfiguration(
                 host: configuration.host,
                 port: configuration.port,
-                authenticationMethod: {
+                authenticationMethod: { _ in
                     try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential))
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),

@@ -24,7 +24,7 @@ struct RemuxSSHRootKey: Hashable, Sendable {
 struct RemuxSSHRootConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
+    let authenticationMethod: @Sendable (EventLoopFuture<Void>) throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount
@@ -33,7 +33,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     init(
         host: String,
         port: Int,
-        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
+        authenticationMethod: @escaping @Sendable (EventLoopFuture<Void>) throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
         authenticationTimeout: TimeAmount? = nil,
@@ -1275,7 +1275,12 @@ enum RemuxSSHRootBootstrap {
             rootChannel = channel
 
             try await trace.stage("sshAuthentication") {
-                try await connection.authenticated.get()
+                try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    try await connection.authenticated.get()
+                } onCancel: {
+                    channel.close(promise: nil)
+                }
             }
 
             let sshHandler = try await trace.stage("sshHandler.lookup") {
@@ -1307,7 +1312,7 @@ enum RemuxSSHRootBootstrap {
         )
         let authenticationMethod: SSHAuthenticationMethod
         do {
-            authenticationMethod = try configuration.authenticationMethod()
+            authenticationMethod = try configuration.authenticationMethod(channel.closeFuture)
         } catch {
             return channel.eventLoop.makeFailedFuture(error)
         }

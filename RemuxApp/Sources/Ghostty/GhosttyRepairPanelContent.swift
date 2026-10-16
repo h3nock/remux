@@ -70,6 +70,16 @@ struct GhosttyRepairPanelContent: Equatable {
                 accessibilityIdentifier: "terminal.status.auth.updateCredentials",
                 isPrimary: true
             )]
+        case .keyUnlock:
+            title = "Key Locked"
+            message = reason?.message ?? ""
+            actions = [Action(
+                kind: .retry,
+                title: "Unlock Key",
+                systemImage: "lock.open",
+                accessibilityIdentifier: "terminal.status.keyUnlock.retry",
+                isPrimary: true
+            )]
         case .verificationExpired:
             title = "Verification Expired"
             message = "Tailscale verification wasn't completed in time."

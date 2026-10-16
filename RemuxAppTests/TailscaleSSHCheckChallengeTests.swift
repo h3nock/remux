@@ -252,7 +252,7 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         return RemuxSSHRootBootstrap.configureChannel(channel, using: RemuxSSHRootConfiguration(
             host: server.host,
             port: server.port,
-            authenticationMethod: { .passwordBased(username: "tester", password: "unused") },
+            authenticationMethod: { _ in .passwordBased(username: "tester", password: "unused") },
             hostKeyValidator: trustedHosts.validator(for: server),
             connectTimeout: .seconds(10),
             onTailscaleSSHCheck: onTailscaleSSHCheck

@@ -70,7 +70,7 @@ final class RemuxLibrarySSHPrewarmCoordinator {
                         sshAuth: sshAuth,
                         terminalSettings: terminalSettings
                     )
-                    guard target.sshAuth.credential != .none else {
+                    guard !target.sshAuth.requiresInteractiveAuthentication else {
                         await MainActor.run {
                             self?.traceSkipped(
                                 candidate: candidate,

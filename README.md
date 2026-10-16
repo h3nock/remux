@@ -41,7 +41,8 @@ terminal, and uploads photos and files, with markup for images.
   then drag to place the cursor.
 - **Direct SSH**: Remux connects straight to the server, with no relay and
   no account. Passwords and private keys are stored in the iOS Keychain,
-  and trusted host keys are remembered.
+  and trusted host keys are remembered. Supports Secure Enclave ECDSA keys
+  protected by Face ID, Touch ID, or your device passcode.
 - **Themes**: Ghostty default, Catppuccin Mocha, and Catppuccin Latte,
   with adjustable font size.
 

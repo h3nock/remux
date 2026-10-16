@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import NIOCore
 import NIOPosix
 
@@ -21,6 +22,10 @@ enum GhosttyTerminalDisconnectReasonClassifier {
                 kind: .verificationExpired,
                 message: tailscaleCheckError.localizedDescription
             )
+        }
+
+        if error is LAError || error is SecureEnclaveSSHError {
+            return TerminalDisconnectReason(kind: .keyUnlock, message: error.localizedDescription)
         }
 
         if isServerUnreachable(error) {

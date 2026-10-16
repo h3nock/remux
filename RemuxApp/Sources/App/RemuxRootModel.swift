@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import SwiftUI
 
 enum SSHPublicKeyInstallDraftError: Error, Equatable, LocalizedError {
@@ -838,7 +839,7 @@ final class RemuxRootModel: ObservableObject {
         guard !username.isEmpty else {
             throw SSHPublicKeyInstallDraftError.invalidUsername
         }
-        guard let inspection = try? SSHPrivateKeyInspector.inspect(draft.privateKeyPEM) else {
+        guard let inspection = try? SSHPrivateKeyCredential(privateKeyPEM: draft.privateKeyPEM, secureEnclaveKey: draft.secureEnclaveKey).inspect() else {
             throw SSHPublicKeyInstallDraftError.invalidPrivateKey
         }
         let passphrase = draft.privateKeyPassphrase.isEmpty
@@ -852,7 +853,8 @@ final class RemuxRootModel: ObservableObject {
             username: username,
             privateKey: SSHPrivateKeyCredential(
                 privateKeyPEM: inspection.normalizedPEM,
-                passphrase: passphrase
+                passphrase: passphrase,
+                secureEnclaveKey: draft.secureEnclaveKey
             ),
             publicKeyLine: inspection.publicKeyLine
         )
@@ -2140,6 +2142,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private static func newServerVerificationMessage(for error: any Error) -> String {
+        if error is LAError || error is SecureEnclaveSSHError { return error.localizedDescription }
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
         }
@@ -2150,7 +2153,7 @@ final class RemuxRootModel: ObservableObject {
             return "Remux could not reach the server. Check the address, port, network, or VPN."
         case .authentication:
             return "The server rejected these credentials. Check the user and authentication details."
-        case .backendUnavailable:
+        case .backendUnavailable, .keyUnlock:
             return reason.message
         case .hostKey:
             return "Remux could not verify the SSH host key."
@@ -2180,7 +2183,7 @@ final class RemuxRootModel: ObservableObject {
             )
 
         case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+            let inspection = try credential.inspect()
             let identity = SSHIdentity(
                 name: draft.displayName,
                 authenticationKind: .privateKey,
@@ -2220,7 +2223,7 @@ final class RemuxRootModel: ObservableObject {
             )
 
         case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+            let inspection = try credential.inspect()
             let identity = SSHIdentity(
                 id: existingIdentity.id,
                 name: draft.displayName,
