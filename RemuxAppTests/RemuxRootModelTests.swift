@@ -136,6 +136,79 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotNil(harness.model.library.workspace(id: opened.id))
     }
 
+    func testDeepLinkOpensSessionOnServerMatchedByDisplayName() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(servers: [pair.server], identities: [pair.identity])
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        await harness.model.handleOpenURL(URL(string: "remux://open?server=build%20host&session=ops")!)
+
+        let opened = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(opened.target.server.id, pair.server.id)
+        XCTAssertEqual(opened.target.workspace.sessionName, "ops")
+        XCTAssertEqual(harness.model.state, .terminal(opened.id))
+        XCTAssertNil(harness.model.deepLinkFailure)
+    }
+
+    func testDeepLinkShowsAlreadyActiveSessionWithoutReconnecting() async throws {
+        let pair = makePasswordBackedServer()
+        let main = SavedWorkspace(serverID: pair.server.id, sessionName: "main")
+        let ops = SavedWorkspace(serverID: pair.server.id, sessionName: "ops")
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [main, ops],
+            identities: [pair.identity]
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        await harness.model.connect(to: main.id)
+        await harness.model.connect(to: ops.id)
+        let mainInstance = try XCTUnwrap(
+            harness.model.activeSessions.first { $0.id == main.id }?.instanceID
+        )
+
+        await harness.model.handleOpenURL(URL(string: "remux://open?server=build.example.test&session=main")!)
+
+        XCTAssertEqual(harness.model.state, .terminal(main.id))
+        XCTAssertEqual(harness.model.activeSessions.count, 2)
+        XCTAssertEqual(
+            harness.model.activeSessions.first { $0.id == main.id }?.instanceID,
+            mainInstance
+        )
+    }
+
+    func testDeepLinkReceivedWhileLoadingOpensAfterLoad() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(servers: [pair.server], identities: [pair.identity])
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+
+        await harness.model.handleOpenURL(URL(string: "remux://open?server=Build%20Host&session=ops")!)
+        XCTAssertEqual(harness.model.state, .loading)
+        await harness.model.load()
+
+        let opened = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(opened.target.workspace.sessionName, "ops")
+        XCTAssertEqual(harness.model.state, .terminal(opened.id))
+    }
+
+    func testDeepLinkToUnknownServerReportsFailure() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(servers: [pair.server], identities: [pair.identity])
+        await harness.model.load()
+
+        await harness.model.handleOpenURL(URL(string: "remux://open?server=elsewhere&session=ops")!)
+
+        XCTAssertTrue(harness.model.activeSessions.isEmpty)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(
+            harness.model.deepLinkFailure,
+            RemuxDeepLink.ServerResolutionError.notFound("elsewhere").localizedDescription
+        )
+        harness.model.dismissDeepLinkFailure()
+        XCTAssertNil(harness.model.deepLinkFailure)
+    }
+
     func testDiscoveredTmuxSessionDoesNotOpenSameNamedHerdrWorkspace() async throws {
         let pair = makePasswordBackedServer()
         let herdrOps = SavedWorkspace(serverID: pair.server.id, backend: .herdr, sessionName: "ops")

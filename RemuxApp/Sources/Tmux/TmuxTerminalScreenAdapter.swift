@@ -456,8 +456,11 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     // MARK: Command failures
 
     private func presentCommandFailure(for request: TmuxSessionController.Request) {
+        presentCommandFailure(message: "tmux: \(Self.failureLabel(for: request)) failed")
+    }
+
+    func presentCommandFailure(message: String) {
         commandFailureToken &+= 1
-        let message = "tmux: \(Self.failureLabel(for: request)) failed"
         commandFailureMessage = message
         commandFailureEvent = GhosttyTerminalCommandFailureEvent(
             token: commandFailureToken,
@@ -770,6 +773,19 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         controller.requestSelectWindow(
             windowID: targetWindow.id,
             preferredPaneID: targetWindow.activePaneID
+        )
+    }
+
+    /// Selects a window and pane that tmux resolved from a link's target.
+    func focusResolvedTarget(_ target: TmuxSessionController.ResolvedTarget) {
+        guard let controller else { return }
+        pendingFocusedPaneID = nil
+        if latestTopology?.activeWindowID != target.windowID {
+            session?.prepareForPaneSelection(paneID: target.paneID)
+        }
+        controller.requestSelectWindow(
+            windowID: target.windowID,
+            preferredPaneID: target.paneID
         )
     }
 
