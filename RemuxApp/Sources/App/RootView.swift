@@ -595,8 +595,12 @@ private struct RemuxWorkspaceShell: View {
                         )
                     }
                 },
-                onRefreshServerSessions: { serverID in
-                    await model.refreshTmuxSessionsAndWait(for: serverID)
+                onRefreshServerSessions: { serverID, allowsUserPresence in
+                    if allowsUserPresence {
+                        await model.refreshTmuxSessionsAndWait(for: serverID)
+                    } else {
+                        model.refreshTmuxSessions(for: serverID)
+                    }
                 },
                 onTrustDiscoveryHostKey: model.trustTmuxSessionDiscoveryHostKey,
                 onShowActiveSession: { workspaceID in
@@ -920,7 +924,7 @@ private struct ConnectionLibraryView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onConnectAvailableSession: (SavedServer.ID, String) -> Void
-    let onRefreshServerSessions: (SavedServer.ID) async -> Void
+    let onRefreshServerSessions: (SavedServer.ID, Bool) async -> Void
     let onTrustDiscoveryHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
@@ -1369,7 +1373,7 @@ private struct ServerDetailView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onConnectAvailableSession: (SavedServer.ID, String) -> Void
-    let onRefreshSessions: (SavedServer.ID) async -> Void
+    let onRefreshSessions: (SavedServer.ID, Bool) async -> Void
     let onTrustHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let terminalTheme: TerminalTheme
@@ -1474,11 +1478,11 @@ private struct ServerDetailView: View {
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: terminalTheme)
         .refreshable {
-            await onRefreshSessions(server.id)
+            await onRefreshSessions(server.id, true)
         }
         .task(id: server.id) {
             guard discoveryState.phase == .idle else { return }
-            await onRefreshSessions(server.id)
+            await onRefreshSessions(server.id, false)
         }
         .navigationTitle(server.displayName)
         .navigationBarTitleDisplayMode(.inline)
@@ -1547,6 +1551,15 @@ private struct ServerDetailView: View {
                 .accessibilityIdentifier("library.server.available.loading")
             }
 
+            if discoveryState.phase == .authenticationRequired {
+                Button {
+                    Task { await onRefreshSessions(server.id, true) }
+                } label: {
+                    Label("Unlock to check sessions", systemImage: "lock.open")
+                }
+                .accessibilityIdentifier("library.server.available.unlock")
+            }
+
             if discoveryState.phase == .failed {
                 discoveryFailureRow
             }
@@ -1613,7 +1626,7 @@ private struct ServerDetailView: View {
                 .accessibilityIdentifier("library.server.available.review-host-key")
             } else {
                 Button("Retry") {
-                    Task { await onRefreshSessions(server.id) }
+                    Task { await onRefreshSessions(server.id, true) }
                 }
                 .accessibilityIdentifier("library.server.available.retry")
             }
@@ -2881,7 +2894,7 @@ struct ConnectionSetupView: View {
         if !draft.privateKeyFileName.isEmpty {
             return draft.privateKeyFileName
         }
-        return privateKeyInspection?.keyType.displayName ?? "Private key"
+        return draft.secureEnclaveKey != nil ? "Secure Enclave key" : (privateKeyInspection?.keyType.displayName ?? "Private key")
     }
 
     private var importedPrivateKeySubtitle: String {
@@ -2892,7 +2905,7 @@ struct ConnectionSetupView: View {
     }
 
     private var privateKeyInspection: SSHPrivateKeyInspection? {
-        try? SSHPrivateKeyInspector.inspect(draft.privateKeyPEM)
+        try? SSHPrivateKeyCredential(privateKeyPEM: draft.privateKeyPEM, secureEnclaveKey: draft.secureEnclaveKey).inspect()
     }
 
     private var shouldShowPrivateKeyPassphrase: Bool {
@@ -2923,6 +2936,10 @@ struct ConnectionSetupView: View {
             ) {
                 pastePrivateKeyFromClipboard()
             }
+
+            privateKeyActionDivider()
+
+            secureEnclaveGenerateButton()
 
             privateKeyActionDivider()
 
@@ -2960,6 +2977,12 @@ struct ConnectionSetupView: View {
             Text(importedPrivateKeyTitle)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+
+            if draft.secureEnclaveKey != nil {
+                Text("Protected by Face ID, Touch ID, or passcode. Cannot be exported or transferred to another device.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
 
             Text(importedPrivateKeySubtitle)
                 .font(.footnote)
@@ -3092,6 +3115,12 @@ struct ConnectionSetupView: View {
                 generatePrivateKey()
             } label: {
                 Label("Generate New ED25519 Key", systemImage: "key.horizontal")
+            }
+
+            Button {
+                generateSecureEnclaveKey()
+            } label: {
+                Label("Generate Secure Enclave Key", systemImage: "lock.shield")
             }
 
             Button(role: .destructive) {
@@ -3233,6 +3262,7 @@ struct ConnectionSetupView: View {
             publicKeyCopyMessage = nil
             onChange { draft in
                 draft.authenticationKind = .privateKey
+                draft.secureEnclaveKey = nil
                 draft.privateKeyPEM = inspection.normalizedPEM
                 draft.privateKeyFileName = url.lastPathComponent
                 draft.privateKeyPassphrase = ""
@@ -3251,6 +3281,7 @@ struct ConnectionSetupView: View {
         publicKeyCopyMessage = nil
         Haptic.tap()
         onChange { draft in
+            draft.secureEnclaveKey = nil
             draft.privateKeyPEM = ""
             draft.privateKeyFileName = ""
             draft.privateKeyPassphrase = ""
@@ -3271,6 +3302,7 @@ struct ConnectionSetupView: View {
             Haptic.tap()
             onChange { draft in
                 draft.authenticationKind = .privateKey
+                draft.secureEnclaveKey = nil
                 draft.privateKeyPEM = inspection.normalizedPEM
                 draft.privateKeyFileName = "Pasted private key"
                 draft.privateKeyPassphrase = ""
@@ -3285,6 +3317,34 @@ struct ConnectionSetupView: View {
         }
     }
 
+    private func secureEnclaveGenerateButton() -> some View {
+        privateKeyActionButton(
+            title: "Generate Secure Enclave key",
+            subtitle: "Device-only P-256 key, unlocked with biometrics or passcode",
+            systemImage: "lock.shield",
+            accessibilityIdentifier: "connection.private-key.generate-secure-enclave"
+        ) { generateSecureEnclaveKey() }
+    }
+
+    private func generateSecureEnclaveKey() {
+        do {
+            let key = try SecureEnclaveSSHKey.generate()
+            privateKeyImportError = nil
+            publicKeyCopyMessage = nil
+            onChange { draft in
+                draft.authenticationKind = .privateKey
+                draft.privateKeyPEM = ""
+                draft.privateKeyPassphrase = ""
+                draft.privateKeyFileName = "Secure Enclave P-256 key"
+                draft.secureEnclaveKey = key
+            }
+            Haptic.tap()
+        } catch {
+            privateKeyImportError = error.localizedDescription
+            Haptic.error()
+        }
+    }
+
     private func generatePrivateKey() {
         let generated = SSHPrivateKeyInspector.generateEd25519()
         privateKeyImportError = nil
@@ -3292,6 +3352,7 @@ struct ConnectionSetupView: View {
         Haptic.tap()
         onChange { draft in
             draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = nil
             draft.privateKeyPEM = generated.privateKeyPEM
             draft.privateKeyFileName = "Generated ED25519 key"
             draft.privateKeyPassphrase = ""

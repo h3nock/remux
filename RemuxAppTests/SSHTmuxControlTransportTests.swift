@@ -60,7 +60,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let defaultConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
+            authenticationMethod: { _ in
                 .passwordBased(username: server.username, password: "pw")
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
@@ -72,7 +72,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let tracedConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
+            authenticationMethod: { _ in
                 .passwordBased(username: server.username, password: "pw")
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
@@ -1477,7 +1477,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let transport = SSHTmuxControlTransport(
             configuration: SSHTmuxControlConfiguration(
                 host: server.host,
-                authenticationMethod: {
+                authenticationMethod: { _ in
                     .passwordBased(username: server.username, password: "pw")
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),

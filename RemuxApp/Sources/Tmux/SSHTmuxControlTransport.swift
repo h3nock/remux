@@ -7,7 +7,7 @@ import NIOConcurrencyHelpers
 struct SSHTmuxControlConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
+    let authenticationMethod: @Sendable (EventLoopFuture<Void>) throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount?
@@ -23,7 +23,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     init(
         host: String,
         port: Int = 22,
-        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
+        authenticationMethod: @escaping @Sendable (EventLoopFuture<Void>) throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount = .seconds(30),
         authenticationTimeout: TimeAmount? = nil,

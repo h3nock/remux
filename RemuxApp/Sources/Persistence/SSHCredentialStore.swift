@@ -1,11 +1,18 @@
 import Foundation
 import Security
+import CryptoKit
 
 struct SSHPrivateKeyCredential: Equatable, Codable, Sendable {
     var privateKeyPEM: String
     var passphrase: String?
+    var secureEnclaveKey: SecureEnclaveSSHKey?
 
-    init(privateKeyPEM: String, passphrase: String? = nil) {
+    init(
+        privateKeyPEM: String,
+        passphrase: String? = nil,
+        secureEnclaveKey: SecureEnclaveSSHKey? = nil
+    ) {
+        self.secureEnclaveKey = secureEnclaveKey
         self.privateKeyPEM = privateKeyPEM
         self.passphrase = passphrase
     }
@@ -34,6 +41,7 @@ enum SSHCredential: Equatable, Codable, Sendable {
         case password
         case privateKeyPEM
         case privateKeyPassphrase
+        case secureEnclaveKey
     }
 
     init(from decoder: Decoder) throws {
@@ -47,7 +55,8 @@ enum SSHCredential: Equatable, Codable, Sendable {
             self = .privateKey(
                 SSHPrivateKeyCredential(
                     privateKeyPEM: try container.decode(String.self, forKey: .privateKeyPEM),
-                    passphrase: try container.decodeIfPresent(String.self, forKey: .privateKeyPassphrase)
+                    passphrase: try container.decodeIfPresent(String.self, forKey: .privateKeyPassphrase),
+                    secureEnclaveKey: try container.decodeIfPresent(SecureEnclaveSSHKey.self, forKey: .secureEnclaveKey)
                 )
             )
         }
@@ -64,6 +73,7 @@ enum SSHCredential: Equatable, Codable, Sendable {
             try container.encode(Kind.privateKey, forKey: .kind)
             try container.encode(credential.privateKeyPEM, forKey: .privateKeyPEM)
             try container.encodeIfPresent(credential.passphrase, forKey: .privateKeyPassphrase)
+            try container.encodeIfPresent(credential.secureEnclaveKey, forKey: .secureEnclaveKey)
         }
     }
 }
@@ -134,11 +144,18 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
     func saveCredential(_ credential: SSHCredential, identityID: SSHIdentity.ID) async throws {
         let data = try encoder.encode(credential)
         let query = baseQuery(for: identityID, returnData: false)
-        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        var attributes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlocked,
+        ]
+        if case .privateKey(let key) = credential, key.secureEnclaveKey != nil {
+            attributes[kSecAttrAccessible] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+        }
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
         if updateStatus == errSecItemNotFound {
             var addQuery = query
-            addQuery[kSecValueData] = data
+            addQuery.merge(attributes) { _, new in new }
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
                 throw KeychainSSHCredentialStoreError.saveFailed(addStatus)
@@ -171,5 +188,67 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         }
 
         return query
+    }
+}
+
+/// The representation is an opaque, device-bound encrypted key blob, never a
+/// plaintext private key. Public metadata is available without authentication.
+struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
+    let representation: Data
+    let publicKey: Data
+
+    static func generate() throws -> Self {
+        guard SecureEnclave.isAvailable else {
+            throw SecureEnclaveSSHError.unavailable
+        }
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+            nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+            [.privateKeyUsage, .userPresence], &error
+        ) else {
+            if let error { throw error.takeRetainedValue() as Error }
+            throw SecureEnclaveSSHError.unavailable
+        }
+        let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
+        return Self(representation: key.dataRepresentation, publicKey: key.publicKey.x963Representation)
+    }
+
+    func inspect() throws -> SSHPrivateKeyInspection {
+        guard !representation.isEmpty else { throw SecureEnclaveSSHError.unavailable }
+        _ = try P256.Signing.PublicKey(x963Representation: publicKey)
+        var blob = Data()
+        for field in [Data("ecdsa-sha2-nistp256".utf8), Data("nistp256".utf8), publicKey] {
+            var length = UInt32(field.count).bigEndian
+            withUnsafeBytes(of: &length) { blob.append(contentsOf: $0) }
+            blob.append(field)
+        }
+        let fingerprint = Data(SHA256.hash(data: blob)).base64EncodedString()
+            .replacingOccurrences(of: "=", with: "")
+        return SSHPrivateKeyInspection(
+            keyType: .ecdsaP256, publicFingerprint: "SHA256:\(fingerprint)",
+            publicKeyLine: "ecdsa-sha2-nistp256 \(blob.base64EncodedString())",
+            normalizedPEM: "", isEncrypted: false
+        )
+    }
+}
+
+enum SecureEnclaveSSHError: LocalizedError {
+    case unavailable
+    case appNotActive
+    case publicKeyMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: "Secure Enclave keys require a supported physical device with a passcode."
+        case .appNotActive: "Open Remux to unlock your Secure Enclave SSH key."
+        case .publicKeyMismatch: "The Secure Enclave key does not match its saved public key."
+        }
+    }
+}
+
+extension SSHPrivateKeyCredential {
+    func inspect() throws -> SSHPrivateKeyInspection {
+        if let secureEnclaveKey { return try secureEnclaveKey.inspect() }
+        return try SSHPrivateKeyInspector.inspect(privateKeyPEM)
     }
 }

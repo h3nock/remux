@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import SwiftUI
 
 enum SSHPublicKeyInstallDraftError: Error, Equatable, LocalizedError {
@@ -185,6 +186,7 @@ struct TmuxSessionDiscoveryState: Equatable {
     enum Phase: Equatable {
         case idle
         case loading
+        case authenticationRequired
         case loaded
         case failed
     }
@@ -238,6 +240,11 @@ struct TmuxSessionDiscoveryState: Equatable {
             hostKeyChallenge: hostKeyChallenge,
             executableProblem: executableProblem
         )
+    }
+
+    func requiringUserPresence() -> Self {
+        Self(phase: .authenticationRequired, lastSuccessfulSessionNames: lastSuccessfulSessionNames,
+             hostKeyChallenge: nil, executableProblem: nil)
     }
 
     func cancellingRefresh() -> Self {
@@ -700,7 +707,7 @@ final class RemuxRootModel: ObservableObject {
         guard !username.isEmpty else {
             throw SSHPublicKeyInstallDraftError.invalidUsername
         }
-        guard let inspection = try? SSHPrivateKeyInspector.inspect(draft.privateKeyPEM) else {
+        guard let inspection = try? SSHPrivateKeyCredential(privateKeyPEM: draft.privateKeyPEM, secureEnclaveKey: draft.secureEnclaveKey).inspect() else {
             throw SSHPublicKeyInstallDraftError.invalidPrivateKey
         }
         let passphrase = draft.privateKeyPassphrase.isEmpty
@@ -714,7 +721,8 @@ final class RemuxRootModel: ObservableObject {
             username: username,
             privateKey: SSHPrivateKeyCredential(
                 privateKeyPEM: inspection.normalizedPEM,
-                passphrase: passphrase
+                passphrase: passphrase,
+                secureEnclaveKey: draft.secureEnclaveKey
             ),
             publicKeyLine: inspection.publicKeyLine
         )
@@ -1397,7 +1405,7 @@ final class RemuxRootModel: ObservableObject {
     /// Coalesces launch and explicit refresh requests for one server. A
     /// completed result must still match the server profile it started with;
     /// editing or deleting that server makes the result stale.
-    func refreshTmuxSessions(for serverID: SavedServer.ID) {
+    func refreshTmuxSessions(for serverID: SavedServer.ID, allowsUserPresence: Bool = false) {
         guard tmuxSessionRefreshes[serverID] == nil,
               let server = library.server(id: serverID) else {
             return
@@ -1410,16 +1418,22 @@ final class RemuxRootModel: ObservableObject {
             guard let self else { return }
             await self.performTmuxSessionRefresh(
                 for: server,
-                refreshID: refreshID
+                refreshID: refreshID,
+                allowsUserPresence: allowsUserPresence
             )
         }
         tmuxSessionRefreshes[serverID] = TmuxSessionRefresh(id: refreshID, task: task)
     }
 
     func refreshTmuxSessionsAndWait(for serverID: SavedServer.ID) async {
-        refreshTmuxSessions(for: serverID)
+        refreshTmuxSessions(for: serverID, allowsUserPresence: true)
         guard let refresh = tmuxSessionRefreshes[serverID] else { return }
         await refresh.task.value
+        // An explicit request may have joined a noninteractive launch refresh.
+        if tmuxSessionDiscoveryState(for: serverID).phase == .authenticationRequired {
+            refreshTmuxSessions(for: serverID, allowsUserPresence: true)
+            await tmuxSessionRefreshes[serverID]?.task.value
+        }
     }
 
     func trustTmuxSessionDiscoveryHostKey(_ challenge: SSHHostKeyTrustChallenge) {
@@ -1430,7 +1444,7 @@ final class RemuxRootModel: ObservableObject {
 
         do {
             try dependencies.trustedHostStore.trustHostKey(challenge)
-            refreshTmuxSessions(for: challenge.serverID)
+            refreshTmuxSessions(for: challenge.serverID, allowsUserPresence: true)
         } catch {
             tmuxSessionDiscoveryStates[challenge.serverID] = tmuxSessionDiscoveryState(
                 for: challenge.serverID
@@ -1480,6 +1494,8 @@ final class RemuxRootModel: ObservableObject {
             state = .library
             return
         }
+
+        guard !source.isAutomatic || !currentSession.target.sshAuth.usesSecureEnclaveKey else { return }
 
         GhosttyRuntimeTrace.flowBegin(
             sessionReconnectFlowID(id),
@@ -1858,6 +1874,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private static func newServerVerificationMessage(for error: any Error) -> String {
+        if error is LAError || error is SecureEnclaveSSHError { return error.localizedDescription }
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
         }
@@ -1868,7 +1885,7 @@ final class RemuxRootModel: ObservableObject {
             return "Remux could not reach the server. Check the address, port, network, or VPN."
         case .authentication:
             return "The server rejected these credentials. Check the user and authentication details."
-        case .tmuxUnavailable:
+        case .keyUnlock, .tmuxUnavailable:
             return reason.message
         case .hostKey:
             return "Remux could not verify the SSH host key."
@@ -1897,7 +1914,7 @@ final class RemuxRootModel: ObservableObject {
             )
 
         case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+            let inspection = try credential.inspect()
             let identity = SSHIdentity(
                 name: draft.displayName,
                 authenticationKind: .privateKey,
@@ -1937,7 +1954,7 @@ final class RemuxRootModel: ObservableObject {
             )
 
         case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+            let inspection = try credential.inspect()
             let identity = SSHIdentity(
                 id: existingIdentity.id,
                 name: draft.displayName,
@@ -2073,13 +2090,19 @@ final class RemuxRootModel: ObservableObject {
 
     private func performTmuxSessionRefresh(
         for server: SavedServer,
-        refreshID: UUID
+        refreshID: UUID,
+        allowsUserPresence: Bool
     ) async {
         defer { finishTmuxSessionRefresh(for: server.id, refreshID: refreshID) }
 
         do {
             let sshAuth = try await resolveSSHAuth(for: server)
             guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            guard allowsUserPresence || !sshAuth.usesSecureEnclaveKey else {
+                tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
+                    .requiringUserPresence()
+                return
+            }
             let discoveryTarget = target(
                 server: server,
                 workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
@@ -2281,7 +2304,9 @@ final class RemuxRootModel: ObservableObject {
     ) -> TerminalReconnectSource? {
         guard connectionSetup == nil,
               case .terminal(let selectedID) = state,
-              selectedID == update.workspaceID else {
+              selectedID == update.workspaceID,
+              let session = RemuxActiveSessionCollection.session(selectedID, in: activeSessions),
+              !session.target.sshAuth.usesSecureEnclaveKey else {
             return nil
         }
         guard let reason = update.state.disconnectedReason,

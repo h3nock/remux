@@ -1,10 +1,20 @@
 @preconcurrency import Citadel
 import NIO
+import LocalAuthentication
 import XCTest
 @preconcurrency import NIOSSH
 @testable import Remux
 
 final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
+    func testLocalUnlockFailureDoesNotSuggestRejectedCredentials() {
+        for error: any Error in [LAError(.authenticationFailed), LAError(.userCancel), SecureEnclaveSSHError.appNotActive] {
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+            XCTAssertEqual(reason.kind, .keyUnlock)
+            XCTAssertFalse(reason.allowsAutomaticReconnect)
+            XCTAssertEqual(reason.message, error.localizedDescription)
+        }
+    }
+
     func testTransportStartFailureMapsKnownBoundaryErrors() {
         let hostKeyChallenge = SSHHostKeyTrustChallenge(
             kind: .changed,
