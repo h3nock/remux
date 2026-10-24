@@ -236,15 +236,31 @@ final class TmuxSessionController: @unchecked Sendable {
     private var topologyRevision: UInt64 = 0
     private var outboundSink: (@Sendable (Data) -> Void)?
     private var shuttingDown = false
+    /// Panes whose program holds their drawing (synchronized output), each with the hold it was last seen to begin
+    /// and when that hold times out.
+    private var renderHolds: [TmuxPaneID: RenderHold] = [:]
+    private var renderHoldTimer: DispatchSourceTimer?
+    private let renderHoldTimeout: DispatchTimeInterval
+
+    private struct RenderHold {
+        let generation: UInt64
+        let deadline: DispatchTime
+    }
+
+    /// A program that never ends its synchronized output would freeze its pane; Ghostty's own process runtime ends a
+    /// hold after one second.
+    static let defaultRenderHoldTimeout: DispatchTimeInterval = .seconds(1)
 
     init(
         callbacks: Callbacks,
         zoomOwner: TmuxZoomOwner? = nil,
-        queue: DispatchQueue = DispatchQueue(label: "remux.tmux.session.writer")
+        queue: DispatchQueue = DispatchQueue(label: "remux.tmux.session.writer"),
+        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout
     ) {
         self.callbacks = callbacks
         self.zoomOwner = zoomOwner
         self.queue = queue
+        self.renderHoldTimeout = renderHoldTimeout
     }
 
     deinit {
@@ -381,6 +397,7 @@ final class TmuxSessionController: @unchecked Sendable {
             viewportClaimAwaitingTopology = false
             topology = nil
             clientSize = nil
+            endRenderHoldTracking()
             retainedPaneIDs.removeAll()
             assert(surfacesByPaneID.isEmpty, "terminal surfaces must unregister before client free")
             surfacesByPaneID.removeAll()
@@ -457,6 +474,7 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
             viewportClaimAwaitingTopology = false
+            endRenderHoldTracking()
             let exit = action.value.exit
             let detail = decodeTmuxString(exit.detail)
             switch exit.reason {
@@ -472,7 +490,7 @@ final class TmuxSessionController: @unchecked Sendable {
             handleTopology(action.value.topology)
 
         case GHOSTTY_TMUX_ACTION_PANE_CHANGED:
-            handlePaneChanged(TmuxPaneID(action.value.pane_id))
+            handlePaneChanged(action.value.pane_change)
 
         case GHOSTTY_TMUX_ACTION_COMMAND_COMPLETE:
             handleCommandCompletion(action.value.command)
@@ -522,6 +540,7 @@ final class TmuxSessionController: @unchecked Sendable {
         for paneID in removed {
             retainedPaneIDs.remove(paneID)
             surfacesByPaneID.removeValue(forKey: paneID)
+            renderHolds.removeValue(forKey: paneID)
         }
         let didBecomeReady = state != .ready
         state = .ready
@@ -533,9 +552,11 @@ final class TmuxSessionController: @unchecked Sendable {
         admitDeferredMutationsIfPossible()
     }
 
-    private func handlePaneChanged(_ paneID: TmuxPaneID) {
+    private func handlePaneChanged(_ change: ghostty_tmux_pane_change_s) {
         preconditionOnWriterQueue()
         guard let client else { return }
+        let paneID = TmuxPaneID(change.pane_id)
+        trackRenderHold(of: paneID, held: change.render_hold, generation: change.render_hold_generation)
 
         if retainedPaneIDs.insert(paneID).inserted {
             var terminal: ghostty_terminal_t?
@@ -554,6 +575,10 @@ final class TmuxSessionController: @unchecked Sendable {
             return
         }
 
+        paneTerminalChanged(paneID)
+    }
+
+    private func paneTerminalChanged(_ paneID: TmuxPaneID) {
         if let surface = surfacesByPaneID[paneID] {
             let result = ghostty_terminal_surface_terminal_changed(surface.value)
             if result != GHOSTTY_TERMINAL_SURFACE_RESULT_OK {
@@ -566,6 +591,58 @@ final class TmuxSessionController: @unchecked Sendable {
         if activePaneID(in: topology) == paneID {
             DispatchQueue.main.async { self.callbacks.onActivePaneChanged(paneID) }
         }
+    }
+
+    // MARK: Render holds
+
+    /// A hold times out a fixed time after it begins; a hold seen to end needs nothing.
+    private func trackRenderHold(of paneID: TmuxPaneID, held: Bool, generation: UInt64) {
+        guard held else {
+            renderHolds.removeValue(forKey: paneID)
+            return
+        }
+        guard renderHolds[paneID]?.generation != generation else { return }
+        renderHolds[paneID] = RenderHold(generation: generation, deadline: .now() + renderHoldTimeout)
+        if renderHoldTimer == nil { scheduleRenderHoldTimer() }
+    }
+
+    /// One timer for the earliest deadline. A hold that begins again only moves its own deadline, so a program that
+    /// draws every frame inside a hold wakes this at most once per timeout.
+    private func scheduleRenderHoldTimer() {
+        guard let earliest = renderHolds.values.map(\.deadline).min() else {
+            renderHoldTimer?.cancel()
+            renderHoldTimer = nil
+            return
+        }
+        let timer = renderHoldTimer ?? {
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.setEventHandler { [weak self] in self?.endExpiredRenderHolds() }
+            timer.activate()
+            renderHoldTimer = timer
+            return timer
+        }()
+        timer.schedule(deadline: earliest, leeway: .milliseconds(50))
+    }
+
+    private func endExpiredRenderHolds() {
+        preconditionOnWriterQueue()
+        guard let client, !shuttingDown else { return }
+        let now = DispatchTime.now()
+        let expired = renderHolds.filter { $0.value.deadline <= now }.map(\.key)
+        for paneID in expired {
+            renderHolds.removeValue(forKey: paneID)
+            guard ghostty_tmux_client_end_render_hold(client, paneID.rawValue) == GHOSTTY_TMUX_RESULT_OK else {
+                continue
+            }
+            paneTerminalChanged(paneID)
+        }
+        scheduleRenderHoldTimer()
+    }
+
+    private func endRenderHoldTracking() {
+        renderHolds.removeAll()
+        renderHoldTimer?.cancel()
+        renderHoldTimer = nil
     }
 
     private func handleCommandCompletion(_ completion: ghostty_tmux_command_completion_s) {

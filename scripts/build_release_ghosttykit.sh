@@ -19,8 +19,12 @@ fi
 printf 'Building ReleaseFast GhosttyKit from %s\n' "$ghostty_root"
 (
   cd "$ghostty_root"
+  # Unstripped, so the app's dSYM resolves Ghostty frames in crash reports to
+  # file and line. The debug info stays in the dSYM; the app keeps Ghostty's
+  # unwind tables.
   zig build \
     -Doptimize=ReleaseFast \
+    -Dstrip=false \
     -Demit-xcframework=true \
     -Demit-macos-app=false
 )

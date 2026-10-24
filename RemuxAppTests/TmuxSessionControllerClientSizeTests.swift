@@ -1379,6 +1379,86 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await fulfillment(of: [completed], timeout: 1)
     }
 
+    // MARK: Render holds
+
+    /// A program's synchronized output holds its pane's drawing. One that never ends its hold has it ended after the
+    /// timeout, and the pane is woken without any more output; output after that holds nothing.
+    func testARenderHoldThatNeverEndsEndsAfterTheTimeout() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(200)
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hframe\n".utf8))
+        try await waitUntil("the held output didn't reach the pane") { wakes.count == 1 }
+        try await waitUntil("the hold didn't time out") { wakes.count == 2 }
+
+        harness.controller.pump(Data("%output %0 more\n".utf8))
+        try await waitUntil("the output didn't reach the pane") { wakes.count == 3 }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 3)
+    }
+
+    /// A hold the output ends, later or within the same output, leaves nothing to time out.
+    func testARenderHoldTheOutputEndsWakesNothingMore() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(200)
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hA\n".utf8))
+        harness.controller.pump(Data("%output %0 B\\033[?2026l\n".utf8))
+        harness.controller.pump(Data("%output %0 \\033[?2026hC\\033[?2026l\n".utf8))
+        try await waitUntil("the output didn't reach the pane") { wakes.count == 3 }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 3)
+    }
+
+    /// Each hold restarts the timeout, so a program that draws every frame inside a hold, faster than the timeout,
+    /// isn't cut off; the last hold times out once its output stops.
+    func testEachNewRenderHoldRestartsTheTimeout() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hF\n".utf8))
+        for frame in 1...6 {
+            try await Task.sleep(for: .milliseconds(250))
+            harness.controller.pump(Data("%output %0 \\033[?2026l\\033[?2026hF\(frame)\n".utf8))
+        }
+        await drain(harness.controller)
+        try await Task.sleep(for: .milliseconds(100))
+        // One wake per frame, none from a timeout while the frames came.
+        XCTAssertEqual(wakes.count, 7)
+        try await waitUntil("the last hold didn't time out", timeout: .seconds(3)) { wakes.count == 8 }
+    }
+
+    /// A hold pending when the session shuts down is dropped with it.
+    func testAPendingRenderHoldEndsWithTheSession() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(200)
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hframe\n".utf8))
+        try await waitUntil("the held output didn't reach the pane") { wakes.count == 1 }
+        await shutDown(harness.controller)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 1)
+    }
+
     private struct ReadyControllerHarness {
         let runtime: GhosttyKitRuntime
         let controller: TmuxSessionController
@@ -1398,13 +1478,15 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         listWindowsBody: String,
         expectedPaneCount: Int,
         callbacks: TmuxSessionController.Callbacks = .init(),
-        zoomOwner: TmuxZoomOwner? = nil
+        zoomOwner: TmuxZoomOwner? = nil,
+        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout
     ) async throws -> ReadyControllerHarness {
         let harness = try await hydratingController(
             listWindowsBody: listWindowsBody,
             expectedPaneCount: expectedPaneCount,
             callbacks: callbacks,
-            zoomOwner: zoomOwner
+            zoomOwner: zoomOwner,
+            renderHoldTimeout: renderHoldTimeout
         )
         let hydrationEnd = harness.firstHydrationCommandNumber + harness.hydrationCommandCount
         let hydration = (harness.firstHydrationCommandNumber..<hydrationEnd)
@@ -1426,11 +1508,16 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         listWindowsBody: String,
         expectedPaneCount: Int,
         callbacks: TmuxSessionController.Callbacks = .init(),
-        zoomOwner: TmuxZoomOwner? = nil
+        zoomOwner: TmuxZoomOwner? = nil,
+        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout
     ) async throws -> HydratingControllerHarness {
         let runtime = try GhosttyKitRuntime()
         let recorder = ControllerOutboundRecorder()
-        let controller = TmuxSessionController(callbacks: callbacks, zoomOwner: zoomOwner)
+        let controller = TmuxSessionController(
+            callbacks: callbacks,
+            zoomOwner: zoomOwner,
+            renderHoldTimeout: renderHoldTimeout
+        )
         addTeardownBlock {
             await withCheckedContinuation { continuation in
                 controller.shutdown { continuation.resume() }
@@ -1706,6 +1793,22 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     ) -> String {
         "$42 @\(id) \(active ? 1 : 0) %\(paneID) 83 44 "
             + "\(layout) \(visibleLayout) \(name)\n"
+    }
+}
+
+/// Counts the controller's wakes of the active pane 0, delivered on the main queue.
+@MainActor
+private final class PaneWakeCounter {
+    private(set) var count = 0
+
+    var callbacks: TmuxSessionController.Callbacks {
+        var callbacks = TmuxSessionController.Callbacks()
+        callbacks.onActivePaneChanged = { [self] paneID in
+            MainActor.assumeIsolated {
+                if paneID == 0 { count += 1 }
+            }
+        }
+        return callbacks
     }
 }
 
