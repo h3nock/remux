@@ -50,6 +50,7 @@ final class TmuxScreenModel: ObservableObject {
     private var transportFailureObservation: AnyCancellable?
     private var presentationObservation: AnyCancellable?
     private var stopped = false
+    private var pendingTargetSelection: TmuxTargetSelection?
     private var initialViewport: TmuxControlViewport?
     private var lastSubmittedClientSize: TmuxSessionController.ClientSize?
     private var lastStableClientSize: TmuxSessionController.ClientSize?
@@ -370,9 +371,47 @@ final class TmuxScreenModel: ObservableObject {
 
     // MARK: Domain state reporting
 
+    /// Selects a link's window and pane once the session is attached. A
+    /// later call replaces a selection still waiting for attach.
+    func selectTarget(_ selection: TmuxTargetSelection) {
+        guard !stopped, let session else { return }
+        guard session.state == .ready else {
+            pendingTargetSelection = selection
+            return
+        }
+        resolveTarget(selection, in: session)
+    }
+
+    private func resolveTarget(_ selection: TmuxTargetSelection, in session: TmuxTerminalSession) {
+        pendingTargetSelection = nil
+        let adapter = terminalScreenAdapter
+        session.controller.requestResolveTarget(selection) { result in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    switch result {
+                    case .success(let target):
+                        adapter.focusResolvedTarget(target)
+                    case .failure(.sessionUnavailable):
+                        // The disconnect is already on screen.
+                        break
+                    case .failure(let error):
+                        adapter.presentCommandFailure(
+                            message: error.errorDescription ?? "tmux could not open that window or pane."
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private func handleSessionState(_ state: TmuxSessionController.SessionState) {
         if case .ready = state {
             pendingForegroundInactiveReason = nil
+            // `$state` publishes before the property changes, so resolve
+            // directly rather than through `selectTarget`'s state check.
+            if let selection = pendingTargetSelection, !stopped, let session {
+                resolveTarget(selection, in: session)
+            }
         }
         if case .detached = state,
            let reason = pendingForegroundInactiveReason {

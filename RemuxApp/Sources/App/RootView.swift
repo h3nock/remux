@@ -70,6 +70,17 @@ private struct RemuxRootContentView: View {
                 handleTailscaleSSHCheckEvent(event)
             }
         }
+        .onOpenURL { url in
+            Task { await model.handleOpenURL(url) }
+        }
+        .alert("Couldn’t Open Link", isPresented: Binding(
+            get: { model.deepLinkFailure != nil },
+            set: { if !$0 { model.dismissDeepLinkFailure() } }
+        )) {
+            Button("OK", role: .cancel, action: model.dismissDeepLinkFailure)
+        } message: {
+            Text(model.deepLinkFailure ?? "")
+        }
     }
 
     private var currentTailscaleSSHCheckRequest: Binding<TailscaleSSHCheckRequest?> {
@@ -1076,6 +1087,11 @@ private struct ConnectionLibraryView: View {
                             .accessibilityIdentifier("library.active-session.show")
                     }
                     .buttonStyle(.plain)
+                    .copyLinkContextMenu(RemuxDeepLink.sessionURL(
+                        server: session.target.server,
+                        locator: session.target.locator,
+                        among: snapshot.servers
+                    ))
                     .swipeActions(edge: .trailing) {
                         Button("Disconnect") {
                             disconnectActiveSession(session.id)
@@ -1123,6 +1139,11 @@ private struct ConnectionLibraryView: View {
                             .accessibilityIdentifier("library.session.resume")
                         }
                         .buttonStyle(.plain)
+                        .copyLinkContextMenu(RemuxDeepLink.sessionURL(
+                            server: server,
+                            locator: workspace.locator,
+                            among: snapshot.servers
+                        ))
                         .swipeActions(edge: .trailing) {
                             Button("Edit") {
                                 onEditWorkspace(server.id, workspace.id)
@@ -1308,6 +1329,7 @@ private struct ConnectionLibraryView: View {
     ) -> some View {
         ServerDetailView(
             server: server,
+            linkServers: snapshot.servers,
             workspaces: visibleWorkspaces(for: server.id),
             activeSessions: activeSessions.filter { $0.target.server.id == server.id },
             discovery: discoveries[server.id] ?? .idle,
@@ -1387,6 +1409,8 @@ private struct ServerDetailView: View {
     private static let maximumInlineAvailableSessionCount = 3
 
     let server: SavedServer
+    /// Every saved server, so links name this one unambiguously.
+    let linkServers: [SavedServer]
     let workspaces: [SavedWorkspace]
     let activeSessions: [ActiveTerminalSession]
     let discovery: ServerSessionDiscovery
@@ -1403,6 +1427,10 @@ private struct ServerDetailView: View {
 
     @State private var isReviewingHostKey = false
     @State private var showsAllWorkspaces = false
+
+    private func sessionLink(_ locator: SessionLocator) -> URL? {
+        RemuxDeepLink.sessionURL(server: server, locator: locator, among: linkServers)
+    }
 
     var body: some View {
         List {
@@ -1451,6 +1479,7 @@ private struct ServerDetailView: View {
                         .accessibilityIdentifier("library.session.resume")
                     }
                     .buttonStyle(.plain)
+                    .copyLinkContextMenu(sessionLink(workspace.locator))
                     .swipeActions(edge: .trailing) {
                         Button("Edit") {
                             onEditWorkspace(server.id, workspace.id)
@@ -1479,13 +1508,7 @@ private struct ServerDetailView: View {
                 }
 
                 ForEach(inlineAvailableSessions) { session in
-                    Button {
-                        onConnectAvailableSession(server.id, session.id.locator)
-                    } label: {
-                        AvailableServerSessionRow(session: session)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("library.server.available.session")
+                    availableSessionRow(session)
                 }
 
                 if discovery.isLoading || discovery.isIdle {
@@ -1584,6 +1607,17 @@ private struct ServerDetailView: View {
 
     private var inlineAvailableSessions: [AvailableSessionSwitcherItem] {
         Array(availableSessions.prefix(Self.maximumInlineAvailableSessionCount))
+    }
+
+    private func availableSessionRow(_ session: AvailableSessionSwitcherItem) -> some View {
+        Button {
+            onConnectAvailableSession(server.id, session.id.locator)
+        } label: {
+            AvailableServerSessionRow(session: session)
+        }
+        .buttonStyle(.plain)
+        .copyLinkContextMenu(session.link)
+        .accessibilityIdentifier("library.server.available.session")
     }
 
     /// At the top: nothing on the server can be checked until the key is reviewed. A key seen for the first
@@ -1690,6 +1724,7 @@ private struct ServerAvailableSessionsView: View {
                         AvailableServerSessionRow(session: session)
                     }
                     .buttonStyle(.plain)
+                    .copyLinkContextMenu(session.link)
                     .accessibilityIdentifier("library.server.available.result")
                 }
 
