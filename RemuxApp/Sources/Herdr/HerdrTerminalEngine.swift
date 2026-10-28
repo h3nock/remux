@@ -116,9 +116,9 @@ enum HerdrEngineUpdate: Sendable {
     case zoomAnswered(HerdrPaneZoomResult?, bootID: String, failure: HerdrCommandError?, reportsFailure: Bool, connection: UInt64)
     /// Herdr refused the show of the current view request `request`, for `reason`.
     case showRefused(request: UInt64, reason: String, connection: UInt64)
-    /// The frame on screen now was drawn against snapshot `projectionRevision` and shows these panes,
-    /// whose agents the user can see. Comes before that frame's layout.
-    case presented(bootID: String, projectionRevision: UInt64, paneIDs: Set<String>, connection: UInt64)
+    /// The frame on screen now was drawn against snapshot `projectionRevision`, shows these panes, whose
+    /// agents the user can see, and draws `focusedPaneID` focused. Comes before that frame's layout.
+    case presented(bootID: String, projectionRevision: UInt64, paneIDs: Set<String>, focusedPaneID: String?, connection: UInt64)
 }
 
 /// One connection's way into the engine, named by its owner's attempt. Once that connection ends or a
@@ -275,6 +275,7 @@ actor HerdrTerminalEngine {
         let bootID: String
         let projectionRevision: UInt64
         let paneIDs: Set<String>
+        let focusedPaneID: String?
     }
 
     /// A view request, as Herdr's client tracks an activation (`activation/model.rs`): a show, a move or a
@@ -1299,13 +1300,19 @@ actor HerdrTerminalEngine {
             borders = HerdrBorderLine.lines(in: surface)
             bordersMayHaveChanged = false
         }
-        let frame = PresentedFrame(bootID: surface.bootID, projectionRevision: surface.projectionRevision, paneIDs: listed)
+        let frame = PresentedFrame(
+            bootID: surface.bootID,
+            projectionRevision: surface.projectionRevision,
+            paneIDs: listed,
+            focusedPaneID: surface.panes.first(where: \.focused)?.paneID
+        )
         if frame != presentedFrame {
             presentedFrame = frame
             continuation.yield(.presented(
                 bootID: frame.bootID,
                 projectionRevision: frame.projectionRevision,
                 paneIDs: frame.paneIDs,
+                focusedPaneID: frame.focusedPaneID,
                 connection: connection
             ))
         }

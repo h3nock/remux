@@ -301,8 +301,11 @@ final class HerdrScreenModel {
     private(set) var layout: HerdrPaneLayout?
     /// The newest snapshot, kept across a reconnect until the new connection's first.
     private var snapshot: HerdrSnapshot?
-    /// The frame on screen: the connection and snapshot revision it was drawn against, and its panes.
-    private var presentedFrame: (connection: UInt64, bootID: String, projectionRevision: UInt64, paneIDs: Set<String>)?
+    /// The frame on screen: the connection and snapshot revision it was drawn against, its panes, and the
+    /// one it draws focused.
+    private var presentedFrame: (
+        connection: UInt64, bootID: String, projectionRevision: UInt64, paneIDs: Set<String>, focusedPaneID: String?
+    )?
     /// The session's agents as this phone shows them.
     let agents = HerdrAgentPresentation()
     /// Where to go once the session is shown, and the server boot its ids belong to.
@@ -798,10 +801,12 @@ final class HerdrScreenModel {
         return move.pane
     }
 
-    /// The pane the screen shows as the user's: `userPaneID` once it is drawn, else Herdr's focused pane.
+    /// The pane the screen shows as the user's: `userPaneID` once it is drawn, else the pane the frame on
+    /// screen draws focused. Herdr's snapshot names the pane it focuses before the frame showing it arrives,
+    /// so a tab the user leaves stays drawn and ready until the tab reached is.
     var screenPaneID: String? {
         guard let pane = userPaneID, layout?.panes.contains(where: { $0.paneID == pane && $0.hasTextArea }) == true
-        else { return focusedPaneID }
+        else { return presentedFrame?.focusedPaneID }
         return pane
     }
 
@@ -1877,11 +1882,13 @@ final class HerdrScreenModel {
                 }
             }
             reconcilePresentationActivity()
-        case .presented(let bootID, let projectionRevision, let paneIDs, let connection):
-            presentedFrame = (connection, bootID, projectionRevision, paneIDs)
+        case .presented(let bootID, let projectionRevision, let paneIDs, let focusedPaneID, let connection):
+            let refocused = focusedPaneID != presentedFrame?.focusedPaneID
+            presentedFrame = (connection, bootID, projectionRevision, paneIDs, focusedPaneID)
             acknowledgeShownAgents()
-            // Only what counts as seen follows it; the screen has nothing new to show.
-            return
+            // What counts as seen follows it; the screen has something new only for a pane drawn focused.
+            guard refocused else { return }
+            reconcilePresentationActivity()
         case .paneScroll(let scrolls):
             endSelections(movedBy: scrolls)
             paneScrolls = scrolls

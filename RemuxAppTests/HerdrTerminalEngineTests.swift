@@ -1344,7 +1344,7 @@ final class HerdrTerminalEngineTests: XCTestCase {
         let rest = await updates.drain()
         XCTAssertTrue(
             rest.allSatisfy {
-                if case .presented(_, _, ["P"], let connection) = $0 { connection == second.connection } else { false }
+                if case .presented(_, _, ["P"], _, let connection) = $0 { connection == second.connection } else { false }
             },
             "the same panes need no new terminals or layout: \(rest)"
         )
@@ -2344,7 +2344,7 @@ private final class UpdateLog {
         defer { self.iterator = iterator }
         guard let update = await iterator.next(isolation: #isolation) else { throw UpdateLogError.finished }
         switch update {
-        case .presented(let bootID, let revision, let paneIDs, _):
+        case .presented(let bootID, let revision, let paneIDs, _, _):
             presented.append((bootID, revision, paneIDs))
         case .started(let request, let kind, _, _):
             started.append((request, kind))
