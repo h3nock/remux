@@ -4314,6 +4314,34 @@ final class HerdrScreenModelTests: XCTestCase {
         }
     }
 
+    /// A pick of another tab keeps the tab left drawn and ready, with no loading screen, from when Herdr's
+    /// snapshot names the pane it focuses on the tab reached until the frame showing that tab arrives.
+    func testATabPickKeepsTheTabLeftOnScreenUntilTheTabReachedIsDrawn() async throws {
+        let harness = await makeHarness()
+        let session = try await shownTab(harness, secondTab: Self.secondTab)
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+        let shown = try XCTUnwrap(adapter.terminalInteractionProjection.selectedActiveLeafID)
+
+        XCTAssertTrue(harness.model.reveal(.tab("t2"), bootID: "boot"))
+        let step = try await nextWrite(session.bridge, from: &index) { write -> String? in
+            if case .command(let id, "tab.focus", _) = write { return id }
+            return nil
+        }
+        await session.bridge.serve(HerdrConnectionTests.reply(id: step, json: #"{"type":"ok"}"#))
+        await session.bridge.serve(Self.secondTabOnScreen(revision: 2, focusedPane: "w1:p3"))
+        try await harness.waitUntil("the snapshot didn't name the pane focused on the tab reached") {
+            harness.model.focusedPaneID == "w1:p3"
+        }
+        XCTAssertEqual(adapter.terminalScreenPresentationProjection.statusOverlay, .ready)
+        XCTAssertEqual(adapter.terminalInteractionProjection.selectedActiveLeafID, shown)
+
+        await session.bridge.serve(try harness.shownSurface(projection: 2, revision: 2, lines: ["three four"], panes: Self.drawn(Self.secondTab, focused: "w1:p3")))
+        try await harness.waitUntil("Herdr didn't show the tab reached") {
+            harness.model.screenPaneID == "w1:p3" && harness.model.stateTraceLabel == "shown"
+        }
+    }
+
     /// A tap on another pane whose program reads the mouse focuses it and clicks there, and the keys typed
     /// next go to it.
     func testKeysAfterATapClickGoToThePaneClicked() async throws {
