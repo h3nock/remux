@@ -4321,6 +4321,11 @@ final class HerdrScreenModelTests: XCTestCase {
         let session = try await shownTab(harness, secondTab: Self.secondTab)
         var index = session.next
         let adapter = harness.model.terminalScreenAdapter
+        let left = try XCTUnwrap(harness.model.screenPaneID)
+        try await harness.waitUntil("the tab left didn't draw") {
+            harness.model.presentation(ofPane: left) == .ready
+        }
+        XCTAssertEqual(adapter.terminalScreenPresentationProjection.statusOverlay, .ready)
         let shown = try XCTUnwrap(adapter.terminalInteractionProjection.selectedActiveLeafID)
 
         XCTAssertTrue(harness.model.reveal(.tab("t2"), bootID: "boot"))

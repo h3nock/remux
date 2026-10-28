@@ -1340,14 +1340,10 @@ final class HerdrTerminalEngineTests: XCTestCase {
         await second.receive(.surface(try Self.surface(revision: 1, lines: ["two"], panes: panes)))
         XCTAssertEqual(rows(of: renderer, columns: 3, rows: 1), ["two"])
         await engine.stop()
-        // Only the new connection's frame is reported as what the screen shows.
         let rest = await updates.drain()
-        XCTAssertTrue(
-            rest.allSatisfy {
-                if case .presented(_, _, ["P"], _, let connection) = $0 { connection == second.connection } else { false }
-            },
-            "the same panes need no new terminals or layout: \(rest)"
-        )
+        XCTAssertTrue(rest.isEmpty, "the same panes need no new terminals or layout: \(rest)")
+        // After the first connection's frame, only the new connection's is reported as what the screen shows.
+        XCTAssertEqual(updates.unreadPresented.map(\.connection), [first.connection, second.connection])
         XCTAssertEqual(layout.tab, nil)
     }
 
@@ -2257,7 +2253,11 @@ private final class UpdateLog {
     private var iterator: AsyncStream<HerdrEngineUpdate>.AsyncIterator
     /// Updates `next` hasn't returned yet, read while looking for another kind.
     private var held: [HerdrEngineUpdate] = []
-    private var presented: [(bootID: String, projectionRevision: UInt64, paneIDs: Set<String>)] = []
+    private var presented: [(bootID: String, projectionRevision: UInt64, paneIDs: Set<String>, connection: UInt64)] = []
+    /// The frames reported as presented that `nextPresented` hasn't returned, in order.
+    var unreadPresented: [(bootID: String, projectionRevision: UInt64, paneIDs: Set<String>, connection: UInt64)] {
+        presented
+    }
     /// Every request the engine started, in order, and how many `nextStarted` has returned.
     private(set) var started: [(request: UInt64, kind: HerdrViewKind)] = []
     private var startsRead = 0
@@ -2291,7 +2291,7 @@ private final class UpdateLog {
     }
 
     /// The next frame reported as presented.
-    func nextPresented() async throws -> (bootID: String, projectionRevision: UInt64, paneIDs: Set<String>) {
+    func nextPresented() async throws -> (bootID: String, projectionRevision: UInt64, paneIDs: Set<String>, connection: UInt64) {
         while presented.isEmpty {
             if let update = try await read() { held.append(update) }
         }
@@ -2344,8 +2344,8 @@ private final class UpdateLog {
         defer { self.iterator = iterator }
         guard let update = await iterator.next(isolation: #isolation) else { throw UpdateLogError.finished }
         switch update {
-        case .presented(let bootID, let revision, let paneIDs, _, _):
-            presented.append((bootID, revision, paneIDs))
+        case .presented(let bootID, let revision, let paneIDs, _, let connection):
+            presented.append((bootID, revision, paneIDs, connection))
         case .started(let request, let kind, _, _):
             started.append((request, kind))
         case .answered(let request, .focus, let failure, _):
