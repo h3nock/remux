@@ -617,7 +617,7 @@ final class HerdrScreenModel {
     }
 
     func activity(ofPane paneID: String) -> String {
-        snapshot?.activity(ofPane: paneID) ?? "terminal"
+        snapshot?.activity(ofPane: paneID) ?? ""
     }
 
     /// What the rename alert for `place` starts with (`HerdrSnapshot.renameField(for:)`).

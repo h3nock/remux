@@ -1775,6 +1775,53 @@ final class RemuxAppUITests: XCTestCase {
         captureLiveHerdrStep("6-scrolled", in: configuration)
     }
 
+    /// Uses an isolated Herdr fixture with ordinary shells, integration-reported agents and actual OSC
+    /// terminal titles. Tab labels stay independent of descriptions, which are shown without parsing.
+    func testLiveHerdrTabLabelsKeepSuppliedTitlesWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        app.buttons["terminal.windows"].firstMatch.tap()
+        XCTAssertTrue(app.otherElements["terminal.windows.sheet"].waitForExistence(timeout: 5))
+
+        func row(_ number: Int) -> XCUIElement {
+            app.buttons["terminal.window.tile.\(number)"].firstMatch
+        }
+        func description(_ number: Int) -> String {
+            row(number).value as? String ?? ""
+        }
+        for number in 1...6 {
+            XCTAssertTrue(row(number).waitForExistence(timeout: 5))
+        }
+        captureLiveHerdrStep("labels-initial", in: configuration)
+        XCTAssertTrue(row(1).label.components(separatedBy: ", ").contains("1"), "The unnamed tab lost Herdr's label.")
+        XCTAssertEqual(description(1), "api")
+        XCTAssertEqual(description(2), "codex-a | 01a18929-c0a9-7f41-9044-2b8f242ba070")
+        XCTAssertEqual(description(3), "Claude Code: Review")
+        XCTAssertTrue(row(4).label.components(separatedBy: ", ").contains("review"))
+        XCTAssertEqual(description(4), "", "The logo already identifies the agent; its name isn't a description.")
+        XCTAssertEqual(description(5), "Running tests")
+        XCTAssertEqual(description(6), "api")
+
+        // The fixture updates integration metadata along with OSC titles, publishing fresh snapshots.
+        // Updates while Tabs stays open must reach the same rows, including removal of a description.
+        _ = try performLiveHerdrStep("change-title", in: configuration)
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            description(3) == "Claude Code: Updated while open"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 10), .completed)
+        XCTAssertEqual(description(5), "Integration updated")
+        captureLiveHerdrStep("labels-updated", in: configuration)
+
+        _ = try performLiveHerdrStep("clear-description", in: configuration)
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            row(2).exists && description(2).isEmpty
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 10), .completed)
+        XCTAssertEqual(description(5), "Integration cleared test")
+        captureLiveHerdrStep("labels-cleared", in: configuration)
+    }
+
     /// Tabs and workspaces of a live Herdr session whose workspace `remux` has a three-pane tab and a tab
     /// `build`, beside workspaces `api` (a two-pane tab `server` and a tab `tests`), `web`, `notes` and
     /// `infra`, with a session `locked` Herdr can't reach. The Tabs sheet lists the tabs of the workspace

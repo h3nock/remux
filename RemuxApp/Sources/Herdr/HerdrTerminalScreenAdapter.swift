@@ -771,7 +771,7 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         model?.places.outline?.workspaces.flatMap(\.tabs).map(contents(of:)) ?? []
     }
 
-    /// A tab's row: its name if the user gave it one, what its focused pane runs in front of what up to two
+    /// A tab's row: Herdr's label (custom name or number), what its focused pane runs in front of what up to two
     /// of its other panes run, and what its focused pane is doing. Herdr names the focused pane only of the
     /// tab this phone is on, so another tab's row shows its most urgent agent's pane, else its first pane.
     private func contents(of tab: HerdrSessionOutline.Tab) -> GhosttyWindowSelectionSheetRenderProjection.Contents {
@@ -781,7 +781,7 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         let focused = tab.paneIDs.first { $0 == model?.focusedPaneID } ?? urgent ?? tab.paneIDs.first
         let shown = [focused].compactMap { $0 } + tab.paneIDs.filter { $0 != focused }.prefix(2)
         return GhosttyWindowSelectionSheetRenderProjection.Contents(
-            name: tab.hasCustomLabel ? tab.label : nil,
+            name: tab.label,
             programs: shown.map { model?.program(ofPane: $0) ?? .terminal },
             activity: focused.flatMap { model?.activity(ofPane: $0) } ?? ""
         )

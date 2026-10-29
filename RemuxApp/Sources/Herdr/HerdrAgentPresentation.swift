@@ -204,39 +204,13 @@ extension HerdrSnapshot.Agent {
         return Dictionary(uniqueKeysWithValues: names.flatMap { kind, names in names.map { ($0, kind) } })
     }()
 
-    /// What the agent says it is doing: its terminal title, from after a part that only names its kind, as
-    /// Codex titles itself "codex | " and then its thread, else the title its hooks report. Codex names its
-    /// session by its id until it names the thread, and an id says nothing of the work. Nothing in it ticks:
-    /// Herdr takes an agent's spinner off the title it sends (`terminal/title.rs`), and what Codex blinks
-    /// while it waits comes before its kind.
+    /// The terminal title Herdr supplies without its spinner, otherwise the integration-reported title.
+    /// Both are program-owned text: their contents are not a contract for Remux to parse.
     var activity: String? {
-        let kinds = [agent, kind, displayAgent].compactMap { $0 }.filter { !$0.isEmpty }
-        let shown = terminalTitleStripped.flatMap { title -> String? in
-            guard let rest = kinds.lazy.compactMap({ Self.remainder(of: title, after: $0) }).first else { return title }
-            return UUID(uuidString: rest) == nil ? rest : nil
-        }
-        return [shown, title].lazy
-            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty }
+        [terminalTitleStripped, title].lazy
+            .compactMap { $0 }
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
-
-    /// What follows `kind` and a separator in `title`, where `kind` starts the title or follows a separator,
-    /// as Codex puts "[ ! ] Action Required | " before "codex | " while it waits for the user.
-    private static func remainder(of title: String, after kind: String) -> String? {
-        var searched = title.startIndex..<title.endIndex
-        while let found = title.range(of: kind, options: .caseInsensitive, range: searched) {
-            searched = found.upperBound..<title.endIndex
-            let before = title[..<found.lowerBound].reversed().first { !$0.isWhitespace }
-            guard before.map(titleSeparators.contains) ?? true else { continue }
-            let rest = title[found.upperBound...].drop(while: \.isWhitespace)
-            guard let separator = rest.first, titleSeparators.contains(separator) else { continue }
-            let remainder = rest.dropFirst().trimmingCharacters(in: .whitespaces)
-            if !remainder.isEmpty { return remainder }
-        }
-        return nil
-    }
-
-    private static let titleSeparators: Set<Character> = ["|", ":", "-", "–", "—", "·"]
 }
 
 extension HerdrAgentStatus {

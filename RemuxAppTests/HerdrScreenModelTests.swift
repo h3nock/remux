@@ -6004,7 +6004,7 @@ final class HerdrScreenModelTests: XCTestCase {
         let windows = adapter.windowSelectionSheetRenderProjection(group: nil).windows
         XCTAssertEqual(windows.map(\.contents), [
             .init(name: "main", programs: [.terminal, .agent("claude")], activity: "app"),
-            .init(name: "t2", programs: [.agent("codex"), .terminal, .agent("opencode")], activity: "Review the diff"),
+            .init(name: "t2", programs: [.agent("codex"), .terminal, .agent("opencode")], activity: "codex | Review the diff"),
             .init(name: "t3", programs: [.terminal], activity: "server"),
         ])
         XCTAssertEqual(windows.map(\.rowAgentMark), [.spinner, .dot(.blocked), nil])
@@ -6019,10 +6019,9 @@ final class HerdrScreenModelTests: XCTestCase {
         }
     }
 
-    /// A tab Herdr names by its number shows only what its focused pane is doing, and a pane without a
-    /// name or a folder reads as a terminal. Another workspace's tab puts its agent's pane in front; an agent
-    /// saying nothing of what it does shows its name.
-    func testTheTabsSheetsRowsLeaveOutHerdrsNumbers() async throws {
+    /// Herdr's labels remain even without a custom-name flag, on and off the current workspace. A missing
+    /// pane description leaves only the tab label, with no duplicate program identity.
+    func testTheTabsSheetsRowsKeepHerdrsLabelsWithoutSynthesizingDescriptions() async throws {
         let harness = await makeHarness()
         let session = try await shownWorkspaces(harness, zoomingOnShow: false)
         await session.bridge.serve(Self.twoWorkspaces(revision: 2, customTabLabels: false, agents: [
@@ -6030,25 +6029,25 @@ final class HerdrScreenModelTests: XCTestCase {
             HerdrServerScript.snapshotAgent("w2:p7", title: "Plan the release", agent: "pi", workspace: "w2", tab: "t4"),
         ]))
         let adapter = harness.model.terminalScreenAdapter
-        try await harness.waitUntil("the tabs' names weren't left out") {
-            adapter.windowSelectionSheetRenderProjection(group: nil).windows.first?.contents?.name == nil
+        try await harness.waitUntil("the tabs' agent metadata wasn't projected") {
+            adapter.windowSelectionSheetRenderProjection(group: nil).windows.dropFirst().first?.contents?.programs.first
+                == .agent("claude")
         }
 
         XCTAssertEqual(adapter.windowSelectionSheetRenderProjection(group: nil).windows.map(\.contents), [
-            .init(name: nil, programs: [.terminal, .terminal], activity: "terminal"),
-            .init(name: nil, programs: [.agent("claude"), .terminal], activity: "claude-code"),
+            .init(name: "t1", programs: [.terminal, .terminal], activity: ""),
+            .init(name: "t2", programs: [.agent("claude"), .terminal], activity: ""),
         ])
         let beta = try XCTUnwrap(adapter.windowSelectionSheetRenderProjection(group: nil).grouping?.groups[1].id)
         XCTAssertEqual(adapter.windowSelectionSheetRenderProjection(group: beta).windows.map(\.contents), [
-            .init(name: nil, programs: [.terminal], activity: "terminal"),
-            .init(name: nil, programs: [.agent("pi"), .terminal], activity: "Plan the release"),
+            .init(name: "t3", programs: [.terminal], activity: ""),
+            .init(name: "t4", programs: [.agent("pi"), .terminal], activity: "Plan the release"),
         ])
     }
 
     /// A snapshot that changes what a tab's row says tells the views: an agent naming its thread anew, a shell
-    /// moving to another folder. One that changes only what ticks doesn't: Codex's spinner, which Herdr takes
-    /// off the title it sends, and what Codex blinks while it waits, which the row leaves out; nor does a new
-    /// title of an agent whose pane no row puts in front.
+    /// moving to another folder. Raw spinner changes that Herdr excludes from its stripped title do not
+    /// update the row, nor does a new title of an agent whose pane no row puts in front.
     func testATabsRowTellsTheViewsOnlyWhenWhatItSaysChanges() async throws {
         let harness = await makeHarness()
         let session = try await shownSession(harness)
@@ -6089,24 +6088,24 @@ final class HerdrScreenModelTests: XCTestCase {
         }
         await serve(2)
         try await harness.waitUntil("the tabs' rows weren't listed") {
-            activities() == ["app", "Review the diff", "Plan the release"]
+            activities() == ["app", "[ ! ] Action Required | codex | Review the diff", "codex | Plan the release"]
         }
 
         var screenChanges = 0
         let watch = adapter.objectWillChange.sink { screenChanges += 1 }
         defer { watch.cancel() }
-        await serve(3, claude: "Fix the flaky test", blink: ".", spinner: "⠙")
-        await serve(4, claude: "Fix the flaky test", blink: ".", thread: "Review the fix", spinner: "⠹")
+        await serve(3, claude: "Fix the flaky test", spinner: "⠙")
+        await serve(4, claude: "Fix the flaky test", thread: "Review the fix", spinner: "⠹")
         try await harness.waitUntil("the agent's new thread didn't reach its row") {
-            activities() == ["app", "Review the fix", "Plan the release"]
+            activities() == ["app", "[ ! ] Action Required | codex | Review the fix", "codex | Plan the release"]
         }
         XCTAssertEqual(screenChanges, 1, "a ticking title or a pane no row shows told the views")
 
         await serve(
-            5, folder: "docs", claude: "Fix the flaky test", blink: ".", thread: "Review the fix", spinner: "⠸"
+            5, folder: "docs", claude: "Fix the flaky test", thread: "Review the fix", spinner: "⠸"
         )
         try await harness.waitUntil("the shell's new folder didn't reach its row") {
-            activities() == ["docs", "Review the fix", "Plan the release"]
+            activities() == ["docs", "[ ! ] Action Required | codex | Review the fix", "codex | Plan the release"]
         }
         XCTAssertEqual(screenChanges, 2)
     }

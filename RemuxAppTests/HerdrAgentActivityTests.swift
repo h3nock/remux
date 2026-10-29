@@ -38,32 +38,21 @@ final class HerdrAgentActivityTests: XCTestCase {
         XCTAssertNil(try agent(agent: "  ").kind)
     }
 
-    /// The terminal title says what the agent is doing, without a lead that only repeats which agent it
-    /// is; a title that is only the agent's name stays whole.
-    func testAnAgentsActivityIsItsTitleWithoutItsKind() throws {
-        XCTAssertEqual(try agent(agent: "codex", terminalTitle: "codex | Fix the flaky test").activity, "Fix the flaky test")
-        XCTAssertEqual(try agent(agent: "codex", terminalTitle: "Codex - plan the release").activity, "plan the release")
-        XCTAssertEqual(
-            try agent(agent: "claude", displayAgent: "Claude Code", terminalTitle: "Claude Code: Review").activity,
-            "Review"
-        )
-        XCTAssertEqual(
-            try agent(agent: "codex", terminalTitle: "[ ! ] Action Required | codex | Create hello.txt").activity,
-            "Create hello.txt"
-        )
-        XCTAssertEqual(try agent(agent: "codex", terminalTitle: "codexify the build").activity, "codexify the build")
-        XCTAssertEqual(try agent(agent: "pi", terminalTitle: "Fix the api | pi docs").activity, "Fix the api | pi docs")
-        // Codex's title before it names the thread: its session's id.
-        XCTAssertNil(try agent(agent: "codex", terminalTitle: "codex | 01a18438-6b3c-7100-be3f-63285c8e6ca4").activity)
-        XCTAssertEqual(
-            try agent(agent: "codex", title: "Review", terminalTitle: "codex | 01a18438-6b3c-7100-be3f-63285c8e6ca4").activity,
-            "Review"
-        )
-        XCTAssertEqual(try agent(agent: "codex", terminalTitle: "codex |").activity, "codex |")
-        XCTAssertEqual(
-            try agent(agent: "claude", displayAgent: "Claude Code", terminalTitle: "Claude Code").activity,
-            "Claude Code"
-        )
+    /// A title's prefixes, project names and IDs belong to its program, across agent kinds.
+    func testAnAgentsSuppliedTitleIsNotParsed() throws {
+        let titles = [
+            ("codex", "codex | Fix the flaky test"),
+            ("codex", "codex-a | 01a18438-6b3c-7100-be3f-63285c8e6ca4"),
+            ("codex", "01a18438-6b3c-7100-be3f-63285c8e6ca4"),
+            ("claude", "Claude Code: Review"),
+            ("opencode", "opencode - Plan the release"),
+            ("my-agent", "my-agent | Review"),
+        ]
+        for (kind, title) in titles {
+            XCTAssertEqual(try agent(agent: kind, terminalTitle: title).activity, title)
+        }
+        let title = "codex | 01a18438-6b3c-7100-be3f-63285c8e6ca4"
+        XCTAssertEqual(try agent(agent: "codex", title: "Review", terminalTitle: title).activity, title)
     }
 
     /// Without a terminal title, the title the agent's hooks report; without either, nothing.
@@ -73,8 +62,8 @@ final class HerdrAgentActivityTests: XCTestCase {
         XCTAssertNil(try agent(agent: "pi").activity)
     }
 
-    /// A pane as the Tabs sheet's row says it: an agent by its kind, saying what it is doing, else its
-    /// name, and one Herdr can't name by its name; a pane without an agent by its name, else its folder's.
+    /// Program marks retain their identity when a description is absent. Descriptions come from supplied
+    /// titles, pane names or folders, never a synthesized agent or terminal name.
     func testAPaneSaysWhatItsAgentOrItsShellIsDoing() throws {
         let panes = [
             HerdrServerScript.snapshotPane("w1:p4", label: "logs"),
@@ -96,6 +85,7 @@ final class HerdrAgentActivityTests: XCTestCase {
             ids.map(snapshot.program(ofPane:)),
             [.agent("codex"), .agent("claude"), .agent("reviewer"), .terminal, .terminal, .terminal]
         )
-        XCTAssertEqual(ids.map(snapshot.activity(ofPane:)), ["Fix it", "claude-code", "reviewer", "logs", "web", "terminal"])
+        XCTAssertEqual(ids.map(snapshot.activity(ofPane:)), ["codex | Fix it", "", "", "logs", "web", ""])
+        XCTAssertEqual(snapshot.activity(ofPane: "missing"), "")
     }
 }

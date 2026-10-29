@@ -267,13 +267,13 @@ extension HerdrSnapshot {
         return .agent(agent.kind ?? agent.listName)
     }
 
-    /// What the pane is doing: what its agent says it is doing, else the agent's name; for a pane without
-    /// an agent, its name, else its folder's.
+    /// The description Herdr supplies: an agent's title, or a plain pane's name or folder.
+    /// Missing descriptions stay empty; the program's mark already identifies what is running.
     func activity(ofPane paneID: String) -> String {
-        if let agent = agents.first(where: { $0.paneID == paneID }) { return agent.activity ?? agent.listName }
-        guard let pane = panes.first(where: { $0.paneID == paneID }) else { return "terminal" }
+        if let agent = agents.first(where: { $0.paneID == paneID }) { return agent.activity ?? "" }
+        guard let pane = panes.first(where: { $0.paneID == paneID }) else { return "" }
         if let label = pane.label, !label.isEmpty { return label }
-        return (pane.foregroundCWD ?? pane.cwd).map { ($0 as NSString).lastPathComponent } ?? "terminal"
+        return (pane.foregroundCWD ?? pane.cwd).map { ($0 as NSString).lastPathComponent } ?? ""
     }
 
     /// What the rename alert for `place` starts with: its name, and Herdr's automatic name as the

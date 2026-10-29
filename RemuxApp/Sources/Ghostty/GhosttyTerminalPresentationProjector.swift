@@ -622,7 +622,7 @@ struct GhosttyWindowSelectionSheetRenderProjection: Equatable, Sendable {
 
     /// What a window holds, as its row in the sheet says it.
     struct Contents: Equatable, Sendable {
-        /// The window's name, when the user gave it one.
+        /// The window label to show before its activity.
         let name: String?
         /// What its focused pane runs, then what up to two of its other panes run.
         let programs: [TerminalProgram]
