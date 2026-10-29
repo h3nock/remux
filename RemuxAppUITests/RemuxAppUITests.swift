@@ -2535,6 +2535,167 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["terminal.windows.close"].tap()
     }
 
+    /// Herdr's popup on a live server, opened by a second Herdr client on the tab the phone shows, as from
+    /// a Mac: the phone shows it over the whole terminal area with its title, and its Tabs and Panes are
+    /// inert. Typing, the keyboard, the composer and the key row's Control go into it (the harness reads
+    /// them back from the other client's screen); the other client typing takes the popup's size, and the
+    /// phone's next key takes it back. Home and back lands on it; `exit` closes it and the panes come back. A
+    /// popup running Claude Code shows the same way, takes the phone's keys, and closes when Claude Code
+    /// exits. Screens in dark, then in Latte. The harness answers each `<step>.request` with `<step>.done`, and `<step>.out` for what
+    /// it read: `open-shell` and `open-claude` open the popups from the other client, `mac-types` types
+    /// there, `read` captures its screen, `end-claude` ends Claude Code (its first-run screens don't quit on
+    /// Control-C).
+    func testLiveHerdrPopupWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        let popup = app.descendants(matching: .any)["terminal.popup"].firstMatch
+        let popupContent = app.descendants(matching: .any)["terminal.popup.content"].firstMatch
+        let title = app.staticTexts["terminal.popup.title"].firstMatch
+        let tabs = app.buttons["terminal.windows"].firstMatch
+        let panes = app.buttons["terminal.panes"].firstMatch
+        func step(_ name: String) throws -> String {
+            try performLiveHerdrStep(name, in: configuration)
+        }
+        func typeIntoPopup(_ text: String) {
+            if !app.keyboards.firstMatch.exists {
+                popupContent.tap()
+                XCTAssertNotNil(waitForKeyboardPresence(true, label: "popup keyboard", timeout: 8))
+            }
+            app.typeText(text)
+        }
+        func hideKeyboard() {
+            guard app.keyboards.firstMatch.exists else { return }
+            app.buttons["terminal.keyboard"].tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "popup keyboard hide", timeout: 8))
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        }
+        func waitForScreen(containing text: String) throws -> Bool {
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline {
+                if try step("read").contains(text) { return true }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            }
+            return false
+        }
+        func assertNavigationHeld(_ held: Bool, _ context: String) {
+            XCTAssertEqual(tabs.isEnabled, !held, "Tabs \(held ? "worked" : "stayed held") \(context).")
+            XCTAssertEqual(panes.isEnabled, !held, "Panes \(held ? "worked" : "stayed held") \(context).")
+        }
+
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        assertNavigationHeld(false, "before any popup")
+
+        // Opened from the other client, whose typing then gives the popup its size: the phone shows its
+        // share of that grid.
+        _ = try step("open-shell")
+        XCTAssertTrue(popup.waitForExistence(timeout: 15), "The popup opened on the tab on screen didn't show.")
+        XCTAssertEqual(title.label, "popup")
+        assertNavigationHeld(true, "under the popup")
+        _ = try step("mac-types")
+        XCTAssertTrue(try waitForScreen(containing: "typed-on-mac"), "The other client's typing didn't reach the popup.")
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        captureLiveHerdrStep("p1-popup-dark-mac-size", in: configuration)
+
+        // The phone's keys go into the popup, and take its size.
+        typeIntoPopup("echo typed-on-phone\n")
+        XCTAssertTrue(try waitForScreen(containing: "typed-on-phone"), "Typing on the phone didn't reach the popup.")
+        hideKeyboard()
+        captureLiveHerdrStep("p2-popup-dark-phone-size", in: configuration)
+
+        // The composer's message goes into the popup.
+        app.buttons["terminal.composer.toggle"].tap()
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        composerField.tap()
+        composerField.typeText("echo from-the-composer")
+        app.buttons["terminal.composer.send"].tap()
+        XCTAssertTrue(try waitForScreen(containing: "from-the-composer"), "The composer's message didn't reach the popup.")
+        if app.buttons["terminal.composer.toggle"].exists, composerField.exists {
+            app.buttons["terminal.composer.toggle"].tap()
+        }
+        hideKeyboard()
+
+        // The key row's Control goes into the popup too: Control-C stops the shell's program, so the next
+        // command runs.
+        let control = app.buttons.matching(identifier: "terminal.toolbar-key.0").firstMatch
+        XCTAssertEqual(control.label, "Control")
+        typeIntoPopup("sleep 600\n")
+        control.tap()
+        app.typeText("c")
+        app.typeText("echo stopped-$((40+2))\n")
+        XCTAssertTrue(try waitForScreen(containing: "stopped-42"), "The key row's Control-C didn't reach the popup.")
+        hideKeyboard()
+
+        // Home and back lands on the popup, which kept running.
+        openHomeFromTerminal()
+        let activeSession = app.descendants(matching: .any)["library.active-session.show"].firstMatch
+        XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
+        activeSession.tap()
+        XCTAssertTrue(popup.waitForExistence(timeout: 20), "Coming back didn't land on the popup.")
+        assertNavigationHeld(true, "back on the popup")
+        captureLiveHerdrStep("p3-popup-dark-back", in: configuration)
+
+        // Latte, the light theme, while the popup is open.
+        openHomeFromTerminal()
+        app.buttons["library.settings"].tap()
+        XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 5))
+        app.buttons["Latte"].tap()
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
+        activeSession.tap()
+        XCTAssertTrue(popup.waitForExistence(timeout: 20))
+        typeIntoPopup("clear\n")
+        hideKeyboard()
+        captureLiveHerdrStep("p4-popup-light-phone-size", in: configuration)
+        _ = try step("mac-types")
+        XCTAssertTrue(try waitForScreen(containing: "typed-on-mac"), "The other client's typing didn't reach the popup.")
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        captureLiveHerdrStep("p5-popup-light-mac-size", in: configuration)
+
+        // The popup's program exits, and the panes come back with Tabs and Panes.
+        typeIntoPopup("exit\n")
+        XCTAssertTrue(popup.waitForNonExistence(timeout: 15), "The popup stayed after its program exited.")
+        hideKeyboard()
+        assertNavigationHeld(false, "once the popup closed")
+        captureLiveHerdrStep("p6-popup-closed", in: configuration)
+
+        // Claude Code in a popup, light; the phone's Enter takes its first-run screen to the next.
+        _ = try step("open-claude")
+        XCTAssertTrue(popup.waitForExistence(timeout: 15), "The Claude Code popup didn't show.")
+        RunLoop.current.run(until: Date().addingTimeInterval(6))
+        captureLiveHerdrStep("p7-popup-light-claude", in: configuration)
+        let before = try step("read")
+        typeIntoPopup("\n")
+        hideKeyboard()
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        XCTAssertNotEqual(try step("read"), before, "The phone's key didn't reach Claude Code.")
+        captureLiveHerdrStep("p8-popup-light-claude-key", in: configuration)
+
+        // Claude Code exits, and its popup closes.
+        _ = try step("end-claude")
+        XCTAssertTrue(popup.waitForNonExistence(timeout: 15), "The Claude Code popup stayed after it exited.")
+        assertNavigationHeld(false, "once Claude Code's popup closed")
+    }
+
+    /// Asks the harness for `step` and waits for it to answer; returns what it wrote for the step.
+    private func performLiveHerdrStep(_ step: String, in configuration: LiveHerdrConfiguration) throws -> String {
+        let directory = URL(fileURLWithPath: try XCTUnwrap(configuration.stepDirectory))
+        let done = directory.appendingPathComponent("\(step).done")
+        try? FileManager.default.removeItem(at: done)
+        try requestLiveHerdrStep(step, in: configuration)
+        let deadline = Date().addingTimeInterval(20)
+        while !FileManager.default.fileExists(atPath: done.path) {
+            guard Date() < deadline else {
+                XCTFail("The harness didn't answer step \(step).")
+                return ""
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        let output = (try? String(contentsOf: directory.appendingPathComponent("\(step).out"), encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(at: done)
+        return output
+    }
+
     private func waitForLabel(of element: XCUIElement, _ label: String, timeout: TimeInterval) -> Bool {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", label),
