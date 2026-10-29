@@ -512,6 +512,17 @@ struct GhosttyTerminalViewportPresentationProjection: Equatable {
         windowCount: 0
     )
 
+    /// A popup the backend shows over the whole terminal area, which takes the terminal's input meanwhile.
+    struct Popup: Equatable, Sendable {
+        /// Its surface, in the screen's surface lookup.
+        let id: UUID
+        let title: String
+        let columns: UInt32
+        let rows: UInt32
+        /// The cell its renderer draws, once it has one: the grid fills `columns` × `rows` of it.
+        let cell: GhosttyTerminalCellDisplayMetrics?
+    }
+
     let windowGrid: GhosttyTerminalGridSize?
     let cellMetrics: GhosttyTerminalCellDisplayMetrics?
     let panes: [Pane]
@@ -520,6 +531,7 @@ struct GhosttyTerminalViewportPresentationProjection: Equatable {
     let focusedSurfaceID: UUID?
     let isServerZoomed: Bool
     let windowCount: Int
+    var popup: Popup? = nil
 
     var canNavigateWindows: Bool {
         windowCount > 1

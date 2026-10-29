@@ -3681,8 +3681,8 @@ final class HerdrScreenModelTests: XCTestCase {
     }
 
     /// A composed message that can't go isn't sent, and the composer says so itself: over Herdr's byte
-    /// limit, to a pane no longer on the tab, while a popup is open over the tab, or while the session is
-    /// hidden. Herdr would refuse the first and drop the others without a word, still answering pings.
+    /// limit, to a pane no longer on the tab, or while the session is hidden. Herdr would refuse the first
+    /// and drop the others without a word, still answering pings.
     func testAComposedMessageThatCantGoIsNotSent() async throws {
         let harness = await makeHarness()
         let session = try await shownSession(harness)
@@ -3694,19 +3694,6 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertFalse(oversized)
         let elsewhere = await adapter.sendPasteAwaitingCommandCompletion("x", to: UUID())
         XCTAssertFalse(elsewhere)
-        await session.bridge.serve(HerdrServerScript.surface(
-            projection: 1,
-            revision: 3,
-            lines: ["one two"],
-            panes: [
-                .init(id: "w1:p1", x: 0, width: 3, height: 1, focused: true),
-                .init(id: "w1:p2", x: 4, width: 3, height: 1),
-            ],
-            popup: "popup-terminal"
-        ))
-        try await harness.waitUntil("the popup wasn't seen") { harness.model.layout?.hasPopup == true }
-        let underPopup = await adapter.sendPasteAwaitingCommandCompletion("x", to: pane)
-        XCTAssertFalse(underPopup)
         harness.model.setSelected(false)
         let hidden = await adapter.sendPasteAwaitingCommandCompletion("x", to: pane)
         XCTAssertFalse(hidden)

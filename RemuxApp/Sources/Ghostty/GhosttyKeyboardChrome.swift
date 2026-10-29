@@ -149,6 +149,9 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let selectedWindowIndex: Int?
     let windowCount: Int
     let paneCount: Int
+    /// A popup holds the tab on screen: its tabs and panes are inert until it closes, as Herdr's client
+    /// keeps its tab bar visible but inert under a popup.
+    let isNavigationHeldByPopup: Bool
     let isComposerPresented: Bool
     let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
@@ -226,10 +229,10 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: windowAccessibilityLabel,
-                    accessibilityHint: windowDetail,
+                    accessibilityHint: navigation.tabsHint,
                     accessibilityIdentifier: "terminal.windows",
                     isActive: false,
-                    isEnabled: isEnabled && !isInteractionLocked && windowCount > 0,
+                    isEnabled: navigation.isTabsEnabled,
                     action: onShowWindows
                 )
 
@@ -240,10 +243,10 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: paneAccessibilityLabel,
-                    accessibilityHint: paneDetail,
+                    accessibilityHint: navigation.panesHint,
                     accessibilityIdentifier: "terminal.panes",
                     isActive: false,
-                    isEnabled: isEnabled && !isInteractionLocked && paneCount > 0,
+                    isEnabled: navigation.isPanesEnabled,
                     action: onShowPanes
                 )
             }
@@ -382,8 +385,13 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             : GhosttyKeyboardChromeSizing.dockButtonWidth
     }
 
-    private var windowDetail: String? {
-        windowCount > 1 ? "switch or create" : "create"
+    private var navigation: GhosttyKeyboardChromeNavigation {
+        GhosttyKeyboardChromeNavigation(
+            isEnabled: isEnabled && !isInteractionLocked,
+            isHeldByPopup: isNavigationHeldByPopup,
+            windowCount: windowCount,
+            paneCount: paneCount
+        )
     }
 
     private var windowAccessibilityLabel: String {
@@ -396,9 +404,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         return "\(displayIndex(selectedWindowIndex, count: windowCount))"
     }
 
-    private var paneDetail: String? {
-        paneCount > 1 ? "switch or split" : "split or stack"
-    }
 
     private var paneBadge: String? {
         guard paneCount > 1 else { return nil }
@@ -412,6 +417,25 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     private func displayIndex(_ index: Int?, count: Int) -> Int {
         min(max((index ?? 0) + 1, 1), max(count, 1))
+    }
+}
+
+/// Whether the toolbar's Tabs and Panes buttons work, and what each says it does.
+struct GhosttyKeyboardChromeNavigation: Equatable {
+    let isTabsEnabled: Bool
+    let isPanesEnabled: Bool
+    let tabsHint: String
+    let panesHint: String
+
+    static let heldByPopupHint = "Unavailable while a popup is open."
+
+    /// `isEnabled`: the terminal takes input and nothing holds the chrome. A popup over the tab holds both
+    /// buttons, which stay visible, dimmed and say why.
+    init(isEnabled: Bool, isHeldByPopup: Bool, windowCount: Int, paneCount: Int) {
+        isTabsEnabled = isEnabled && !isHeldByPopup && windowCount > 0
+        isPanesEnabled = isEnabled && !isHeldByPopup && paneCount > 0
+        tabsHint = isHeldByPopup ? Self.heldByPopupHint : windowCount > 1 ? "switch or create" : "create"
+        panesHint = isHeldByPopup ? Self.heldByPopupHint : paneCount > 1 ? "switch or split" : "split or stack"
     }
 }
 

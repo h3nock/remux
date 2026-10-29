@@ -61,9 +61,12 @@ struct HerdrPaneImages {
         var placements: [Placement] = []
         var kept: Set<HerdrGraphicsAssetKey> = []
 
+        /// No images, as the popup's terminal shows: its images aren't drawn.
+        init() {}
+
         /// The pane's part of the frame's scene. A placement that doesn't lie inside the pane's text
         /// area isn't drawn, so it can't cover another pane; Herdr crops them all to it. Popup images
-        /// are left out with the popup.
+        /// are left out.
         init(_ scene: HerdrGraphicsScene, pane: HerdrSurfacePane) {
             func isPane(_ key: HerdrGraphicsAssetKey) -> Bool {
                 guard case .terminal(.pane(let paneID), _) = key.source else { return false }

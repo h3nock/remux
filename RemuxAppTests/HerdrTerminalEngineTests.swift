@@ -1178,8 +1178,11 @@ final class HerdrTerminalEngineTests: XCTestCase {
             for update in await updates.drain() {
                 switch update {
                 case .paneTerminal(let paneID, let terminal): terminals[paneID] = terminal
-                case .paneTerminalFailed, .rendererWakeFailed, .failed: XCTFail("\(fixture.name): \(update)")
-                case .layout, .paneScroll, .started, .activated, .timedOut, .answered, .zoomAnswered, .showRefused, .presented: break
+                case .paneTerminalFailed, .rendererWakeFailed, .popupTerminalFailed, .popupRendererWakeFailed, .failed:
+                    XCTFail("\(fixture.name): \(update)")
+                case .layout, .paneScroll, .started, .activated, .timedOut, .answered, .zoomAnswered, .showRefused, .presented,
+                     .popupTerminal:
+                    break
                 }
             }
             for pane in surface.panes where pane.innerRect.width > 0 && pane.innerRect.height > 0 {

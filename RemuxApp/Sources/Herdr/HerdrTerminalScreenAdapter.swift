@@ -28,6 +28,8 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
     private var tabIDsBySurfaceID: [UUID: String] = [:]
     private var workspaceGroupIDs: [String: UUID] = [:]
     private var workspaceIDsByGroupID: [UUID: String] = [:]
+    /// One id per popup terminal, as for a pane.
+    private var popupSurfaceIDs: [String: UUID] = [:]
 
     func attach(to model: HerdrScreenModel) {
         self.model = model
@@ -49,6 +51,7 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
         tabIDsBySurfaceID.removeAll()
         workspaceGroupIDs.removeAll()
         workspaceIDsByGroupID.removeAll()
+        popupSurfaceIDs.removeAll()
         objectWillChange.send()
     }
 
@@ -59,6 +62,13 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
         let id = UUID()
         paneSurfaceIDs[paneID] = id
         paneIDsBySurfaceID[id] = paneID
+        return id
+    }
+
+    private func surfaceID(forPopup terminalID: String) -> UUID {
+        if let id = popupSurfaceIDs[terminalID] { return id }
+        let id = UUID()
+        popupSurfaceIDs[terminalID] = id
         return id
     }
 
@@ -195,7 +205,16 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
             paneLines: layout.borders.map { Self.paneLine($0, colors: model.terminalColors) },
             focusedSurfaceID: presentedSurfaceID,
             isServerZoomed: zoomed,
-            windowCount: workspaceOnScreen?.tabs.count ?? 1
+            windowCount: workspaceOnScreen?.tabs.count ?? 1,
+            popup: layout.popup.map { popup in
+                GhosttyTerminalViewportPresentationProjection.Popup(
+                    id: surfaceID(forPopup: popup.terminalID),
+                    title: popup.title,
+                    columns: UInt32(popup.columns),
+                    rows: UInt32(popup.rows),
+                    cell: model.popupSurface.flatMap { $0.terminalID == popup.terminalID ? $0.fit.cell : nil }
+                )
+            }
         )
     }
 
@@ -231,7 +250,15 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
         _ = surface.screenSurface(id: surfaceID(forPane: surface.paneID))
     }
 
+    func makeScreenSurface(forPopup surface: HerdrPopupTerminalSurface) {
+        _ = surface.screenSurface(id: surfaceID(forPopup: surface.terminalID))
+    }
+
     private func managedSurface(for id: UUID) -> GhosttyManagedSurface? {
+        if let popup = model?.popupSurface, popupSurfaceIDs[popup.terminalID] == id,
+           model?.layout?.popup?.terminalID == popup.terminalID {
+            return popup.renderer.managedSurface
+        }
         guard let paneID = paneID(for: id) else { return nil }
         return model?.paneSurface(paneID)?.renderer.managedSurface
     }
@@ -245,6 +272,10 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func setViewportStabilityHint(stable: Bool) {}
+
+    func preparePopupArea(size: CGSize, scale: CGFloat) {
+        model?.preparePopupArea(size: size, scale: scale)
+    }
 
     /// The session reads as ready once its connection is ready and its focused pane is presented, so the
     /// root sees it connect.
@@ -437,9 +468,10 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     /// The screen's tiles, swipes and sheet buttons pick from what it draws: the layout on screen, and the
     /// session's outline only while it has the layout's server boot (`workspaceOnScreen`). So each pick goes
-    /// only on that boot, through the model's one way to ask something of the session.
+    /// only on that boot, through the model's one way to ask something of the session. None goes while a
+    /// popup is open over the tab, as Herdr's client keeps its tabs and panes inert under a popup.
     private func ask(_ request: HerdrRequest) -> Bool {
-        guard let model, let layout = model.layout else { return false }
+        guard let model, let layout = model.layout, !layout.hasPopup else { return false }
         return model.ask(request, bootID: layout.bootID)
     }
 
@@ -493,7 +525,10 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func setFocusedPaneZoomed(_ zoomed: Bool) -> GhosttyTerminalActionOutcome {
-        model?.setFocusedPaneZoomed(zoomed) == true ? .queued : .missingTarget(.focusedPane)
+        guard model?.layout?.hasPopup == false, model?.setFocusedPaneZoomed(zoomed) == true else {
+            return .missingTarget(.focusedPane)
+        }
+        return .queued
     }
 
     func closePane(_ id: UUID) -> GhosttyTerminalActionOutcome {

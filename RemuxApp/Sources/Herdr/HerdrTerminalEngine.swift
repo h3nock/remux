@@ -22,6 +22,18 @@ struct HerdrPaneLayout: Equatable, Sendable {
         let zoomed: Bool
     }
 
+    /// The session's popup, which Herdr sends only to a client on the tab it was opened on. Its grid is
+    /// the one Herdr gives this client (`popup_size.rs`): its command's cells or percentage of the
+    /// client's area, else half of it each way. The popup's program runs at the grid of the client that
+    /// last used the tab, and a client sized otherwise gets as much of that as its own grid holds.
+    struct Popup: Equatable, Sendable {
+        let terminalID: String
+        /// Its terminal's name in Herdr, else "popup", as Herdr's client titles the popup's box.
+        let title: String
+        let columns: UInt16
+        let rows: UInt16
+    }
+
     let bootID: String
     let tab: Tab?
     let columns: UInt16
@@ -30,8 +42,18 @@ struct HerdrPaneLayout: Equatable, Sendable {
     let panes: [Pane]
     /// The lines Herdr draws around and between the panes, which the crop leaves out of the panes.
     let borders: [HerdrBorderLine]
-    /// Whether a popup is open over the tab. It takes the tab's input meanwhile.
-    let hasPopup: Bool
+    /// The popup open over the tab. It takes the tab's input meanwhile: Herdr drops pane input from a
+    /// client on that tab.
+    let popup: Popup?
+
+    var hasPopup: Bool { popup != nil }
+}
+
+/// A terminal the engine paints from Herdr's frame: a pane's text area, or the popup's whole frame.
+enum HerdrTerminalTarget: Hashable, Sendable {
+    case pane(String)
+    /// The popup's terminal, by Herdr's terminal id.
+    case popup(String)
 }
 
 /// Where a pane's history viewport is and what its program asks of the mouse, from Herdr's surface.
@@ -84,7 +106,7 @@ enum HerdrEngineUpdate: Sendable {
     /// `HerdrPaneRendererFence`. It replaces an earlier terminal for the same pane, whose renderer the
     /// owner closes.
     case paneTerminal(paneID: String, terminal: HerdrRetainedTerminal)
-    /// Follows the terminals of the new panes it lists.
+    /// Follows the terminals of the new panes and popup it lists.
     case layout(HerdrPaneLayout)
     /// Each listed pane's scrolling, whenever any of it changed. Kept out of the layout because the
     /// history grows with every line a program prints.
@@ -94,6 +116,14 @@ enum HerdrEngineUpdate: Sendable {
     case paneTerminalFailed(paneID: String)
     /// Waking the pane's renderer failed and its registration is dropped, as for a tmux pane.
     case rendererWakeFailed(paneID: String)
+    /// As `paneTerminal`, for the popup open over the tab, whose renderer the owner creates with a
+    /// `HerdrPaneRendererFence` for `.popup(terminalID)`. It comes before the layout listing the popup.
+    case popupTerminal(terminalID: String, terminal: HerdrRetainedTerminal)
+    /// As `paneTerminalFailed`, for the popup: it isn't painted again until it closes or a new
+    /// connection begins.
+    case popupTerminalFailed(terminalID: String)
+    /// As `rendererWakeFailed`, for the popup's renderer.
+    case popupRendererWakeFailed(terminalID: String)
     /// A surface Remux can't index came over `connection`. Nothing more of it is painted; the owner
     /// ends that connection.
     case failed(HerdrConnectionError, connection: UInt64)
@@ -438,18 +468,19 @@ actor HerdrTerminalEngine {
         var data: [UInt8] = []
     }
 
-    /// Makes a pane's producer for a terminal of the given columns and rows.
+    /// Makes a producer for a terminal of the given columns and rows.
     typealias ProducerFactory = @Sendable (_ columns: UInt16, _ rows: UInt16) throws -> any HerdrPaneProducing
 
-    private struct Pane {
+    /// One terminal the engine paints, a pane's or the popup's.
+    private struct Painting {
         let producer: any HerdrPaneProducing
         /// The terminal handed to the owner; a renderer registers only over this one.
         let terminal: HerdrRetainedTerminal
         /// What the terminal shows: the last paint Ghostty accepted.
         var painted: HerdrPanePainter.Painted
-        /// Herdr's pane as of that paint.
-        var content: HerdrPaneContent
-        /// The images the terminal holds and shows, as of that paint.
+        /// Herdr's pane as of that paint; nil for the popup, whose history Remux doesn't read.
+        var content: HerdrPaneContent?
+        /// The images the terminal holds and shows, as of that paint. The popup's images aren't drawn.
         var images: HerdrPaneImages
         var renderer: HerdrRendererSurface?
     }
@@ -462,9 +493,9 @@ actor HerdrTerminalEngine {
     /// Kept across connections: its keys name their bytes, and each scene keeps only what Herdr counts
     /// as delivered.
     private var images = HerdrImageStore()
-    private var panes: [String: Pane] = [:]
-    /// Listed panes whose terminal Ghostty couldn't make or paint, until the next connection.
-    private var failedPaneIDs: Set<String> = []
+    private var terminals: [HerdrTerminalTarget: Painting] = [:]
+    /// Listed terminals Ghostty couldn't make or paint, until the next connection.
+    private var failedTerminals: Set<HerdrTerminalTarget> = []
     private var bootID: String?
     private var paintedSurface: PaintedSurface?
     private var presentedFrame: PresentedFrame?
@@ -531,7 +562,7 @@ actor HerdrTerminalEngine {
         paintedSurface = nil
         presentedFrame = nil
         request = nil
-        failedPaneIDs.removeAll()
+        failedTerminals.removeAll()
         return feed
     }
 
@@ -1225,7 +1256,7 @@ actor HerdrTerminalEngine {
 
     /// What `paneID`'s terminal shows of Herdr's pane; nil while it has no terminal.
     func content(ofPane paneID: String) -> HerdrPaneContent? {
-        panes[paneID]?.content
+        terminals[.pane(paneID)]?.content
     }
 
     /// A new cell size, from the screen's font or scale: the terminals keep their grids.
@@ -1235,19 +1266,19 @@ actor HerdrTerminalEngine {
         else { return }
         cellWidthPx = widthPx
         cellHeightPx = heightPx
-        for (paneID, var pane) in panes {
-            let result = pane.producer.resize(
-                columns: pane.painted.area.width,
-                rows: pane.painted.area.height,
+        for (target, var painting) in terminals {
+            let result = painting.producer.resize(
+                columns: painting.painted.area.width,
+                rows: painting.painted.area.height,
                 cellWidthPx: widthPx,
                 cellHeightPx: heightPx
             )
             guard result == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK else {
-                fail(paneID: paneID)
+                fail(target)
                 continue
             }
-            wake(&pane, paneID: paneID)
-            panes[paneID] = pane
+            wake(&painting, target: target)
+            terminals[target] = painting
         }
     }
 
@@ -1257,8 +1288,8 @@ actor HerdrTerminalEngine {
         guard state != .stopped else { return }
         state = .stopped
         endRequests()
-        panes.removeAll()
-        failedPaneIDs.removeAll()
+        terminals.removeAll()
+        failedTerminals.removeAll()
         continuation.finish()
     }
 
@@ -1278,9 +1309,9 @@ actor HerdrTerminalEngine {
     private func draw(_ surface: HerdrPaneSurfaceFrame, snapshot: HerdrSnapshot) {
         paintedSurface = PaintedSurface(of: surface)
         if surface.bootID != bootID {
-            // Pane ids belong to one server boot.
-            panes.removeAll()
-            failedPaneIDs.removeAll()
+            // Pane and terminal ids belong to one server boot.
+            terminals.removeAll()
+            failedTerminals.removeAll()
             bootID = surface.bootID
         }
         let cursor = HerdrPanePainter.paneCursor(of: surface)
@@ -1289,12 +1320,24 @@ actor HerdrTerminalEngine {
                 HerdrPanePainter.Painted(frame: surface.frame, area: pane.innerRect, cursor: cursor),
                 content: HerdrPaneContent(of: pane),
                 images: HerdrPaneImages.Scene(surface.graphics, pane: pane),
-                paneID: pane.paneID
+                target: .pane(pane.paneID)
+            )
+        }
+        // The popup's terminal shows its whole frame, which is the popup's text area.
+        if let popup = surface.popup {
+            let whole = HerdrSurfaceRect(x: 0, y: 0, width: popup.frame.width, height: popup.frame.height)
+            paint(
+                HerdrPanePainter.Painted(frame: popup.frame, area: whole, cursor: popup.frame.cursor),
+                content: nil,
+                images: HerdrPaneImages.Scene(),
+                target: .popup(popup.terminalID)
             )
         }
         let listed = Set(surface.panes.map(\.paneID))
-        panes = panes.filter { listed.contains($0.key) }
-        failedPaneIDs.formIntersection(listed)
+        var shown = Set(listed.map(HerdrTerminalTarget.pane))
+        if let popup = surface.popup { shown.insert(.popup(popup.terminalID)) }
+        terminals = terminals.filter { shown.contains($0.key) }
+        failedTerminals.formIntersection(shown)
         if bordersMayHaveChanged {
             borders = HerdrBorderLine.lines(in: surface)
             bordersMayHaveChanged = false
@@ -1315,57 +1358,57 @@ actor HerdrTerminalEngine {
 
     private func paint(
         _ next: HerdrPanePainter.Painted,
-        content: HerdrPaneContent,
+        content: HerdrPaneContent?,
         images scene: HerdrPaneImages.Scene,
-        paneID: String
+        target: HerdrTerminalTarget
     ) {
         let area = next.area
         guard area.width > 0, area.height > 0 else {
             // A pane with no text area has no terminal; it gets a new one when it has room again.
-            panes.removeValue(forKey: paneID)
-            failedPaneIDs.remove(paneID)
+            terminals.removeValue(forKey: target)
+            failedTerminals.remove(target)
             return
         }
-        guard !failedPaneIDs.contains(paneID) else { return }
-        guard var pane = panes[paneID] else {
-            createPane(paneID: paneID, painted: next, content: content, images: scene)
+        guard !failedTerminals.contains(target) else { return }
+        guard var painting = terminals[target] else {
+            create(target, painted: next, content: content, images: scene)
             return
         }
         let result: ghostty_terminal_producer_result_e
-        if pane.painted.area.width == area.width, pane.painted.area.height == area.height {
-            let bytes = HerdrPanePainter.update(from: pane.painted, to: next)
-                + pane.images.update(to: scene, from: images)
+        if painting.painted.area.width == area.width, painting.painted.area.height == area.height {
+            let bytes = HerdrPanePainter.update(from: painting.painted, to: next)
+                + painting.images.update(to: scene, from: images)
             guard !bytes.isEmpty else {
-                pane.painted = next
-                pane.content = content
-                panes[paneID] = pane
+                painting.painted = next
+                painting.content = content
+                terminals[target] = painting
                 return
             }
-            result = pane.producer.feed(bytes)
+            result = painting.producer.feed(bytes)
         } else {
-            pane.images.terminalResized()
-            result = pane.producer.resizeAndFeed(
+            painting.images.terminalResized()
+            result = painting.producer.resizeAndFeed(
                 columns: area.width,
                 rows: area.height,
                 cellWidthPx: cellWidthPx,
                 cellHeightPx: cellHeightPx,
-                bytes: HerdrPanePainter.repaint(next) + pane.images.update(to: scene, from: images)
+                bytes: HerdrPanePainter.repaint(next) + painting.images.update(to: scene, from: images)
             )
         }
         guard result == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK else {
-            fail(paneID: paneID)
+            fail(target)
             return
         }
-        pane.painted = next
-        pane.content = content
-        wake(&pane, paneID: paneID)
-        panes[paneID] = pane
+        painting.painted = next
+        painting.content = content
+        wake(&painting, target: target)
+        terminals[target] = painting
     }
 
-    private func createPane(
-        paneID: String,
+    private func create(
+        _ target: HerdrTerminalTarget,
         painted: HerdrPanePainter.Painted,
-        content: HerdrPaneContent,
+        content: HerdrPaneContent?,
         images scene: HerdrPaneImages.Scene
     ) {
         let producer: any HerdrPaneProducing
@@ -1374,24 +1417,33 @@ actor HerdrTerminalEngine {
             producer = try makeProducer(painted.area.width, painted.area.height)
             terminal = try producer.retainTerminal()
         } catch {
-            fail(paneID: paneID)
+            fail(target)
             return
         }
         // The cell size goes in with the first paint, before the terminal is shown.
-        var paneImages = HerdrPaneImages()
+        var terminalImages = HerdrPaneImages()
         let result = producer.resizeAndFeed(
             columns: painted.area.width,
             rows: painted.area.height,
             cellWidthPx: cellWidthPx,
             cellHeightPx: cellHeightPx,
-            bytes: HerdrPanePainter.repaint(painted) + paneImages.update(to: scene, from: images)
+            bytes: HerdrPanePainter.repaint(painted) + terminalImages.update(to: scene, from: images)
         )
         guard result == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK else {
-            fail(paneID: paneID)
+            fail(target)
             return
         }
-        panes[paneID] = Pane(producer: producer, terminal: terminal, painted: painted, content: content, images: paneImages)
-        continuation.yield(.paneTerminal(paneID: paneID, terminal: terminal))
+        terminals[target] = Painting(
+            producer: producer,
+            terminal: terminal,
+            painted: painted,
+            content: content,
+            images: terminalImages
+        )
+        switch target {
+        case .pane(let paneID): continuation.yield(.paneTerminal(paneID: paneID, terminal: terminal))
+        case .popup(let terminalID): continuation.yield(.popupTerminal(terminalID: terminalID, terminal: terminal))
+        }
     }
 
     /// The tab's panes come from the snapshot, which lists a zoomed tab's undrawn panes too, in Herdr's
@@ -1416,7 +1468,9 @@ actor HerdrTerminalEngine {
                 )
             },
             borders: borders,
-            hasPopup: surface.popup != nil
+            popup: surface.popup.map {
+                HerdrPaneLayout.Popup(terminalID: $0.terminalID, title: $0.title, columns: $0.frame.width, rows: $0.frame.height)
+            }
         )
         guard next != layout else { return }
         layout = next
@@ -1454,62 +1508,86 @@ actor HerdrTerminalEngine {
         return [pane?.foregroundCWD, pane?.cwd].lazy.compactMap { $0 }.first { !$0.isEmpty } ?? ""
     }
 
-    private func wake(_ pane: inout Pane, paneID: String) {
-        guard let renderer = pane.renderer else { return }
+    private func wake(_ painting: inout Painting, target: HerdrTerminalTarget) {
+        guard let renderer = painting.renderer else { return }
         guard ghostty_terminal_surface_terminal_changed(renderer.handle) == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
-            pane.renderer = nil
-            continuation.yield(.rendererWakeFailed(paneID: paneID))
+            painting.renderer = nil
+            switch target {
+            case .pane(let paneID): continuation.yield(.rendererWakeFailed(paneID: paneID))
+            case .popup(let terminalID): continuation.yield(.popupRendererWakeFailed(terminalID: terminalID))
+            }
             return
         }
     }
 
-    /// Frees the pane's producer; a renderer over its terminal keeps the last frame Ghostty accepted.
-    private func fail(paneID: String) {
-        panes.removeValue(forKey: paneID)
-        failedPaneIDs.insert(paneID)
-        continuation.yield(.paneTerminalFailed(paneID: paneID))
+    /// Frees the terminal's producer; a renderer over its terminal keeps the last frame Ghostty accepted.
+    private func fail(_ target: HerdrTerminalTarget) {
+        terminals.removeValue(forKey: target)
+        failedTerminals.insert(target)
+        switch target {
+        case .pane(let paneID): continuation.yield(.paneTerminalFailed(paneID: paneID))
+        case .popup(let terminalID): continuation.yield(.popupTerminalFailed(terminalID: terminalID))
+        }
     }
 
     // MARK: - Renderer registration
 
-    /// Admits a renderer over the pane's current terminal to the engine's wakes. One renderer per pane.
+    /// Admits a renderer over the target's current terminal to the engine's wakes. One renderer per
+    /// terminal.
+    func register(
+        _ surface: HerdrRendererSurface,
+        for target: HerdrTerminalTarget,
+        terminal: HerdrRetainedTerminal
+    ) -> Result<Void, HerdrRendererRegistrationError> {
+        guard state != .stopped else { return .failure(.engineEnded) }
+        guard var painting = terminals[target], painting.terminal === terminal else { return .failure(.terminalGone) }
+        guard painting.renderer == nil else { return .failure(.alreadyRegistered) }
+        // A paint between the renderer's creation and now didn't wake it.
+        guard ghostty_terminal_surface_terminal_changed(surface.handle) == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            return .failure(.rendererWakeFailed)
+        }
+        painting.renderer = surface
+        terminals[target] = painting
+        return .success(())
+    }
+
     func register(
         _ surface: HerdrRendererSurface,
         paneID: String,
         terminal: HerdrRetainedTerminal
     ) -> Result<Void, HerdrRendererRegistrationError> {
-        guard state != .stopped else { return .failure(.engineEnded) }
-        guard var pane = panes[paneID], pane.terminal === terminal else { return .failure(.terminalGone) }
-        guard pane.renderer == nil else { return .failure(.alreadyRegistered) }
-        // A paint between the renderer's creation and now didn't wake it.
-        guard ghostty_terminal_surface_terminal_changed(surface.handle) == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
-            return .failure(.rendererWakeFailed)
-        }
-        pane.renderer = surface
-        panes[paneID] = pane
-        return .success(())
+        register(surface, for: .pane(paneID), terminal: terminal)
     }
 
     /// After this returns, the engine never wakes `surface` again, so its owner may free it.
+    func unregister(_ surface: HerdrRendererSurface, from target: HerdrTerminalTarget) {
+        guard var painting = terminals[target], painting.renderer == surface else { return }
+        painting.renderer = nil
+        terminals[target] = painting
+    }
+
     func unregister(_ surface: HerdrRendererSurface, paneID: String) {
-        guard var pane = panes[paneID], pane.renderer == surface else { return }
-        pane.renderer = nil
-        panes[paneID] = pane
+        unregister(surface, from: .pane(paneID))
     }
 }
 
-/// The lifetime fence for a renderer over a Herdr pane's terminal: registration and unregistration
-/// go through the engine, so an unregistration completes only once no wake of that surface can run.
+/// The lifetime fence for a renderer over a terminal the engine paints, a pane's or the popup's:
+/// registration and unregistration go through the engine, so an unregistration completes only once no
+/// wake of that surface can run.
 @MainActor
 final class HerdrPaneRendererFence: TerminalPaneRendererFence {
     private let engine: HerdrTerminalEngine
-    private let paneID: String
+    private let target: HerdrTerminalTarget
     private let terminal: HerdrRetainedTerminal
 
-    init(engine: HerdrTerminalEngine, paneID: String, terminal: HerdrRetainedTerminal) {
+    init(engine: HerdrTerminalEngine, target: HerdrTerminalTarget, terminal: HerdrRetainedTerminal) {
         self.engine = engine
-        self.paneID = paneID
+        self.target = target
         self.terminal = terminal
+    }
+
+    convenience init(engine: HerdrTerminalEngine, paneID: String, terminal: HerdrRetainedTerminal) {
+        self.init(engine: engine, target: .pane(paneID), terminal: terminal)
     }
 
     func registerRenderer(
@@ -1517,8 +1595,8 @@ final class HerdrPaneRendererFence: TerminalPaneRendererFence {
         completion: @escaping @MainActor @Sendable (Result<Void, any Error>) -> Void
     ) {
         let surface = HerdrRendererSurface(handle: surface)
-        Task { [engine, paneID, terminal] in
-            let result = await engine.register(surface, paneID: paneID, terminal: terminal)
+        Task { [engine, target, terminal] in
+            let result = await engine.register(surface, for: target, terminal: terminal)
             completion(result.mapError { $0 as any Error })
         }
     }
@@ -1528,8 +1606,8 @@ final class HerdrPaneRendererFence: TerminalPaneRendererFence {
         completion: @escaping @MainActor @Sendable () -> Void
     ) {
         let surface = HerdrRendererSurface(handle: surface)
-        Task { [engine, paneID] in
-            await engine.unregister(surface, paneID: paneID)
+        Task { [engine, target] in
+            await engine.unregister(surface, from: target)
             completion()
         }
     }

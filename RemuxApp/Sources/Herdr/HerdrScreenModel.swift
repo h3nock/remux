@@ -25,6 +25,35 @@ final class HerdrPaneSurface: TerminalPaneInputSink {
     func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent) async -> Bool { false }
 }
 
+/// The renderer of the popup open over the tab, over the popup terminal the engine gave it, with its font
+/// at the size at which Herdr's grid fills the popup's area.
+@MainActor
+final class HerdrPopupTerminalSurface: TerminalPaneInputSink {
+    let terminalID: String
+    let terminal: HerdrRetainedTerminal
+    let renderer: TerminalPaneRenderer
+    /// The font and cell the renderer draws with, or is being replaced to draw with.
+    fileprivate(set) var fit: GhosttyTerminalGridFit
+    /// A renderer at `fit`'s font is replacing the one before it.
+    fileprivate(set) var isReplacingFont = false
+
+    init(terminalID: String, terminal: HerdrRetainedTerminal, renderer: TerminalPaneRenderer, fit: GhosttyTerminalGridFit) {
+        self.terminalID = terminalID
+        self.terminal = terminal
+        self.renderer = renderer
+        self.fit = fit
+    }
+
+    func screenSurface(id: UUID) -> GhosttyManagedSurface {
+        renderer.screenSurface(id: id, inputSink: self)
+    }
+
+    // Input goes through the screen model, which holds the connection.
+    func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool { false }
+
+    func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent) async -> Bool { false }
+}
+
 /// The screen model for one Herdr session, as `TmuxScreenModel` is for tmux: one connection at a time
 /// to the session's server, the session's terminal engine, and a renderer for each pane terminal. It
 /// reports the domain `TerminalRuntimeState` that the root reduces.
@@ -67,8 +96,8 @@ final class HerdrScreenModel {
         case resize(HerdrSurfaceGeometry)
         case theme([HerdrHostThemeUpdate])
         case appActive(Bool)
-        /// `delivered`, when given, learns whether Herdr has the input.
-        case input(paneID: String, events: [HerdrInputEvent], delivered: CheckedContinuation<Bool, Never>?)
+        /// Input for a pane or for the popup; `delivered`, when given, learns whether Herdr has it.
+        case input(HerdrTerminalTarget, events: [HerdrInputEvent], delivered: CheckedContinuation<Bool, Never>?)
         /// Remux's move to a place or creation (`move(_:to:)`); `fromAnotherTab` when another tab was on
         /// screen as it was asked for. `ask` names it among the attempt's moves (`Attempt.move`).
         case move(HerdrDestination, fromAnotherTab: Bool, ask: UInt64)
@@ -328,6 +357,16 @@ final class HerdrScreenModel {
     /// The mouse button held down in a pane, from its press to its release.
     private var mouseGesture: MouseGesture?
     private var presentationFailures: [String: TerminalDisconnectReason] = [:]
+    /// The terminal of the popup the layout lists, from the engine.
+    private var popupTerminal: (terminalID: String, terminal: HerdrRetainedTerminal)?
+    private(set) var popupSurface: HerdrPopupTerminalSurface?
+    private var popupFailure: TerminalDisconnectReason?
+    /// The area the screen shows the popup's grid in, from the screen, once it has one.
+    private var popupArea: (size: CGSize, scale: CGFloat)?
+    /// The font size of the settings, which the popup's font is fitted from; nil until read.
+    private var baseFontSize: Float32?
+    /// A fit to a new area, waiting for Herdr's grid for it (`popupGridWait`).
+    private var popupAreaFit: Task<Void, Never>?
     private var notices = HerdrNoticePolicy(visibleFor: GhosttyTerminalNotice.failureDuration)
     private var creatingTerminals: Set<ObjectIdentifier> = []
     /// Ghostty gives a terminal one renderer at a time, so a replacement waits for these to close.
@@ -629,11 +668,14 @@ final class HerdrScreenModel {
             terminalColors = try? runtime?.terminalColors()
             didChange()
         }
-        for surface in surfaces.values where !surface.renderer.isClosing {
-            if !surface.renderer.applyTerminalConfiguration(theme: settings.theme) {
-                surface.renderer.failPresentation(message: Self.configurationFailureMessage)
+        let renderers = surfaces.values.map(\.renderer) + [popupSurface?.renderer].compactMap { $0 }
+        for renderer in renderers where !renderer.isClosing {
+            if !renderer.applyTerminalConfiguration(theme: settings.theme) {
+                renderer.failPresentation(message: Self.configurationFailureMessage)
             }
         }
+        // The popup's font is fitted from the settings' font, which the next measurement brings in.
+        baseFontSize = nil
         if themeChanged, let themeReport {
             attempt?.ask(.theme(themeReport))
         }
@@ -666,8 +708,33 @@ final class HerdrScreenModel {
         for paneID in Array(terminals.keys) {
             createRendererIfPossible(paneID)
         }
+        fitPopup()
         didChange()
     }
+
+    /// The area the screen shows the popup in. The popup's font is fitted to it, so Herdr's grid fills it
+    /// with text drawn at its own size. The screen's new size goes to Herdr as the area changes, so a fit to
+    /// the new area waits for Herdr's grid for it, up to `popupGridWait`.
+    func preparePopupArea(size: CGSize, scale: CGFloat) {
+        guard !stopped, size.width > 0, size.height > 0, scale > 0 else { return }
+        guard popupArea.map({ $0.size != size || $0.scale != scale }) ?? true else { return }
+        popupArea = (size, scale)
+        guard popupSurface != nil else {
+            createPopupRendererIfPossible()
+            return
+        }
+        popupAreaFit?.cancel()
+        popupAreaFit = Task { [weak self] in
+            try? await Task.sleep(for: Self.popupGridWait)
+            guard !Task.isCancelled, let self else { return }
+            fitPopup()
+            didChange()
+        }
+    }
+
+    /// How long a fit to a new area waits for Herdr's grid for it: a fit to the area alone, then another to
+    /// the grid, would replace the renderer twice each time the keyboard comes up or goes.
+    static let popupGridWait: Duration = .milliseconds(400)
 
     /// Ends the current connection, if any, and opens a new one. The panes keep their terminals, so
     /// the last frame stays on screen until the new connection's first. Pane failures say to reconnect,
@@ -724,11 +791,15 @@ final class HerdrScreenModel {
             close(surface.renderer)
         }
         surfaces.removeAll()
+        popupAreaFit?.cancel()
+        closePopupSurface()
         if closingRenderers > 0 {
             await withCheckedContinuation { closesDrained = $0 }
         }
         terminals.removeAll()
         presentationFailures.removeAll()
+        popupTerminal = nil
+        popupFailure = nil
         layout = nil
         terminalScreenAdapter.invalidate()
         runtime = nil
@@ -789,9 +860,10 @@ final class HerdrScreenModel {
     /// The session takes input: it is shown on an open connection with no show in progress, and Herdr has a
     /// pane focused, as Herdr's client sends input (`shell/input.rs`): Herdr's client drops input before its
     /// first snapshot and while a show is in progress, and the server drops input on a hidden surface. It
-    /// holds while Remux's move is under way, whichever pane the user is in (`userPaneID`).
+    /// holds while Remux's move is under way, whichever pane the user is in (`userPaneID`). While a popup is
+    /// open over the tab on screen, the popup takes the input.
     var isInputAvailable: Bool {
-        focusedPaneID.flatMap(inputTarget(forPane:)) != nil
+        popupInputTarget != nil || focusedPaneID.flatMap(inputTarget(forPane:)) != nil
     }
 
     /// The pane the user is in: the pane of Remux's move from the moment it is asked until it ends, else
@@ -816,8 +888,20 @@ final class HerdrScreenModel {
         return pane
     }
 
-    private var inputTarget: (attempt: Attempt, paneID: String)? {
-        userPaneID.flatMap(inputTarget(forPane:))
+    /// Where keys, text and pastes go: the popup while one is open over the tab on screen, else the pane the
+    /// user is in.
+    private var inputTarget: (attempt: Attempt, target: HerdrTerminalTarget)? {
+        if let popup = popupInputTarget { return (popup.attempt, .popup(popup.terminalID)) }
+        return userPaneID.flatMap(inputTarget(forPane:)).map { ($0.attempt, .pane($0.paneID)) }
+    }
+
+    /// The popup open over the tab on screen takes every input, as Herdr's client sends it every key and
+    /// paste on that tab before anything else (`shell/input.rs`), and Herdr drops pane input from a client
+    /// on that tab. Herdr sends the popup only to a client on that tab, so the frame on screen tells. Not
+    /// during Remux's move, whose keys follow the pane it goes to.
+    private var popupInputTarget: (attempt: Attempt, terminalID: String)? {
+        guard let popup = layout?.popup, let attempt = shownAttempt, attempt.move == nil else { return nil }
+        return (attempt, popup.terminalID)
     }
 
     /// Where input for `paneID` goes, the one rule for every input: the session is shown with no show in
@@ -868,7 +952,7 @@ final class HerdrScreenModel {
     /// or refuse a paste.
     private func send(
         _ events: [HerdrInputEvent],
-        to target: (attempt: Attempt, paneID: String)
+        to destination: (attempt: Attempt, target: HerdrTerminalTarget)
     ) -> FocusedTerminalInputSubmissionResult {
         let messages = HerdrInputTranslator.messages(events)
         do {
@@ -878,14 +962,23 @@ final class HerdrScreenModel {
             return .surfaceRejected
         }
         for message in messages {
-            ask(input: message, toPane: target.paneID, on: target.attempt, delivered: nil)
+            ask(input: message, to: destination.target, on: destination.attempt, delivered: nil)
         }
         return .accepted
     }
 
+    /// Input that only ever goes to a pane: the mouse and the wheel.
+    private func send(
+        _ events: [HerdrInputEvent],
+        toPane pane: (attempt: Attempt, paneID: String)
+    ) -> FocusedTerminalInputSubmissionResult {
+        send(events, to: (pane.attempt, .pane(pane.paneID)))
+    }
+
     /// The composer's message goes to the pane it was written in, focused or not: Herdr takes input for
-    /// every pane on the shown tab. Each part returns true once Herdr has it, so the composer's pause
-    /// before Enter runs from there; false when it can't go, or the connection ended first.
+    /// every pane on the shown tab. While a popup is open over that tab it goes into the popup, which takes
+    /// the tab's input. Each part returns true once Herdr has it, so the composer's pause before Enter runs
+    /// from there; false when it can't go, or the connection ended first.
     func sendPasteAwaitingDelivery(_ text: String, toPane paneID: String) async -> Bool {
         guard !text.isEmpty else { return false }
         return await sendAwaitingDelivery([.paste(text)], toPane: paneID)
@@ -897,27 +990,26 @@ final class HerdrScreenModel {
     }
 
     private func sendAwaitingDelivery(_ events: [HerdrInputEvent], toPane paneID: String) async -> Bool {
-        // Herdr drops pane input while a popup is open over the tab, and still answers the ping.
-        guard let target = inputTarget(forPane: paneID), layout?.hasPopup == false,
-              (try? HerdrConnection.checkLimits(events)) != nil
-        else { return false }
+        let destination = popupInputTarget.map { (attempt: $0.attempt, target: HerdrTerminalTarget.popup($0.terminalID)) }
+            ?? inputTarget(forPane: paneID).map { (attempt: $0.attempt, target: HerdrTerminalTarget.pane($0.paneID)) }
+        guard let destination, (try? HerdrConnection.checkLimits(events)) != nil else { return false }
         return await withCheckedContinuation { delivered in
-            ask(input: events, toPane: target.paneID, on: target.attempt, delivered: delivered)
+            ask(input: events, to: destination.target, on: destination.attempt, delivered: delivered)
         }
     }
 
-    /// All input for a pane goes this way. Input other than the wheel ends the pane's selection, as Herdr's
+    /// All input goes this way. Input for a pane other than the wheel ends the pane's selection, as Herdr's
     /// client ends its own on a key, text or a paste, whatever sends it.
     private func ask(
         input events: [HerdrInputEvent],
-        toPane paneID: String,
+        to target: HerdrTerminalTarget,
         on attempt: Attempt,
         delivered: CheckedContinuation<Bool, Never>?
     ) {
-        if events.contains(where: { if case .mouse = $0 { false } else { true } }) {
+        if case .pane(let paneID) = target, events.contains(where: { if case .mouse = $0 { false } else { true } }) {
             surfaces[paneID]?.renderer.managedSurface?.endSelection()
         }
-        attempt.ask(.input(paneID: paneID, events: events, delivered: delivered))
+        attempt.ask(.input(target, events: events, delivered: delivered))
     }
 
     /// Remux's move to `destination`: a view request the engine starts when it goes (`.move`); the newest
@@ -1136,7 +1228,7 @@ final class HerdrScreenModel {
             lines: Self.wheelLines
         )
         let events = Array(repeating: HerdrInputEvent.mouse(wheel), count: Int(steps.magnitude))
-        return send(events, to: target) == .accepted
+        return send(events, toPane: target) == .accepted
     }
 
     private func applyScroll(toPane paneID: String) {
@@ -1183,7 +1275,7 @@ final class HerdrScreenModel {
             guard reportsMouse(inPane: paneID), cell != previous else { return }
             kind = .moved
         }
-        _ = send([mouseEvent(kind, at: cell, mods: mods)], to: target)
+        _ = send([mouseEvent(kind, at: cell, mods: mods)], toPane: target)
     }
 
     /// A button pressed or released at the pointer, as Herdr's client sends one to a pane: a press goes
@@ -1199,7 +1291,7 @@ final class HerdrScreenModel {
             guard mouseGesture == nil, let target = inputTarget(forPane: paneID), reportsMouse(inPane: paneID),
                   button != .right || takesRightClick(inPane: paneID, mods: event.mods),
                   let cell = pointers[paneID].flatMap({ paneCell(at: $0, inPane: paneID) }),
-                  send([mouseEvent(.down(button), at: cell, mods: event.mods)], to: target) == .accepted
+                  send([mouseEvent(.down(button), at: cell, mods: event.mods)], toPane: target) == .accepted
             else { return false }
             mouseGesture = MouseGesture(paneID: paneID, button: button, cell: cell)
             return true
@@ -1208,7 +1300,7 @@ final class HerdrScreenModel {
             mouseGesture = nil
             guard let target = inputTarget(forPane: gesture.paneID) else { return false }
             let cell = pointers[gesture.paneID].flatMap { paneCell(at: $0, inPane: gesture.paneID) } ?? gesture.cell
-            return send([mouseEvent(.up(button), at: cell, mods: event.mods)], to: target) == .accepted
+            return send([mouseEvent(.up(button), at: cell, mods: event.mods)], toPane: target) == .accepted
         }
     }
 
@@ -1479,9 +1571,12 @@ final class HerdrScreenModel {
             }
         case .appActive(let active):
             await connection.setAppActive(active)
-        case .input(let paneID, let events, let delivered):
+        case .input(let target, let events, let delivered):
             do {
-                try await connection.send(events, toPane: paneID)
+                switch target {
+                case .pane(let paneID): try await connection.send(events, toPane: paneID)
+                case .popup(let terminalID): try await connection.send(events, toPopup: terminalID)
+                }
             } catch {
                 if let delivered {
                     // The composer says what didn't go.
@@ -1890,6 +1985,15 @@ final class HerdrScreenModel {
                     createRendererIfPossible(paneID)
                 }
             }
+            if layout.popup?.terminalID != popupTerminal?.terminalID {
+                // The popup closed, or another opened: the engine sends a new one's terminal before this
+                // layout.
+                popupTerminal = nil
+                popupFailure = nil
+                closePopupSurface()
+            }
+            popupAreaFit?.cancel()
+            fitPopup()
             reconcilePresentationActivity()
         case .presented(let bootID, let projectionRevision, let paneIDs, let connection):
             presentedFrame = (connection, bootID, projectionRevision, paneIDs)
@@ -1909,6 +2013,20 @@ final class HerdrScreenModel {
             surfaces[paneID]?.renderer.failPresentation(message: Self.paneFailure.message)
         case .rendererWakeFailed(let paneID):
             surfaces[paneID]?.renderer.failPresentation(message: Self.rendererFailureMessage)
+        case .popupTerminal(let terminalID, let terminal):
+            popupTerminal = (terminalID, terminal)
+            popupFailure = nil
+            if let surface = popupSurface, surface.terminal !== terminal {
+                closePopupSurface()
+            }
+            createPopupRendererIfPossible()
+        case .popupTerminalFailed(let terminalID):
+            guard popupTerminal?.terminalID == terminalID else { break }
+            popupFailure = Self.paneFailure
+            popupSurface?.renderer.failPresentation(message: Self.paneFailure.message)
+        case .popupRendererWakeFailed(let terminalID):
+            guard popupSurface?.terminalID == terminalID else { break }
+            popupSurface?.renderer.failPresentation(message: Self.rendererFailureMessage)
         case .failed(let error, let connection):
             if let attempt, attempt.id == connection {
                 end(attempt, error.terminalDisconnectReason(on: target.server), recovery: Self.recovery(connectionFailedWith: error, opened: true))
@@ -1927,6 +2045,7 @@ final class HerdrScreenModel {
     }
 
     private func retryFailedPanes() {
+        retryFailedPopup()
         presentationFailures.removeAll()
         for paneID in Array(terminals.keys) {
             createRendererIfPossible(paneID)
@@ -2027,11 +2146,18 @@ final class HerdrScreenModel {
     private func reconcilePresentationActivity() {
         let sceneActive = appPhase == .active
         let live = failure == nil && isConnectionOpen
+        // A popup covers the panes and has the only cursor, so they aren't drawn under it.
+        let popupShown = layout?.popup != nil
         for (paneID, surface) in surfaces {
             let inLayout = layout?.panes.contains { $0.paneID == paneID } == true
             surface.renderer.setSceneActive(sceneActive)
-            surface.renderer.setPresented(isSelected && inLayout)
-            surface.renderer.setFocused(isSelected && live && inLayout && paneID == screenPaneID)
+            surface.renderer.setPresented(isSelected && inLayout && !popupShown)
+            surface.renderer.setFocused(isSelected && live && inLayout && !popupShown && paneID == screenPaneID)
+        }
+        if let popup = popupSurface {
+            popup.renderer.setSceneActive(sceneActive)
+            popup.renderer.setPresented(isSelected && popupShown)
+            popup.renderer.setFocused(isSelected && live && popupShown)
         }
     }
 
@@ -2064,6 +2190,182 @@ final class HerdrScreenModel {
         guard creatingTerminals.isEmpty, let continuation = creationsDrained else { return }
         creationsDrained = nil
         continuation.resume()
+    }
+
+    // MARK: - Popup
+
+    /// What the popup shows: its renderer's presentation, or why it can't be drawn.
+    var popupPresentation: TerminalPanePresentation {
+        if let popupFailure { return .failed(popupFailure) }
+        return popupSurface?.renderer.presentation ?? .pending
+    }
+
+    /// The font at which the popup's grid fills its area, kept while it still fits and is close to the best
+    /// (`GhosttyTerminalGridFit`); nil until the screen has measured both.
+    private func popupFit(current: GhosttyTerminalGridFit?) -> GhosttyTerminalGridFit? {
+        guard let runtime, let popup = layout?.popup, let popupArea, let measurement else { return nil }
+        if baseFontSize == nil { baseFontSize = try? runtime.fontSize() }
+        guard let baseFontSize else { return nil }
+        let area = GhosttySurfaceDisplayMetrics(size: popupArea.size, scale: popupArea.scale)
+        return GhosttyTerminalGridFit.next(
+            current: current,
+            columns: popup.columns,
+            rows: popup.rows,
+            areaPixels: (area.pixelWidth, area.pixelHeight),
+            baseFontSize: baseFontSize,
+            baseCell: measurement.cellMetrics,
+            measure: { try? runtime.measureCell(fontSize: $0, scale: popupArea.scale) }
+        )
+    }
+
+    private func popupMetrics(_ fit: GhosttyTerminalGridFit) -> GhosttySurfaceDisplayMetrics? {
+        guard let popup = layout?.popup else { return nil }
+        let width = UInt64(popup.columns) * UInt64(fit.cell.pixelWidth)
+        let height = UInt64(popup.rows) * UInt64(fit.cell.pixelHeight)
+        guard width > 0, height > 0, let pixelWidth = UInt32(exactly: width), let pixelHeight = UInt32(exactly: height)
+        else { return nil }
+        return GhosttySurfaceDisplayMetrics(contentScale: fit.cell.contentScale, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+    }
+
+    /// The renderer draws Herdr's grid at the font it has, or is being replaced to have, so it draws at the
+    /// size the screen gives it, which the same font sets. A font size is fixed when a renderer is made, so a
+    /// new font replaces the renderer in the same view, which keeps the last frame until it draws; one at a
+    /// time, each fitting again once it is in.
+    private func fitPopup() {
+        guard let runtime, let surface = popupSurface else {
+            createPopupRendererIfPossible()
+            return
+        }
+        guard !surface.renderer.isClosing, let next = popupFit(current: surface.fit) else { return }
+        if let metrics = popupMetrics(surface.fit), !surface.renderer.updateDisplay(metrics: metrics) {
+            surface.renderer.failPresentation(message: Self.configurationFailureMessage)
+            return
+        }
+        guard next.fontSize != surface.fit.fontSize, !surface.isReplacingFont, let metrics = popupMetrics(next) else {
+            return
+        }
+        let previous = surface.fit
+        surface.fit = next
+        surface.isReplacingFont = true
+        var config = runtime.makeTmuxBaseSurfaceConfig()
+        config.font_size = next.fontSize
+        surface.renderer.replaceRenderer(
+            baseConfig: config,
+            metrics: metrics,
+            theme: currentTerminalSettings.theme
+        ) { [weak self, weak surface] result in
+            guard let self, let surface, popupSurface === surface else { return }
+            surface.isReplacingFont = false
+            if result == .replaced {
+                // The grid or the area may have changed meanwhile.
+                fitPopup()
+            } else {
+                // A renderer that failed says so itself.
+                surface.fit = previous
+            }
+            reconcilePresentationActivity()
+            didChange()
+        }
+    }
+
+    private func createPopupRendererIfPossible() {
+        guard !stopped, let runtime, let (terminalID, terminal) = popupTerminal,
+              popupSurface?.terminal !== terminal,
+              !closingTerminals.contains(ObjectIdentifier(terminal)),
+              popupFailure == nil,
+              let fit = popupFit(current: nil),
+              let metrics = popupMetrics(fit),
+              creatingTerminals.insert(ObjectIdentifier(terminal)).inserted
+        else { return }
+        var config = runtime.makeTmuxBaseSurfaceConfig()
+        config.font_size = fit.fontSize
+        TerminalPaneRenderer.create(
+            app: runtime.appHandle,
+            terminal: terminal,
+            fence: HerdrPaneRendererFence(engine: engine, target: .popup(terminalID), terminal: terminal),
+            writeInput: nil,
+            baseConfig: config,
+            metrics: metrics,
+            theme: currentTerminalSettings.theme,
+            diagnosticName: "herdr popup=\(terminalID)",
+            onRendererFailure: { [weak self] in self?.popupRendererFailed(terminal) }
+        ) { [weak self, runtime] result in
+            guard let self else {
+                // Nothing waits for this close, so it keeps the Ghostty app alive itself.
+                if case .success(let renderer) = result {
+                    renderer.close { withExtendedLifetime(runtime) {} }
+                }
+                return
+            }
+            self.popupRendererCreated(result, terminalID: terminalID, terminal: terminal, fit: fit)
+        }
+    }
+
+    private func popupRendererCreated(
+        _ result: Result<TerminalPaneRenderer, TerminalPaneRenderer.CreateError>,
+        terminalID: String,
+        terminal: HerdrRetainedTerminal,
+        fit: GhosttyTerminalGridFit
+    ) {
+        creatingTerminals.remove(ObjectIdentifier(terminal))
+        defer { resumeCreationDrainIfQuiescent() }
+        // The engine may have replaced or dropped the terminal while its renderer was being registered.
+        let isCurrentTerminal = !stopped && popupTerminal?.terminal === terminal
+        switch result {
+        case .failure(let error):
+            guard isCurrentTerminal else { return }
+            popupFailure = TerminalDisconnectReason(
+                kind: .runtime,
+                message: "Terminal renderer could not be created. Reconnect to try again."
+            )
+            GhosttyRuntimeTrace.diagnostics(
+                "herdrPopup.createFailed terminal=\(terminalID) error=\(String(describing: error))"
+            )
+        case .success(let renderer):
+            guard isCurrentTerminal else {
+                close(renderer)
+                return
+            }
+            let surface = HerdrPopupTerminalSurface(terminalID: terminalID, terminal: terminal, renderer: renderer, fit: fit)
+            popupSurface = surface
+            terminalScreenAdapter.makeScreenSurface(forPopup: surface)
+            renderer.onPresentationChange = { [weak self] in self?.didChange() }
+            if !renderer.applyTerminalConfiguration(theme: currentTerminalSettings.theme) {
+                renderer.failPresentation(message: Self.configurationFailureMessage)
+            }
+            // The grid or the area may have changed while the renderer was being registered.
+            fitPopup()
+            reconcilePresentationActivity()
+        }
+        didChange()
+    }
+
+    private func popupRendererFailed(_ terminal: HerdrRetainedTerminal) {
+        guard let surface = popupSurface, surface.terminal === terminal else { return }
+        surface.renderer.failPresentation(message: Self.rendererFailureMessage)
+        didChange()
+    }
+
+    /// A reconnect tries a failed popup again: a terminal Ghostty couldn't paint comes again with the new
+    /// connection's first frame, and a failed renderer is replaced over its terminal now.
+    private func retryFailedPopup() {
+        popupFailure = nil
+        guard let surface = popupSurface, case .failed = surface.renderer.presentation else { return }
+        popupSurface = nil
+        let terminal = ObjectIdentifier(surface.terminal)
+        closingTerminals.insert(terminal)
+        close(surface.renderer) { [weak self] in
+            guard let self else { return }
+            closingTerminals.remove(terminal)
+            createPopupRendererIfPossible()
+            didChange()
+        }
+    }
+
+    private func closePopupSurface() {
+        guard let surface = popupSurface else { return }
+        popupSurface = nil
+        close(surface.renderer)
     }
 
     // MARK: - Reporting
