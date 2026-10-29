@@ -257,6 +257,33 @@ final class GhosttyKitRuntime {
         try state.terminalColors()
     }
 
+    /// The font size, in points, that terminal surfaces take from the current settings.
+    func fontSize() throws -> Float32 {
+        try state.fontSize()
+    }
+
+    /// The cell a terminal surface gets with its font at `fontSize` points on a screen of `scale`, as
+    /// `ghostty_terminal_surface_new` makes it; nil when Ghostty measures no cell.
+    func measureCell(fontSize: Float32, scale: CGFloat) throws -> GhosttyTerminalCellDisplayMetrics? {
+        let metrics = GhosttySurfaceDisplayMetrics(size: CGSize(width: 256, height: 256), scale: scale)
+        var config = makeTmuxBaseSurfaceConfig()
+        config.scale_factor = metrics.contentScale
+        config.font_size = fontSize
+        config.width_px = metrics.pixelWidth
+        config.height_px = metrics.pixelHeight
+        var measured = ghostty_surface_size_s()
+        let result = ghostty_terminal_surface_measure(state.app, &config, &measured)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw GhosttyKitRuntimeError.surfaceMeasurementFailed(result)
+        }
+        guard measured.cell_width_px > 0, measured.cell_height_px > 0 else { return nil }
+        return GhosttyTerminalCellDisplayMetrics(
+            pixelWidth: measured.cell_width_px,
+            pixelHeight: measured.cell_height_px,
+            contentScale: metrics.contentScale
+        )
+    }
+
     private static func initializeBackend() throws {
         guard !initialized else { return }
         try configureProcessDirectories()
@@ -420,6 +447,26 @@ private final class GhosttyKitRuntimeState {
             background: color(background),
             palette: paletteColors
         )
+    }
+
+    /// Read from a config built from the current settings with the device's font size, as the app's is.
+    @MainActor
+    func fontSize() throws -> Float32 {
+        guard let config = ghostty_config_new() else {
+            throw GhosttyKitRuntimeError.configCreationFailed
+        }
+        defer { ghostty_config_free(config) }
+        try Self.loadSettings(
+            terminalSettings,
+            into: config,
+            effectiveFontSize: GhosttyTerminalAppearancePolicy.currentDeviceFontSize(settings: terminalSettings)
+        )
+        ghostty_config_finalize(config)
+        var size: Float32 = 0
+        guard Self.read("font-size", from: config, into: &size), size > 0 else {
+            throw GhosttyKitRuntimeError.configCreationFailed
+        }
+        return size
     }
 
     private static func read<Value>(
