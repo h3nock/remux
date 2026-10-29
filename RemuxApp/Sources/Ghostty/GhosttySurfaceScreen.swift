@@ -335,6 +335,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
                             GhosttyKeyboardContinuityAccessibilityMarker(
                                 owner: inputCoordinator.keyboardOwner,
+                                isTerminalFirstResponder: isTerminalResponderFirstResponder,
                                 keyboardWillHideCount: uiTestKeyboardWillHideCount,
                                 liveViewportSize: liveTerminalViewportSize,
                                 effectiveViewportSize: terminalViewportSize,
@@ -2361,6 +2362,7 @@ private struct GhosttySurfaceScreenBodyEvalMarker: View {
 
 private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
     let owner: GhosttyKeyboardOwner
+    let isTerminalFirstResponder: Bool
     let keyboardWillHideCount: Int
     let liveViewportSize: CGSize
     let effectiveViewportSize: CGSize
@@ -2382,7 +2384,7 @@ private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
             .accessibilityElement()
             .accessibilityLabel("Keyboard continuity")
             .accessibilityValue(
-                "owner=\(ownerLabel);willHide=\(keyboardWillHideCount);"
+                "owner=\(ownerLabel);firstResponder=\(isTerminalFirstResponder);willHide=\(keyboardWillHideCount);"
                     + "liveViewport=\(liveViewportSize.traceLabel);"
                     + "effectiveViewport=\(effectiveViewportSize.traceLabel);"
                     + "bottomChrome=\(bottomChromeHeight.traceLabel);"

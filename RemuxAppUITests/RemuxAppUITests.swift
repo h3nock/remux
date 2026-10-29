@@ -475,6 +475,29 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["No speech detected. Try again."].exists)
     }
 
+    /// On a tmux session the Tabs sheet covers the terminal, which gives up the keyboard under it and gets it
+    /// back when the sheet closes. A responder left under a sheet has UIKit bring its keyboard back over the
+    /// sheet for anything there that reloads input views, as a menu's list does.
+    func testTheTerminalGivesUpTheKeyboardUnderTheTabsSheet() {
+        launchSeededSimulatorTerminal()
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        terminal.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "terminal keyboard before Tabs"))
+        XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't take the keyboard.")
+
+        openWindowsSheet()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "Tabs over the terminal"))
+        XCTAssertTrue(waitForTerminalFirstResponder(false), "The terminal kept the keyboard under Tabs.")
+
+        let close = app.buttons["terminal.windows.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "terminal keyboard after Tabs"))
+        XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
+    }
+
     func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
         launchSeededSimulatorTerminal()
 
@@ -2206,6 +2229,107 @@ final class RemuxAppUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         return false
+    }
+
+    /// The keyboard and what covers the terminal, on a live Herdr session whose tab 1 and tab 3 run Claude Code
+    /// and whose workspaces overflow the Tabs sheet's capsules. The harness answers `reset` (tab 1 on screen,
+    /// its agents idle) and `prompt-1` and `prompt-3` (a one-line prompt to that tab's Claude Code, which a
+    /// banner reports done). With the keyboard up, Tabs covers the terminal, which gives up the keyboard: More's
+    /// menu opens over the sheet with no keyboard and answers, and closing Tabs brings the keyboard back.
+    func testLiveHerdrMenuOverTabsLeavesTheKeyboardDownWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        let keyboardButton = app.buttons["terminal.keyboard"].firstMatch
+        let close = app.buttons["terminal.windows.close"].firstMatch
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        _ = try performLiveHerdrStep("reset", in: configuration)
+        keyboardButton.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard before Tabs"))
+
+        app.buttons["terminal.windows"].firstMatch.tap()
+        let more = app.buttons["terminal.windows.group.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 10), "Tabs has no More.")
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "Tabs over the terminal"))
+        more.tap()
+        let newWorkspace = app.buttons["New Workspace"].firstMatch
+        XCTAssertTrue(newWorkspace.waitForExistence(timeout: 5), "More's menu didn't open.")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "The keyboard came up over the Tabs sheet.")
+        captureLiveHerdrStep("k1-more-over-tabs", in: configuration)
+
+        // A tap away from the menu puts it away and leaves Tabs open.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+        XCTAssertTrue(newWorkspace.waitForNonExistence(timeout: 5), "More's menu didn't go.")
+        XCTAssertTrue(close.isHittable, "Tabs closed with the menu.")
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard after Tabs"))
+        XCTAssertEqual(keyboardButton.label, "Hide keyboard controls")
+    }
+
+    /// With the keyboard up, Home, then a banner for the agent in tab 3: the tap opens its tab with the keyboard
+    /// up, and the keyboard button, which says so, puts it away with one tap.
+    func testLiveHerdrBannerFromHomeBringsTheKeyboardBackWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        let keyboardButton = app.buttons["terminal.keyboard"].firstMatch
+        let banner = app.descendants(matching: .any)["herdr.notification.banner"].firstMatch
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        _ = try performLiveHerdrStep("reset", in: configuration)
+        keyboardButton.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard before Home"))
+
+        openHomeFromTerminal()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "Home"))
+        _ = try performLiveHerdrStep("prompt-3", in: configuration)
+        XCTAssertTrue(banner.waitForExistence(timeout: 90), "No banner over Home for the agent in tab 3.")
+        XCTAssertEqual(banner.label, "claude done, Herdr live · remux-ui · agents › 3")
+        banner.tap()
+        XCTAssertTrue(
+            waitForLabel(of: app.buttons["terminal.windows"].firstMatch, "Tab 3 of 3", timeout: 15),
+            "The banner didn't open tab 3."
+        )
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard back with the banner's tab"))
+        XCTAssertEqual(keyboardButton.label, "Hide keyboard controls")
+        captureLiveHerdrStep("k2-banner-from-home", in: configuration)
+
+        keyboardButton.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "the keyboard button's first tap"))
+        XCTAssertEqual(keyboardButton.label, "Show keyboard controls")
+    }
+
+    /// With the keyboard up in tab 1, a swipe to tab 2 and the Sessions sheet's Agents, then a banner for the
+    /// agent in tab 1: the tap closes the sheet and opens tab 1 with the keyboard up, and the first tap on Tabs
+    /// opens Tabs.
+    func testLiveHerdrBannerOverAgentsBringsTheKeyboardBackWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        let keyboardButton = app.buttons["terminal.keyboard"].firstMatch
+        let tabs = app.buttons["terminal.windows"].firstMatch
+        let banner = app.descendants(matching: .any)["herdr.notification.banner"].firstMatch
+        let sessionsSheet = app.otherElements["terminal.sessions.sheet"]
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        _ = try performLiveHerdrStep("reset", in: configuration)
+        keyboardButton.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard in tab 1"))
+        app.otherElements["terminal.screen"].firstMatch.swipeLeft()
+        XCTAssertTrue(waitForLabel(of: tabs, "Tab 2 of 3", timeout: 10), "The swipe didn't reach tab 2.")
+
+        openSessionSwitcherFromTerminal()
+        XCTAssertTrue(sessionsSheet.waitForExistence(timeout: 5))
+        app.buttons["Agents"].firstMatch.tap()
+        _ = try performLiveHerdrStep("prompt-1", in: configuration)
+        XCTAssertTrue(banner.waitForExistence(timeout: 90), "No banner over Agents for the agent in tab 1.")
+        banner.tap()
+        XCTAssertTrue(sessionsSheet.waitForNonExistence(timeout: 5), "The tap didn't close the Sessions sheet.")
+        XCTAssertTrue(waitForLabel(of: tabs, "Tab 1 of 3", timeout: 15), "The banner didn't open tab 1.")
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard back with the banner's tab"))
+        captureLiveHerdrStep("k3-banner-over-agents", in: configuration)
+
+        tabs.tap()
+        let close = app.buttons["terminal.windows.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "The first tap on Tabs didn't open Tabs.")
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
     }
 
     /// Herdr's notifications on a live server whose session has a three-pane tab (workspace `remux`) and a
@@ -4590,6 +4714,17 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTFail("Timed out waiting for keyboard \(expected ? "visible" : "hidden") during \(label)")
         return nil
+    }
+
+    /// Whether the terminal holds first responder, as the screen's keyboard marker reports it.
+    private func waitForTerminalFirstResponder(_ expected: Bool, timeout: TimeInterval = 5) -> Bool {
+        let marker = app.otherElements["terminal.keyboard.continuity"]
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let value = marker.value as? String, value.contains("firstResponder=\(expected);") { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        } while Date() < deadline
+        return false
     }
 
     private func waitForKeyboardContinuity(
