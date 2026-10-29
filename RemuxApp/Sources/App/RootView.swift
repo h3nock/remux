@@ -583,7 +583,8 @@ private struct RemuxWorkspaceShell: View {
                         isSessionSwitcherPresented = true
                     },
                     onShowLibrary: {
-                        dismissKeyboard()
+                        // The terminal gives up the keyboard once Home replaces it, as the screen decides;
+                        // a resign here as well would be taken back while the terminal is still on screen.
                         Task { await model.showLibrary() }
                     }
                 )

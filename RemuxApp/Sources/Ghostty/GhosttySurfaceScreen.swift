@@ -377,7 +377,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             effectiveSize: terminalViewportSize,
                             context: viewportTraceContext
                         )
-                        if isTerminalCovered {
+                        if isTerminalInputCovered {
                             updateTerminalCoverPresentation(
                                 isCovered: true,
                                 liveSize: liveTerminalViewportSize
@@ -395,7 +395,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         )
                         finishTerminalCoverRestorationIfSettled(liveSize: newValue)
                     }
-                    .onChange(of: isTerminalCovered) { _, isCovered in
+                    .onChange(of: isTerminalInputCovered) { _, isCovered in
                         updateTerminalCoverPresentation(
                             isCovered: isCovered,
                             liveSize: liveTerminalViewportSize
@@ -727,6 +727,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             isFileImporterPresented: isAttachmentFileImporterPresented,
             isPreviewPresented: attachmentPreviewRequest != nil
         ).isTransientInputOwnerPresented
+    }
+
+    /// Something presented over the terminal: the app's sheets and previews, or this screen's own Tabs and
+    /// Panes sheet. Under any of them the terminal gives up the keyboard, and it gets it back when the last
+    /// one goes (`terminalCoverPhase`). UIKit only hides the keyboard of a responder under a sheet, and
+    /// anything in the sheet that reloads input views, as a menu's list does, would bring it back over the
+    /// sheet; with a menu open there, UIKit's keyboard and the sheet's layout then never settle.
+    private var isTerminalInputCovered: Bool {
+        isTerminalCovered || selectionSheet != nil
     }
 
     private var isTransientInputOwnerPresented: Bool {
@@ -1099,7 +1108,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @discardableResult
     private func finishTerminalCoverRestorationIfSettled(liveSize: CGSize) -> Bool {
         guard terminalCoverPhase.isRestoringKeyboard,
-              !isTerminalCovered,
+              !isTerminalInputCovered,
               scenePhase == .active,
               isSelected,
               isTerminalInputAvailable,
@@ -1122,7 +1131,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func resumeTerminalCoverKeyboardRestorationIfPossible() {
         guard terminalCoverPhase.isRestoringKeyboard,
-              !isTerminalCovered,
+              !isTerminalInputCovered,
               scenePhase == .active,
               isSelected,
               isTerminalInputAvailable else {

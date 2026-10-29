@@ -209,6 +209,10 @@ final class HerdrNotificationBannerAnchor: UIView {
         /// Where the banner is, in the window's coordinates; every other touch goes to the app.
         var bannerFrame: CGRect = .zero
 
+        /// The banner takes taps, never text, so the app's window stays key: UIKit shows the keyboard only
+        /// for the key window's first responder, and the terminal or composer it opens onto keeps it.
+        override var canBecomeKey: Bool { false }
+
         override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             guard bannerFrame.contains(point) else { return nil }
             return super.hitTest(point, with: event)
