@@ -384,6 +384,29 @@ final class GhosttyTerminalViewportCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.effectiveSize(liveSize: full), full)
     }
 
+    /// The Tabs or Panes sheet is a cover too, so its own hold and the cover's hold the same size. The sheet's
+    /// ends as it goes, while the keyboard is still down; the size stays the keyboard's until the cover's
+    /// ends with the keyboard back, so the terminal is never resized to the full area in between.
+    func testASheetsHoldEndingBeforeItsCoversKeepsOneSize() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let keyboard = CGSize(width: 402, height: 452)
+        let full = CGSize(width: 402, height: 726)
+
+        XCTAssertTrue(coordinator.observeLiveSize(keyboard).didApplyStableSize)
+        coordinator.setCoveredPresentation(true, liveSize: keyboard)
+        XCTAssertEqual(coordinator.setSheetPresented(true, liveSize: keyboard), .hold(effectiveSize: keyboard))
+        XCTAssertFalse(coordinator.observeLiveSize(full).didApplyStableSize)
+
+        XCTAssertEqual(coordinator.setSheetPresented(false, liveSize: full), .release(previousEffectiveSize: keyboard))
+        XCTAssertTrue(coordinator.isFrozen)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), keyboard)
+
+        XCTAssertFalse(coordinator.observeLiveSize(keyboard).didApplyStableSize)
+        XCTAssertEqual(coordinator.setCoveredPresentation(false, liveSize: keyboard), .release(previousEffectiveSize: keyboard))
+        XCTAssertFalse(coordinator.isFrozen)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: keyboard), keyboard)
+    }
+
     func testTopologyRefocusCompleteReportsReleaseAndPreservesCurrentEffectiveViewport() {
         var coordinator = GhosttyTerminalViewportCoordinator()
         let keyboard = CGSize(width: 402, height: 452)
