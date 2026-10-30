@@ -25,11 +25,14 @@ struct GhosttySurfaceStatusOverlay: View {
     }
 
     private var overlayAlignment: Alignment {
-        if case .failed = projection {
+        switch projection {
+        case .failed:
             return .bottom
+        case .switching:
+            return .center
+        default:
+            return .topLeading
         }
-
-        return .topLeading
     }
 
     private var allowsHitTesting: Bool {
