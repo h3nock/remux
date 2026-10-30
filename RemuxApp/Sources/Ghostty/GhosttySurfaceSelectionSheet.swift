@@ -27,6 +27,8 @@ enum GhosttySurfaceSelectionSheet: Identifiable {
 struct GhosttyWindowSelectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var removal = GhosttyTileRemoval<GhosttyWindowSelectionSheetRenderProjection.Window>()
+    @State private var renamePrompt: TerminalRenamePrompt?
+    @State private var renameName = ""
 
     /// The windows' previews; nil lists the windows as rows.
     let session: GhosttyPanePreviewSession?
@@ -41,6 +43,7 @@ struct GhosttyWindowSelectionSheet: View {
     let onCreateWindow: (() -> Void)?
     let onSelect: (UUID) -> Void
     let onRemoveWindow: (UUID) -> Void
+    let onRenameWindow: (UUID, String) -> Void
     /// Picking a group changes only which windows the sheet lists.
     let onShowGroup: (UUID) -> Void
     let onCreateGroup: () -> Void
@@ -64,9 +67,8 @@ struct GhosttyWindowSelectionSheet: View {
                                 projection: projection,
                                 topLevelNoun: topLevelNoun,
                                 layout: layout,
-                                removal: $removal,
                                 onSelect: select,
-                                onRemoveWindow: onRemoveWindow
+                                onClose: close
                             )
                         }
                         .contentMargins(
@@ -79,7 +81,8 @@ struct GhosttyWindowSelectionSheet: View {
                             windows: projection.windows,
                             topLevelNoun: topLevelNoun,
                             onSelect: select,
-                            onClose: close
+                            onClose: close,
+                            onRename: rename
                         )
                     }
                 }
@@ -112,6 +115,7 @@ struct GhosttyWindowSelectionSheet: View {
             removal.keep(among: newValue)
         }
         .ghosttyCloseConfirmationDialog(closeQuestion)
+        .terminalRenameAlert($renamePrompt, name: $renameName)
         .overlay(alignment: .bottom) {
             if let commandFailureMessage {
                 GhosttySelectionSheetFailureBanner(message: commandFailureMessage)
@@ -134,9 +138,18 @@ struct GhosttyWindowSelectionSheet: View {
     /// Closes the window, after the question its backend asks first, if any.
     private func close(_ window: GhosttyWindowSelectionSheetRenderProjection.Window) {
         Haptic.warning()
-        if let window = removal.remove(window) {
+        if let window = removal.remove(window.id, among: projection.windows) {
             onRemoveWindow(window.id)
         }
+    }
+
+    private func rename(_ window: GhosttyWindowSelectionSheetRenderProjection.Window) {
+        guard let field = window.renameField else { return }
+        Haptic.tap()
+        renameName = field.name
+        renamePrompt = TerminalRenamePrompt(
+            title: "Rename \(topLevelNoun.singular)", placeholder: field.placeholder, allowsEmpty: false
+        ) { name in onRenameWindow(window.id, name) }
     }
 
     /// The window's removal asked about, else the close the backend's server asked about.
@@ -156,6 +169,8 @@ struct GhosttyPaneSelectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @State private var removal = GhosttyTileRemoval<GhosttyPaneSelectionSheetRenderProjection.Pane>()
+    @State private var renamePrompt: TerminalRenamePrompt?
+    @State private var renameName = ""
 
     let projection: GhosttyPaneSelectionSheetRenderProjection
     let topologySize: CGSize
@@ -167,6 +182,7 @@ struct GhosttyPaneSelectionSheet: View {
     let onSetZoomed: (Bool) -> Void
     let onSelect: (UUID) -> Void
     let onRemovePane: (UUID) -> Void
+    let onRenamePane: (UUID, String) -> Void
 
     var body: some View {
         NavigationStack {
@@ -232,6 +248,7 @@ struct GhosttyPaneSelectionSheet: View {
             removal.keep(among: newValue)
         }
         .ghosttyCloseConfirmationDialog(closeQuestion)
+        .terminalRenameAlert($renamePrompt, name: $renameName)
         .overlay(alignment: .bottom) {
             if let commandFailureMessage {
                 GhosttySelectionSheetFailureBanner(message: commandFailureMessage)
@@ -251,23 +268,30 @@ struct GhosttyPaneSelectionSheet: View {
             selectedPaneID: projection.selectedPaneID,
             size: topologySize,
             accent: chromeStyle.selectedStroke,
-            pendingRemovalPaneID: removal.bubbleTileID,
             onSelect: { paneID in
                 Haptic.selection()
                 removal.end()
                 onSelect(paneID)
             },
-            onLongPress: { pane in
-                Haptic.warning()
-                removal.showBubble(on: pane)
-            },
-            onRemove: { _ in
-                if let pane = removal.bubbleTapped(among: projection.panes) {
-                    onRemovePane(pane.id)
-                }
-            }
+            onClose: close,
+            onRename: rename,
+            onClearName: { pane in onRenamePane(pane.id, "") }
         )
         .frame(height: topologySize.height, alignment: .top)
+    }
+
+    private func close(_ pane: GhosttyPaneSelectionSheetRenderProjection.Pane) {
+        Haptic.warning()
+        if let pane = removal.remove(pane.id, among: projection.panes) { onRemovePane(pane.id) }
+    }
+
+    private func rename(_ pane: GhosttyPaneSelectionSheetRenderProjection.Pane) {
+        guard let field = pane.renameField else { return }
+        Haptic.tap()
+        renameName = field.name
+        renamePrompt = TerminalRenamePrompt(title: "Rename Pane", placeholder: field.placeholder, allowsEmpty: true) { name in
+            onRenamePane(pane.id, name)
+        }
     }
 
     /// The pane's removal asked about, else the close the backend's server asked about.
@@ -288,9 +312,8 @@ private struct GhosttyWindowPreviewGrid: View {
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let topLevelNoun: GhosttyTopLevelNoun
     let layout: PanePreviewLayout.Metrics
-    @Binding var removal: GhosttyTileRemoval<GhosttyWindowSelectionSheetRenderProjection.Window>
     let onSelect: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
-    let onRemoveWindow: (UUID) -> Void
+    let onClose: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
 
     var body: some View {
         LazyVGrid(
@@ -302,59 +325,36 @@ private struct GhosttyWindowPreviewGrid: View {
             spacing: layout.gridSpacing
         ) {
             ForEach(projection.windows) { window in
-                ZStack(alignment: .topTrailing) {
-                    Button {
-                        onSelect(window)
-                    } label: {
-                        GhosttyWindowSelectionTile(
-                            topLevelNoun: topLevelNoun,
-                            displayIndex: window.displayIndex,
-                            displayName: window.displayName,
-                            totalCount: window.totalCount,
-                            paneCount: window.paneCount,
-                            isSelected: window.isSelected,
-                            agentStatus: window.agentStatus,
-                            previewState: window.focusedPreviewPaneID.flatMap { pane in
-                                // A pane the sheet doesn't capture has no preview coming.
-                                projection.previewLeafIDs.contains(pane) ? session.imagesByPaneID[pane] : .failed
-                            },
-                            chromeStyle: chromeStyle,
-                            layout: layout
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("terminal.window.tile.\(window.displayIndex)")
-                    .highPriorityGesture(
-                        LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
-                            .onEnded { _ in
-                                Haptic.warning()
-                                removal.showBubble(on: window)
-                            }
+                Button {
+                    onSelect(window)
+                } label: {
+                    GhosttyWindowSelectionTile(
+                        topLevelNoun: topLevelNoun,
+                        displayIndex: window.displayIndex,
+                        displayName: window.displayName,
+                        totalCount: window.totalCount,
+                        paneCount: window.paneCount,
+                        isSelected: window.isSelected,
+                        agentStatus: window.agentStatus,
+                        previewState: window.focusedPreviewPaneID.flatMap { pane in
+                            projection.previewLeafIDs.contains(pane) ? session.imagesByPaneID[pane] : .failed
+                        },
+                        chromeStyle: chromeStyle,
+                        layout: layout
                     )
-                    .allowsHitTesting(removal.bubbleTileID != window.id)
-
-                    if removal.bubbleTileID == window.id {
-                        GhosttySelectionContextActionButton(
-                            title: "Remove \(topLevelNoun.singular) \(window.displayIndex)",
-                            accessibilityIdentifier: "terminal.window.remove.\(window.displayIndex)"
-                        ) {
-                            if let window = removal.bubbleTapped(among: projection.windows) {
-                                onRemoveWindow(window.id)
-                            }
-                        }
-                        .padding(4)
-                        .transition(.scale(scale: 0.92).combined(with: .opacity))
-                        .zIndex(1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("terminal.window.tile.\(window.displayIndex)")
+                .contextMenu {
+                    Button(role: .destructive) {
+                        onClose(window)
+                    } label: {
+                        Label("Close", systemImage: "xmark")
                     }
+                    .accessibilityIdentifier("terminal.window.remove.\(window.displayIndex)")
                 }
                 .frame(width: layout.tilePointSize.width, height: layout.tilePointSize.height)
-                .animation(.spring(response: 0.24, dampingFraction: 0.82), value: removal.bubbleTileID)
-                .accessibilityAction(named: Text("Remove \(topLevelNoun.singular) \(window.displayIndex)")) {
-                    Haptic.warning()
-                    if let window = removal.remove(window) {
-                        onRemoveWindow(window.id)
-                    }
-                }
+                .accessibilityAction(named: Text("Close \(topLevelNoun.singular)")) { onClose(window) }
             }
 
         }
@@ -378,48 +378,23 @@ protocol GhosttyRemovableTile: Identifiable where ID == UUID {
 extension GhosttyWindowSelectionSheetRenderProjection.Window: GhosttyRemovableTile {}
 extension GhosttyPaneSelectionSheetRenderProjection.Pane: GhosttyRemovableTile {}
 
-/// A selection sheet's removal of a tile: the long-press bubble on it, then the question its backend asks
-/// first, if any. What closing the tile asks is read from the sheet's tiles when the bubble is tapped, not at
-/// the long-press, since it can change meanwhile, as when another client closes the tile's last sibling.
+/// A selection sheet's pending close question. The backend remains responsible for the actual close.
 struct GhosttyTileRemoval<Tile: GhosttyRemovableTile> {
-    /// The tile the bubble is on.
-    private(set) var bubbleTileID: UUID?
-    /// The tile whose removal the dialog asks about, as the sheet listed it then.
     private(set) var asked: Tile?
 
-    mutating func showBubble(on tile: Tile) {
-        bubbleTileID = tile.id
-    }
-
-    /// The bubble was tapped: removes its tile as `tiles`, the sheet's tiles now, list it. Returns the tile
-    /// when it goes at once; nil when its backend asks first, or when the sheet no longer lists it.
-    mutating func bubbleTapped(among tiles: [Tile]) -> Tile? {
-        guard let tile = tiles.first(where: { $0.id == bubbleTileID }) else {
-            bubbleTileID = nil
-            return nil
-        }
-        return remove(tile)
-    }
-
-    /// Removes `tile`, after asking when its backend asks first. Returns the tile when it goes at once.
-    mutating func remove(_ tile: Tile) -> Tile? {
-        bubbleTileID = nil
+    /// Returns the tile when it closes at once; otherwise retain its confirmation until answered.
+    mutating func remove(_ id: UUID, among tiles: [Tile]) -> Tile? {
+        guard let tile = tiles.first(where: { $0.id == id }) else { return nil }
         guard tile.closeConfirmation != nil else { return tile }
         asked = tile
         return nil
     }
 
-    /// The tiles the sheet lists changed: a tile no longer listed takes its bubble and its question with it.
     mutating func keep(among ids: [UUID]) {
-        if let id = bubbleTileID, !ids.contains(id) { bubbleTileID = nil }
         if let id = asked?.id, !ids.contains(id) { asked = nil }
     }
 
-    /// The question was answered, or the bubble set aside.
-    mutating func end() {
-        bubbleTileID = nil
-        asked = nil
-    }
+    mutating func end() { asked = nil }
 }
 
 /// A close the user is asked to confirm, and what their answer does.
@@ -430,7 +405,36 @@ struct GhosttyCloseQuestion {
     let answer: (Bool) -> Void
 }
 
+/// The native rename alert's presentation. Its caller owns the text until the alert is dismissed.
+struct TerminalRenamePrompt {
+    let title: String
+    let placeholder: String
+    let allowsEmpty: Bool
+    let save: (String) -> Void
+}
+
 extension View {
+    func terminalRenameAlert(_ prompt: Binding<TerminalRenamePrompt?>, name: Binding<String>) -> some View {
+        alert(
+            prompt.wrappedValue?.title ?? "",
+            isPresented: Binding(
+                get: { prompt.wrappedValue != nil },
+                set: { if !$0 { prompt.wrappedValue = nil } }
+            ),
+            presenting: prompt.wrappedValue
+        ) { prompt in
+            TextField(prompt.placeholder, text: name)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityLabel("Name")
+                .accessibilityIdentifier("terminal.rename.name")
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { prompt.save(name.wrappedValue) }
+                .disabled(!prompt.allowsEmpty && name.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("terminal.rename.save")
+        }
+    }
+
     /// The selection sheets' dialog before a close, in its backend's words.
     func ghosttyCloseConfirmationDialog(_ question: GhosttyCloseQuestion?) -> some View {
         confirmationDialog(
@@ -607,8 +611,9 @@ private extension View {
     }
 }
 
-private struct GhosttySelectionSheetFailureBanner: View {
+struct GhosttySelectionSheetFailureBanner: View {
     let message: String
+    var accessibilityIdentifier = "terminal.selection.failure"
 
     var body: some View {
         HStack(spacing: 8) {
@@ -629,46 +634,8 @@ private struct GhosttySelectionSheetFailureBanner: View {
             Capsule().strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 0.75)
         }
         .shadow(color: Color.black.opacity(0.18), radius: 12, y: 7)
-        .accessibilityIdentifier("terminal.selection.failure")
-    }
-}
-
-private struct GhosttySelectionContextActionButton: View {
-    let title: String
-    let accessibilityIdentifier: String
-    let action: () -> Void
-
-    var body: some View {
-        Button {
-            Haptic.tap()
-            action()
-        } label: {
-            Image(systemName: "trash")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(GhosttySelectionContextActionPalette.destructiveText)
-                .frame(width: 44, height: 44)
-                .ghosttySelectionContextActionSurface()
-        }
-        .buttonStyle(GhosttySelectionContextActionButtonStyle())
         .accessibilityIdentifier(accessibilityIdentifier)
-        .accessibilityLabel(title)
     }
-}
-
-private struct GhosttySelectionContextActionButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.975 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-private enum GhosttySelectionContextActionPalette {
-    static let fallbackFill = Color(uiColor: .secondarySystemBackground).opacity(0.92)
-    static let glassTint = Color.primary.opacity(0.055)
-    static let destructiveText = Color(uiColor: .systemRed)
-    static let stroke = Color.primary.opacity(0.11)
-    static let shadow = Color.black.opacity(0.20)
 }
 
 private struct GhosttyRenderedPreviewSurface: View {
@@ -818,10 +785,10 @@ private struct GhosttyPaneTopologyDiagram: View {
     let selectedPaneID: UUID?
     let size: CGSize
     let accent: Color
-    let pendingRemovalPaneID: UUID?
     let onSelect: (UUID) -> Void
-    let onLongPress: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
-    let onRemove: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
+    let onClose: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
+    let onRename: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
+    let onClearName: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
 
     static func contentSize(for outerSize: CGSize) -> CGSize {
         CGSize(
@@ -864,7 +831,6 @@ private struct GhosttyPaneTopologyDiagram: View {
             RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
                 .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 1)
         }
-        .animation(.spring(response: 0.24, dampingFraction: 0.82), value: pendingRemovalPaneID)
     }
 
     private func paneTile(
@@ -874,34 +840,45 @@ private struct GhosttyPaneTopologyDiagram: View {
         let selected = pane.id == selectedPaneID
         let radius = max(1, min(6, min(size.width, size.height) * 0.18))
 
-        return ZStack(alignment: .topTrailing) {
-            Button {
-                onSelect(pane.id)
+        return Button {
+            onSelect(pane.id)
+        } label: {
+            paneLabel(for: pane, size: size)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if let field = pane.renameField {
+                Button {
+                    onRename(pane)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                .accessibilityIdentifier("terminal.pane.rename.\(pane.id.uuidString)")
+                if !field.name.isEmpty {
+                    Button {
+                        onClearName(pane)
+                    } label: {
+                        Label("Clear Name", systemImage: "eraser")
+                    }
+                    .accessibilityIdentifier("terminal.pane.clear-name.\(pane.id.uuidString)")
+                }
+            }
+            Button(role: .destructive) {
+                onClose(pane)
             } label: {
-                paneLabel(for: pane, size: size)
+                Label("Close", systemImage: "xmark")
             }
-            .buttonStyle(.plain)
-            .highPriorityGesture(
-                LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
-                    .onEnded { _ in onLongPress(pane) }
-            )
-            .allowsHitTesting(pendingRemovalPaneID != pane.id)
-            .accessibilityIdentifier("terminal.pane.tile.\(pane.id.uuidString)")
-            .accessibilityLabel(accessibilityLabel(for: pane))
-            .accessibilityAddTraits(selected ? .isSelected : [])
-            .accessibilityAction(named: Text("Remove Pane")) {
-                onLongPress(pane)
+            .accessibilityIdentifier("terminal.pane.remove.\(pane.id.uuidString)")
+        }
+        .accessibilityIdentifier("terminal.pane.tile.\(pane.id.uuidString)")
+        .accessibilityLabel(accessibilityLabel(for: pane))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityActions {
+            if let field = pane.renameField {
+                Button("Rename Pane") { onRename(pane) }
+                if !field.name.isEmpty { Button("Clear Name") { onClearName(pane) } }
             }
-
-            if pendingRemovalPaneID == pane.id {
-                GhosttySelectionContextActionButton(
-                    title: "Remove Pane",
-                    accessibilityIdentifier: "terminal.pane.remove.\(pane.id.uuidString)",
-                    action: { onRemove(pane) }
-                )
-                .padding(4)
-                .transition(.scale(scale: 0.92).combined(with: .opacity))
-            }
+            Button("Close Pane") { onClose(pane) }
         }
         .frame(width: size.width, height: size.height)
         .background(
@@ -1061,31 +1038,4 @@ private extension Optional where Wrapped == GhosttyPanePreviewSession.PreviewSta
             "Preview loading"
         }
     }
-}
-
-private extension View {
-    @ViewBuilder
-    func ghosttySelectionContextActionSurface() -> some View {
-        let shape = Circle()
-
-        if #available(iOS 26.0, *) {
-            self
-                .glassEffect(.regular.tint(GhosttySelectionContextActionPalette.glassTint).interactive(), in: shape)
-                .overlay {
-                    shape.strokeBorder(GhosttySelectionContextActionPalette.stroke, lineWidth: 0.75)
-                }
-                .shadow(color: GhosttySelectionContextActionPalette.shadow, radius: 18, y: 9)
-        } else {
-            self
-                .background(.regularMaterial, in: shape)
-                .background {
-                    shape.fill(GhosttySelectionContextActionPalette.fallbackFill)
-                }
-                .overlay {
-                    shape.strokeBorder(GhosttySelectionContextActionPalette.stroke, lineWidth: 1)
-                }
-                .shadow(color: GhosttySelectionContextActionPalette.shadow, radius: 18, y: 10)
-        }
-    }
-
 }

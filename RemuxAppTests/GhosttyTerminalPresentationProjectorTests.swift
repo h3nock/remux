@@ -773,10 +773,8 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         }
     }
 
-    /// The long-press bubble's tap reads what closing its tile asks from the sheet's tiles then: a tab that
-    /// became its workspace's only one since the long-press, as when another client closed its sibling, asks
-    /// first instead of closing its workspace at once.
-    func testATileRemovalAsksWhatClosingItAsksWhenTheBubbleIsTapped() {
+    /// Closing reads the current tiles: their last-tab confirmation may have changed while a menu was open.
+    func testATileRemovalAsksWhatClosingItAsksWhenTheActionIsChosen() {
         func tab(_ id: UUID, asking confirmation: GhosttyCloseConfirmation?) -> GhosttyWindowSelectionSheetRenderProjection.Window {
             GhosttyWindowSelectionSheetRenderProjection.Window(
                 id: id, displayName: "build", displayIndex: 1, totalCount: 1, paneCount: 1, isSelected: false,
@@ -791,20 +789,14 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         )
         var removal = GhosttyTileRemoval<GhosttyWindowSelectionSheetRenderProjection.Window>()
 
-        removal.showBubble(on: tab(id, asking: nil))
-        XCTAssertEqual(removal.bubbleTileID, id)
-        XCTAssertNil(removal.bubbleTapped(among: [tab(id, asking: lastTab)]), "The tab closed without asking.")
+        XCTAssertNil(removal.remove(id, among: [tab(id, asking: lastTab)]), "The tab closed without asking.")
         XCTAssertEqual(removal.asked?.closeConfirmation, lastTab)
-        XCTAssertNil(removal.bubbleTileID)
         removal.end()
 
-        removal.showBubble(on: tab(id, asking: lastTab))
-        XCTAssertEqual(removal.bubbleTapped(among: [tab(id, asking: nil)])?.id, id, "A tab with a sibling again asked.")
+        XCTAssertEqual(removal.remove(id, among: [tab(id, asking: nil)])?.id, id, "A tab with a sibling again asked.")
         XCTAssertNil(removal.asked)
 
-        removal.showBubble(on: tab(id, asking: nil))
-        XCTAssertNil(removal.bubbleTapped(among: []), "A tab the sheet no longer lists was removed.")
-        XCTAssertNil(removal.bubbleTileID)
+        XCTAssertNil(removal.remove(id, among: []), "A tab the sheet no longer lists was removed.")
         XCTAssertNil(removal.asked)
     }
 
@@ -820,13 +812,12 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         )
         var removal = GhosttyTileRemoval<GhosttyWindowSelectionSheetRenderProjection.Window>()
 
-        XCTAssertNil(removal.remove(tab), "The workspace's only tab closed without asking.")
+        XCTAssertNil(removal.remove(tab.id, among: [tab]), "The workspace's only tab closed without asking.")
         removal.keep(among: [id, other])
         XCTAssertEqual(removal.asked?.id, id, "A question about a tab still listed went.")
 
         removal.keep(among: [other])
         XCTAssertNil(removal.asked, "A question about a tab no longer listed stayed.")
-        XCTAssertNil(removal.bubbleTileID)
     }
 
     func testTerminalReadyTraceFieldsPreserveExistingKeysAndAddRawReadinessFacts() throws {

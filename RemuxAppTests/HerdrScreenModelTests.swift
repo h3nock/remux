@@ -6045,6 +6045,32 @@ final class HerdrScreenModelTests: XCTestCase {
         ])
     }
 
+    /// A nonfocused pane's label is visible in the map even though it is not the tab row's description.
+    func testRenamingAnUnfocusedPaneTellsTheOpenMap() async throws {
+        let harness = await makeHarness()
+        let session = try await shownSession(harness)
+        let adapter = harness.model.terminalScreenAdapter
+        let tab = try XCTUnwrap(adapter.windowSelectionSheetRenderProjection(group: nil).windows.first?.id)
+        func names() -> [String] {
+            adapter.paneSelectionSheetRenderProjection(topLevelID: tab).panes.compactMap { $0.renameField?.name }
+        }
+        var changes = 0
+        let watch = adapter.objectWillChange.sink { changes += 1 }
+        defer { watch.cancel() }
+        await session.bridge.serve(HerdrServerScript.snapshot(revision: 2, panes: [
+            HerdrServerScript.snapshotPane("w1:p1"),
+            HerdrServerScript.snapshotPane("w1:p2", label: "logs"),
+        ]))
+        try await harness.waitUntil("the pane's manual name wasn't projected") { names() == ["", "logs"] }
+        XCTAssertEqual(changes, 1)
+        await session.bridge.serve(HerdrServerScript.snapshot(revision: 3, panes: [
+            HerdrServerScript.snapshotPane("w1:p1"),
+            HerdrServerScript.snapshotPane("w1:p2"),
+        ]))
+        try await harness.waitUntil("the pane's cleared name wasn't projected") { names() == ["", ""] }
+        XCTAssertEqual(changes, 2)
+    }
+
     /// A snapshot that changes what a tab's row says tells the views: an agent naming its thread anew, a shell
     /// moving to another folder. Raw spinner changes that Herdr excludes from its stripped title do not
     /// update the row, nor does a new title of an agent whose pane no row puts in front.

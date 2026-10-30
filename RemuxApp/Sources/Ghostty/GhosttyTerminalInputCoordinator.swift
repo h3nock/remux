@@ -80,10 +80,16 @@ struct GhosttyTerminalInputCoordinator: Equatable {
         }
     }
 
-    mutating func updateSoftwareKeyboardVisibility(_ isVisible: Bool) {
+    mutating func updateSoftwareKeyboardVisibility(
+        _ isVisible: Bool,
+        isInputCovered: Bool = false
+    ) {
         isSoftwareKeyboardVisible = isVisible
 
         if isVisible {
+            // A field in a sheet uses the same system keyboard. Observe its
+            // visibility without changing the terminal's requested input state.
+            guard !isInputCovered else { return }
             // Presentation can finish after the user has already asked to
             // dismiss the keyboard. Keep that explicit dismissal authoritative
             // until UIKit confirms the keyboard is hidden.

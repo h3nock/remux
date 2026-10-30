@@ -280,19 +280,19 @@ extension HerdrSnapshot {
     /// placeholder. A tab's automatic name is its number in its workspace (`workspace.rs`
     /// `tab_display_name`); a pane's field starts empty without a manual label. Herdr's snapshot doesn't
     /// carry a workspace's automatic name once the user named it.
-    func renameField(for place: HerdrPlace) -> HerdrRenameField? {
+    func renameField(for place: HerdrPlace) -> TerminalRenameField? {
         switch place {
         case .pane(let id):
             guard let pane = panes.first(where: { $0.paneID == id }) else { return nil }
-            return HerdrRenameField(name: pane.label ?? "", placeholder: automaticName(ofPane: id))
+            return TerminalRenameField(name: pane.label ?? "", placeholder: automaticName(ofPane: id))
         case .tab(let id):
             guard let tab = tabs.first(where: { $0.tabID == id }),
                   let index = tabs.filter({ $0.workspaceID == tab.workspaceID }).firstIndex(where: { $0.tabID == id })
             else { return nil }
-            return HerdrRenameField(name: tab.label, placeholder: String(index + 1))
+            return TerminalRenameField(name: tab.label, placeholder: String(index + 1))
         case .workspace(let id):
             guard let workspace = workspaces.first(where: { $0.workspaceID == id }) else { return nil }
-            return HerdrRenameField(name: workspace.label, placeholder: workspace.customLabel ? "Name" : workspace.label)
+            return TerminalRenameField(name: workspace.label, placeholder: workspace.customLabel ? "Name" : workspace.label)
         }
     }
 
@@ -448,12 +448,6 @@ struct HerdrSessionOutline: Equatable, Sendable {
         guard !others.isEmpty, others.allSatisfy({ $0.worktree?.isLinkedWorktree == true }) else { return [workspace] }
         return [workspace] + others
     }
-}
-
-/// The text field of a rename alert: the place's name, and Herdr's automatic name as its placeholder.
-struct HerdrRenameField: Equatable, Sendable {
-    let name: String
-    let placeholder: String
 }
 
 /// What a close Herdr's client asks about first closes: a workspace, its tabs and panes, and for a worktree

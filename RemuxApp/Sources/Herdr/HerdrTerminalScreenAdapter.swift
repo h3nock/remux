@@ -639,11 +639,11 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         model?.answerAskedCloseConfirmation(agreed: agreed)
     }
 
-    func renameField(forTopLevel id: UUID) -> HerdrRenameField? {
+    func renameField(forTopLevel id: UUID) -> TerminalRenameField? {
         tabIDsBySurfaceID[id].flatMap { model?.renameField(for: .tab($0)) }
     }
 
-    func renameField(forPane id: UUID) -> HerdrRenameField? {
+    func renameField(forPane id: UUID) -> TerminalRenameField? {
         paneID(for: id).flatMap { model?.renameField(for: .pane($0)) }
     }
 
@@ -746,6 +746,7 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 let tab = tabIDsBySurfaceID[window.id].flatMap { id in shown.tabs.first { $0.id == id } }
                 window.closeConfirmation = tab.flatMap { closeConfirmation(before: .tab($0.id)) }
                 window.contents = tab.map(contents(of:))
+                window.renameField = renameField(forTopLevel: window.id)
                 return window
             },
             selectedWindowID: onScreen.selectedWindowID,
@@ -797,6 +798,7 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             panes: projection.panes.map { pane in
                 var pane = pane
                 pane.closeConfirmation = paneID(for: pane.id).flatMap { closeConfirmation(before: .pane($0)) }
+                pane.renameField = renameField(forPane: pane.id)
                 return pane
             },
             selectedPaneID: projection.selectedPaneID,

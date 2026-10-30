@@ -458,14 +458,14 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let windows = adapter.windowSelectionSheetRenderProjection(group: nil).windows
         XCTAssertEqual(windows.map(\.closeConfirmation), [
             GhosttyCloseConfirmation(
-                title: "Remove Window?",
+                title: "Close Window?",
                 message: "This will close Window 1 and 2 panes.",
-                action: "Remove Window 1"
+                action: "Close Window 1"
             ),
             GhosttyCloseConfirmation(
-                title: "Remove Window?",
+                title: "Close Window?",
                 message: "This will close Window 2 and 1 pane.",
-                action: "Remove Window 2"
+                action: "Close Window 2"
             ),
         ])
         XCTAssertEqual(
@@ -475,9 +475,9 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(
             adapter.paneSelectionSheetRenderProjection(topLevelID: windows[1].id).panes.map(\.closeConfirmation),
             [GhosttyCloseConfirmation(
-                title: "Remove Pane?",
-                message: "This is the only pane in the window, so removing it can close the window too.",
-                action: "Remove Pane"
+                title: "Close Pane?",
+                message: "This is the only pane in the window, so closing it can close the window too.",
+                action: "Close Pane"
             )]
         )
         XCTAssertNil(adapter.askedCloseConfirmation)

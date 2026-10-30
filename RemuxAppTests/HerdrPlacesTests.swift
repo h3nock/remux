@@ -174,12 +174,12 @@ final class HerdrPlacesTests: XCTestCase {
         """
         let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: Data(json.utf8))
 
-        XCTAssertEqual(snapshot.renameField(for: .tab("t2")), HerdrRenameField(name: "build", placeholder: "2"))
-        XCTAssertEqual(snapshot.renameField(for: .tab("t3")), HerdrRenameField(name: "1", placeholder: "1"))
-        XCTAssertEqual(snapshot.renameField(for: .pane("p1")), HerdrRenameField(name: "server", placeholder: "terminal"))
-        XCTAssertEqual(snapshot.renameField(for: .pane("p2")), HerdrRenameField(name: "", placeholder: "claude"))
-        XCTAssertEqual(snapshot.renameField(for: .workspace("w1")), HerdrRenameField(name: "api", placeholder: "api"))
-        XCTAssertEqual(snapshot.renameField(for: .workspace("w2")), HerdrRenameField(name: "docs", placeholder: "Name"))
+        XCTAssertEqual(snapshot.renameField(for: .tab("t2")), TerminalRenameField(name: "build", placeholder: "2"))
+        XCTAssertEqual(snapshot.renameField(for: .tab("t3")), TerminalRenameField(name: "1", placeholder: "1"))
+        XCTAssertEqual(snapshot.renameField(for: .pane("p1")), TerminalRenameField(name: "server", placeholder: "terminal"))
+        XCTAssertEqual(snapshot.renameField(for: .pane("p2")), TerminalRenameField(name: "", placeholder: "claude"))
+        XCTAssertEqual(snapshot.renameField(for: .workspace("w1")), TerminalRenameField(name: "api", placeholder: "api"))
+        XCTAssertEqual(snapshot.renameField(for: .workspace("w2")), TerminalRenameField(name: "docs", placeholder: "Name"))
         XCTAssertNil(snapshot.renameField(for: .tab("gone")))
         XCTAssertTrue(snapshot.isOnScreen(.pane("p2")))
         XCTAssertTrue(snapshot.isOnScreen(.workspace("w1")))

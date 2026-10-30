@@ -218,6 +218,11 @@ private struct RemuxWorkspaceShell: View {
                 herdrPlaces: model.herdrPlaces(of:),
                 onSelectHerdrWorkspace: model.openHerdrWorkspace(_:bootID:in:),
                 onCreateHerdrWorkspace: model.createHerdrWorkspace(in:),
+                herdrWorkspaceRenameField: model.herdrWorkspaceRenameField(_:in:),
+                onRenameHerdrWorkspace: model.renameHerdrWorkspace(_:to:bootID:in:),
+                herdrWorkspaceCloseConfirmation: model.herdrWorkspaceCloseConfirmation(_:in:),
+                onCloseHerdrWorkspace: model.closeHerdrWorkspace(confirmed:in:),
+                herdrScreen: model.herdrScreen(of:),
                 herdrAgents: model.herdrAgents(of:),
                 onOpenHerdrAgent: { workspaceID, paneID, bootID in
                     model.openHerdrSession(workspaceID, atPane: paneID, bootID: bootID)

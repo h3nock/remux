@@ -996,6 +996,10 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func answerAskedCloseConfirmation(agreed: Bool) {}
 
+    func renameTopLevel(_ id: UUID, to name: String) -> Bool { false }
+
+    func renamePane(_ id: UUID, to name: String) -> Bool { false }
+
     func enterFocusedTmuxCopyMode() -> GhosttyTerminalActionOutcome {
         guard let controller, let activeManagedPaneID else {
             return .missingTarget(.focusedPane)
@@ -1075,9 +1079,9 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 var window = window
                 let panes = window.paneCount == 1 ? "1 pane" : "\(window.paneCount) panes"
                 window.closeConfirmation = GhosttyCloseConfirmation(
-                    title: "Remove Window?",
+                    title: "Close Window?",
                     message: "This will close Window \(window.displayIndex) and \(panes).",
-                    action: "Remove Window \(window.displayIndex)"
+                    action: "Close Window \(window.displayIndex)"
                 )
                 return window
             },
@@ -1108,9 +1112,9 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         )
         guard projection.paneCount == 1, var pane = projection.panes.first else { return projection }
         pane.closeConfirmation = GhosttyCloseConfirmation(
-            title: "Remove Pane?",
-            message: "This is the only pane in the window, so removing it can close the window too.",
-            action: "Remove Pane"
+            title: "Close Pane?",
+            message: "This is the only pane in the window, so closing it can close the window too.",
+            action: "Close Pane"
         )
         return GhosttyPaneSelectionSheetRenderProjection(
             panes: [pane],

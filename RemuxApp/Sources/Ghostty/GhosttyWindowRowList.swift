@@ -2,9 +2,9 @@ import SwiftUI
 import UIKit
 
 /// The windows as a plain list, as the Sessions sheet lists sessions, for a backend that says what each window
-/// holds. A row has its panes' marks, its name if the user gave it one and what its focused pane is doing, a
+/// holds. A row has its panes' marks, its label and what its focused pane is doing, a
 /// spinner while an agent in it works, and the checkmark on the window on screen. Its most urgent agent's
-/// other states show as the dot on its front mark. A long press offers Close. The marks take one fixed column,
+/// other states show as the dot on its front mark. Native row actions offer Rename and Close. The marks take one fixed column,
 /// `TerminalProgramStack.width`, and the text starts 8 points after it, so every row's front tile and text start at
 /// the same x, whatever each row's mark holds.
 struct GhosttyWindowRowList: View {
@@ -18,6 +18,7 @@ struct GhosttyWindowRowList: View {
     let topLevelNoun: GhosttyTopLevelNoun
     let onSelect: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
     let onClose: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
+    let onRename: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
 
     /// The rows' height, as tall as `rowCount` rows at the user's text size, up to `maximumContentHeight`.
     @MainActor
@@ -37,21 +38,40 @@ struct GhosttyWindowRowList: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
-                    Button(role: .destructive) {
-                        onClose(window)
-                    } label: {
-                        Label("Close \(topLevelNoun.singular)", systemImage: "xmark")
-                    }
-                    .accessibilityIdentifier("terminal.window.remove.\(window.displayIndex)")
+                    actions(for: window)
                 }
-                .accessibilityAction(named: Text("Close \(topLevelNoun.singular)")) {
-                    onClose(window)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    actions(for: window)
+                }
+                .accessibilityActions {
+                    if window.renameField != nil {
+                        Button("Rename \(topLevelNoun.singular)") { onRename(window) }
+                    }
+                    Button("Close \(topLevelNoun.singular)") { onClose(window) }
                 }
                 .sessionSwitcherListRow(accessibilityIdentifier: "terminal.window.tile.\(window.displayIndex)")
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder
+    private func actions(for window: GhosttyWindowSelectionSheetRenderProjection.Window) -> some View {
+        if window.renameField != nil {
+            Button {
+                onRename(window)
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            .accessibilityIdentifier("terminal.window.rename.\(window.displayIndex)")
+        }
+        Button(role: .destructive) {
+            onClose(window)
+        } label: {
+            Label("Close", systemImage: "xmark")
+        }
+        .accessibilityIdentifier("terminal.window.remove.\(window.displayIndex)")
     }
 }
 

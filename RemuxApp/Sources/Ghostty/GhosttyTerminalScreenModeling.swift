@@ -234,6 +234,13 @@ protocol GhosttyTerminalActionModeling: ObservableObject {
     @discardableResult
     func closeTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome
 
+    /// Rename is offered only for projections with a rename field.
+    @discardableResult
+    func renameTopLevel(_ id: UUID, to name: String) -> Bool
+
+    @discardableResult
+    func renamePane(_ id: UUID, to name: String) -> Bool
+
     /// A close the backend's server asked the user to confirm, as Herdr's asks before a close that would
     /// close a worktree group, until the user answers it (`answerAskedCloseConfirmation(agreed:)`).
     var askedCloseConfirmation: GhosttyCloseConfirmation? { get }

@@ -1742,7 +1742,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// What renaming a workspace from its row starts with; only the session on screen offers it.
-    func herdrWorkspaceRenameField(_ herdrWorkspaceID: String, in workspaceID: SavedWorkspace.ID) -> HerdrRenameField? {
+    func herdrWorkspaceRenameField(_ herdrWorkspaceID: String, in workspaceID: SavedWorkspace.ID) -> TerminalRenameField? {
         herdrModelOnScreen(workspaceID)?.renameField(for: .workspace(herdrWorkspaceID))
     }
 
@@ -1759,6 +1759,11 @@ final class RemuxRootModel: ObservableObject {
     private func herdrModelOnScreen(_ workspaceID: SavedWorkspace.ID) -> HerdrScreenModel? {
         guard state == .terminal(workspaceID) else { return nil }
         return herdrModel(of: workspaceID)
+    }
+
+    /// The current session's existing notice publisher, observed by the sheet that issues its commands.
+    func herdrScreen(of workspaceID: SavedWorkspace.ID) -> HerdrTerminalScreenAdapter? {
+        herdrModelOnScreen(workspaceID)?.terminalScreenAdapter
     }
 
     /// An open Herdr session's agents.

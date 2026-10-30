@@ -2002,6 +2002,350 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground)
     }
 
+    /// Rejections use the existing notice inside large Sessions, where the terminal's own notice is covered.
+    func testLiveHerdrWorkspaceFailuresStayVisibleInSessionsWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        openSessionSwitcherFromTerminal()
+        let sheet = elementWithIdentifier("terminal.sessions.sheet")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        sheet.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)))
+        XCTAssertGreaterThan(sheet.frame.height, app.frame.height * 0.75, "Sessions didn't reach its large detent.")
+        func row(_ name: String) -> XCUIElement {
+            app.buttons.matching(NSPredicate(
+                format: "identifier == %@ AND label CONTAINS %@", "terminal.sessions.herdr-workspace", "Workspace \(name),"
+            )).firstMatch
+        }
+        func checkFailure(_ message: String, shot: String) {
+            captureLiveHerdrStep(shot, in: configuration)
+            if let directory = configuration.captureDirectory {
+                try? app.debugDescription.write(
+                    toFile: URL(fileURLWithPath: directory).appendingPathComponent("\(shot).ax.txt").path,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            let banner = elementWithIdentifier("terminal.sessions.failure")
+            XCTAssertTrue(banner.waitForExistence(timeout: 3), "Sessions did not show its command failure.")
+            XCTAssertEqual(banner.label, message)
+            let footer = app.buttons["terminal.sessions.new"].firstMatch
+            XCTAssertTrue(footer.isHittable)
+            XCTAssertGreaterThanOrEqual(banner.frame.minY, sheet.frame.minY)
+            XCTAssertLessThan(banner.frame.maxY, footer.frame.minY, "The failure covers the New Session action.")
+            captureLiveHerdrStep(shot, in: configuration)
+            XCTAssertTrue(banner.waitForNonExistence(timeout: 7), "Sessions did not observe the existing notice expire.")
+        }
+        XCTAssertTrue(row("archive").waitForExistence(timeout: 5))
+        row("archive").press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.workspace.rename.w2", fallbackLabel: "Rename")
+        XCTAssertTrue(app.alerts["Rename Workspace"].waitForExistence(timeout: 5))
+        let removed = try performLiveHerdrStep("remove-rename-target", in: configuration)
+        XCTAssertTrue(removed.hasPrefix("OK"), removed)
+        app.alerts.firstMatch.buttons["Save"].firstMatch.tap()
+        checkFailure("Herdr: rename workspace failed", shot: "sessions-rename-failure")
+
+        XCTAssertTrue(row("last-pane").waitForExistence(timeout: 5))
+        row("last-pane").press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.workspace.remove.w3", fallbackLabel: "Close")
+        let confirm = app.buttons["terminal.workspace.remove.confirm"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        let closed = try performLiveHerdrStep("remove-close-target", in: configuration)
+        XCTAssertTrue(closed.hasPrefix("OK"), closed)
+        confirm.tap()
+        checkFailure("Herdr: close workspace failed", shot: "sessions-close-failure")
+    }
+
+    /// A manual name equal to the automatic one still changes whether Clear Name is available.
+    func testLiveHerdrPaneRenameStateWithoutAVisibleNameChangeWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        app.buttons["terminal.panes"].firstMatch.tap()
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 5))
+        let pane = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label == %@", "terminal.pane.tile.", "api, terminal · 2"
+        )).firstMatch
+        XCTAssertTrue(pane.waitForExistence(timeout: 5))
+        let suffix = String(pane.identifier.dropFirst("terminal.pane.tile.".count))
+        let result = try performLiveHerdrStep("set-auto-name", in: configuration)
+        XCTAssertTrue(result.hasPrefix("OK"), result)
+        XCTAssertEqual(pane.label, "api, terminal · 2")
+        pane.press(forDuration: 1)
+        let clear = app.buttons["terminal.pane.clear-name.\(suffix)"].firstMatch
+        XCTAssertTrue(clear.waitForExistence(timeout: 5), "The manual-name state didn't reach the open map.")
+        captureLiveHerdrStep("same-visible-name-menu", in: configuration)
+        clear.tap()
+        let cleared = try performLiveHerdrStep("pane-cleared", in: configuration)
+        XCTAssertTrue(cleared.hasPrefix("OK"), cleared)
+        pane.press(forDuration: 1)
+        XCTAssertFalse(clear.exists, "Clear Name stayed after its manual name was cleared.")
+        captureLiveHerdrStep("same-visible-name-cleared-menu", in: configuration)
+    }
+
+    /// Native actions use Herdr's real rename and close contracts, while keeping the sheet on screen.
+    func testLiveHerdrRenameKeyboardMatrixWhenConfigured() throws {
+        app.launchEnvironment["REMUX_TRACE_COMPOSER_PERF"] = "1"
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        func record(_ name: String) {
+            let marker = app.otherElements["terminal.keyboard.continuity"]
+            print("RENAME_KEYBOARD \(name) keyboard=\(isSoftwareKeyboardOnScreen(app.keyboards.firstMatch)) state=\(marker.exists ? (marker.value ?? "missing") : "covered")")
+            captureLiveHerdrStep(name, in: configuration)
+        }
+        var workspaceName = "archive"
+        for kind in ["tabs", "panes", "sessions"] {
+            for shown in [false, true] {
+                for action in ["Cancel", "Save"] {
+                    let label = "\(kind)-\(shown ? "shown" : "hidden")-\(action.lowercased())"
+                    if isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) != shown {
+                        app.buttons["terminal.keyboard"].tap()
+                    }
+                    XCTAssertNotNil(waitForKeyboardPresence(shown, label: label + " initial", timeout: 5))
+                    XCTAssertTrue(waitForTerminalFirstResponder(shown))
+                    record(label + "-1-before")
+                    if kind == "sessions" { openSessionSwitcherFromTerminal() }
+                    else { app.buttons[kind == "tabs" ? "terminal.windows" : "terminal.panes"].firstMatch.tap() }
+                    XCTAssertNotNil(waitForKeyboardPresence(false, label: label + " sheet", timeout: 5))
+                    record(label + "-2-sheet")
+                    if kind == "tabs" {
+                        app.buttons["terminal.window.tile.2"].firstMatch.press(forDuration: 1)
+                        tapPickerButton(identifier: "terminal.window.rename.2", fallbackLabel: "Rename")
+                    } else if kind == "panes" {
+                        let tile = try XCTUnwrap(panePickerTiles().first)
+                        let suffix = String(tile.identifier.dropFirst("terminal.pane.tile.".count))
+                        tile.press(forDuration: 1)
+                        tapPickerButton(identifier: "terminal.pane.rename.\(suffix)", fallbackLabel: "Rename")
+                    } else {
+                        app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "terminal.sessions.herdr-workspace", "Workspace \(workspaceName),")).firstMatch.press(forDuration: 1)
+                        tapPickerButton(identifier: "terminal.workspace.rename.w2", fallbackLabel: "Rename")
+                    }
+                    XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5))
+                    XCTAssertNotNil(waitForKeyboardPresence(true, label: label + " alert", timeout: 5))
+                    record(label + "-3-alert")
+                    if app.otherElements["terminal.keyboard.continuity"].exists {
+                        XCTAssertTrue(waitForTerminalFirstResponder(false), "Native alert must own input: " + label)
+                    }
+                    if action == "Save" {
+                        let field = app.alerts.firstMatch.textFields.firstMatch
+                        field.tap()
+                        let count = (field.value as? String)?.count ?? 0
+                        if count > 0 { field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: count)) }
+                        let name = kind + (shown ? "-shown" : "-hidden")
+                        field.typeText(name)
+                        if kind == "sessions" { workspaceName = name }
+                        XCTAssertTrue(app.alerts.firstMatch.buttons[action].firstMatch.isEnabled)
+                    }
+                    app.alerts.firstMatch.buttons[action].firstMatch.tap()
+                    XCTAssertTrue(app.alerts.firstMatch.waitForNonExistence(timeout: 5))
+                    RunLoop.current.run(until: Date().addingTimeInterval(1))
+                    record(label + "-4-after-action")
+                    XCTAssertNotNil(waitForKeyboardPresence(false, label: label + " action while sheet stays", timeout: 5))
+                    if app.otherElements["terminal.keyboard.continuity"].exists {
+                        XCTAssertTrue(waitForTerminalFirstResponder(false))
+                    }
+                    let close = kind == "tabs" ? "terminal.windows.close" : kind == "panes" ? "terminal.panes.close" : "terminal.sessions.close"
+                    app.buttons[close].firstMatch.tap()
+                    RunLoop.current.run(until: Date().addingTimeInterval(1))
+                    record(label + "-5-after-dismiss")
+                    XCTAssertNotNil(waitForKeyboardPresence(shown, label: label + " restoration", timeout: 5))
+                    XCTAssertTrue(waitForTerminalFirstResponder(shown), "Terminal intent must survive Rename: " + label)
+                }
+            }
+        }
+        if !isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) { app.buttons["terminal.keyboard"].tap() }
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "More control before Tabs"))
+        app.buttons["terminal.windows"].firstMatch.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "More control under Tabs"))
+        let more = app.buttons["terminal.windows.group.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        let newWorkspace = app.buttons["New Workspace"].firstMatch
+        XCTAssertTrue(newWorkspace.waitForExistence(timeout: 5))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "More control menu"))
+        record("more-control-menu")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+        XCTAssertTrue(newWorkspace.waitForNonExistence(timeout: 5))
+        app.buttons["terminal.windows.close"].firstMatch.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "More control restoration"))
+        XCTAssertTrue(waitForTerminalFirstResponder(true))
+        record("more-control-restored")
+    }
+
+    func testLiveHerdrNativeRenameAndCloseWhenConfigured() throws {
+        app.launchEnvironment["REMUX_TRACE_COMPOSER_PERF"] = "1"
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        let tabs = app.buttons["terminal.windows"].firstMatch
+        let panes = app.buttons["terminal.panes"].firstMatch
+        let field = app.alerts.firstMatch.textFields.firstMatch
+        let save = app.alerts.firstMatch.buttons["Save"].firstMatch
+        func tab(_ index: Int) -> XCUIElement { app.buttons["terminal.window.tile.\(index)"].firstMatch }
+        func workspace(_ name: String) -> XCUIElement {
+            app.buttons.matching(NSPredicate(
+                format: "identifier == %@ AND label CONTAINS %@", "terminal.sessions.herdr-workspace", "Workspace \(name),"
+            )).firstMatch
+        }
+        func replaceName(_ name: String) {
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            field.tap()
+            let count = (field.value as? String)?.count ?? 0
+            if count > 0 { field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: count)) }
+            if !name.isEmpty { field.typeText(name) }
+        }
+        func saveName(_ name: String) {
+            replaceName(name)
+            XCTAssertTrue(save.isEnabled)
+            save.tap()
+            XCTAssertTrue(app.alerts.firstMatch.waitForNonExistence(timeout: 5))
+        }
+        func checkpoint(_ step: String) throws {
+            let result = try performLiveHerdrStep(step, in: configuration)
+            XCTAssertTrue(result.hasPrefix("OK"), result)
+            captureLiveHerdrStep(step, in: configuration)
+        }
+        func cancelDialog() {
+            let cancel = app.buttons["Cancel"].firstMatch
+            if cancel.exists {
+                cancel.tap()
+            } else {
+                // The native popover on iOS 27 dismisses with an outside tap.
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+            }
+            XCTAssertTrue(app.buttons["Close Workspace"].firstMatch.waitForNonExistence(timeout: 5))
+        }
+        func openWorkspace(_ name: String) {
+            openSessionSwitcherFromTerminal()
+            let list = app.descendants(matching: .any)["terminal.sessions.list"].firstMatch
+            for _ in 0..<4 where !workspace(name).exists || !workspace(name).isHittable { list.swipeUp() }
+            XCTAssertTrue(workspace(name).waitForExistence(timeout: 5))
+            workspace(name).tap()
+            XCTAssertTrue(elementWithIdentifier("terminal.sessions.sheet").waitForNonExistence(timeout: 5))
+        }
+        func closePaneMenu(_ tile: XCUIElement) {
+            tile.press(forDuration: 1)
+            tapPickerButton(identifier: "terminal.pane.remove.\(tile.identifier.dropFirst("terminal.pane.tile.".count))", fallbackLabel: "Close")
+        }
+
+        if !isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) { app.buttons["terminal.keyboard"].tap() }
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "native actions before Tabs", timeout: 5))
+        XCTAssertTrue(waitForTerminalFirstResponder(true))
+        captureLiveHerdrStep("keyboard-before-tabs", in: configuration)
+        tabs.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "native actions under Tabs", timeout: 5))
+        XCTAssertTrue(waitForTerminalFirstResponder(false))
+        XCTAssertTrue(tab(2).waitForExistence(timeout: 5))
+        tab(2).press(forDuration: 1)
+        captureLiveHerdrStep("tab-menu", in: configuration)
+        tapPickerButton(identifier: "terminal.window.rename.2", fallbackLabel: "Rename")
+        XCTAssertTrue(app.alerts["Rename Tab"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        captureLiveHerdrStep("tab-rename-alert", in: configuration)
+        replaceName("")
+        XCTAssertFalse(save.isEnabled, "A tab cannot have an empty name.")
+        captureLiveHerdrStep("tab-rename-empty", in: configuration)
+        saveName("build")
+        try checkpoint("tab-renamed")
+        XCTAssertTrue(tab(2).label.contains("build"))
+
+        tab(2).swipeLeft()
+        captureLiveHerdrStep("tab-swipe", in: configuration)
+        tapPickerButton(identifier: "terminal.window.rename.2", fallbackLabel: "Rename")
+        saveName("tests")
+        try checkpoint("tab-renamed-by-swipe")
+        tab(2).swipeLeft()
+        tapPickerButton(identifier: "terminal.window.remove.2", fallbackLabel: "Close")
+        XCTAssertTrue(tab(2).waitForNonExistence(timeout: 10))
+        try checkpoint("tab-closed")
+        app.buttons["terminal.windows.close"].tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "native actions after Tabs", timeout: 5))
+
+        panes.tap()
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 5))
+        let unnamed = try XCTUnwrap(panePickerTiles().first { $0.label == "api, terminal · 2" })
+        let paneSuffix = String(unnamed.identifier.dropFirst("terminal.pane.tile.".count))
+        unnamed.press(forDuration: 1)
+        XCTAssertFalse(app.buttons["terminal.pane.clear-name.\(paneSuffix)"].exists)
+        captureLiveHerdrStep("pane-menu", in: configuration)
+        tapPickerButton(identifier: "terminal.pane.rename.\(paneSuffix)", fallbackLabel: "Rename")
+        saveName("logs")
+        let renamedPane = app.buttons["terminal.pane.tile.\(paneSuffix)"].firstMatch
+        XCTAssertTrue(waitForLabel(of: renamedPane, "api, logs · 2", timeout: 5))
+        try checkpoint("pane-renamed")
+        renamedPane.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["terminal.pane.clear-name.\(paneSuffix)"].waitForExistence(timeout: 5))
+        captureLiveHerdrStep("pane-named-menu", in: configuration)
+        tapPickerButton(identifier: "terminal.pane.clear-name.\(paneSuffix)", fallbackLabel: "Clear Name")
+        XCTAssertTrue(waitForLabel(of: renamedPane, "api, terminal · 2", timeout: 5))
+        try checkpoint("pane-cleared")
+        renamedPane.press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.pane.rename.\(paneSuffix)", fallbackLabel: "Rename")
+        saveName("logs")
+        renamedPane.press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.pane.rename.\(paneSuffix)", fallbackLabel: "Rename")
+        saveName("")
+        XCTAssertTrue(waitForLabel(of: renamedPane, "api, terminal · 2", timeout: 5))
+        try checkpoint("pane-empty-name")
+        closePaneMenu(renamedPane)
+        XCTAssertTrue(waitForPanePickerTileCount(1, timeout: 10))
+        try checkpoint("pane-closed")
+        app.buttons["terminal.panes.close"].tap()
+
+        openSessionSwitcherFromTerminal()
+        XCTAssertTrue(workspace("archive").waitForExistence(timeout: 5))
+        workspace("archive").press(forDuration: 1)
+        captureLiveHerdrStep("workspace-menu", in: configuration)
+        tapPickerButton(identifier: "terminal.workspace.rename.w2", fallbackLabel: "Rename")
+        XCTAssertTrue(app.alerts["Rename Workspace"].waitForExistence(timeout: 5))
+        replaceName("  ")
+        XCTAssertFalse(save.isEnabled, "A workspace cannot have a blank name.")
+        saveName("docs")
+        XCTAssertTrue(workspace("docs").waitForExistence(timeout: 5))
+        try checkpoint("workspace-renamed")
+        workspace("docs").swipeLeft()
+        captureLiveHerdrStep("workspace-swipe", in: configuration)
+        tapPickerButton(identifier: "terminal.workspace.remove.w2", fallbackLabel: "Close")
+        XCTAssertTrue(app.buttons["terminal.workspace.remove.confirm"].waitForExistence(timeout: 5))
+        captureLiveHerdrStep("workspace-close-question", in: configuration)
+        cancelDialog()
+        try checkpoint("workspace-close-cancelled")
+        workspace("docs").press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.workspace.remove.w2", fallbackLabel: "Close")
+        app.buttons["terminal.workspace.remove.confirm"].firstMatch.tap()
+        XCTAssertTrue(workspace("docs").waitForNonExistence(timeout: 10))
+        try checkpoint("workspace-closed")
+        app.buttons["terminal.sessions.close"].tap()
+
+        openWorkspace("last-tab")
+        tabs.tap()
+        tab(1).press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.window.remove.1", fallbackLabel: "Close")
+        XCTAssertTrue(app.buttons["terminal.window.remove.confirm.1"].waitForExistence(timeout: 5))
+        captureLiveHerdrStep("last-tab-question", in: configuration)
+        cancelDialog()
+        try checkpoint("last-tab-cancelled")
+        tab(1).press(forDuration: 1)
+        tapPickerButton(identifier: "terminal.window.remove.1", fallbackLabel: "Close")
+        app.buttons["terminal.window.remove.confirm.1"].firstMatch.tap()
+        try checkpoint("last-tab-closed")
+        dismissTopSheetIfPresent()
+
+        openWorkspace("last-pane")
+        panes.tap()
+        XCTAssertTrue(waitForPanePickerTileCount(1, timeout: 5))
+        closePaneMenu(panePickerTiles()[0])
+        XCTAssertTrue(app.buttons["terminal.pane.remove.confirm"].waitForExistence(timeout: 5))
+        captureLiveHerdrStep("last-pane-question", in: configuration)
+        cancelDialog()
+        try checkpoint("last-pane-cancelled")
+        closePaneMenu(panePickerTiles()[0])
+        app.buttons["terminal.pane.remove.confirm"].firstMatch.tap()
+        try checkpoint("last-pane-closed")
+    }
+
     /// Closing tabs from the Tabs sheet asks where Herdr's client asks, on the tabs test's server with a
     /// worktree group added: the repository `shop`'s root checkout and its linked worktree `shop-feature`. A
     /// tab beside another closes at once; a workspace's only tab asks about the workspace's close first; and
@@ -2017,7 +2361,7 @@ final class RemuxAppUITests: XCTestCase {
         func remove(tile index: Int) {
             XCTAssertTrue(tile(index).waitForExistence(timeout: 5), "Missing tab tile \(index)")
             tile(index).press(forDuration: 1.0)
-            tapPickerButton(identifier: "terminal.window.remove.\(index)", fallbackLabel: "Close Tab")
+            tapPickerButton(identifier: "terminal.window.remove.\(index)", fallbackLabel: "Close")
         }
 
         openFirstSavedSession()
@@ -3508,9 +3852,9 @@ final class RemuxAppUITests: XCTestCase {
         removePickerItem(
             tileIdentifier: "terminal.window.tile.2",
             actionIdentifier: "terminal.window.remove.2",
-            actionLabel: "Remove Window 2",
+            actionLabel: "Close",
             confirmIdentifier: "terminal.window.remove.confirm.2",
-            confirmLabel: "Remove Window 2"
+            confirmLabel: "Close Window 2"
         )
         XCTAssertTrue(
             waitForElementToDisappear(app.buttons["terminal.window.tile.2"], timeout: 10),
@@ -6108,9 +6452,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(paneIdentifier.isEmpty)
 
         tile.press(forDuration: 1.0)
+        XCTAssertFalse(app.buttons["Rename"].exists, "tmux panes offer Close only.")
+        attachScreenshot(named: "tmux-pane-close-menu")
         tapPickerButton(
             identifier: "terminal.pane.remove.\(paneIdentifier)",
-            fallbackLabel: "Remove Pane"
+            fallbackLabel: "Close"
         )
     }
 
@@ -6124,7 +6470,8 @@ final class RemuxAppUITests: XCTestCase {
         let tile = app.buttons[tileIdentifier]
         XCTAssertTrue(tile.waitForExistence(timeout: 5), "Missing picker tile \(tileIdentifier)")
         tile.press(forDuration: 1.0)
-
+        XCTAssertFalse(app.buttons["Rename"].exists, "tmux windows offer Close only.")
+        attachScreenshot(named: "tmux-window-close-menu")
         tapPickerButton(identifier: actionIdentifier, fallbackLabel: actionLabel)
         tapPickerButton(identifier: confirmIdentifier, fallbackLabel: confirmLabel)
     }

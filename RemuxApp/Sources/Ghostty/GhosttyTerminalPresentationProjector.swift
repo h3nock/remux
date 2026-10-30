@@ -595,6 +595,12 @@ struct GhosttyPaneSelectionSheetTopologyProjection: Equatable, Sendable {
     let shouldDismissPaneSheet: Bool
 }
 
+/// A rename field supplied by the backend: its current name and automatic-name placeholder.
+struct TerminalRenameField: Equatable, Sendable {
+    let name: String
+    let placeholder: String
+}
+
 /// What a close asks the user first, in its backend's words, as the selection sheets' dialog shows it.
 struct GhosttyCloseConfirmation: Equatable, Sendable {
     let title: String
@@ -616,6 +622,8 @@ struct GhosttyWindowSelectionSheetRenderProjection: Equatable, Sendable {
         var agentStatus: TerminalAgentStatus?
         /// What closing the window asks the user first; nil when it closes at once.
         var closeConfirmation: GhosttyCloseConfirmation?
+        /// Nil when this backend does not offer Rename.
+        var renameField: TerminalRenameField? = nil
         /// What the window holds, for a backend whose sheet lists its windows as rows.
         var contents: Contents?
     }
@@ -677,6 +685,8 @@ struct GhosttyPaneSelectionSheetRenderProjection: Equatable, Sendable {
         var agent: TerminalAgentState?
         /// What closing the pane asks the user first; nil when it closes at once.
         var closeConfirmation: GhosttyCloseConfirmation?
+        /// Nil when this backend does not offer Rename.
+        var renameField: TerminalRenameField? = nil
     }
 
     let panes: [Pane]

@@ -65,6 +65,42 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.isSoftwareKeyboardVisible)
     }
 
+    func testCoveredFieldKeyboardDoesNotActivateHiddenTerminalInput() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+
+        coordinator.updateSoftwareKeyboardVisibility(true, isInputCovered: true)
+
+        XCTAssertTrue(coordinator.isSoftwareKeyboardVisible)
+        XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
+        XCTAssertEqual(coordinator.terminalActivationToken, 0)
+
+        coordinator.updateSoftwareKeyboardVisibility(false, isInputCovered: true)
+
+        XCTAssertFalse(coordinator.isSoftwareKeyboardVisible)
+        XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
+    }
+
+    func testCoveredFieldKeyboardPreservesTerminalRestorationIntent() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+        coordinator.showSystemKeyboard(isInputAvailable: true)
+        coordinator.updateSoftwareKeyboardVisibility(true)
+
+        coordinator.updateSoftwareKeyboardVisibility(false, isInputCovered: true)
+        coordinator.updateSoftwareKeyboardVisibility(true, isInputCovered: true)
+        coordinator.updateSoftwareKeyboardVisibility(false, isInputCovered: true)
+
+        XCTAssertFalse(coordinator.isSoftwareKeyboardVisible)
+        XCTAssertEqual(coordinator.keyboardMode, .system)
+        XCTAssertEqual(coordinator.keyboardOwner, .terminal)
+        XCTAssertEqual(coordinator.terminalActivationToken, 1)
+
+        coordinator.refocusSystemKeyboardIfActive(isInputAvailable: true)
+
+        XCTAssertEqual(coordinator.terminalActivationToken, 2)
+    }
+
     func testLateKeyboardShowDoesNotCancelExplicitDismissal() {
         var coordinator = GhosttyTerminalInputCoordinator()
         coordinator.showSystemKeyboard(isInputAvailable: true)

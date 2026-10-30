@@ -621,7 +621,7 @@ final class HerdrScreenModel {
     }
 
     /// What the rename alert for `place` starts with (`HerdrSnapshot.renameField(for:)`).
-    func renameField(for place: HerdrPlace) -> HerdrRenameField? {
+    func renameField(for place: HerdrPlace) -> TerminalRenameField? {
         snapshot?.renameField(for: place)
     }
 
@@ -1911,6 +1911,7 @@ final class HerdrScreenModel {
             onNotification(.serverRestarted)
         }
         let rows = terminalScreenAdapter.tabRowContents
+        let panes = self.snapshot?.panes
         self.snapshot = snapshot
         if agents.project(snapshot, completions: completions) { didChange() }
         acknowledgeShownAgents()
@@ -1921,8 +1922,8 @@ final class HerdrScreenModel {
             reconcilePresentationActivity()
             didChange()
         }
-        // The rows read what each pane runs and does on demand, so a change to them alone tells the views here.
-        if terminalScreenAdapter.tabRowContents != rows { didChange() }
+        // Rows and pane tiles read metadata on demand. A rename of an unfocused pane still updates its tile.
+        if terminalScreenAdapter.tabRowContents != rows || snapshot.panes != panes { didChange() }
         guard !attempt.hasSnapshot else { return }
         attempt.hasSnapshot = true
         hasConnected = true

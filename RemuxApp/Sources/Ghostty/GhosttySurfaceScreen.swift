@@ -1797,7 +1797,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             keyboardViewportTransitionCoordinator.observeKeyboardVisibility(isVisible: projection.isVisible)
 
             var updatedCoordinator = inputCoordinator
-            updatedCoordinator.updateSoftwareKeyboardVisibility(projection.isVisible)
+            updatedCoordinator.updateSoftwareKeyboardVisibility(
+                projection.isVisible,
+                isInputCovered: isTerminalInputCovered
+            )
             if updatedCoordinator != inputCoordinator {
                 inputCoordinator = updatedCoordinator
             }
@@ -2228,6 +2231,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     onCreateWindow: createTopLevelFromSelectionSheet,
                     onSelect: selectTopLevelFromSelectionSheet,
                     onRemoveWindow: closeTopLevelFromSelectionSheet,
+                    onRenameWindow: { id, name in model.renameTopLevel(id, to: name) },
                     onShowGroup: { shownWindowGroupID = $0 },
                     onCreateGroup: createTopLevelGroupFromSelectionSheet
                 )
@@ -2257,7 +2261,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 onSelect: selectPaneFromSelectionSheet,
                 onRemovePane: { id in
                     closePaneFromSelectionSheet(id, topLevelID: topLevelID)
-                }
+                },
+                onRenamePane: { id, name in model.renamePane(id, to: name) }
             )
         }
     }

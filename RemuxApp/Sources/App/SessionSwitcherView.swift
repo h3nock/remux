@@ -191,6 +191,11 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     let herdrPlaces: (SavedWorkspace.ID) -> HerdrSessionPlaces?
     let onSelectHerdrWorkspace: (_ herdrWorkspaceID: String, _ bootID: String, _ session: SavedWorkspace.ID) -> Void
     let onCreateHerdrWorkspace: (SavedWorkspace.ID) -> Void
+    let herdrWorkspaceRenameField: (String, SavedWorkspace.ID) -> TerminalRenameField?
+    let onRenameHerdrWorkspace: (String, String, String, SavedWorkspace.ID) -> Void
+    let herdrWorkspaceCloseConfirmation: (String, SavedWorkspace.ID) -> HerdrCloseConfirmation?
+    let onCloseHerdrWorkspace: (HerdrCloseConfirmation, SavedWorkspace.ID) -> Void
+    let herdrScreen: (SavedWorkspace.ID) -> HerdrTerminalScreenAdapter?
     /// An open Herdr session's agents, which the sheet follows as they change.
     let herdrAgents: (SavedWorkspace.ID) -> HerdrAgentPresentation?
     /// Opens a Herdr session at an agent's pane: the session, the pane and the server boot its id is from.
@@ -202,6 +207,9 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     @State private var herdrDisclosures: [SavedWorkspace.ID: Bool] = [:]
     @State private var mode = Mode.sessions
     @State private var agentFilter = SessionAgentsFilter.all
+    @State private var renamePrompt: TerminalRenamePrompt?
+    @State private var renameName = ""
+    @State private var workspaceClose: (session: SavedWorkspace.ID, confirmation: HerdrCloseConfirmation)?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -238,6 +246,15 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             onCancelCreateSession()
         }
         .interactiveDismissDisabled(isCreatingSession)
+        .terminalRenameAlert($renamePrompt, name: $renameName)
+        .ghosttyCloseConfirmationDialog(workspaceCloseQuestion)
+        .overlay(alignment: .bottom) {
+            if let current = projection.activeSessions.first(where: \.isSelected), let screen = herdrScreen(current.id) {
+                HerdrCommandFailureReader(screen: screen)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, TerminalSelectionSheetLayout.actionBarHeight + 20)
+            }
+        }
         .presentationDetents([.medium, .large])
         .presentationContentInteraction(.resizes)
         .presentationDragIndicator(.visible)
@@ -429,7 +446,9 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                     workspace,
                     isCurrent: session.isSelected && workspace.id == outline.focusedWorkspaceID,
                     agentStatus: agents?.status(ofWorkspace: workspace.id),
-                    isStale: session.runtimeState != .connected
+                    isStale: session.runtimeState != .connected,
+                    sessionID: session.id,
+                    bootID: outline.bootID
                 ) {
                     onSelectHerdrWorkspace(workspace.id, outline.bootID, session.id)
                 }
@@ -477,6 +496,8 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         isCurrent: Bool,
         agentStatus: TerminalAgentStatus?,
         isStale: Bool,
+        sessionID: SavedWorkspace.ID,
+        bootID: String,
         open: @escaping () -> Void
     ) -> some View {
         Button {
@@ -494,6 +515,54 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         }
         .buttonStyle(.plain)
         .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.herdr-workspace")
+        .contextMenu {
+            workspaceActions(workspace, sessionID: sessionID, bootID: bootID, isStale: isStale)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            workspaceActions(workspace, sessionID: sessionID, bootID: bootID, isStale: isStale)
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceActions(
+        _ workspace: HerdrSessionOutline.Workspace,
+        sessionID: SavedWorkspace.ID,
+        bootID: String,
+        isStale: Bool
+    ) -> some View {
+        if !isStale, let field = herdrWorkspaceRenameField(workspace.id, sessionID) {
+            Button {
+                Haptic.tap()
+                renameName = field.name
+                renamePrompt = TerminalRenamePrompt(
+                    title: "Rename Workspace", placeholder: field.placeholder, allowsEmpty: false
+                ) { name in onRenameHerdrWorkspace(workspace.id, name, bootID, sessionID) }
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            .accessibilityIdentifier("terminal.workspace.rename.\(workspace.id)")
+
+            Button(role: .destructive) {
+                guard let confirmation = herdrWorkspaceCloseConfirmation(workspace.id, sessionID) else { return }
+                Haptic.warning()
+                workspaceClose = (sessionID, confirmation)
+            } label: {
+                Label("Close", systemImage: "xmark")
+            }
+            .accessibilityIdentifier("terminal.workspace.remove.\(workspace.id)")
+        }
+    }
+
+    private var workspaceCloseQuestion: GhosttyCloseQuestion? {
+        workspaceClose.map { close in
+            GhosttyCloseQuestion(
+                confirmation: close.confirmation.dialog,
+                confirmIdentifier: "terminal.workspace.remove.confirm"
+            ) { agreed in
+                if agreed { onCloseHerdrWorkspace(close.confirmation, close.session) }
+                workspaceClose = nil
+            }
+        }
     }
 
     private func newHerdrWorkspaceRow(_ session: ActiveSessionSwitcherItem) -> some View {
@@ -681,6 +750,18 @@ private struct HerdrOutlineReader<Content: View>: View {
 
     var body: some View {
         content(places.outline)
+    }
+}
+
+/// Workspace commands leave Sessions open, so it observes the same notice as the terminal and its pickers.
+private struct HerdrCommandFailureReader: View {
+    @ObservedObject var screen: HerdrTerminalScreenAdapter
+
+    var body: some View {
+        if case .commandFailure(let message) = screen.terminalScreenPresentationProjection.statusOverlay {
+            GhosttySelectionSheetFailureBanner(message: message, accessibilityIdentifier: "terminal.sessions.failure")
+                .accessibilityElement(children: .combine)
+        }
     }
 }
 

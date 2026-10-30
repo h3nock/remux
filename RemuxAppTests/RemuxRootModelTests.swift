@@ -4973,6 +4973,24 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNil(harness.model.herdrWorkspaceRenameField("w1", in: workspace.id))
     }
 
+    /// Sessions observes the actual adapter notice, rather than reading a copied error once on opening.
+    func testWorkspaceCommandFailurePublishesThroughTheCurrentSessionsScreen() async throws {
+        let (harness, workspace, _) = try await connectedHerdrSession(agentStatus: .idle)
+        let screen = try XCTUnwrap(harness.model.herdrScreen(of: workspace.id))
+        var published: [String] = []
+        let watch = screen.objectWillChange.sink {
+            if let message = screen.commandFailureEvent?.message { published.append(message) }
+        }
+        defer { watch.cancel() }
+
+        harness.model.renameHerdrWorkspace("removed", to: "docs", bootID: "boot", in: workspace.id)
+
+        XCTAssertEqual(published, ["Herdr: rename workspace failed"])
+        XCTAssertEqual(screen.commandFailureEvent?.message, "Herdr: rename workspace failed")
+        await harness.model.showLibrary()
+        XCTAssertNil(harness.model.herdrScreen(of: workspace.id), "A hidden session cannot issue workspace commands.")
+    }
+
     /// An open Herdr session's agents are listed, as the phone shows them, until the session closes; an
     /// agent's row opens the session and asks Herdr to focus the agent's pane right after the show, as a
     /// banner does.
