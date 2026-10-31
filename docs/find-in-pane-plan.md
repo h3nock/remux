@@ -7,7 +7,9 @@ real endpoint feasibility experiment, before finishing the production UI.
 - Base: `main` at `250a2f5926b9b3948581bb1afe4e667feb2d827f`
 - Approved prototype: Site `fd963992ccbd7805f7e667127f69abaa40666712`
 - Independent investigation: Astra (`gpt-6-astra`), high effort, 31 October 2026.
-  Its original response is preserved in the Find item in Remux Review.
+  Its original response and subsequent client-only reassessment are preserved in
+  the Find item in Remux Review. The original upstream-change contingency was a
+  planning error; the reassessment below uses only currently available APIs.
 
 ## Contract
 
@@ -73,7 +75,39 @@ proposal would be separate work, not an assumed implementation escape hatch.
 | Search only the phone's terminal surface | Does not meet retained-history scope. |
 
 These choices are based on contracts, not a measured performance win. No search
-latency benchmark has been run yet.
+latency comparison between client scheduling policies has been run yet.
+
+### Client-only reassessment and evidence
+
+The original exploration did not sufficiently compare client behavior after
+freshness failures because it left an upstream change available as a fallback.
+That recommendation is withdrawn. Astra re-examined the available client choices
+at high effort and reviewed actual installed-0.9.5 endpoint probes.
+
+| Client choice | Decision |
+| --- | --- |
+| Require Return to search | Fewer requests, but changes the approved typeahead flow. No demonstrated need for that interaction change. |
+| Short trailing coalescing + latest-only dispatch | First baseline to measure: native editing stays immediate while obsolete queries are replaced before submission. |
+| Eager latest-only throttle | Compare against the baseline for final-edit latency, scans and lane occupancy. Earlier dispatch alone does not establish better UX. |
+| Keep old counts/highlights as current after output | Reject. A successful snapshot does not establish current global ordinals or coordinates after mutation. Keep the query and show pending in the existing status area. |
+| Read a revision with copy-motion before each search | Not justified: scrolled-back probes continued receiving metadata; this adds another serial request without curing transmission races. |
+| Export text via selection-read | Available copying is not a lossless history/cell/wrap export. A separate transcript reader changes the approved UX. |
+
+In isolated fixed-80x24 fixtures, quiet 1k/10k histories each succeeded 20/20 and
+reported exact counts, with a 1024-range window for 10k matches. Quiet search,
+absolute scroll and the returned frame preserved content revision. With a target
+50 writes/second and an artificial 50 ms outbound-only gap after capturing the
+revision, all 20 searches were stale, both live and scrolled back. At 10 writes/
+second and that gap, 9/20 live and 10/20 scrolled-back searches succeeded. This
+supports bounded recovery; it does not prove failure for ordinary agent output.
+
+These are local Unix endpoint observations, not SSH, iOS rendering or phone
+latency measurements. Twenty requests per case do not establish universal success
+rates. Fast stale errors are not successful-search performance wins. The probes
+used the official installed binary, isolated XDG state and owned disposable
+sessions; both servers stopped and their temporary directories were removed.
+The raw receipts and harness are under
+`.local/find-pane-implementation-20261031/` in the primary workspace.
 
 ## Ownership, scheduling and presentation
 
@@ -87,13 +121,28 @@ Keep the existing command lane. Allow one in-flight search and one replaceable
 latest intent, not a FIFO task for every keystroke or arrow tap. Check intent and
 source validity again when work reaches dispatch. Empty query clears locally.
 Closing drops unsent Find work; sent commands drain normally and their replies
-cannot revive a closed or replaced Find session. Do not start another connection
+cannot revive a closed or replaced Find session or initiate another reveal. An
+absolute scroll already sent can still complete: the API has no cancellation.
+Preserve the last requested passage and never add an entry-offset/bottom reset.
+Test close during reveal rather than promising that a remote action can be undone.
+Do not start another connection
 or release the lane early to simulate cancellation. Select any short typing
 coalescing interval from measurements; it is not the correctness mechanism.
 
+Use a finite freshness state: initial attempt, then at most one prompt retry on a
+newer even painted revision. After that, wait for a revision-quiet interval before
+one recovery attempt. Content revision changes reset the quiet deadline; they do not issue
+a search per frame. A successful result invalidated by background output enters
+quiet refresh directly. A new query or explicit navigation gets its own prompt
+budget and replaces obsolete work. Keep pending distinct from a valid zero result
+in the existing count/status area; preserve the query and add no new control.
+No production coalescing/quiet interval is established by the current probes.
+
 Navigate within the valid returned window locally. Derive global position from
 `current_global - current`; fetch the next window at a boundary. Wrap locally
-only when the whole result set is present. No speculative window prefetch.
+only when the whole result set is present. Rapid arrow taps update a desired
+index or bounded signed step count, not a FIFO request per tap and not only the
+last direction, which would lose intended steps. No speculative window prefetch.
 
 For an offscreen target, compute one absolute `pane.scroll` from current geometry,
 then wait for the matching painted passage. Do not synthesize wheel input, which
@@ -132,7 +181,10 @@ framework or hardcoded agent-specific behavior.
    reveal an offscreen match and identify its accepted frame. Instrument queue,
    request/response, decode, reveal and first correct highlighted frame. Use a
    disposable session, leaving the user's working panes untouched. Exercise idle
-   and streaming output before treating the existing API as sufficient.
+   and streaming output with the bounded client algorithm. Compare trailing
+   coalescing against eager latest-only throttling using realistic edit traces and
+   lane waits; measure recovery after output stops. Existing endpoint-only probes
+   establish backend behavior, not this complete client path.
 2. **Bounded state and requests.** Add typed request/reply validation, latest-intent
    dispatch, result-window navigation and lifecycle invalidation. Cover delayed
    replies, clear/close, partial windows and connection replacement.
@@ -155,7 +207,8 @@ search cost from network, lane wait, reveal and rendering. Establish numerical
 budgets from this baseline rather than inventing a claim of instant results.
 
 Correctness gates: no PTY input while Find owns input or after closing into
-reading; no obsolete query decoration/reveal after scope changes; bounded pending
+reading; no obsolete local decoration or new unsent reveal work after scope
+changes (already-issued scroll can drain); bounded pending
 work; correct global ordinals beyond 1024 matches; correct Unicode/wrap mapping;
 restored styles on close; readable passage through keyboard transitions; and no
 ongoing search work when Find is closed. Validate two attached clients, width
@@ -172,8 +225,10 @@ Exact results during continuously changing output are the main unresolved
 feasibility question. Keep the query, distinguish pending/stale from zero, and
 never draw coordinates known to be invalid. Do not solve it with unbounded retries,
 assumed append-only output or a silently frozen terminal. First measure ordinary
-agent streaming. If useful results cannot be obtained promptly, demonstrate the
-limit and propose a clearly defined Remux refresh or interaction behavior within
-the existing API. Bring any departure from the approved UX to the user before
-implementing that compromise. Do not make a Herdr change a prerequisite or quietly
-weaken coordinate correctness. The source/API checks above are engineering work.
+agent streaming with the bounded algorithm. Arbitrarily fast continuous output
+cannot be promised an exact fresh result at every instant; keep the interface
+responsive and recover when a usable revision becomes available. Only an observed
+conflict with the approved UX justifies proposing a product compromise. Do not
+silently require Return, add Refresh/freeze controls or introduce another reader.
+Bring any demonstrated need for a UX change to the user first. No Herdr change is
+a prerequisite, and coordinate correctness remains intact.
