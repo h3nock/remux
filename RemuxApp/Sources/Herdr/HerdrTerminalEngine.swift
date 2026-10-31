@@ -1035,7 +1035,8 @@ actor HerdrTerminalEngine {
                 let reply = try answer.get()
                 let result = try HerdrFindResult.decode(reply.json, request: request, columns: source.columns)
                 guard let current = content(ofPane: find.paneID), current.revision == source.revision,
-                      current.columns == source.columns, current.alternateScreenActive == source.alternateScreenActive
+                      current.columns == source.columns, current.rows == source.rows,
+                      current.alternateScreenActive == source.alternateScreenActive
                 else { staleFind(revision: source.revision); return }
                 find.result = result; find.content = current
                 if find.desiredIndex == nil {
@@ -1083,14 +1084,18 @@ actor HerdrTerminalEngine {
             return
         }
         let content = HerdrPaneContent(of: pane)
-        let changed = find.content.map { $0.revision != content.revision || $0.columns != content.columns
-            || $0.alternateScreenActive != content.alternateScreenActive } ?? true
+        let resized = find.content.map { $0.columns != content.columns || $0.rows != content.rows } ?? false
+        let changed = resized || (find.content.map { $0.revision != content.revision
+            || $0.alternateScreenActive != content.alternateScreenActive } ?? true)
         let remapped = find.content.map { $0.columns != content.columns
             || $0.alternateScreenActive != content.alternateScreenActive } ?? true
         if find.origin == nil || remapped { find.origin = HerdrFindPoint(row: UInt32(clamping: content.top), col: 0) }
         if changed, find.result != nil {
             find.invalidate(); find.needsReveal = false; find.waitsForQuiet = true
         }
+        // A smaller viewport can hide the active hit. Re-find it at the new
+        // geometry before revealing; output-only refreshes keep the reading position.
+        if resized { find.needsReveal = true }
         find.content = content; self.find = find
         if changed, find.waitsForQuiet { scheduleFind(after: .milliseconds(200)) }
         if let old = find.waitingRevision, old != content.revision,

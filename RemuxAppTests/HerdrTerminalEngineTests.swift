@@ -2892,6 +2892,41 @@ final class HerdrTerminalEngineTests: XCTestCase {
         await engine.stop()
     }
 
+    /// Keyboard resize must reveal the revalidated hit if it moved above the viewport;
+    /// output-only changes may leave that same hit off screen without moving the reader.
+    func testFindRevealsAfterResizeButDoesNotChaseOrdinaryOutput() async throws {
+        for height in [1, 2] {
+            let engine = makeEngine()
+            let updates = UpdateLog(engine)
+            let (feed, outbox) = await connect(engine)
+            try await shown(feed, updates, outbox, panes: Self.atP)
+            try await findFrame(feed, revision: 2)
+            await engine.performFind(.begin("P"), connection: 1)
+            await engine.performFind(.query("one"), connection: 1)
+            try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+            // History row 20 is initially visible at the top of the two-row viewport.
+            try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [20]))
+            XCTAssertEqual(try outbox.commands(), ["pane.copy_search"])
+
+            await feed.receive(.surface(try Self.surface(
+                revision: 4, lines: Array(["two ", "new "].prefix(height)),
+                panes: [Self.pane("P", x: 0, width: 4, height: height, focused: true,
+                                  contentRevision: 4, scroll: (0, 21, height))]
+            )))
+            try await waitUntil("refresh wasn't sent") { (try? outbox.commands().count) == 2 }
+            // The old coordinates alone must not scroll; the new revision's search comes first.
+            XCTAssertEqual(try outbox.lastCommand().method, "pane.copy_search")
+            try await answer(feed, outbox, json: Self.findReply(revision: 4, rows: [20]))
+            if height == 1 {
+                XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.copy_search", "pane.scroll"])
+                XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "1")
+            } else {
+                XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.copy_search"])
+            }
+            await engine.stop()
+        }
+    }
+
     private func findFrame(_ feed: HerdrEngineFeed, revision: UInt64, offset: Int = 0, surfaceRevision: UInt64? = nil) async throws {
         await feed.receive(.surface(try Self.surface(
             revision: surfaceRevision ?? revision, lines: ["one ", "two "],
