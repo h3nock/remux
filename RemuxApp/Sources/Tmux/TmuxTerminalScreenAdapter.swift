@@ -668,7 +668,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     /// A tmux pane's history is in its local terminal, which reads the selection itself.
-    func selectedText(in surfaceID: UUID) async -> String? {
+    func selectedText(in surfaceID: UUID, reportResult: Bool) async -> String? {
         managedSurface(for: surfaceID)?.controlSurface.readSelection()
     }
 
@@ -678,7 +678,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         at point: CGPoint,
         selected: GhosttyLongPressSelection
     ) async -> Bool {
-        false
+        true
     }
 
     // MARK: tmux topology actions

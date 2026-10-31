@@ -275,8 +275,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 model.sendMouseScroll(to: surfaceID, event)
                             },
                             selectionSource: GhosttyTerminalSelectionSource(
-                                readText: { surfaceID in
-                                    await model.selectedText(in: surfaceID)
+                                readText: { surfaceID, reportResult in
+                                    await model.selectedText(in: surfaceID, reportResult: reportResult)
                                 },
                                 completeLink: { surfaceID, point, selected in
                                     await model.completeLinkSelection(in: surfaceID, at: point, selected: selected)

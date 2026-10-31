@@ -168,12 +168,34 @@ struct TerminalPreviewCandidate: Equatable, Sendable {
         if host.hasPrefix("["), host.hasSuffix("]") {
             host = String(host.dropFirst().dropLast())
         }
+        // A fully qualified "localhost." names the same loopback host.
+        if host.hasSuffix(".") { host.removeLast() }
         if host == "localhost" || host == "::1" { return host }
         if host == "0.0.0.0" { return "127.0.0.1" }
         if host.hasPrefix("127."), host.split(separator: ".").count == 4 {
             return host
         }
         return nil
+    }
+}
+
+/// A web link the terminal printed, which opens in the system browser rather
+/// than in a preview. Loopback URLs stay previews: only the server reaches them.
+enum TerminalExternalLink {
+    static func url(selection: String, explicitTarget: String? = nil) -> URL? {
+        let value = (explicitTarget ?? selection).trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !value.contains("\0"),
+              !value.contains("\n"),
+              !value.contains("\r"),
+              let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host?.isEmpty == false,
+              TerminalPreviewCandidate(selection: value) == nil
+        else { return nil }
+        return url
     }
 }
 
@@ -195,13 +217,21 @@ struct TerminalPreviewSelectionContext: Equatable {
     }
 
     func candidate(for selection: String) -> TerminalPreviewCandidate? {
-        let matchesAutomaticSelection = automaticVisibleText == selection
-        let explicitTarget = matchesAutomaticSelection
-            ? automaticExplicitTarget
-            : nil
-        return TerminalPreviewCandidate(
+        TerminalPreviewCandidate(
             selection: selection,
-            explicitTarget: explicitTarget
+            explicitTarget: explicitTarget(for: selection)
         )
+    }
+
+    func externalLink(for selection: String) -> URL? {
+        TerminalExternalLink.url(
+            selection: selection,
+            explicitTarget: explicitTarget(for: selection)
+        )
+    }
+
+    /// Match the renderer's visible label, even when authoritative selection text joins wrapped rows.
+    func explicitTarget(for selection: String) -> String? {
+        automaticVisibleText == selection ? automaticExplicitTarget : nil
     }
 }

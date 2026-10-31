@@ -38,6 +38,7 @@ final class TerminalPreviewCandidateTests: XCTestCase {
             ("https://localhost:8443/", "localhost", 8443, "https", "/"),
             ("http://0.0.0.0:5173/", "127.0.0.1", 5173, "http", "/"),
             ("http://[::1]:9000", "::1", 9000, "http", ""),
+            ("http://localhost.:3000/", "localhost", 3000, "http", "/"),
             ("localhost:3000", "localhost", 3000, "http", ""),
             ("127.0.0.1:8000/health", "127.0.0.1", 8000, "http", "/health"),
         ]
@@ -171,5 +172,56 @@ final class TerminalPreviewCandidateTests: XCTestCase {
 
         context.selectionDidChange()
         XCTAssertNil(context.candidate(for: "report"))
+    }
+
+    func testOpensNonLoopbackWebLinksExternally() {
+        for value in [
+            "https://github.com/h3nock/remux/pull/131",
+            "http://example.com/docs?page=2#setup",
+            "  HTTPS://Example.com/path  \n",
+        ] {
+            XCTAssertNotNil(TerminalExternalLink.url(selection: value), value)
+        }
+    }
+
+    func testKeepsLoopbackAndNonWebTargetsOutOfExternalLinks() {
+        for value in [
+            "http://localhost:3000",
+            "http://127.0.0.1:8000/docs",
+            "http://localhost.:3000",
+            "localhost:3000",
+            "/srv/app/readme.md",
+            "file:///srv/app/readme.md",
+            "mailto:someone@example.com",
+            "ftp://example.com/file",
+            "https://",
+            "https://example.com/a\nb",
+        ] {
+            XCTAssertNil(TerminalExternalLink.url(selection: value), value)
+        }
+    }
+
+    func testExternalLinkUsesExplicitTargetOnlyForUntouchedAutomaticSelection() {
+        var context = TerminalPreviewSelectionContext()
+        context.setAutomaticSelection(
+            visibleText: "the PR",
+            explicitTarget: "https://github.com/h3nock/remux/pull/1"
+        )
+
+        XCTAssertEqual(
+            context.externalLink(for: "the PR")?.absoluteString,
+            "https://github.com/h3nock/remux/pull/1"
+        )
+        XCTAssertNil(context.candidate(for: "the PR"))
+        XCTAssertEqual(
+            TerminalExternalLink.url(
+                selection: "https://github.com@example.com/login"
+            )?.host,
+            "example.com"
+        )
+        XCTAssertNil(context.externalLink(for: "the PR edited"))
+
+        context.selectionDidChange()
+        XCTAssertNil(context.externalLink(for: "the PR"))
     }
 }
