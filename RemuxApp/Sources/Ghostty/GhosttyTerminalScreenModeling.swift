@@ -308,5 +308,34 @@ protocol GhosttyTerminalScreenModeling:
     GhosttyTerminalRenderingModeling,
     GhosttyTerminalInputModeling,
     GhosttyTerminalActionModeling,
-    GhosttyTerminalSelectionModeling
+    GhosttyTerminalSelectionModeling,
+    TerminalFindModeling
 {}
+
+/// Presentation only. The Herdr engine owns requests, results and their validity.
+struct TerminalFindPresentation: Equatable, Sendable {
+    var status = ""
+    var canNavigate = false
+}
+
+/// Optional backend Find capability. Unsupported backends expose no action.
+@MainActor
+protocol TerminalFindModeling {
+    var canFindInPane: Bool { get }
+    var paneFindPresentation: TerminalFindPresentation? { get }
+    func beginFind(in surfaceID: UUID) -> Bool
+    func updateFind(_ query: String)
+    func navigateFind(_ step: Int)
+    func endFind()
+    func resumeFindInput()
+}
+
+extension TerminalFindModeling {
+    var canFindInPane: Bool { false }
+    var paneFindPresentation: TerminalFindPresentation? { nil }
+    func beginFind(in surfaceID: UUID) -> Bool { false }
+    func updateFind(_ query: String) {}
+    func navigateFind(_ step: Int) {}
+    func endFind() {}
+    func resumeFindInput() {}
+}

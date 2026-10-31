@@ -1,7 +1,8 @@
 # Find in pane implementation plan
 
-Status: design approved; implementation planning complete. First milestone is a
-real endpoint feasibility experiment, before finishing the production UI.
+Status: approved design implemented in Remux using existing Herdr APIs. Simulator
+validation and regression checks are recorded in [find-in-pane-validation.md](find-in-pane-validation.md).
+Physical-device and Wi-Fi performance remain release checks.
 
 - Branch: `feat/herdr-find-in-pane`
 - Base: `main` at `250a2f5926b9b3948581bb1afe4e667feb2d827f`

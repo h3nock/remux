@@ -39,6 +39,7 @@ enum HerdrPanePainter {
         let area: HerdrSurfaceRect
         /// In frame coordinates: `paneCursor(of:)` for a pane, the popup frame's cursor for a popup.
         let cursor: HerdrCursor?
+        var find: HerdrFindDecoration? = nil
     }
 
     /// Grapheme clustering (mode 2027), which Herdr's terminals have: Herdr lays out a cluster such as a
@@ -58,7 +59,7 @@ enum HerdrPanePainter {
     /// cursor.
     static func repaint(_ next: Painted) -> [UInt8] {
         terminalSetup
-            + rows(0..<Int(next.area.height), of: next.frame, area: next.area)
+            + rows(0..<Int(next.area.height), of: next.frame, area: next.area, find: next.find)
             + cursorBytes(cursor(next.cursor, in: next.area))
     }
 
@@ -72,7 +73,7 @@ enum HerdrPanePainter {
         if changed.isEmpty {
             return shown == cursor(previous.cursor, in: previous.area) ? [] : cursorBytes(shown)
         }
-        return rows(changed, of: next.frame, area: next.area) + cursorBytes(shown)
+        return rows(changed, of: next.frame, area: next.area, find: next.find) + cursorBytes(shown)
     }
 
     /// The area's rows (0 is its top row) whose cells look different, compared as Herdr's client
@@ -89,7 +90,10 @@ enum HerdrPanePainter {
         func link(_ cell: HerdrCell, _ links: [[UInt8]?]) -> [UInt8]? {
             cell.hyperlink.flatMap { Int($0) < links.count ? links[Int($0)] : nil }
         }
+        let decorationRows: Set<Int> = previous.find == next.find ? []
+            : Set(previous.find?.rows.keys.map { $0 } ?? []).union(next.find?.rows.keys.map { $0 } ?? [])
         return (0..<height).filter { y in
+            if decorationRows.contains(y) { return true }
             let oldStart = (Int(previous.area.y) + y) * Int(previous.frame.width) + Int(previous.area.x)
             let newStart = (Int(next.area.y) + y) * Int(next.frame.width) + Int(next.area.x)
             for x in 0..<width {
@@ -106,7 +110,7 @@ enum HerdrPanePainter {
 
     /// The listed rows of the area (0 is its top row), each erased and then written left to right, then
     /// SGR 0.
-    static func rows(_ rows: some Sequence<Int>, of frame: HerdrFrame, area: HerdrSurfaceRect) -> [UInt8] {
+    static func rows(_ rows: some Sequence<Int>, of frame: HerdrFrame, area: HerdrSurfaceRect, find frameDecoration: HerdrFindDecoration? = nil) -> [UInt8] {
         let links = frame.hyperlinks.map(sanitizedLink)
         var bytes: [UInt8] = []
         for y in rows {
@@ -117,16 +121,38 @@ enum HerdrPanePainter {
             var afterVS15 = false
             // The cursor's column when known, and the style in effect (SGR 0 sets the default one).
             var cursorColumn: Int? = 0
+            let spans = frameDecoration?.rows[y] ?? []
+            // Fill decoration before glyphs. Keep the original erased-cell skip rule below:
+            // a full frame represents a wide glyph's covered cell as an ordinary blank.
+            for span in spans {
+                appendCursorPosition(row: y, column: span.start, to: &bytes)
+                bytes += Array((span.selected ? "\u{1B}[48;2;255;225;65m" : "\u{1B}[48;2;107;96;45m").utf8)
+                bytes += Array("\u{1B}[\(span.end - span.start + 1)X".utf8)
+            }
+            if !spans.isEmpty {
+                bytes += resetSGR
+                appendCursorPosition(row: y, column: 0, to: &bytes)
+            }
+            var spanIndex = 0
             var style: (fg: HerdrColor.Value, bg: HerdrColor.Value, modifier: UInt16) = (.default, .default, 0)
             for x in 0..<Int(area.width) {
-                let cell = frame.cells[start + x]
+                let original = frame.cells[start + x]
+                var cell = original
+                while spanIndex < spans.count, spans[spanIndex].end < x { spanIndex += 1 }
+                if spanIndex < spans.count, spans[spanIndex].start <= x {
+                    let active = spans[spanIndex].selected
+                    cell = HerdrCell(symbol: cell.symbol,
+                        fg: active ? HerdrColor(raw: 1) : cell.fg,
+                        bg: HerdrColor(raw: active ? 0x02FFE141 : 0x026B602D),
+                        modifier: cell.modifier & ~UInt16(64 | 128), skip: cell.skip, hyperlink: cell.hyperlink)
+                }
                 // A cell's text never controls the terminal. Herdr's cells come from Ghostty cells,
                 // which never hold a control character.
                 let symbol = withoutControlCharacters(cell.symbol)
                 let link = cell.hyperlink.flatMap { Int($0) < links.count ? links[Int($0)] : nil }
                 // A covered cell, a cell marked skip (Herdr's client never writes those), or one the
                 // erased row already shows.
-                if symbol.isEmpty || cell.skip || (link == nil && looksErased(symbol, cell) && !afterVS15) {
+                if symbol.isEmpty || cell.skip || (link == nil && looksErased(symbol, original) && !afterVS15) {
                     afterVS15 = false
                     continue
                 }
