@@ -2,7 +2,8 @@
 
 Status: approved design implemented in Remux using existing Herdr APIs. Simulator
 validation and regression checks are recorded in [find-in-pane-validation.md](find-in-pane-validation.md).
-Physical-device and Wi-Fi performance remain release checks.
+Physical-phone functional checks also pass after the viewport-resize follow-up.
+Performance budgets, independent code review and App CI remain release checks.
 
 - Branch: `feat/herdr-find-in-pane`
 - Base: `main` at `250a2f5926b9b3948581bb1afe4e667feb2d827f`

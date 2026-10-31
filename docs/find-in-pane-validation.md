@@ -53,6 +53,35 @@ Verified in the initial production pass:
   `right-only` was copied from highlighted terminal text and pasted into the
   native Composer without submitting it.
 
+## Physical phone follow-up
+
+Terra tested the Release build on an iPhone 14 Pro Max / iOS 27.2 through Device
+Hub, using the saved Tailscale SSH connection over phone Wi-Fi and a disposable
+Herdr session. This is not a direct-LAN latency benchmark.
+
+The phone run reproduced a keyboard-resize issue in `c1490263`: file3 remained
+selected at `3 of 12`, but reopening the keyboard moved it above the viewport.
+`3666f4d8` makes geometry refresh request a newly validated reveal; ordinary
+output refresh still preserves the reading position. The same case passed on the
+phone with keyboard capture both on and off. The selected line briefly leaves
+view during pending refresh, then becomes readable after it settles. Paired
+stills document that result; the timed fixed-build recording ended before the
+transition, so it is not transition evidence.
+
+Other phone passes: retained search, next/previous, zero/clear, 1,600-match wrap
+across the response window, changing-output pending/quiet recovery, Copy into
+Composer and Find, an unfocused pane, a full wide glyph and a three-row wrapped
+match. Closing Find preserved reading and required one Keyboard tap to resume.
+The final onscreen `o`, `k`, Return check added exactly `ok\r` to the PTY log;
+an earlier CR-only attempt was inconclusive for letters and was repeated. No
+typed/pasted query or unsent Composer text appeared in that receipt.
+
+The geometry change's 107-case Find/engine/painter run completed with
+`TEST SUCCEEDED`. The fixed Release build remains installed. The disposable
+server was stopped and keyboard capture restored off. The original Terra report,
+phone captures and hashes are attached to the Find item in Remux Review. This is
+functional validation; independent production code review is still pending.
+
 ## Timing policy
 
 The implementation uses a 120 ms trailing edit pause and a 200 ms revision-quiet
@@ -98,7 +127,7 @@ After the anchor change, the 106-case Find/engine/painter run also completed wit
 `TEST SUCCEEDED`. The final responder-only change built successfully and was
 verified through the actual keyboard-close/resume flow above.
 
-Physical-device/Wi-Fi latency, CPU/memory budgets, imposed network RTT, long
+Quantified physical-device/Wi-Fi latency, CPU/memory budgets, imposed network RTT, long
 pruning runs, arbitrary IME/hardware keyboards, two visible clients and all
 selection/graphics combinations are not established by these checks. Keep those
 release gates separate from this implementation's simulator evidence. Find
