@@ -57,13 +57,19 @@ their own negotiated method checks.
 
 ## Approaches and selected baseline
 
+Herdr is an upstream dependency, not a repository we own. This implementation
+changes Remux and uses Herdr's currently advertised APIs. It does not include a
+Herdr patch, protocol extension, custom server fork or dependency on an upstream
+release. If a measured API limit affects the approved UX, explain the feasible
+Remux behavior and bring any meaningful UX compromise to the user. An upstream
+proposal would be separate work, not an assumed implementation escape hatch.
+
 | Approach | Why or why not |
 | --- | --- |
 | Existing server search + absolute scroll | Selected baseline: authoritative history and terminal-cell mapping, bounded replies, existing transport. Must measure full scans, stale responses and dependent reveal. |
 | Local navigation through the current returned window | Use while its revision is valid. Saves another search for known adjacent hits; offscreen hits still need scroll/frame delivery. |
 | Download history and search on the phone | Current APIs lack a complete, revision-safe history/cell export. Adds transfer, memory and synchronization ownership. Do not build this as a fallback. |
-| Narrow server search/reveal extension | Contingency if normal streaming output or two-step reveal fails the feasibility experiment. Define revision/frame identity and live versus snapshot behavior explicitly. |
-| Server incremental native search | Investigate only if measured scan costs justify it. Herdr does not currently wire it into this API; lifecycle and matching semantics differ. |
+| Upstream search/reveal or incremental-search changes | Outside this Remux implementation. Astra considered these to identify API limits; they are not available client-side approaches or prerequisites we can assume. |
 | Search only the phone's terminal surface | Does not meet retained-history scope. |
 
 These choices are based on contracts, not a measured performance win. No search
@@ -73,7 +79,7 @@ latency benchmark has been run yet.
 
 Keep one active Find session scoped to connection generation, server boot and
 pane ID. Its query generation, source revision/geometry, bounded result window
-and selected ordinal belong with the existing Herdr engine. The screen owns
+and selected ordinal belong with Remux's existing `HerdrTerminalEngine`. The screen owns
 native field focus; the adapter projects availability, state and actions. Keep
 backend state out of SwiftUI and command scheduling out of the field delegate.
 
@@ -159,14 +165,15 @@ changes, pruning, alternate-screen changes, selection/Copy and reconnects.
 
 The existing shared-scroll behavior means a desktop viewer of the same pane can
 see Remux's jump, just as with ordinary history scrolling. Highlights stay local.
-A private search viewport would require a different server boundary, not a local
-scroll calculation.
+A private search viewport is not supplied by the current API; this implementation
+preserves existing Herdr scroll semantics rather than promising one.
 
 Exact results during continuously changing output are the main unresolved
 feasibility question. Keep the query, distinguish pending/stale from zero, and
 never draw coordinates known to be invalid. Do not solve it with unbounded retries,
 assumed append-only output or a silently frozen terminal. First measure ordinary
-agent streaming. If useful results cannot be obtained promptly, bring back the
-demonstrated tradeoff: accept a clearly defined refresh behavior, or make a narrow
-server snapshot/search/reveal extension a prerequisite. This is the decision the
-user may need to make; the source/API checks above are engineering work.
+agent streaming. If useful results cannot be obtained promptly, demonstrate the
+limit and propose a clearly defined Remux refresh or interaction behavior within
+the existing API. Bring any departure from the approved UX to the user before
+implementing that compromise. Do not make a Herdr change a prerequisite or quietly
+weaken coordinate correctness. The source/API checks above are engineering work.
