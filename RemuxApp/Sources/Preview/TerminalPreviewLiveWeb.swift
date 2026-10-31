@@ -81,12 +81,16 @@ final class TerminalPreviewLiveWebResource: @unchecked Sendable, Equatable {
         localPort: Int,
         closeForward: @escaping @Sendable () async throws -> Void
     ) throws {
-        let pathQuery = target.pathQuery.isEmpty ? "/" : target.pathQuery
-        guard pathQuery.hasPrefix("/"),
-              let localURL = URL(
-                string: "\(target.scheme)://127.0.0.1:\(localPort)\(pathQuery)"
-              )
+        guard (1...Int(UInt16.max)).contains(localPort),
+              var components = URLComponents(url: target.url, resolvingAgainstBaseURL: false)
         else { throw TerminalPreviewLiveWebError.invalidLocalURL }
+        components.host = "127.0.0.1"
+        components.port = localPort
+        // Preserve the existing policy: URL userinfo is not forwarded into Preview.
+        components.user = nil
+        components.password = nil
+        if components.percentEncodedPath.isEmpty { components.percentEncodedPath = "/" }
+        guard let localURL = components.url else { throw TerminalPreviewLiveWebError.invalidLocalURL }
         self.localURL = localURL
         self.localPort = localPort
         self.closeForward = closeForward
