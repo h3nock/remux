@@ -72,6 +72,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var terminalInputController = GhosttyTerminalInputController()
     @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
+    @State private var isFindPresented = false
+    @State private var findQuery = ""
+    @State private var findWantsKeyboard = false
+    @State private var findSurfaceID: UUID?
+    @State private var isReadingAfterFind = false
     /// The group whose windows the window sheet lists, when the backend groups them; nil is the group on
     /// screen.
     @State private var shownWindowGroupID: UUID?
@@ -444,32 +449,41 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 Color.clear
                     .frame(height: bottomChromeHeight)
                     .overlay(alignment: .bottom) {
-                        GhosttyKeyboardChrome(
-                            keyboardMode: renderedKeyboardMode,
-                            isEnabled: interactionProjection.isInputAvailable,
-                            isInteractionLocked: composer.isSubmitting,
-                            isCompact: chrome.isCompact,
-                            isControlArmed: terminalInputController.isControlArmed,
-                            toolbarKeys: presentation.toolbarKeys,
-                            topLevelNoun: model.topLevelNoun,
-                            selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                            windowCount: interactionProjection.windowCount,
-                            paneCount: interactionProjection.paneCount,
-                            isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
-                            isComposerPresented: isActiveComposerPresented,
-                            onShowSessions: onShowSessions,
-                            onShowLibrary: onShowLibrary,
-                            onShowWindows: {
-                                showWindows(availableSize: screenProxy.size)
-                            },
-                            onShowPanes: showPanes,
-                            onOpenComposer: openComposer,
-                            onToggleKeyboard: toggleKeyboardChrome,
-                            onToggleControl: toggleControlModifier,
-                            onShowShortcuts: showShortcutPalette,
-                            sendKey: sendTerminalKeyEvent
-                        ) {
-                            selectedComposerBar()
+                        Group {
+                            if isFindPresented {
+                                TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
+                                    presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
+                                    onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
+                                    .frame(height: 46)
+                            } else {
+                                GhosttyKeyboardChrome(
+                                    keyboardMode: renderedKeyboardMode,
+                                    isEnabled: interactionProjection.isInputAvailable,
+                                    isInteractionLocked: composer.isSubmitting,
+                                    isCompact: chrome.isCompact,
+                                    isControlArmed: terminalInputController.isControlArmed,
+                                    toolbarKeys: presentation.toolbarKeys,
+                                    topLevelNoun: model.topLevelNoun,
+                                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                                    windowCount: interactionProjection.windowCount,
+                                    paneCount: interactionProjection.paneCount,
+                                    isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
+                                    isComposerPresented: isActiveComposerPresented,
+                                    onShowSessions: onShowSessions,
+                                    onShowLibrary: onShowLibrary,
+                                    onShowWindows: {
+                                        showWindows(availableSize: screenProxy.size)
+                                    },
+                                    onShowPanes: showPanes,
+                                    onOpenComposer: openComposer,
+                                    onToggleKeyboard: toggleKeyboardChrome,
+                                    onToggleControl: toggleControlModifier,
+                                    onShowShortcuts: showShortcutPalette,
+                                    sendKey: sendTerminalKeyEvent,
+                                    composerContent: { selectedComposerBar() },
+                                    allowsTerminalKeys: !isReadingAfterFind
+                                )
+                            }
                         }
                         .padding(.horizontal, chrome.surfaceHorizontalPadding)
                         .padding(.top, 4)
@@ -524,7 +538,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 GhosttyRuntimeTrace.perf("kbd.didHide")
                 completeKeyboardDidHide()
             }
-            .sheet(item: selectionSheetBinding) { sheet in
+            .sheet(item: selectionSheetBinding, onDismiss: {
+                if isFindPresented { findWantsKeyboard = true }
+            }) { sheet in
                 let windowLayout = PanePreviewLayout.windowMetrics(
                     availableSize: screenProxy.size
                 )
@@ -676,6 +692,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
                 }
             }
+            .onChange(of: model.paneFindPresentation == nil) { _, ended in
+                if ended, isFindPresented { closeFind() }
+            }
+            .onChange(of: isSelected) { _, selected in
+                if !selected, isFindPresented { closeFind() }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background, isFindPresented { closeFind() }
+            }
+            .onDisappear { if isFindPresented { closeFind() } }
             .onChange(of: model.commandFailureEvent) { _, event in
                 handleCommandFailureEvent(event)
             }
@@ -743,6 +769,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             || isShortcutsSettingsPresented
             || shortcutEditorRequest != nil
             || terminalCoverPhase.ownsTerminalInput
+            || isFindPresented || isReadingAfterFind
     }
 
     private var selectionSheetBinding: Binding<GhosttySurfaceSelectionSheet?> {
@@ -786,7 +813,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private var isTerminalInputAvailable: Bool {
-        model.terminalInteractionProjection.isInputAvailable
+        model.terminalInteractionProjection.isInputAvailable && !isFindPresented && !isReadingAfterFind
     }
 
     private var isTerminalViewportFrozen: Bool {
@@ -825,6 +852,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         _ surfaceID: UUID,
         shouldShowKeyboard: Bool
     ) {
+        if isFindPresented {
+            if surfaceID != findSurfaceID { closeFind(); _ = model.focusPane(surfaceID) }
+            else { findWantsKeyboard = false }
+            return
+        }
+        if isReadingAfterFind { _ = model.focusPane(surfaceID); return }
         if surfaceID == model.terminalScreenPresentationProjection.viewport.popup?.id {
             handlePopupTap()
             return
@@ -894,6 +927,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleKeyboardChrome() {
+        if isReadingAfterFind { isReadingAfterFind = false; model.resumeFindInput() }
         let isInputAvailable = isTerminalInputAvailable
         GhosttyRuntimeTrace.flowBegin(
             "terminal.input",
@@ -931,7 +965,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func openComposer() {
-        guard !composer.isSubmitting else { return }
+        guard !isFindPresented, !composer.isSubmitting else { return }
+        if isReadingAfterFind { isReadingAfterFind = false; model.resumeFindInput() }
         withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
             composer.open()
         }
@@ -1559,7 +1594,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func sendTerminalText(_ text: String) -> Bool {
-        terminalInputController.performTextInput(
+        guard !isFindPresented, !isReadingAfterFind else { return false }
+        return terminalInputController.performTextInput(
             text,
             holdsTmuxPrefix: model.holdsTmuxPrefixKey,
             submit: submitTerminalText(_:),
@@ -1579,6 +1615,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func submitTerminalText(_ outbound: String) -> Bool {
+        guard !isFindPresented, !isReadingAfterFind else { return false }
         let start = GhosttyRuntimeTrace.nowNanos()
         let submittedAt = GhosttyRuntimeTrace.latencyEnabled ? start : nil
         if let submittedAt {
@@ -1641,7 +1678,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func sendTerminalPaste(_ text: String) -> Bool {
-        terminalInputController.performPaste(
+        guard !isFindPresented, !isReadingAfterFind else { return false }
+        return terminalInputController.performPaste(
             text,
             submitPendingPrefix: submitTerminalText(_:),
             sendPaste: { model.sendPasteToFocusedSurface($0).isAccepted }
@@ -1733,7 +1771,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent) -> Bool {
-        terminalInputController.performKeyEvent(
+        guard !isFindPresented, !isReadingAfterFind else { return false }
+        return terminalInputController.performKeyEvent(
             event,
             submitPendingPrefix: submitTerminalText(_:),
             sendKey: { event in
@@ -1799,7 +1838,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             var updatedCoordinator = inputCoordinator
             updatedCoordinator.updateSoftwareKeyboardVisibility(
                 projection.isVisible,
-                isInputCovered: isTerminalInputCovered
+                isInputCovered: isTerminalInputCovered || isFindPresented || isReadingAfterFind
             )
             if updatedCoordinator != inputCoordinator {
                 inputCoordinator = updatedCoordinator
@@ -2145,6 +2184,33 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
+    private var findPaneAction: ((UUID) -> Void)? {
+        guard model.canFindInPane else { return nil }
+        return { id in beginFind(id) }
+    }
+
+    private func beginFind(_ surfaceID: UUID) {
+        guard !composer.isSubmitting, model.beginFind(in: surfaceID) else { return }
+        isReadingAfterFind = true
+        isFindPresented = true; findSurfaceID = surfaceID
+        findQuery = ""; findWantsKeyboard = false
+        terminalInputController.clearControl()
+        _ = terminalInputController.flushPendingTmuxPrefixInput()
+        inputCoordinator.dismissKeyboard()
+        if let effect = topologyActionInputRefocusCoordinator.cancelForCommandFailure() {
+            _ = applyTopologyInputRefocusEffect(effect)
+        }
+        if terminalCoverPhase.ownsTerminalInput { terminalCoverPhase = .covered(restoreKeyboard: false) }
+        dismissSelectionSheet()
+    }
+
+    private func closeFind() {
+        findWantsKeyboard = false; isFindPresented = false; findSurfaceID = nil
+        isReadingAfterFind = true
+        inputCoordinator.dismissKeyboard()
+        model.endFind()
+    }
+
     private func selectPaneFromSelectionSheet(_ id: UUID) {
         GhosttyRuntimeTrace.flowBegin(
             GhosttyRuntimeTrace.paneSwitchFlow,
@@ -2262,7 +2328,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 onRemovePane: { id in
                     closePaneFromSelectionSheet(id, topLevelID: topLevelID)
                 },
-                onRenamePane: { id, name in model.renamePane(id, to: name) }
+                onRenamePane: { id, name in model.renamePane(id, to: name) },
+                onFindPane: findPaneAction
             )
         }
     }

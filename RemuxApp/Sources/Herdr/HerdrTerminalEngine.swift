@@ -111,9 +111,11 @@ struct HerdrPaneContent: Equatable, Sendable {
     /// The text area's size.
     let columns: UInt16
     let rows: UInt16
+    let alternateScreenActive: Bool
 
     init(of pane: HerdrSurfacePane) {
         revision = pane.contentRevision
+        alternateScreenActive = pane.alternateScreenActive
         offsetFromBottom = pane.scroll?.offsetFromBottom
         top = HerdrPaneScroll(of: pane).scrollState.offset
         columns = pane.innerRect.width
@@ -123,6 +125,7 @@ struct HerdrPaneContent: Equatable, Sendable {
 
 /// What the engine tells its main-actor owner, in order.
 enum HerdrEngineUpdate: Sendable {
+    case findChanged(TerminalFindPresentation?, connection: UInt64)
     /// A new terminal for a pane, already painted; the owner creates its renderer with a
     /// `HerdrPaneRendererFence`. It replaces an earlier terminal for the same pane, whose renderer the
     /// owner closes.
@@ -585,7 +588,7 @@ actor HerdrTerminalEngine {
             switch command.purpose {
             case .zoom(let pane, let zoomed): self = .zoom(pane: pane, on: zoomed)
             case .release: self = .elsewhere
-            case .layout, .other: return nil
+            case .layout, .other, .find: return nil
             }
         }
 
@@ -714,6 +717,12 @@ actor HerdrTerminalEngine {
     private var deadline: Task<Void, Never>?
     /// Every command of the connection, the current request's steps and the rest.
     private var lane = HerdrCommandLane()
+    private var find: HerdrFindState?
+    private var findBlocksInput = false
+    private var findGeneration: UInt64 = 0
+    private var findTimer: Task<Void, Never>?
+    private var findTimerToken: UInt64 = 0
+    private var findEditedAt: ContinuousClock.Instant?
     /// Where the connection's requests go out.
     private var outbox: (any HerdrOutbound)?
     /// The methods the connection's welcome offered, and how long a command may stay unanswered.
@@ -777,6 +786,11 @@ actor HerdrTerminalEngine {
     fileprivate func send(_ events: [HerdrInputEvent], to target: HerdrTerminalTarget, connection: UInt64) -> HerdrInputSend {
         guard state == .running, connection == self.connection, let outbox else { return .ended }
         guard outbox.isSurfaceActive else { return .inactive }
+        if findBlocksInput, !events.allSatisfy(\.releasesPress) {
+            guard case .pane(let paneID) = target, let scroll = paneScrolls[paneID],
+                  !scroll.mouseReporting, !scroll.alternateScreenActive,
+                  events.allSatisfy(\.isHistoryWheel) else { return .notTaken }
+        }
         guard events.allSatisfy(\.releasesPress) || takesInput(target) else { return .notTaken }
         switch target {
         case .pane(let pane):
@@ -853,6 +867,268 @@ actor HerdrTerminalEngine {
         return shown ? nil : change
     }
 
+    // MARK: - Find
+
+    func performFind(_ intent: HerdrFindIntent, connection: UInt64) {
+        guard self.connection == connection else { return }
+        switch intent {
+        case .begin(let pane): beginFind(inPane: pane, connection: connection)
+        case .query(let query): updateFind(query, connection: connection)
+        case .navigate(let step): navigateFind(step, connection: connection)
+        case .end: endFind(connection: connection)
+        case .resumeInput:
+            endFind(connection: connection)
+            findBlocksInput = false
+        }
+    }
+
+    func beginFind(inPane paneID: String, connection: UInt64) {
+        guard state == .running, self.connection == connection,
+              methods.contains("pane.copy_search"), methods.contains("pane.scroll"),
+              let bootID = presentation.snapshot?.bootID else { return }
+        endFind()
+        findGeneration &+= 1
+        findBlocksInput = true
+        find = HerdrFindState(paneID: paneID, bootID: bootID, generation: findGeneration)
+        publishFind()
+    }
+
+    func updateFind(_ query: String, connection: UInt64) {
+        guard self.connection == connection, var find, query != find.query else { return }
+        cancelFindTimer(); lane.dropWaitingFind()
+        findGeneration &+= 1
+        find.generation = findGeneration; find.query = query
+        find.invalidate(); find.needsReveal = true; find.direction = 1
+        find.retryAvailable = true; find.waitingRevision = nil; find.waitsForQuiet = false; find.isDue = false
+        self.find = find; findEditedAt = .now
+        if query.utf8.count > 4096 {
+            self.find?.presentation.status = "Query too long"
+        } else if !query.isEmpty {
+            scheduleFind(after: .milliseconds(120))
+        }
+        repaintFind(); publishFind()
+    }
+
+    func navigateFind(_ step: Int, connection: UInt64) {
+        guard self.connection == connection, var find, let result = find.result,
+              result.total > 0, let current = find.desiredIndex, step == 1 || step == -1 else { return }
+        cancelFindTimer(); lane.dropWaitingFind()
+        find.desiredIndex = step > 0 ? (current == result.total - 1 ? 0 : current + 1)
+            : (current == 0 ? result.total - 1 : current - 1)
+        find.direction = step; find.needsReveal = true; find.retryAvailable = true
+        find.origin = find.selectedRange?.start ?? find.origin
+        find.showResult(); self.find = find; findEditedAt = .now
+        repaintFind(); publishFind(); advanceFind()
+    }
+
+    func endFind(connection: UInt64? = nil) {
+        guard connection == nil || connection == self.connection else { return }
+        cancelFindTimer(); lane.dropWaitingFind()
+        guard find != nil else { return }
+        find = nil; findEditedAt = nil
+        repaintFind(); publishFind()
+    }
+
+    private func publishFind() {
+        continuation.yield(.findChanged(find?.presentation, connection: connection))
+    }
+
+    private func cancelFindTimer() {
+        findTimerToken &+= 1; findTimer?.cancel(); findTimer = nil
+    }
+
+    private func scheduleFind(after delay: Duration) {
+        cancelFindTimer()
+        let token = findTimerToken
+        findTimer = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.findTimerFired(token)
+        }
+    }
+
+    private func findTimerFired(_ token: UInt64) {
+        guard token == findTimerToken, find != nil else { return }
+        findTimer = nil
+        if let revision = find?.waitingRevision, let pane = find?.paneID,
+           content(ofPane: pane)?.revision == revision { return }
+        find?.isDue = true
+        advanceFind()
+    }
+
+    private func queueFind(_ intent: HerdrFindCommand) {
+        lane.dropWaitingFind()
+        lane.append(HerdrCommandLane.Command(method: intent.method, params: [String: String](), purpose: .find(intent)))
+    }
+
+    /// Revision-dependent parameters are materialized only when the serial lane can send them.
+    private func prepareFindCommand(_ intent: HerdrFindCommand) -> HerdrCommandLane.Command? {
+        guard var find, intent.generation == find.generation else { return nil }
+        guard !holdsFrames,
+              layout?.focusedPaneID == find.paneID, layout?.popup == nil,
+              let content = content(ofPane: find.paneID) else {
+            self.find?.isDue = true
+            return nil
+        }
+        switch intent {
+        case .search:
+            guard !find.query.isEmpty, find.query.utf8.count <= 4096 else { return nil }
+            guard content.revision.isMultiple(of: 2) else {
+                self.find?.waitingRevision = content.revision
+                return nil
+            }
+            if find.origin == nil { find.origin = HerdrFindPoint(row: UInt32(clamping: content.top), col: 0) }
+            let request = find.request(for: content)
+            find.content = content; find.isDue = false
+            self.find = find
+            GhosttyRuntimeTrace.perf("find.request generation=\(find.generation) bytes=\(find.query.utf8.count) revision=\(content.revision)")
+            return HerdrCommandLane.Command(method: intent.method, params: request,
+                purpose: .find(.search(generation: find.generation, request: request, content: content)))
+        case .reveal:
+            guard let result = find.result, result.content_revision == content.revision,
+                  let range = find.selectedRange,
+                  let scroll = paneScrolls[find.paneID] else { return nil }
+            let targetTop = UInt64(range.start.row).subtractingReportingOverflow(UInt64(content.rows / 3))
+            let top = targetTop.overflow ? 0 : targetTop.partialValue
+            let offset = scroll.maxLinesFromBottom - min(top, scroll.maxLinesFromBottom)
+            find.needsReveal = false; self.find = find
+            struct Params: Encodable, Sendable { let pane_id: String; let offset_from_bottom: UInt64 }
+            return HerdrCommandLane.Command(method: intent.method,
+                params: Params(pane_id: find.paneID, offset_from_bottom: offset), purpose: .find(intent))
+        }
+    }
+
+    private func advanceFind() {
+        guard var find, !find.query.isEmpty, find.query.utf8.count <= 4096, !holdsFrames else { return }
+        if case .command(let command)? = lane.inFlight?.item,
+           case .find(let intent) = command.purpose, intent.generation == find.generation { return }
+        if let range = find.selectedRange, find.needsReveal,
+           let content = content(ofPane: find.paneID), find.result?.content_revision == content.revision {
+            if UInt64(range.start.row) >= content.top, UInt64(range.start.row) < content.top + UInt64(content.rows) {
+                find.needsReveal = false; self.find = find
+                traceFindCommit()
+            } else {
+                queueFind(.reveal(generation: find.generation)); dispatch()
+            }
+        } else if find.result != nil, find.selected == nil, find.desiredIndex != nil {
+            queueFind(.search(generation: find.generation, request: nil, content: nil)); dispatch()
+        } else if find.isDue {
+            self.find?.isDue = false
+            queueFind(.search(generation: find.generation, request: nil, content: nil)); dispatch()
+        }
+    }
+
+    private func findAnswered(_ intent: HerdrFindCommand, result answer: Result<HerdrCommandReply, HerdrCommandError>) {
+        guard var find, find.generation == intent.generation else { return }
+        switch intent {
+        case .reveal:
+            if case .failure = answer {
+                find.needsReveal = false
+                find.presentation.status = "Couldn’t show match"; self.find = find; publishFind()
+            } else {
+                traceFindCommit()
+                // Navigation can replace the destination while a sent scroll drains.
+                advanceFind()
+            }
+        case .search(_, let request?, let source?):
+            do {
+                let reply = try answer.get()
+                let result = try HerdrFindResult.decode(reply.json, request: request, columns: source.columns)
+                guard let current = content(ofPane: find.paneID), current.revision == source.revision,
+                      current.columns == source.columns, current.rows == source.rows,
+                      current.alternateScreenActive == source.alternateScreenActive
+                else { staleFind(revision: source.revision); return }
+                find.result = result; find.content = current
+                if find.desiredIndex == nil {
+                    // (0,0) has no predecessor in the unsigned API. Its returned
+                    // window can still contain that exact, freshly matched anchor.
+                    find.desiredIndex = result.matches.firstIndex(where: { $0.start == find.origin })
+                        .map { result.windowStart + $0 } ?? result.current_global
+                }
+                find.origin = find.selectedRange?.start ?? find.origin
+                find.waitingRevision = nil; find.waitsForQuiet = false; find.isDue = false
+                find.showResult(); self.find = find
+                repaintFind(); publishFind(); advanceFind()
+            } catch HerdrCommandError.failed(code: "stale_content", message: _) {
+                staleFind(revision: source.revision)
+            } catch {
+                find.presentation = TerminalFindPresentation(status: "Search failed")
+                self.find = find; publishFind()
+            }
+        case .search:
+            break
+        }
+    }
+
+    private func staleFind(revision: UInt64) {
+        guard var find else { return }
+        find.invalidate(); find.waitingRevision = revision; find.isDue = false
+        if find.retryAvailable { find.retryAvailable = false }
+        else { find.waitsForQuiet = true; scheduleFind(after: .milliseconds(200)) }
+        self.find = find
+        repaintFind(); publishFind()
+        if !find.waitsForQuiet, let content = content(ofPane: find.paneID),
+           content.revision != revision, content.revision.isMultiple(of: 2) {
+            self.find?.waitingRevision = nil; self.find?.isDue = true
+            advanceFind()
+        }
+    }
+
+    /// Called before the matching terminal paint; invalid ranges never reach the new frame.
+    private func reconcileFind(with surface: HerdrPaneSurfaceFrame) {
+        guard var find else { return }
+        let previousPresentation = find.presentation
+        guard find.bootID == surface.bootID, surface.popup == nil else { endFind(); return }
+        guard let pane = surface.panes.first(where: { $0.paneID == find.paneID }), pane.focused else {
+            if request?.inProgress != true { endFind() }
+            return
+        }
+        let content = HerdrPaneContent(of: pane)
+        let resized = find.content.map { $0.columns != content.columns || $0.rows != content.rows } ?? false
+        let changed = resized || (find.content.map { $0.revision != content.revision
+            || $0.alternateScreenActive != content.alternateScreenActive } ?? true)
+        let remapped = find.content.map { $0.columns != content.columns
+            || $0.alternateScreenActive != content.alternateScreenActive } ?? true
+        if find.origin == nil || remapped { find.origin = HerdrFindPoint(row: UInt32(clamping: content.top), col: 0) }
+        if changed, find.result != nil {
+            find.invalidate(); find.needsReveal = false; find.waitsForQuiet = true
+        }
+        // A smaller viewport can hide the active hit. Re-find it at the new
+        // geometry before revealing; output-only refreshes keep the reading position.
+        if resized { find.needsReveal = true }
+        find.content = content; self.find = find
+        if changed, find.waitsForQuiet { scheduleFind(after: .milliseconds(200)) }
+        if let old = find.waitingRevision, old != content.revision,
+           content.revision.isMultiple(of: 2), !find.waitsForQuiet {
+            self.find?.waitingRevision = nil; self.find?.isDue = true
+        }
+        if find.presentation != previousPresentation { publishFind() }
+    }
+
+    private func repaintFind() {
+        for target in terminals.keys {
+            guard case .pane(let paneID) = target, var painting = terminals[target] else { continue }
+            var next = painting.painted
+            next.find = find?.paneID == paneID ? HerdrFindDecoration(find: find, content: painting.content) : nil
+            guard next.find != painting.painted.find else { continue }
+            let bytes = HerdrPanePainter.update(from: painting.painted, to: next)
+            guard painting.producer.feed(bytes) == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK else { fail(target); continue }
+            painting.painted = next; wake(&painting, target: target); terminals[target] = painting
+        }
+    }
+
+    /// Producer commit timing; the renderer presents the resulting frame separately.
+    private func traceFindCommit() {
+        guard let find, let range = find.selectedRange, let content = content(ofPane: find.paneID),
+              find.result?.content_revision == content.revision,
+              UInt64(range.start.row) >= content.top, UInt64(range.start.row) < content.top + UInt64(content.rows)
+        else { return }
+        if let start = findEditedAt {
+            GhosttyRuntimeTrace.perf("find.committed generation=\(find.generation) elapsed=\(start.duration(to: .now))")
+            findEditedAt = nil
+        }
+    }
+
     // MARK: - Frames
 
     /// Herdr's revisions restart with each connection, so the new one starts a new presentation. The
@@ -893,6 +1169,7 @@ actor HerdrTerminalEngine {
     }
 
     private func endRequests() {
+        endFind()
         cancelDeadline()
         outbox = nil
         surfaceSets.removeAll()
@@ -928,6 +1205,7 @@ actor HerdrTerminalEngine {
     @discardableResult
     fileprivate func start(_ view: HerdrView, within deadline: Duration, connection: UInt64) -> UInt64? {
         guard state == .running, connection == self.connection, let outbox, release == nil else { return nil }
+        endFind()
         let snapshot = presentation.snapshot
         switch view {
         case .hidden:
@@ -1465,7 +1743,13 @@ actor HerdrTerminalEngine {
                     fail(command, refusal)
                     continue
                 }
-                params = command.params
+                if case .find(let intent) = command.purpose {
+                    guard let prepared = prepareFindCommand(intent) else { continue }
+                    item = .command(prepared)
+                    params = prepared.params
+                } else {
+                    params = command.params
+                }
             }
             guard methods.contains(item.method) else {
                 finish(HerdrCommandLane.InFlight(id: "", item: item, sentAfter: snapshot.revision),
@@ -1521,7 +1805,7 @@ actor HerdrTerminalEngine {
         case .layout(let pane):
             let zoomed = snapshot.tabs.contains { $0.tabID == snapshot.focusedTabID && $0.zoomed }
             return request.inProgress || snapshot.focusedPaneID != pane || !zoomed ? .notSent : nil
-        case .release, .other:
+        case .release, .other, .find:
             return nil
         }
     }
@@ -1656,6 +1940,8 @@ actor HerdrTerminalEngine {
                 }
             case .release(.back):
                 if case .failure(.failed(code: "endpoint_busy", _)) = result { release?.backRefused = true }
+            case .find(let intent):
+                findAnswered(intent, result: result)
             case .other(let answered):
                 answered(result)
             }
@@ -1914,11 +2200,15 @@ actor HerdrTerminalEngine {
             popupTab = nil
             bootID = surface.bootID
         }
+        reconcileFind(with: surface)
         let cursor = HerdrPanePainter.paneCursor(of: surface)
         var madeTerminal = false
         for pane in surface.panes {
             let made = paint(
-                HerdrPanePainter.Painted(frame: surface.frame, area: pane.innerRect, cursor: cursor),
+                HerdrPanePainter.Painted(
+                    frame: surface.frame, area: pane.innerRect, cursor: cursor,
+                    find: find?.paneID == pane.paneID ? HerdrFindDecoration(find: find, content: HerdrPaneContent(of: pane)) : nil
+                ),
                 content: HerdrPaneContent(of: pane),
                 images: HerdrPaneImages.Scene(surface.graphics, pane: pane),
                 target: .pane(pane.paneID)
@@ -1948,6 +2238,8 @@ actor HerdrTerminalEngine {
             continuation.yield(.drawn(next, projectionRevision: surface.projectionRevision, connection: connection))
         }
         publishScroll(of: surface)
+        advanceFind()
+        traceFindCommit()
     }
 
     /// Returns whether the target got a new terminal.

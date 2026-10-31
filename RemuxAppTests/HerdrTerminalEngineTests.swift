@@ -1934,7 +1934,7 @@ final class HerdrTerminalEngineTests: XCTestCase {
                 case .paneTerminal(let paneID, let terminal): terminals[paneID] = terminal
                 case .paneTerminalFailed, .rendererWakeFailed, .popupTerminalFailed, .popupRendererWakeFailed, .failed:
                     XCTFail("\(fixture.name): \(update)")
-                case .drawn, .paneScroll, .started, .activated, .timedOut, .answered, .zoomAnswered, .showRefused, .popupTerminal:
+                case .drawn, .paneScroll, .started, .activated, .timedOut, .answered, .zoomAnswered, .showRefused, .popupTerminal, .findChanged:
                     break
                 }
             }
@@ -2793,6 +2793,153 @@ final class HerdrTerminalEngineTests: XCTestCase {
         await engine.stop()
     }
 
+    // MARK: - Find
+
+    /// Unsent edits collapse to the newest query, stamped when the shared lane actually frees.
+    /// Closing a sent search prevents its late reply from revealing a passage or enabling input.
+    func testFindCoalescesWaitingEditsAndDropsAClosedSearchReply() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        try await shown(feed, updates, outbox, panes: Self.atP)
+        try await findFrame(feed, revision: 2)
+        await feed.command("worktree.list", params: [String: String](), answered: { _ in })
+        await engine.performFind(.begin("P"), connection: 1)
+        await engine.performFind(.query("old"), connection: 1)
+        await engine.performFind(.query("new"), connection: 1)
+        try await Task.sleep(for: .milliseconds(160))
+        XCTAssertEqual(try outbox.commands(), ["worktree.list"])
+        try await findFrame(feed, revision: 4)
+        try await answer(feed, outbox)
+        XCTAssertEqual(try outbox.lastParams()["query"], "new")
+        XCTAssertEqual(try outbox.lastParams()["content_revision"], "4")
+
+        await engine.performFind(.end, connection: 1)
+        try await answer(feed, outbox, json: Self.findReply(revision: 4, rows: [0]))
+        XCTAssertEqual(try outbox.commands(), ["worktree.list", "pane.copy_search"])
+        if case .notTaken = await feed.send([.text("leak")], to: .pane("P")) {} else {
+            XCTFail("closing Find enabled terminal input")
+        }
+        await engine.performFind(.resumeInput, connection: 1)
+        if case .sent = await feed.send([.text("ok")], to: .pane("P")) {} else {
+            XCTFail("explicit resume didn't restore input")
+        }
+        await engine.stop()
+    }
+
+    /// A newer query owns the next reveal even when the previous query's reply arrives first.
+    func testFindDoesNotRevealAnObsoleteQuery() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        try await shown(feed, updates, outbox, panes: Self.atP)
+        try await findFrame(feed, revision: 2)
+        await engine.performFind(.begin("P"), connection: 1)
+        await engine.performFind(.query("old"), connection: 1)
+        try await waitUntil("first query wasn't sent") { (try? outbox.commands().count) == 1 }
+        await engine.performFind(.query("new"), connection: 1)
+        try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [0]))
+        XCTAssertEqual(try outbox.commands(), ["pane.copy_search"])
+        try await waitUntil("newest query wasn't sent") { (try? outbox.commands().count) == 2 }
+        XCTAssertEqual(try outbox.lastParams()["query"], "new")
+        await engine.stop()
+    }
+
+    /// Stale replies wait for a newer frame; after one retry, changing frames defer recovery until quiet.
+    func testFindHasOneFreshFrameRetryThenWaitsForQuiet() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        try await shown(feed, updates, outbox, panes: Self.atP)
+        try await findFrame(feed, revision: 2)
+        await engine.performFind(.begin("P"), connection: 1)
+        await engine.performFind(.query("one"), connection: 1)
+        try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+        try await answer(feed, outbox, error: ("stale_content", "changed"))
+        try await Task.sleep(for: .milliseconds(160))
+        XCTAssertEqual(try outbox.commands().count, 1, "rescanned the same stale revision")
+        try await findFrame(feed, revision: 4)
+        XCTAssertEqual(try outbox.commands().count, 2)
+        try await answer(feed, outbox, error: ("stale_content", "changed"))
+        for revision in stride(from: UInt64(6), through: 14, by: 2) {
+            try await findFrame(feed, revision: revision)
+            try await Task.sleep(for: .milliseconds(40))
+            XCTAssertEqual(try outbox.commands().count, 2, "rescanned each changing frame")
+        }
+        try await waitUntil("search didn't recover after output settled") { (try? outbox.commands().count) == 3 }
+        XCTAssertEqual(try outbox.lastParams()["content_revision"], "14")
+        await engine.stop()
+    }
+
+    /// A scroll already sent may drain, but a newer arrow tap must still reach its own match.
+    func testFindKeepsNavigationAskedDuringAReveal() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        try await shown(feed, updates, outbox, panes: Self.atP)
+        try await findFrame(feed, revision: 2)
+        await engine.performFind(.begin("P"), connection: 1)
+        await engine.performFind(.query("one"), connection: 1)
+        try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+        try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [0, 10]))
+        XCTAssertEqual(try outbox.lastCommand().method, "pane.scroll")
+        await engine.performFind(.navigate(1), connection: 1)
+        // The first scroll's frame can precede its acknowledgement.
+        try await findFrame(feed, revision: 2, offset: 20, surfaceRevision: 3)
+        try await answer(feed, outbox)
+        XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.scroll", "pane.scroll"])
+        XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "10")
+        await engine.stop()
+    }
+
+    /// Keyboard resize must reveal the revalidated hit if it moved above the viewport;
+    /// output-only changes may leave that same hit off screen without moving the reader.
+    func testFindRevealsAfterResizeButDoesNotChaseOrdinaryOutput() async throws {
+        for height in [1, 2] {
+            let engine = makeEngine()
+            let updates = UpdateLog(engine)
+            let (feed, outbox) = await connect(engine)
+            try await shown(feed, updates, outbox, panes: Self.atP)
+            try await findFrame(feed, revision: 2)
+            await engine.performFind(.begin("P"), connection: 1)
+            await engine.performFind(.query("one"), connection: 1)
+            try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+            // History row 20 is initially visible at the top of the two-row viewport.
+            try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [20]))
+            XCTAssertEqual(try outbox.commands(), ["pane.copy_search"])
+
+            await feed.receive(.surface(try Self.surface(
+                revision: 4, lines: Array(["two ", "new "].prefix(height)),
+                panes: [Self.pane("P", x: 0, width: 4, height: height, focused: true,
+                                  contentRevision: 4, scroll: (0, 21, height))]
+            )))
+            try await waitUntil("refresh wasn't sent") { (try? outbox.commands().count) == 2 }
+            // The old coordinates alone must not scroll; the new revision's search comes first.
+            XCTAssertEqual(try outbox.lastCommand().method, "pane.copy_search")
+            try await answer(feed, outbox, json: Self.findReply(revision: 4, rows: [20]))
+            if height == 1 {
+                XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.copy_search", "pane.scroll"])
+                XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "1")
+            } else {
+                XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.copy_search"])
+            }
+            await engine.stop()
+        }
+    }
+
+    private func findFrame(_ feed: HerdrEngineFeed, revision: UInt64, offset: Int = 0, surfaceRevision: UInt64? = nil) async throws {
+        await feed.receive(.surface(try Self.surface(
+            revision: surfaceRevision ?? revision, lines: ["one ", "two "],
+            panes: [Self.pane("P", x: 0, width: 4, height: 2, focused: true,
+                              contentRevision: revision, scroll: (offset, 20, 2))]
+        )))
+    }
+
+    private static func findReply(revision: UInt64, rows: [Int]) -> String {
+        let matches = rows.map { #"{"start":{"row":\#($0),"col":0},"end":{"row":\#($0),"col":2}}"# }
+        return #"{"type":"pane_copy_search","pane_id":"P","content_revision":\#(revision),"matches":[\#(matches.joined(separator: ","))],"total":\#(rows.count),"current":0,"current_global":0}"#
+    }
+
     /// A connection whose requests go to an outbox the test reads, opened as the model opens one.
     private func connect(
         _ engine: HerdrTerminalEngine,
@@ -2803,7 +2950,7 @@ final class HerdrTerminalEngineTests: XCTestCase {
         await feed.opened(
             methods: [
                 HerdrScreenModel.paneFocusMethod, HerdrScreenModel.paneZoomMethod, "worktree.list", "tab.focus",
-                "pane.split", "tab.close",
+                "pane.split", "tab.close", "pane.copy_search", "pane.scroll",
             ],
             commandTimeout: commandTimeout
         )
@@ -2940,6 +3087,7 @@ final class HerdrTerminalEngineTests: XCTestCase {
         width: Int,
         height: Int,
         focused: Bool = false,
+        contentRevision: UInt64 = 1,
         scroll: (fromBottom: Int, max: Int, rows: Int)? = nil,
         mouseReporting: Bool = false
     ) -> String {
@@ -2947,7 +3095,7 @@ final class HerdrTerminalEngineTests: XCTestCase {
             #"{"offset_from_bottom":\#($0.fromBottom),"max_offset_from_bottom":\#($0.max),"viewport_rows":\#($0.rows)}"#
         } ?? "null"
         return """
-        {"pane_id":"\(id)","content_revision":1,"rect":{"x":\(x),"y":\(y),"width":\(width),"height":\(height)},
+        {"pane_id":"\(id)","content_revision":\(contentRevision),"rect":{"x":\(x),"y":\(y),"width":\(width),"height":\(height)},
          "inner_rect":{"x":\(x),"y":\(y),"width":\(width),"height":\(height)},"scrollbar_rect":null,"scroll":\(scrollJSON),
          "focused":\(focused),"mouse_reporting":\(mouseReporting),"sgr_pixel_mouse":false,
          "alternate_screen_active":false,"pixel_width":0,"pixel_height":0}
