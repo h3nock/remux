@@ -526,9 +526,10 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
               // A selection changed meanwhile is the user's.
               surface.historySelection == selection
         else { return false }
-        if link == selection { return true }
-        guard case .snapshot(let snapshot) = surface.select(link) else { return false }
-        return snapshot.isActive
+        // Keep Herdr's wider visible selection for Copy even if its URL continues off screen.
+        if link.selection == selection { return link.isComplete }
+        guard case .snapshot(let snapshot) = surface.select(link.selection) else { return false }
+        return snapshot.isActive && link.isComplete
     }
 
     // MARK: Topology actions

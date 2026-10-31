@@ -1586,13 +1586,13 @@ final class HerdrScreenModel {
         }
     }
 
-    /// A complete plain-text link at `cell`, a history cell of `paneID`, which Herdr finds across the
-    /// pane's wrapped rows; nil when absent or possibly clipped. It is asked about the frame on screen,
+    /// A plain-text link's visible regions and completeness at `cell`, a history cell of `paneID`, which
+    /// Herdr finds across the pane's wrapped rows; nil when absent. It is asked about the frame on screen,
     /// and its regions, rows of that frame's viewport, come back as history rows. The answer holds only
     /// while the terminal still shows that frame: as Herdr's client does, one found in content or a viewport
     /// that has changed since is dropped. As for Herdr's client the question is optional, so a failure says
     /// nothing.
-    func resolveLink(at cell: GhosttyTerminalCell, inPane paneID: String) async -> GhosttyHistorySelection? {
+    func resolveLink(at cell: GhosttyTerminalCell, inPane paneID: String) async -> HerdrResolvedLink? {
         guard let attempt = shownAttempt,
               let content = await engine.content(ofPane: paneID),
               let request = HerdrLinkResolve(paneID: paneID, cell: cell, content: content),

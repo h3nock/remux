@@ -111,15 +111,15 @@ final class HerdrSelectionTests: XCTestCase {
             return try JSONSerialization.data(withJSONObject: ["result": ["regions": regions]])
         }
         let history = try request(top: 39, fromBottom: 1)
-        XCTAssertNil(try history.link(fromReply: reply(first: 0, row: 1, last: 6)), "start may be above the viewport")
-        XCTAssertNil(try history.link(fromReply: reply(first: 4, row: 2, last: 19)), "end may be below the viewport")
-        XCTAssertNil(try history.link(fromReply: reply(first: 4, row: 2, last: 18)), "wide-wrap padding is not a URL delimiter")
-        XCTAssertNotNil(try history.link(fromReply: reply(first: 4, row: 1, last: 6)), "fully visible wrapped link")
-        XCTAssertNotNil(try request(top: 0, fromBottom: 40).link(fromReply: reply(first: 0, row: 1, last: 6)), "actual history beginning")
-        XCTAssertNotNil(try request(top: 40, fromBottom: 0).link(fromReply: reply(first: 4, row: 2, last: 19)), "actual terminal end")
+        XCTAssertEqual(try history.link(fromReply: reply(first: 0, row: 1, last: 6))?.isComplete, false, "start may be above the viewport")
+        XCTAssertEqual(try history.link(fromReply: reply(first: 4, row: 2, last: 19))?.isComplete, false, "end may be below the viewport")
+        XCTAssertEqual(try history.link(fromReply: reply(first: 4, row: 2, last: 18))?.isComplete, false, "wide-wrap padding is not a URL delimiter")
+        XCTAssertEqual(try history.link(fromReply: reply(first: 4, row: 1, last: 6))?.isComplete, true, "fully visible wrapped link")
+        XCTAssertEqual(try request(top: 0, fromBottom: 40).link(fromReply: reply(first: 0, row: 1, last: 6))?.isComplete, true, "actual history beginning")
+        XCTAssertEqual(try request(top: 40, fromBottom: 0).link(fromReply: reply(first: 4, row: 2, last: 19))?.isComplete, true, "actual terminal end")
         let unknown = try request(top: 0, fromBottom: nil)
-        XCTAssertNil(try unknown.link(fromReply: reply(first: 0, row: 1, last: 6)), "missing metrics do not prove a beginning")
-        XCTAssertNil(try unknown.link(fromReply: reply(first: 4, row: 2, last: 19)), "missing metrics do not prove an end")
+        XCTAssertEqual(try unknown.link(fromReply: reply(first: 0, row: 1, last: 6))?.isComplete, false, "missing metrics do not prove a beginning")
+        XCTAssertEqual(try unknown.link(fromReply: reply(first: 4, row: 2, last: 19))?.isComplete, false, "missing metrics do not prove an end")
     }
 
     // MARK: - On a shown session
@@ -408,6 +408,34 @@ final class HerdrSelectionTests: XCTestCase {
         XCTAssertTrue(grew)
         XCTAssertEqual(surface.historySelection, GhosttyHistorySelection(start: cell(39, 4), end: cell(40, 6)))
         XCTAssertEqual(try session.shownCells(), [cell(0, 4), cell(1, 6)])
+    }
+
+    /// A clipped link still expands to Herdr's visible regions for Copy, without authorizing Open.
+    func testAClippedLinkKeepsTheWiderVisibleSelection() async throws {
+        var session = try await shownSession(scroll: (1, 40, 3), lines: Self.linkLines, width: 20)
+        let surface = try session.surface()
+        let press = session.point(row: 0, column: 8)
+        let selected = try XCTUnwrap(session.longPress(at: press))
+        let completion = Task { await session.adapter.completeLinkSelection(in: session.surfaceID, at: press, selected: selected) }
+        let request = try await session.nextRequest(HerdrScreenModel.paneLinkResolveMethod, as: SentResolve.self)
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: request.id,
+            json: #"{"type":"pane_link_resolved","regions":[{"row":0,"start_col":4,"end_col":19},{"row":1,"start_col":0,"end_col":19},{"row":2,"start_col":0,"end_col":19}]}"#
+        ))
+        let ready = await completion.value
+        XCTAssertFalse(ready, "visible regions do not establish the off-screen destination")
+        XCTAssertEqual(surface.historySelection, GhosttyHistorySelection(start: cell(39, 4), end: cell(41, 19)))
+        XCTAssertEqual(try session.shownCells(), [cell(0, 4), cell(2, 19)])
+
+        let copy = Task { await session.adapter.selectedText(in: session.surfaceID) }
+        let read = try await session.nextSelectionRead()
+        XCTAssertEqual(read.params, SentRead(paneID: "w1:p1", anchor: .init(row: 39, col: 4), cursor: .init(row: 41, col: 19)))
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: read.id,
+            json: #"{"type":"pane_selection","pane_id":"w1:p1","text":"visible link portion"}"#
+        ))
+        let copied = await copy.value
+        XCTAssertEqual(copied, "visible link portion")
     }
 
     /// A long-press on a wrapped link's later row, where the pane's terminal may find only a word, grows

@@ -7,7 +7,8 @@ import UIKit
 struct GhosttyTerminalSelectionSource {
     /// Reads the selection; optional menu inspection suppresses result notices.
     let readText: (_ surfaceID: UUID, _ reportResult: Bool) async -> String?
-    /// Completes an automatic link selection; true when it is safe to inspect, even if already complete.
+    /// Expands an automatic selection; true authorizes destination inspection. False can still leave
+    /// a valid visible expansion for Copy. Refresh selection geometry regardless of the result.
     let completeLink: (UUID, CGPoint, GhosttyLongPressSelection) async -> Bool
 }
 
@@ -613,14 +614,19 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             defer {
                 if let self, self.selectionGeneration == generation { self.selectionMenuPreparation = nil }
             }
+            let isComplete: Bool
             if let link, !Task.isCancelled {
-                guard await source.completeLink(surface.id, link.0, link.1) else { return }
+                isComplete = await source.completeLink(surface.id, link.0, link.1)
+            } else {
+                isComplete = true
             }
             guard !Task.isCancelled, let self, self.selectionGeneration == generation,
                   let (currentSurface, currentControl) = self.exactLocalSelectionSurface(),
                   currentSurface === surface, currentControl === control
             else { return }
             self.applySelectionOutcome(surface.selectionSnapshot(), presentMenu: false)
+            self.selectionEditMenuInteraction.updateVisibleMenuPosition(animated: true)
+            guard isComplete else { return }
             guard let context = self.selectionMenuContext() else { return }
             // Compare Copy Link with the backend's actual Copy text, including unwrapped rows.
             // A failed optional read must not discard an already known embedded destination.

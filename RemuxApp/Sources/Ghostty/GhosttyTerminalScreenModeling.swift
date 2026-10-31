@@ -175,9 +175,9 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
     /// Optional menu inspection is quiet; an explicit Copy keeps its normal failure notice.
     func selectedText(in surfaceID: UUID, reportResult: Bool) async -> String?
 
-    /// Grows what a long-press at `point` selected to the whole link there, when the backend knows more
-    /// of the link than the pane's terminal shows. True means the selection is complete enough to read,
-    /// including when no expansion was needed; false means completion failed or became stale.
+    /// Grows a long-press selection to the backend's visible link regions when it knows more.
+    /// True authorizes destination inspection. False means incomplete, failed or stale; a valid
+    /// visible expansion can still have been applied for Copy, so refresh selection geometry either way.
     func completeLinkSelection(
         in surfaceID: UUID,
         at point: CGPoint,
