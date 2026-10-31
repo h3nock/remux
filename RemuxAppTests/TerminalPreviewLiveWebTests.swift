@@ -60,6 +60,24 @@ final class TerminalPreviewLiveWebTests: XCTestCase {
         }
     }
 
+    func testForwardedURLPreservesPathQueryAndFragment() throws {
+        let cases: [(String, String)] = [
+            ("http://localhost:3000?token=abc", "http://127.0.0.1:54321/?token=abc"),
+            ("http://localhost:3000/#/settings", "http://127.0.0.1:54321/#/settings"),
+            ("http://localhost:3000/docs?tab=2#section", "http://127.0.0.1:54321/docs?tab=2#section"),
+            ("http://localhost:3000/a%2Fb/%2520?q=a+b&q=%2B#part%20two", "http://127.0.0.1:54321/a%2Fb/%2520?q=a+b&q=%2B#part%20two"),
+            ("http://localhost:3000?", "http://127.0.0.1:54321/?"),
+            ("http://localhost:3000#", "http://127.0.0.1:54321/#"),
+            ("localhost:3000?token=abc#/settings", "http://127.0.0.1:54321/?token=abc#/settings"),
+        ]
+        for (value, expected) in cases {
+            let target = try XCTUnwrap(TerminalPreviewCandidate(selection: value)?.localhostTarget)
+            let resource = try TerminalPreviewLiveWebResource(target: target, localPort: 54321, closeForward: {})
+            XCTAssertEqual(resource.localURL.absoluteString, expected, value)
+            resource.close()
+        }
+    }
+
     @MainActor
     func testSessionOpensLocalhostWithoutPathResolutionAndClosesForwardOnce() async throws {
         let closes = LiveWebCloseCounter()
@@ -110,12 +128,7 @@ final class TerminalPreviewLiveWebTests: XCTestCase {
         let closes = LiveWebCloseCounter()
         var resource: TerminalPreviewLiveWebResource? =
             try TerminalPreviewLiveWebResource(
-                target: TerminalPreviewLocalhostTarget(
-                    host: "localhost",
-                    port: 3000,
-                    scheme: "http",
-                    pathQuery: "/"
-                ),
+                target: XCTUnwrap(TerminalPreviewCandidate(selection: "http://localhost:3000/")?.localhostTarget),
                 localPort: 54321,
                 closeForward: { await closes.increment() }
             )
@@ -136,12 +149,7 @@ final class TerminalPreviewLiveWebTests: XCTestCase {
     @MainActor
     func testCoordinatorAllowsLocalOriginAndRoutesExternalLinkTaps() throws {
         let resource = try TerminalPreviewLiveWebResource(
-            target: TerminalPreviewLocalhostTarget(
-                host: "localhost",
-                port: 3000,
-                scheme: "http",
-                pathQuery: "/"
-            ),
+            target: XCTUnwrap(TerminalPreviewCandidate(selection: "http://localhost:3000/")?.localhostTarget),
             localPort: 54321,
             closeForward: {}
         )
