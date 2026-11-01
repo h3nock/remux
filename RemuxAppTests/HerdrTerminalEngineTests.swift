@@ -3005,6 +3005,30 @@ final class HerdrTerminalEngineTests: XCTestCase {
         await engine.stop()
     }
 
+    /// Explicit resume while disconnected may never reach the ended connection's
+    /// operation stream. Its input gate must not survive into the next connection.
+    func testFindInputGateEndsWithItsConnection() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (first, firstOutbox) = await connect(engine)
+        try await shown(first, updates, firstOutbox, panes: Self.atP)
+        await engine.performFind(.begin("P"), connection: 1)
+        if case .notTaken = await first.send([.text("blocked")], to: .pane("P")) {} else {
+            XCTFail("Find didn't block input")
+        }
+        await engine.endConnection(1)
+        // No resume intent is delivered to the old engine connection.
+        let (second, secondOutbox) = await connect(engine, connection: 2)
+        try await shown(second, updates, secondOutbox, panes: Self.atP)
+        if case .sent = await second.send([.text("ok")], to: .pane("P")) {} else {
+            XCTFail("ended Find still blocked the new connection")
+        }
+        XCTAssertTrue(try secondOutbox.writes().contains {
+            if case .paneInput = $0 { return true }; return false
+        }, "input never reached the replacement outbox")
+        await engine.stop()
+    }
+
     func testFindQueryEditsKeepTheirReadingOriginAfterIntermediateResultsSettle() async throws {
         let engine = makeEngine()
         let updates = UpdateLog(engine)
@@ -3051,10 +3075,11 @@ final class HerdrTerminalEngineTests: XCTestCase {
     /// A connection whose requests go to an outbox the test reads, opened as the model opens one.
     private func connect(
         _ engine: HerdrTerminalEngine,
+        connection: UInt64 = 1,
         commandTimeout: Duration = .seconds(60)
     ) async -> (HerdrEngineFeed, RecordingOutbox) {
         let outbox = RecordingOutbox()
-        let feed = await engine.beginConnection(1, outbox: outbox)
+        let feed = await engine.beginConnection(connection, outbox: outbox)
         await feed.opened(
             methods: [
                 HerdrScreenModel.paneFocusMethod, HerdrScreenModel.paneZoomMethod, "worktree.list", "tab.focus",

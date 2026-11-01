@@ -1192,6 +1192,7 @@ actor HerdrTerminalEngine {
 
     private func endRequests() {
         endFind()
+        findBlocksInput = false
         unpaintedFindReveal = nil
         cancelDeadline()
         outbox = nil
