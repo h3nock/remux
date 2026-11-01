@@ -382,6 +382,19 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         model?.stateTraceLabel ?? "released"
     }
 
+    // MARK: Find
+
+    var canFindInPane: Bool { model?.canFindInPane == true }
+    var paneFindPresentation: TerminalFindPresentation? { model?.findPresentation }
+    func beginFind(in surfaceID: UUID) -> Bool {
+        guard let paneID = paneID(for: surfaceID) else { return false }
+        return model?.beginFind(inPane: paneID) == true
+    }
+    func updateFind(_ query: String) { model?.updateFind(query) }
+    func navigateFind(_ step: Int) { model?.navigateFind(step) }
+    func endFind() { model?.endFind() }
+    func resumeFindInput() { model?.resumeFindInput() }
+
     // MARK: Input
 
     /// Herdr panes get Ctrl+B at once; Herdr's own keybindings aren't offered on the phone.

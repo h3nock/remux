@@ -46,6 +46,31 @@ final class HerdrScreenModel {
     let terminalScreenAdapter = HerdrTerminalScreenAdapter()
     /// The session's workspaces and tabs, from the newest snapshot, kept across a reconnect.
     let places = HerdrSessionPlaces()
+    private var findMethodsAvailable = false
+    private(set) var findPresentation: TerminalFindPresentation?
+    private(set) var isFindInputBlocked = false
+    var canFindInPane: Bool { findMethodsAvailable && shownAttempt != nil && popup.popup == nil }
+
+    func beginFind(inPane paneID: String) -> Bool {
+        guard canFindInPane, let attempt = shownAttempt, focusPane(paneID) else { return false }
+        isFindInputBlocked = true
+        findPresentation = TerminalFindPresentation()
+        attempt.ask(.find(.begin(paneID)))
+        didChange()
+        return true
+    }
+
+    func updateFind(_ query: String) { shownAttempt?.ask(.find(.query(query))) }
+    func navigateFind(_ step: Int) { shownAttempt?.ask(.find(.navigate(step))) }
+    func endFind() {
+        findPresentation = nil
+        attempt?.ask(.find(.end))
+        didChange()
+    }
+    func resumeFindInput() {
+        isFindInputBlocked = false
+        attempt?.ask(.find(.resumeInput))
+    }
 
     /// What the model tells its owner about the session's notifications.
     enum NotificationEvent: Equatable {
@@ -63,6 +88,7 @@ final class HerdrScreenModel {
         /// Shows the session, and takes it to `destination` right after, when given (`reconcileVisibility`).
         case show(HerdrSurfaceGeometry, to: HerdrDestination?)
         case hide
+        case find(HerdrFindIntent)
         case resize(HerdrSurfaceGeometry)
         case theme([HerdrHostThemeUpdate])
         case appActive(Bool)
@@ -974,6 +1000,7 @@ final class HerdrScreenModel {
         _ events: [HerdrInputEvent],
         to target: (attempt: Attempt, paneID: String)
     ) -> FocusedTerminalInputSubmissionResult {
+        guard allowsFindInput(events, paneID: target.paneID) else { return .surfaceRejected }
         let messages = HerdrInputTranslator.messages(events)
         do {
             try messages.forEach(HerdrConnection.checkLimits)
@@ -1002,7 +1029,7 @@ final class HerdrScreenModel {
 
     private func sendAwaitingDelivery(_ events: [HerdrInputEvent], toPane paneID: String) async -> Bool {
         // Herdr drops pane input while a popup is open over the tab, and still answers the ping.
-        guard let target = inputTarget(forPane: paneID), popup.popup == nil,
+        guard !isFindInputBlocked, let target = inputTarget(forPane: paneID), popup.popup == nil,
               (try? HerdrConnection.checkLimits(events)) != nil
         else { return false }
         return await withCheckedContinuation { delivered in
@@ -1165,6 +1192,12 @@ final class HerdrScreenModel {
         didChange()
     }
 
+    private func allowsFindInput(_ events: [HerdrInputEvent], paneID: String) -> Bool {
+        guard isFindInputBlocked, !events.allSatisfy(\.releasesPress) else { return true }
+        guard let scroll = paneScrolls[paneID], !scroll.mouseReporting, !scroll.alternateScreenActive else { return false }
+        return events.allSatisfy(\.isHistoryWheel)
+    }
+
     /// All input over the session's connection goes this way. Input other than the wheel ends the selection
     /// of the terminal it goes to, a pane's or the popup's, as Herdr's client ends its own on a key, text or a
     /// paste, whatever sends it.
@@ -1174,6 +1207,12 @@ final class HerdrScreenModel {
         on attempt: Attempt,
         delivered: CheckedContinuation<Bool, Never>?
     ) {
+        if isFindInputBlocked, !events.allSatisfy(\.releasesPress) {
+            guard case .pane(let paneID) = target, allowsFindInput(events, paneID: paneID) else {
+                delivered?.resume(returning: false)
+                return
+            }
+        }
         if events.contains(where: { if case .mouse = $0 { false } else { true } }) {
             managedSurface(of: target)?.endSelection()
         }
@@ -1716,7 +1755,9 @@ final class HerdrScreenModel {
             return
         }
         guard isCurrent(attempt) else { return }
-        await feed.opened(methods: await connection.negotiated?.methods ?? [], commandTimeout: connectionTiming.command)
+        let methods = await connection.negotiated?.methods ?? []
+        findMethodsAvailable = methods.contains("pane.copy_search") && methods.contains("pane.scroll")
+        await feed.opened(methods: methods, commandTimeout: connectionTiming.command)
         guard isCurrent(attempt) else { return }
         attempt.isOpen = true
         if let themeReport { attempt.ask(.theme(themeReport)) }
@@ -1823,6 +1864,8 @@ final class HerdrScreenModel {
             await feed.setZoom(zoomed, ofPane: paneID)
         case .askLayout(let paneID):
             await feed.askLayout(ofPane: paneID)
+        case .find(let intent):
+            await engine.performFind(intent, connection: attempt.id)
         case .command(let method, let params, let answered):
             await feed.command(method, params: params) { answered.resume(returning: $0) }
         }
@@ -2080,7 +2123,11 @@ final class HerdrScreenModel {
         attempt.closeCause = cause
         attempt.finishOperations()
         attempt.task?.cancel()
-        if attempt === self.attempt { resumeSizeWaiter() }
+        if attempt === self.attempt {
+            findPresentation = nil
+            findMethodsAvailable = false
+            resumeSizeWaiter()
+        }
         Task { [engine, id = attempt.id] in await engine.endConnection(id) }
         if let connection = attempt.connection {
             attempt.closing = Task { await connection.close(cause) }
@@ -2187,6 +2234,9 @@ final class HerdrScreenModel {
     private func handle(_ update: HerdrEngineUpdate) {
         guard !stopped else { return }
         switch update {
+        case .findChanged(let value, let connection):
+            guard attempt?.id == connection, findPresentation != value else { return }
+            findPresentation = value
         case .paneTerminal(let paneID, let terminal):
             terminals[paneID] = terminal
             presentationFailures.removeValue(forKey: paneID)

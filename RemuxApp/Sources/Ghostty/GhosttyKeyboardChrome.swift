@@ -163,6 +163,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let onShowShortcuts: () -> Void
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
     let composerContent: () -> ComposerContent
+    var allowsTerminalKeys = true
 
     var body: some View {
         selectorRow
@@ -356,7 +357,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             isActive: isActive,
-            isEnabled: isEnabled && !isInteractionLocked,
+            isEnabled: isEnabled && allowsTerminalKeys && !isInteractionLocked,
             onLongPress: onLongPress,
             action: action
         )
