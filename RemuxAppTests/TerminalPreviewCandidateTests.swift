@@ -209,7 +209,10 @@ final class TerminalPreviewCandidateTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            context.externalLink(for: "the PR")?.absoluteString,
+            TerminalExternalLink.url(
+                selection: "the PR",
+                explicitTarget: context.explicitTarget(for: "the PR")
+            )?.absoluteString,
             "https://github.com/h3nock/remux/pull/1"
         )
         XCTAssertNil(context.candidate(for: "the PR"))
@@ -219,9 +222,9 @@ final class TerminalPreviewCandidateTests: XCTestCase {
             )?.host,
             "example.com"
         )
-        XCTAssertNil(context.externalLink(for: "the PR edited"))
+        XCTAssertNil(context.explicitTarget(for: "the PR edited"))
 
         context.selectionDidChange()
-        XCTAssertNil(context.externalLink(for: "the PR"))
+        XCTAssertNil(context.explicitTarget(for: "the PR"))
     }
 }
