@@ -215,11 +215,14 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
             popup: model.popup.popup.map { popup in
                 let displayed = model.popup.surface?.terminalID == popup.terminalID ? model.popup.displayed : nil
                 let colors = model.terminalColors
+                let columns = model.measurement?.controlViewport.columns ?? layout.columns
+                let rows = model.measurement?.controlViewport.rows ?? layout.rows
                 return GhosttyTerminalViewportPresentationProjection.Popup(
                     id: surfaceID(forPopup: popup.terminalID),
                     title: popup.title,
                     tabLabel: layout.tab.map { model.tabName(ofTab: $0.tabID) ?? $0.label },
-                    border: Self.popupBorder(columns: layout.columns, rows: layout.rows, accent: model.popupAccent, colors: colors),
+                    viewportGrid: GhosttyTerminalGridSize(columns: UInt32(columns), rows: UInt32(rows)),
+                    border: Self.popupBorder(columns: columns, rows: rows, accent: model.popupAccent, colors: colors),
                     titleInk: Self.ink(model.popupAccent, colors: colors, minimumContrast: GhosttyTerminalColors.MinimumContrast.text),
                     tabInk: colors.map { Self.ink($0.secondaryText) } ?? .separator,
                     grid: displayed.map { GhosttyTerminalGridSize(columns: UInt32($0.grid.columns), rows: UInt32($0.grid.rows)) },
@@ -378,6 +381,19 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     var stateTraceLabel: String {
         model?.stateTraceLabel ?? "released"
     }
+
+    // MARK: Find
+
+    var canFindInPane: Bool { model?.canFindInPane == true }
+    var paneFindPresentation: TerminalFindPresentation? { model?.findPresentation }
+    func beginFind(in surfaceID: UUID) -> Bool {
+        guard let paneID = paneID(for: surfaceID) else { return false }
+        return model?.beginFind(inPane: paneID) == true
+    }
+    func updateFind(_ query: String) { model?.updateFind(query) }
+    func navigateFind(_ step: Int) { model?.navigateFind(step) }
+    func endFind() { model?.endFind() }
+    func resumeFindInput() { model?.resumeFindInput() }
 
     // MARK: Input
 

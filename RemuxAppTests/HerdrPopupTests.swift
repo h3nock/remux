@@ -43,6 +43,117 @@ final class HerdrPopupTests: XCTestCase {
 
     // MARK: - Holding the popup
 
+    /// The real keyboard flow keeps the covered tab's size, even before the attachment's first frame.
+    /// Closing the popup reconciles the shell without needing another viewport notification.
+    func testPopupOnlyViewportChangesKeepTheShellSizeUntilThePopupCloses() async throws {
+        let harness = await makeHarness()
+        let session = try await shownSession(harness)
+        await session.bridge.serve(popupSurface(revision: 3))
+        let attach = try await harness.bridge(1)
+        let before = await session.bridge.writtenCount
+        let attachedGrid = try Self.grid(harness)
+        let shellGrid = harness.model.terminalScreenAdapter.terminalScreenPresentationProjection.viewport.windowGrid
+
+        harness.model.prepareViewport(size: CGSize(width: 390, height: 480), scale: 3)
+        let measured = try XCTUnwrap(harness.model.measurement)
+        try await Task.sleep(for: .milliseconds(250))
+        let openingResizes = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(openingResizes, [], "attaching resized the covered tab")
+        let viewport = harness.model.terminalScreenAdapter.terminalScreenPresentationProjection.viewport
+        XCTAssertEqual(viewport.windowGrid, shellGrid)
+        XCTAssertEqual(viewport.popup?.viewportGrid, .init(columns: UInt32(measured.controlViewport.columns), rows: UInt32(measured.controlViewport.rows)))
+
+        await attach.serve(DirectServer.welcome() + DirectServer.frame(1, attachedGrid, "$ "))
+        try await harness.waitUntil("the popup wasn't drawn") { harness.model.popup.surface != nil }
+        await attach.serve(DirectServer.shutdown("terminal attach ended: terminal \(Self.popupID) not found"))
+        try await harness.waitUntil("the shell didn't take the current viewport after close") {
+            let resizes = try? await self.shellResizes(session.bridge, from: before)
+            return resizes?.isEmpty == false
+        }
+        let resizes = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(resizes, [.resize(cols: measured.controlViewport.columns, rows: measured.controlViewport.rows,
+            cellWidth: measured.cellMetrics.pixelWidth, cellHeight: measured.cellMetrics.pixelHeight)])
+    }
+
+    /// The existing framed fallback needs the current shell grid, including when no new measurement occurs.
+    func testFailedPopupAttachmentReconcilesTheCurrentShellSize() async throws {
+        let harness = await makeHarness()
+        let (session, attach, _) = try await attachedPopup(harness)
+        let before = await session.bridge.writtenCount
+        harness.model.prepareViewport(size: CGSize(width: 390, height: 480), scale: 3)
+        try await Task.sleep(for: .milliseconds(250))
+        let held = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(held, [])
+
+        await attach.serve(DirectServer.shutdown("terminal attach failed: unavailable"))
+        try await harness.waitUntil("the fallback didn't size the shell") {
+            let resizes = try? await self.shellResizes(session.bridge, from: before)
+            return resizes?.isEmpty == false
+        }
+        let measured = try XCTUnwrap(harness.model.measurement)
+        let resizes = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(resizes, [.resize(cols: measured.controlViewport.columns, rows: measured.controlViewport.rows,
+            cellWidth: measured.cellMetrics.pixelWidth, cellHeight: measured.cellMetrics.pixelHeight)])
+        XCTAssertFalse(harness.model.popup.resizesIndependently)
+    }
+
+    /// A validated destination of a hidden session sizes its next show before consuming that destination.
+    func testAHiddenSessionsRevealReconcilesTheViewportBeforeShowing() async throws {
+        let harness = await makeHarness()
+        let (session, _, _) = try await attachedPopup(harness, otherTab: true)
+        let before = await session.bridge.writtenCount
+        harness.model.prepareViewport(size: CGSize(width: 390, height: 480), scale: 3)
+        try await Task.sleep(for: .milliseconds(250))
+        let held = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(held, [])
+
+        harness.model.setSelected(false)
+        XCTAssertTrue(harness.model.reveal(.tab("t2"), bootID: "boot"))
+        harness.model.setSelected(true)
+        try await harness.waitUntil("the navigation show kept the popup's old shell size") {
+            let resizes = try? await self.shellResizes(session.bridge, from: before)
+            return resizes?.isEmpty == false
+        }
+        let measured = try XCTUnwrap(harness.model.measurement)
+        let resizes = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(resizes.last, .resize(cols: measured.controlViewport.columns, rows: measured.controlViewport.rows,
+            cellWidth: measured.cellMetrics.pixelWidth, cellHeight: measured.cellMetrics.pixelHeight))
+    }
+
+    private func shellResizes(_ bridge: FakeBridgeTransport, from index: Int) async throws -> [ClientWrite] {
+        var resizes: [ClientWrite] = []
+        for position in index..<(await bridge.writtenCount) {
+            let write = try ClientWrite.decode(try await bridge.written(position))
+            if case .resize = write { resizes.append(write) }
+        }
+        return resizes
+    }
+
+    /// Leaving the popup hides the shell before it adopts the latest size. That size goes with the next
+    /// show, never as an extra active-shell resize immediately before the phone leaves.
+    func testLeavingAPopupSendsTheLatestShellSizeOnlyWithItsNextShow() async throws {
+        let harness = await makeHarness()
+        let (session, _, _) = try await attachedPopup(harness)
+        let before = await session.bridge.writtenCount
+        harness.model.prepareViewport(size: CGSize(width: 390, height: 480), scale: 3)
+        harness.model.setSelected(false)
+        var index = before
+        var hide = try await harness.nextSurfaceSet(session.bridge, from: &index)
+        while hide.active { hide = try await harness.nextSurfaceSet(session.bridge, from: &index) }
+        await session.bridge.serve(HerdrServerScript.surfaceSetReply(id: hide.id, active: false))
+        try await Task.sleep(for: .milliseconds(250))
+        let hiddenResizes = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(hiddenResizes, [], "the hidden shell was resized before leaving")
+
+        harness.model.setSelected(true)
+        var show = try await harness.nextSurfaceSet(session.bridge, from: &index)
+        while !show.active { show = try await harness.nextSurfaceSet(session.bridge, from: &index) }
+        let measured = try XCTUnwrap(harness.model.measurement)
+        let resizes = try await shellResizes(session.bridge, from: before)
+        XCTAssertEqual(resizes, [.resize(cols: measured.controlViewport.columns, rows: measured.controlViewport.rows,
+            cellWidth: measured.cellMetrics.pixelWidth, cellHeight: measured.cellMetrics.pixelHeight)])
+    }
+
     /// The popup on screen is attached at the grid its area holds, and its renderer draws Herdr's frames
     /// at the panes' font, in the frame with the popup's title and its tab.
     func testThePopupOnScreenIsAttachedAtTheGridItsAreaHolds() async throws {
@@ -630,16 +741,18 @@ final class HerdrPopupTests: XCTestCase {
         let tiny = try HerdrModelHarness.screenSize(columns: 5, rows: 2)
         let harness = await makeHarness()
         let (session, attach, _) = try await attachedPopup(harness, otherTab: true)
-        try await leaveOut(harness, session, screen: tiny, columns: 5, rows: 2)
-        let before = await attach.writtenCount
-
-        await session.bridge.serve(Self.twoTabs(revision: 5, focused: "t2"))
-        await session.bridge.serve(try harness.shownSurface(
+        // Herdr still draws this client's shell at its held grid while the popup owns the viewport.
+        let otherTabSurface = try harness.shownSurface(
             projection: 5,
             revision: 50,
             lines: ["cd"],
             panes: [.init(id: "w1:p3", x: 0, width: 5, height: 2, focused: true)]
-        ))
+        )
+        try await leaveOut(harness, session, screen: tiny, columns: 5, rows: 2)
+        let before = await attach.writtenCount
+
+        await session.bridge.serve(Self.twoTabs(revision: 5, focused: "t2"))
+        await session.bridge.serve(otherTabSurface)
         try await harness.waitUntil("tab t2 wasn't shown") { harness.model.layout?.tab?.tabID == "t2" }
         XCTAssertNil(popup(harness), "the popup showed over another tab")
         try await harness.waitUntil("the popup wasn't let go on another tab") {
@@ -1063,7 +1176,7 @@ final class HerdrPopupTests: XCTestCase {
         )
         XCTAssertTrue(projection.canNavigateWindows)
         projection.popup = GhosttyTerminalViewportPresentationProjection.Popup(
-            id: UUID(), title: "popup", tabLabel: nil, border: [], titleInk: .separator, tabInk: .separator, grid: nil, cell: nil
+            id: UUID(), title: "popup", tabLabel: nil, viewportGrid: .init(columns: 1, rows: 1), border: [], titleInk: .separator, tabInk: .separator, grid: nil, cell: nil
         )
         XCTAssertFalse(projection.canNavigateWindows, "a swipe on the popup switches tabs")
     }

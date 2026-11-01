@@ -70,6 +70,7 @@ final class GhosttyPaneLinesViewTests: XCTestCase {
             id: UUID(),
             title: "popup",
             tabLabel: nil,
+            viewportGrid: grid,
             border: box(ink: .color(red: 120, green: 160, blue: 240)),
             titleInk: .separator,
             tabInk: .separator,

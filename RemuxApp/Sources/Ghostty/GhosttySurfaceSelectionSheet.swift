@@ -183,6 +183,7 @@ struct GhosttyPaneSelectionSheet: View {
     let onSelect: (UUID) -> Void
     let onRemovePane: (UUID) -> Void
     let onRenamePane: (UUID, String) -> Void
+    var onFindPane: ((UUID) -> Void)? = nil
 
     var body: some View {
         NavigationStack {
@@ -275,7 +276,8 @@ struct GhosttyPaneSelectionSheet: View {
             },
             onClose: close,
             onRename: rename,
-            onClearName: { pane in onRenamePane(pane.id, "") }
+            onClearName: { pane in onRenamePane(pane.id, "") },
+            onFind: onFindPane
         )
         .frame(height: topologySize.height, alignment: .top)
     }
@@ -789,6 +791,7 @@ private struct GhosttyPaneTopologyDiagram: View {
     let onClose: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
     let onRename: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
     let onClearName: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
+    var onFind: ((UUID) -> Void)? = nil
 
     static func contentSize(for outerSize: CGSize) -> CGSize {
         CGSize(
@@ -847,6 +850,10 @@ private struct GhosttyPaneTopologyDiagram: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            if let onFind {
+                Button { onFind(pane.id) } label: { Label("Find in pane", systemImage: "magnifyingglass") }
+                    .accessibilityIdentifier("terminal.pane.find.\(pane.id.uuidString)")
+            }
             if let field = pane.renameField {
                 Button {
                     onRename(pane)
@@ -874,6 +881,7 @@ private struct GhosttyPaneTopologyDiagram: View {
         .accessibilityLabel(accessibilityLabel(for: pane))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityActions {
+            if let onFind { Button("Find in pane") { onFind(pane.id) } }
             if let field = pane.renameField {
                 Button("Rename Pane") { onRename(pane) }
                 if !field.name.isEmpty { Button("Clear Name") { onClearName(pane) } }
