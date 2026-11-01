@@ -80,7 +80,32 @@ The geometry change's 107-case Find/engine/painter run completed with
 `TEST SUCCEEDED`. The fixed Release build remains installed. The disposable
 server was stopped and keyboard capture restored off. The original Terra report,
 phone captures and hashes are attached to the Find item in Remux Review. This is
-functional validation; independent production code review is still pending.
+functional validation of the phone build at `3666f4d8`.
+
+## Independent code review follow-up
+
+Astra (`gpt-6-astra`, high effort) reviewed the full production diff at `3f091b03`
+and identified two P2 defects: a newer navigation could be lost when a scroll's
+reply preceded its frame, and settled typeahead results moved the editing origin.
+`66661980` retains the single outstanding reveal destination until it paints and
+separates the stable editing origin from the selected-hit refresh hint. Astra's
+independent follow-up at that exact head found both resolved and no remaining
+code-review blockers. This is source review, not a formal GitHub approval.
+
+The actual Remux simulator was then checked over the isolated Herdr 0.9.5 SSH
+fixture with a test relay holding non-reply messages for 800 ms while forwarding
+endpoint replies immediately, without changing their bytes. Onscreen `w → wa → w`
+selected `world → warning → world`, with the same cursor in all three requests.
+Rapid Next → Previous sent the corrective scroll after the first acknowledgement
+but before its held frame arrived; the final highlighted passage and `1 of 2`
+agreed. Hiding the keyboard retained that hit. Native recordings, stills and
+request/delivery logs are retained locally and attached in Remux Review. This is
+controlled ordering evidence, not a network-latency benchmark or another phone run.
+
+The 111-case Find/engine/painter run completed with `TEST SUCCEEDED`, including
+both reply/frame orderings, replacement/close, failure of an older reveal,
+stable editing origin and the prior resize/output regressions. App CI remains
+a separate check of the final pushed head.
 
 ## Timing policy
 
@@ -133,4 +158,4 @@ selection/graphics combinations are not established by these checks. Keep those
 release gates separate from this implementation's simulator evidence. Find
 preserves Herdr's shared runtime scroll behavior; highlights are local. A sent
 scroll cannot be cancelled by the existing API, while unsent obsolete work is
-discarded. No independent production code approval is claimed.
+discarded. Astra's source review and the separate app evidence are described above.

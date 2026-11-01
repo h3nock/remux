@@ -3,7 +3,8 @@
 Status: approved design implemented in Remux using existing Herdr APIs. Simulator
 validation and regression checks are recorded in [find-in-pane-validation.md](find-in-pane-validation.md).
 Physical-phone functional checks also pass after the viewport-resize follow-up.
-Performance budgets, independent code review and App CI remain release checks.
+Independent code review and its two corrective follow-ups are recorded in the
+validation document. Performance budgets and final-head App CI remain separate checks.
 
 - Branch: `feat/herdr-find-in-pane`
 - Base: `main` at `250a2f5926b9b3948581bb1afe4e667feb2d827f`
@@ -76,8 +77,8 @@ proposal would be separate work, not an assumed implementation escape hatch.
 | Upstream search/reveal or incremental-search changes | Outside this Remux implementation. Astra considered these to identify API limits; they are not available client-side approaches or prerequisites we can assume. |
 | Search only the phone's terminal surface | Does not meet retained-history scope. |
 
-These choices are based on contracts, not a measured performance win. No search
-latency comparison between client scheduling policies has been run yet.
+These choices are based on contracts, not a measured performance win. The later
+scheduling experiment and its limits are recorded in the validation document.
 
 ### Client-only reassessment and evidence
 
