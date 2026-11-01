@@ -604,10 +604,11 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         return text
     }
 
-    /// Copy is available immediately. Optional targets use completed backend text and refresh the
-    /// existing menu once; neither a dismissed menu nor an obsolete selection is presented again.
+    /// Embedded destinations need no backend inspection. Plain-text targets use completed backend
+    /// text and refresh the existing menu once; dismissed or obsolete selections stay dismissed.
     private func prepareSelectionMenu(completing link: (CGPoint, GhosttyLongPressSelection)?) {
         invalidateSelectionMenu()
+        if selectionMenuContext()?.explicitTarget != nil { return }
         guard let (surface, control) = exactLocalSelectionSurface(), let source = selectionSource else { return }
         let generation = selectionGeneration
         selectionMenuPreparation = Task { @MainActor [weak self] in
@@ -628,11 +629,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             self.selectionEditMenuInteraction.updateVisibleMenuPosition(animated: true)
             guard isComplete else { return }
             guard let context = self.selectionMenuContext() else { return }
-            // Compare Copy Link with the backend's actual Copy text, including unwrapped rows.
-            // A failed optional read must not discard an already known embedded destination.
-            let copiedText = await self.menuSelectionText(for: context)
-            guard !Task.isCancelled, self.isCurrent(context),
-                  let text = copiedText ?? (context.explicitTarget != nil ? context.visibleText : nil)
+            guard let text = await self.menuSelectionText(for: context),
+                  !Task.isCancelled, self.isCurrent(context)
             else { return }
             self.preparedSelection = (context, text)
             self.selectionEditMenuInteraction.reloadVisibleMenu()
@@ -1006,8 +1004,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
               selectionMenuAnchorHandle != nil
         else { return nil }
 
-        // Embedded destinations are usable immediately; canonical Copy inspection only determines
-        // whether Copy Link would add anything. Plain URLs still require completed backend text.
+        // Link actions use a known embedded destination immediately. Plain URLs require completed
+        // backend text; ordinary Copy always keeps the backend's selected-text semantics.
         let linkSelection = preparedSelection.flatMap { isCurrent($0.context) ? $0 : nil }
             ?? selectionMenuContext().flatMap { context -> (context: SelectionMenuContext, text: String)? in
                 guard context.explicitTarget != nil else { return nil }
@@ -1025,11 +1023,10 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                 self.onPreviewSelection?(surface.id, candidate)
             })
         } else if let prepared = linkSelection,
-                  let url = TerminalExternalLink.url(selection: prepared.text, explicitTarget: prepared.context.explicitTarget),
-                  let host = url.host {
+                  let url = TerminalExternalLink.url(selection: prepared.text, explicitTarget: prepared.context.explicitTarget) {
             let context = prepared.context
             // Keep the destination advertised by this action, including its path, query and fragment.
-            actions.append(UIAction(title: "Open \(host)", image: UIImage(systemName: "safari")) { [weak self] _ in
+            actions.append(UIAction(title: "Open Link", image: UIImage(systemName: "safari")) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isCurrent(context) else { return }
                     let currentText = context.explicitTarget != nil
@@ -1041,9 +1038,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                 }
             })
         }
-        if let prepared = preparedSelection, isCurrent(prepared.context),
-           let target = prepared.context.explicitTarget,
-           target != prepared.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+        if let prepared = linkSelection, let target = prepared.context.explicitTarget {
             let context = prepared.context
             actions.append(UIAction(title: "Copy Link", image: UIImage(systemName: "link")) { [weak self] _ in
                 guard let self, self.isCurrent(context) else { return }
