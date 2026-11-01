@@ -78,7 +78,10 @@ struct HerdrFindState: Sendable {
     let bootID: String
     var generation: UInt64
     var query = ""
+    /// Stable across query edits; explicit navigation or a coordinate remap may move it.
     var origin: HerdrFindPoint?
+    /// The selected occurrence is a hint for refreshing this query, not the next edit's origin.
+    var selectionHint: HerdrFindPoint?
     var content: HerdrPaneContent?
     var result: HerdrFindResult?
     var desiredIndex: Int?
@@ -98,6 +101,7 @@ struct HerdrFindState: Sendable {
     }
 
     var selectedRange: HerdrFindRange? { selected.flatMap { result?.matches[$0] } }
+    var searchOrigin: HerdrFindPoint? { selectionHint ?? origin }
 
     mutating func invalidate() {
         result = nil
@@ -118,7 +122,7 @@ struct HerdrFindState: Sendable {
 
     func request(for content: HerdrPaneContent) -> HerdrFindRequest {
         let edge: HerdrFindRange? = result.flatMap { direction > 0 ? $0.matches.last : $0.matches.first }
-        let anchor = origin ?? HerdrFindPoint(row: UInt32(clamping: content.top), col: 0)
+        let anchor = searchOrigin ?? HerdrFindPoint(row: UInt32(clamping: content.top), col: 0)
         // Herdr searches strictly after the cursor. A fresh scan should include its
         // anchor; `previous` is reserved for stepping beyond a cached window.
         let before = anchor.col > 0 ? HerdrFindPoint(row: anchor.row, col: anchor.col - 1)

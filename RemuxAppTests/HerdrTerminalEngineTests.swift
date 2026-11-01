@@ -2927,6 +2927,114 @@ final class HerdrTerminalEngineTests: XCTestCase {
         }
     }
 
+    /// An acknowledged scroll still owns a remote effect until its passage paints.
+    /// A newer arrow works both before and after the acknowledgement, without
+    /// needing the server to present an intermediate frame it may coalesce away.
+    func testFindKeepsNavigationBeforeAnAcknowledgedRevealPaints() async throws {
+        for beforeAnswer in [true, false] {
+            let engine = makeEngine()
+            let updates = UpdateLog(engine)
+            let (feed, outbox) = await connect(engine)
+            try await shown(feed, updates, outbox, panes: Self.atP)
+            try await findFrame(feed, revision: 2)
+            await engine.performFind(.begin("P"), connection: 1)
+            await engine.performFind(.query("one"), connection: 1)
+            try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+            try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [0, 20, 21]))
+            await engine.performFind(.navigate(-1), connection: 1)
+            XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "20")
+            if beforeAnswer { await engine.performFind(.navigate(1), connection: 1) }
+            try await answer(feed, outbox)
+            if !beforeAnswer { await engine.performFind(.navigate(1), connection: 1) }
+            XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.scroll", "pane.scroll"])
+            XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "0")
+            try await findFrame(feed, revision: 2, offset: 20, surfaceRevision: 3)
+            try await answer(feed, outbox)
+            try await findFrame(feed, revision: 2, offset: 0, surfaceRevision: 4)
+            // Once the effect is painted, another visible match needs no command.
+            await engine.performFind(.navigate(1), connection: 1)
+            XCTAssertEqual(try outbox.commands().count, 3)
+            await engine.stop()
+        }
+    }
+
+    func testFindQueryReplacementAndCloseWhileAnAcknowledgedRevealAwaitsPaint() async throws {
+        for replaceQuery in [true, false] {
+            let engine = makeEngine()
+            let updates = UpdateLog(engine)
+            let (feed, outbox) = await connect(engine)
+            try await shown(feed, updates, outbox, panes: Self.atP)
+            try await findFrame(feed, revision: 2)
+            await engine.performFind(.begin("P"), connection: 1)
+            await engine.performFind(.query("one"), connection: 1)
+            try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+            try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [0, 20]))
+            await engine.performFind(.navigate(-1), connection: 1)
+            try await answer(feed, outbox)
+            if replaceQuery {
+                await engine.performFind(.query("two"), connection: 1)
+                try await waitUntil("replacement wasn't sent") { (try? outbox.commands().count) == 3 }
+                try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [20]))
+                XCTAssertEqual(try outbox.lastCommand().method, "pane.scroll")
+                XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "0")
+            }
+            await engine.performFind(.end, connection: 1)
+            if replaceQuery { try await answer(feed, outbox) }
+            let count = try outbox.commands().count
+            try await findFrame(feed, revision: 2, offset: 20, surfaceRevision: 3)
+            XCTAssertEqual(try outbox.commands().count, count, "closed Find recentered the reader")
+            await engine.stop()
+        }
+    }
+
+    func testFindFailedRevealDoesNotConsumeNewerNavigation() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        try await shown(feed, updates, outbox, panes: Self.atP)
+        try await findFrame(feed, revision: 2)
+        await engine.performFind(.begin("P"), connection: 1)
+        await engine.performFind(.query("one"), connection: 1)
+        try await waitUntil("query wasn't sent") { (try? outbox.commands().count) == 1 }
+        try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: [0, 10, 20]))
+        await engine.performFind(.navigate(-1), connection: 1)
+        await engine.performFind(.navigate(-1), connection: 1)
+        try await answer(feed, outbox, error: ("not_sent", "scroll failed"))
+        XCTAssertEqual(try outbox.commands(), ["pane.copy_search", "pane.scroll", "pane.scroll"])
+        XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], "20")
+        await engine.stop()
+    }
+
+    func testFindQueryEditsKeepTheirReadingOriginAfterIntermediateResultsSettle() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        try await shown(feed, updates, outbox, panes: Self.atP)
+        func paint(top: Int, revision: UInt64) async throws {
+            await feed.receive(.surface(try Self.surface(revision: revision, lines: ["one ", "two "],
+                panes: [Self.pane("P", x: 0, width: 4, height: 2, focused: true,
+                                  contentRevision: 2, scroll: (40 - top, 40, 2))])))
+        }
+        try await paint(top: 10, revision: 2)
+        await engine.performFind(.begin("P"), connection: 1)
+        struct Search: Decodable {
+            struct Params: Decodable { let cursor: HerdrFindPoint }
+            let params: Params
+        }
+        for (index, query) in ["w", "wa", "w"].enumerated() {
+            await engine.performFind(.query(query), connection: 1)
+            try await waitUntil("edit wasn't sent") { (try? outbox.commands().count) == index * 2 + 1 }
+            let search = try JSONDecoder().decode(Search.self, from: outbox.lastCommandJSON())
+            XCTAssertEqual(search.params.cursor, .init(row: 9, col: 3))
+            try await answer(feed, outbox, json: Self.findReply(revision: 2, rows: query == "wa" ? [30] : [20, 30]))
+            XCTAssertEqual(try outbox.lastCommand().method, "pane.scroll")
+            XCTAssertEqual(try outbox.lastParams()["offset_from_bottom"], query == "wa" ? "10" : "20")
+            try await answer(feed, outbox)
+            try await paint(top: query == "wa" ? 30 : 20, revision: UInt64(index + 3))
+        }
+        await engine.stop()
+    }
+
     private func findFrame(_ feed: HerdrEngineFeed, revision: UInt64, offset: Int = 0, surfaceRevision: UInt64? = nil) async throws {
         await feed.receive(.surface(try Self.surface(
             revision: surfaceRevision ?? revision, lines: ["one ", "two "],
@@ -3368,6 +3476,16 @@ private final class RecordingOutbox: HerdrOutbound, @unchecked Sendable {
     func lastCommand() throws -> HerdrConnectionTests.Request {
         let requests = try lock.withLock { frames }.filter(Self.isRequest).map(HerdrConnectionTests.request)
         return try XCTUnwrap(requests.last { $0.method != HerdrConnection.surfaceSetMethod }, "no command went out")
+    }
+
+    @MainActor
+    func lastCommandJSON() throws -> Data {
+        let frames = lock.withLock { self.frames }.filter(Self.isRequest)
+        let frame = try XCTUnwrap(frames.last { (try? HerdrConnectionTests.request($0).method) != HerdrConnection.surfaceSetMethod })
+        var reader = HerdrWireReader(Array(frame.dropFirst(4)))
+        _ = try reader.variant()
+        _ = try reader.string()
+        return Data(try reader.string().utf8)
     }
 
     /// The params of the newest command other than a focus or zoom.

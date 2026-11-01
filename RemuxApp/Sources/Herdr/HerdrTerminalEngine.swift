@@ -723,6 +723,9 @@ actor HerdrTerminalEngine {
     private var findTimer: Task<Void, Never>?
     private var findTimerToken: UInt64 = 0
     private var findEditedAt: ContinuousClock.Instant?
+    /// A reply can precede its scroll frame. Keep its effect across query edits/close
+    /// so a newer target cannot be completed against the viewport it will replace.
+    private var unpaintedFindReveal: (paneID: String, offset: UInt64)?
     /// Where the connection's requests go out.
     private var outbox: (any HerdrOutbound)?
     /// The methods the connection's welcome offered, and how long a command may stay unanswered.
@@ -898,6 +901,7 @@ actor HerdrTerminalEngine {
         cancelFindTimer(); lane.dropWaitingFind()
         findGeneration &+= 1
         find.generation = findGeneration; find.query = query
+        find.selectionHint = nil
         find.invalidate(); find.needsReveal = true; find.direction = 1
         find.retryAvailable = true; find.waitingRevision = nil; find.waitsForQuiet = false; find.isDue = false
         self.find = find; findEditedAt = .now
@@ -917,6 +921,7 @@ actor HerdrTerminalEngine {
             : (current == 0 ? result.total - 1 : current - 1)
         find.direction = step; find.needsReveal = true; find.retryAvailable = true
         find.origin = find.selectedRange?.start ?? find.origin
+        find.selectionHint = find.selectedRange?.start ?? find.selectionHint
         find.showResult(); self.find = find; findEditedAt = .now
         repaintFind(); publishFind(); advanceFind()
     }
@@ -992,6 +997,7 @@ actor HerdrTerminalEngine {
             let top = targetTop.overflow ? 0 : targetTop.partialValue
             let offset = scroll.maxLinesFromBottom - min(top, scroll.maxLinesFromBottom)
             find.needsReveal = false; self.find = find
+            unpaintedFindReveal = (find.paneID, offset)
             struct Params: Encodable, Sendable { let pane_id: String; let offset_from_bottom: UInt64 }
             return HerdrCommandLane.Command(method: intent.method,
                 params: Params(pane_id: find.paneID, offset_from_bottom: offset), purpose: .find(intent))
@@ -1004,7 +1010,8 @@ actor HerdrTerminalEngine {
            case .find(let intent) = command.purpose, intent.generation == find.generation { return }
         if let range = find.selectedRange, find.needsReveal,
            let content = content(ofPane: find.paneID), find.result?.content_revision == content.revision {
-            if UInt64(range.start.row) >= content.top, UInt64(range.start.row) < content.top + UInt64(content.rows) {
+            if unpaintedFindReveal?.paneID != find.paneID,
+               UInt64(range.start.row) >= content.top, UInt64(range.start.row) < content.top + UInt64(content.rows) {
                 find.needsReveal = false; self.find = find
                 traceFindCommit()
             } else {
@@ -1019,12 +1026,17 @@ actor HerdrTerminalEngine {
     }
 
     private func findAnswered(_ intent: HerdrFindCommand, result answer: Result<HerdrCommandReply, HerdrCommandError>) {
+        if case .reveal = intent, case .failure = answer { unpaintedFindReveal = nil }
         guard var find, find.generation == intent.generation else { return }
         switch intent {
         case .reveal:
             if case .failure = answer {
-                find.needsReveal = false
-                find.presentation.status = "Couldn’t show match"; self.find = find; publishFind()
+                if find.needsReveal {
+                    // A failed older scroll does not consume newer navigation intent.
+                    advanceFind()
+                } else {
+                    find.presentation.status = "Couldn’t show match"; self.find = find; publishFind()
+                }
             } else {
                 traceFindCommit()
                 // Navigation can replace the destination while a sent scroll drains.
@@ -1042,10 +1054,13 @@ actor HerdrTerminalEngine {
                 if find.desiredIndex == nil {
                     // (0,0) has no predecessor in the unsigned API. Its returned
                     // window can still contain that exact, freshly matched anchor.
-                    find.desiredIndex = result.matches.firstIndex(where: { $0.start == find.origin })
+                    find.desiredIndex = result.matches.firstIndex(where: { $0.start == find.searchOrigin })
                         .map { result.windowStart + $0 } ?? result.current_global
+                } else {
+                    // A boundary fetch completes explicit navigation, which moves the editing origin.
+                    find.origin = find.selectedRange?.start ?? find.origin
                 }
-                find.origin = find.selectedRange?.start ?? find.origin
+                find.selectionHint = find.selectedRange?.start ?? find.selectionHint
                 find.waitingRevision = nil; find.waitsForQuiet = false; find.isDue = false
                 find.showResult(); self.find = find
                 repaintFind(); publishFind(); advanceFind()
@@ -1076,6 +1091,10 @@ actor HerdrTerminalEngine {
 
     /// Called before the matching terminal paint; invalid ranges never reach the new frame.
     private func reconcileFind(with surface: HerdrPaneSurfaceFrame) {
+        if let reveal = unpaintedFindReveal,
+           surface.panes.contains(where: { $0.paneID == reveal.paneID && $0.scroll?.offsetFromBottom == reveal.offset }) {
+            unpaintedFindReveal = nil
+        }
         guard var find else { return }
         let previousPresentation = find.presentation
         guard find.bootID == surface.bootID, surface.popup == nil else { endFind(); return }
@@ -1089,7 +1108,10 @@ actor HerdrTerminalEngine {
             || $0.alternateScreenActive != content.alternateScreenActive } ?? true)
         let remapped = find.content.map { $0.columns != content.columns
             || $0.alternateScreenActive != content.alternateScreenActive } ?? true
-        if find.origin == nil || remapped { find.origin = HerdrFindPoint(row: UInt32(clamping: content.top), col: 0) }
+        if find.origin == nil || remapped {
+            find.origin = HerdrFindPoint(row: UInt32(clamping: content.top), col: 0)
+            find.selectionHint = nil
+        }
         if changed, find.result != nil {
             find.invalidate(); find.needsReveal = false; find.waitsForQuiet = true
         }
@@ -1170,6 +1192,7 @@ actor HerdrTerminalEngine {
 
     private func endRequests() {
         endFind()
+        unpaintedFindReveal = nil
         cancelDeadline()
         outbox = nil
         surfaceSets.removeAll()
@@ -2195,6 +2218,7 @@ actor HerdrTerminalEngine {
         paintedSurface = PaintedSurface(of: surface)
         if surface.bootID != bootID {
             // Pane and terminal ids belong to one server boot.
+            unpaintedFindReveal = nil
             terminals.removeAll()
             failedTerminals.removeAll()
             popupTab = nil
