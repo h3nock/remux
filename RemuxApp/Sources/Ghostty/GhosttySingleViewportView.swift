@@ -5,9 +5,10 @@ import UIKit
 /// What a pane's selection takes from the backend that keeps the pane's history, beyond what the pane's
 /// terminal holds.
 struct GhosttyTerminalSelectionSource {
-    /// The text a pane's selection copies.
-    let readText: (UUID) async -> String?
-    /// Grows what a long-press selected to the whole link there; true once it has.
+    /// Reads the selection; optional menu inspection suppresses result notices.
+    let readText: (_ surfaceID: UUID, _ reportResult: Bool) async -> String?
+    /// Expands an automatic selection; true authorizes destination inspection. False can still leave
+    /// a valid visible expansion for Copy. Refresh selection geometry regardless of the result.
     let completeLink: (UUID, CGPoint, GhosttyLongPressSelection) async -> Bool
 }
 
@@ -140,6 +141,22 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private var longPressOriginalPoint: CGPoint?
     private var selectionSnapshot = GhosttyLocalSelectionSnapshot.inactive
     private var previewSelectionContext = TerminalPreviewSelectionContext()
+    private var selectionMenuPreparation: Task<Void, Never>?
+    private var selectionGeneration: UInt64 = 0
+    private var preparedSelection: (context: SelectionMenuContext, text: String)?
+
+    /// History endpoints identify a server selection; the visible text also protects local selections
+    /// and the explicit hyperlink context from being reused after output or an edit.
+    private struct SelectionMenuContext {
+        let generation: UInt64
+        let surface: GhosttyManagedSurface
+        let control: GhosttyKitControlSurface
+        let history: GhosttyHistorySelection?
+        let visibleText: String
+        let preview: TerminalPreviewSelectionContext
+
+        var explicitTarget: String? { preview.explicitTarget(for: visibleText) }
+    }
 
     private lazy var startSelectionHandle = makeSelectionHandle(
         endpoint: GHOSTTY_TERMINAL_SURFACE_SELECTION_ENDPOINT_START
@@ -538,40 +555,94 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                 visibleText: control.readSelection(),
                 explicitTarget: explicitTarget
             )
-            applySelectionOutcome(.snapshot(snapshot), presentMenu: true)
-            completeLink(on: surface, at: point, selected: explicitTarget == nil ? .link : .explicitLink)
+            applySelectionOutcome(.snapshot(snapshot), presentMenu: false)
+            presentSelectionCopyMenu(completing: (point, explicitTarget == nil ? .link : .explicitLink))
         case .noMatch:
             longPressOriginalPoint = nil
             previewSelectionContext.selectionDidChange()
-            applySelectionOutcome(surface.selectWord(at: point), presentMenu: true)
-            completeLink(on: surface, at: point, selected: .word)
+            applySelectionOutcome(surface.selectWord(at: point), presentMenu: false)
+            presentSelectionCopyMenu(completing: (point, .word))
         case .unavailable:
             reconcileLocalSelectionAfterLongPress()
         }
     }
 
-    /// The backend may know more of a link than the pane's terminal shows. Once it has grown the
-    /// selection, the handles and the menu move to its new ends.
-    private func completeLink(
-        on surface: GhosttyManagedSurface,
-        at point: CGPoint,
-        selected: GhosttyLongPressSelection
-    ) {
-        guard selectionSnapshot.isActive, let source = selectionSource else { return }
-        Task { @MainActor [weak self] in
-            guard await source.completeLink(surface.id, point, selected),
-                  let self, self.exactLocalSelectionSurface()?.0 === surface
+    private func invalidateSelectionMenu() {
+        selectionMenuPreparation?.cancel()
+        selectionMenuPreparation = nil
+        preparedSelection = nil
+        selectionGeneration &+= 1
+    }
+
+    private func selectionMenuContext() -> SelectionMenuContext? {
+        guard selectionSnapshot.isActive, let (surface, control) = exactLocalSelectionSurface(),
+              let text = control.readSelection(), !text.isEmpty
+        else { return nil }
+        return SelectionMenuContext(
+            generation: selectionGeneration, surface: surface, control: control,
+            history: surface.historySelection, visibleText: text, preview: previewSelectionContext
+        )
+    }
+
+    private func isCurrent(_ context: SelectionMenuContext) -> Bool {
+        guard context.generation == selectionGeneration, selectionSnapshot.isActive,
+              let (surface, control) = exactLocalSelectionSurface()
+        else { return false }
+        return surface === context.surface && control === context.control
+            && surface.historySelection == context.history
+            && control.readSelection() == context.visibleText
+            && previewSelectionContext == context.preview
+    }
+
+    private func menuSelectionText(for context: SelectionMenuContext) async -> String? {
+        guard !Task.isCancelled, isCurrent(context) else { return nil }
+        guard let source = selectionSource,
+              let text = await source.readText(context.surface.id, false), !text.isEmpty,
+              !Task.isCancelled, isCurrent(context)
+        else { return nil }
+        return text
+    }
+
+    /// Embedded destinations need no backend inspection. Plain-text targets use completed backend
+    /// text and refresh the existing menu once; dismissed or obsolete selections stay dismissed.
+    private func prepareSelectionMenu(completing link: (CGPoint, GhosttyLongPressSelection)?) {
+        invalidateSelectionMenu()
+        if selectionMenuContext()?.explicitTarget != nil { return }
+        guard let (surface, control) = exactLocalSelectionSurface(), let source = selectionSource else { return }
+        let generation = selectionGeneration
+        selectionMenuPreparation = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.selectionGeneration == generation { self.selectionMenuPreparation = nil }
+            }
+            let isComplete: Bool
+            if let link, !Task.isCancelled {
+                isComplete = await source.completeLink(surface.id, link.0, link.1)
+            } else {
+                isComplete = true
+            }
+            guard !Task.isCancelled, let self, self.selectionGeneration == generation,
+                  let (currentSurface, currentControl) = self.exactLocalSelectionSurface(),
+                  currentSurface === surface, currentControl === control
             else { return }
             self.applySelectionOutcome(surface.selectionSnapshot(), presentMenu: false)
+            self.selectionEditMenuInteraction.updateVisibleMenuPosition(animated: true)
+            guard isComplete else { return }
+            guard let context = self.selectionMenuContext() else { return }
+            guard let text = await self.menuSelectionText(for: context),
+                  !Task.isCancelled, self.isCurrent(context)
+            else { return }
+            self.preparedSelection = (context, text)
+            self.selectionEditMenuInteraction.reloadVisibleMenu()
             self.selectionEditMenuInteraction.updateVisibleMenuPosition(animated: true)
         }
     }
 
-    private func presentSelectionCopyMenu() {
+    private func presentSelectionCopyMenu(completing link: (CGPoint, GhosttyLongPressSelection)? = nil) {
         guard selectionSnapshot.isActive,
               exactLocalSelectionSurface() != nil,
               let anchor = selectionMenuAnchorHandle
         else { return }
+        prepareSelectionMenu(completing: link)
         selectionEditMenuInteraction.presentEditMenu(
             with: UIEditMenuConfiguration(
                 identifier: nil,
@@ -768,6 +839,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
 
     private func cancelLocalSelectionInteraction() {
+        invalidateSelectionMenu()
         _ = trackpadDriver?.cancel(owner: self)
         localSelectionSurface?.onLocalSelectionGeometryChange = nil
         selectionEditMenuInteraction.dismissMenu()
@@ -801,6 +873,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             return
         }
         if recognizer.state == .began {
+            invalidateSelectionMenu()
             previewSelectionContext.selectionDidChange()
             selectionEditMenuInteraction.dismissMenu()
         }
@@ -930,26 +1003,45 @@ private final class GhosttyCompositeViewportContainerView: UIView,
               selectionMenuAnchorHandle != nil
         else { return nil }
 
-        guard let (_, control) = exactLocalSelectionSurface(),
-              let selectedText = control.readSelection(),
-              !selectedText.isEmpty
-        else { return nil }
-
+        // Link actions use a known embedded destination immediately. Plain URLs require completed
+        // backend text; ordinary Copy always keeps the backend's selected-text semantics.
+        let linkSelection = preparedSelection.flatMap { isCurrent($0.context) ? $0 : nil }
+            ?? selectionMenuContext().flatMap { context -> (context: SelectionMenuContext, text: String)? in
+                guard context.explicitTarget != nil else { return nil }
+                return (context, context.visibleText)
+            }
         var actions: [UIMenuElement] = []
-        if onPreviewSelection != nil,
+        // Preview is currently a local-terminal feature. Preserve its existing synchronous path.
+        if onPreviewSelection != nil, let selectedText = exactLocalSelectionSurface()?.1.readSelection(),
            previewSelectionContext.candidate(for: selectedText) != nil {
-            actions.append(UIAction(
-                title: "Preview",
-                image: UIImage(systemName: "eye")
-            ) { [weak self] _ in
-                guard let self,
-                      let (surface, control) = self.exactLocalSelectionSurface(),
-                      let selectedText = control.readSelection(),
-                      let candidate = self.previewSelectionContext.candidate(
-                          for: selectedText
-                      )
+            actions.append(UIAction(title: "Preview", image: UIImage(systemName: "eye")) { [weak self] _ in
+                guard let self, let (surface, control) = self.exactLocalSelectionSurface(),
+                      let text = control.readSelection(),
+                      let candidate = self.previewSelectionContext.candidate(for: text)
                 else { return }
                 self.onPreviewSelection?(surface.id, candidate)
+            })
+        } else if let prepared = linkSelection,
+                  let url = TerminalExternalLink.url(selection: prepared.text, explicitTarget: prepared.context.explicitTarget) {
+            let context = prepared.context
+            // Keep the destination advertised by this action, including its path, query and fragment.
+            actions.append(UIAction(title: "Open Link", image: UIImage(systemName: "safari")) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isCurrent(context) else { return }
+                    let currentText = context.explicitTarget != nil
+                        ? context.visibleText : await self.menuSelectionText(for: context)
+                    guard let text = currentText, self.isCurrent(context),
+                          TerminalExternalLink.url(selection: text, explicitTarget: context.explicitTarget) == url
+                    else { return }
+                    _ = await UIApplication.shared.open(url)
+                }
+            })
+        }
+        if let prepared = linkSelection, let target = prepared.context.explicitTarget {
+            let context = prepared.context
+            actions.append(UIAction(title: "Copy Link", image: UIImage(systemName: "link")) { [weak self] _ in
+                guard let self, self.isCurrent(context) else { return }
+                UIPasteboard.general.string = target
             })
         }
         actions.append(
@@ -960,12 +1052,21 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                 // The backend reads the text where it keeps the pane's history, which can take a reply
                 // from its server.
                 Task { @MainActor in
-                    guard let text = await source.readText(surface.id), !text.isEmpty else { return }
+                    guard let text = await source.readText(surface.id, true), !text.isEmpty else { return }
                     UIPasteboard.general.string = text
                 }
             }
         )
         return UIMenu(children: actions)
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        willDismissMenuFor configuration: UIEditMenuConfiguration,
+        animator: any UIEditMenuInteractionAnimating
+    ) {
+        // Menu dismissal must not cancel the separate validation of an Open tap.
+        selectionMenuPreparation?.cancel()
     }
 
     func editMenuInteraction(

@@ -56,12 +56,12 @@ struct GhosttyHistorySelection: Equatable {
         start <= end ? (start, end) : (end, start)
     }
 
-    /// Whether it starts at a row's first column or ends at its last in a viewport `columns` wide: where a
-    /// line the server wraps goes on from the row before or into the next.
+    /// Whether it could continue across a row edge. A wide character can leave the last column as
+    /// padding when it wraps, so a match ending one column short also needs backend completion.
     func reachesRowEdge(columns: UInt16) -> Bool {
         guard columns > 0 else { return false }
         let (first, last) = ordered
-        return first.column == 0 || last.column >= columns - 1
+        return first.column == 0 || Int(last.column) + 2 >= Int(columns)
     }
 
     /// Where the endpoints show in a viewport of `rows` × `columns` whose top row is history row `top`:

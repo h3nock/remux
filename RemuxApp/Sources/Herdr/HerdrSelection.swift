@@ -48,6 +48,12 @@ struct HerdrSelectionRead: Encodable, Sendable {
     }
 }
 
+/// Herdr's visible link regions remain useful for selection even when the destination continues off screen.
+struct HerdrResolvedLink {
+    let selection: GhosttyHistorySelection
+    let isComplete: Bool
+}
+
 /// `pane.link.resolve`: the cells of the plain-text link at a cell of a pane's viewport, which Herdr finds
 /// across the pane's wrapped rows, as regions of rows of the viewport. As Herdr's client asks it, the
 /// request names the content revision and viewport of the frame on screen, and Herdr refuses it once its
@@ -76,9 +82,10 @@ struct HerdrLinkResolve: Encodable, Sendable {
     }
 
     /// The link from the reply `{"id", "result": {"type": "pane_link_resolved", "regions"}}`, in history
-    /// rows; nil when Herdr found none. Regions are taken as Herdr's client takes them: inside the
-    /// viewport and covering the cell asked about.
-    func link(fromReply reply: Data) throws -> GhosttyHistorySelection? {
+    /// rows; nil when Herdr found none or returned invalid regions.
+    /// `pane.link.resolve` clips its highlighting to the viewport; those regions alone must not turn
+    /// a URL prefix into a browser destination.
+    func link(fromReply reply: Data) throws -> HerdrResolvedLink? {
         struct Reply: Decodable {
             struct Result: Decodable {
                 let regions: [Region]
@@ -104,9 +111,18 @@ struct HerdrLinkResolve: Encodable, Sendable {
               let first = regions.min(by: { ($0.row, $0.startCol) < ($1.row, $1.startCol) }),
               let last = regions.max(by: { ($0.row, $0.endCol) < ($1.row, $1.endCol) })
         else { return nil }
-        return GhosttyHistorySelection(
-            start: GhosttyTerminalCell(row: content.top + UInt64(first.row), column: first.startCol),
-            end: GhosttyTerminalCell(row: content.top + UInt64(last.row), column: last.endCol)
+        // At the actual history/screen ends there is no hidden continuation. Otherwise an endpoint
+        // at the viewport boundary is ambiguous. Herdr omits wide-wrap padding from its regions,
+        // so the bottom endpoint may be one column short even though the URL continues below.
+        let isComplete = !((content.top > 0 || content.offsetFromBottom == nil) && first.row == 0 && first.startCol == 0)
+            && !(content.offsetFromBottom != 0 && last.row + 1 == content.rows
+                && Int(last.endCol) + 2 >= Int(content.columns))
+        return HerdrResolvedLink(
+            selection: GhosttyHistorySelection(
+                start: GhosttyTerminalCell(row: content.top + UInt64(first.row), column: first.startCol),
+                end: GhosttyTerminalCell(row: content.top + UInt64(last.row), column: last.endCol)
+            ),
+            isComplete: isComplete
         )
     }
 
