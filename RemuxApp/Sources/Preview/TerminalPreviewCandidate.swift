@@ -41,14 +41,53 @@ enum TerminalPreviewPathError: LocalizedError, Equatable, Sendable {
 }
 
 struct TerminalPreviewLocalhostTarget: Equatable, Sendable {
-    /// Host the remote server listens on, resolved on the remote machine.
+    /// The URL as printed, retaining its encoded path, query and fragment.
+    let url: URL
+    /// The SSH forwarding destination, resolved on the remote machine.
     let host: String
     let port: Int
-    let scheme: String
-    let pathQuery: String
+
+    init?(selection value: String) {
+        var components = URLComponents(string: value)
+        let scheme = components?.scheme?.lowercased()
+        if scheme != "http" && scheme != "https" {
+            // Existing bare host:port forms use the same URL parser for their suffix.
+            let authority = value.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+            let hostPort = authority.split(separator: ":", omittingEmptySubsequences: false)
+            guard hostPort.count == 2, Self.connectHost(for: String(hostPort[0])) != nil else { return nil }
+            components = URLComponents(string: "http://" + value)
+        }
+        guard var components,
+              let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let rawHost = components.host, let host = Self.connectHost(for: rawHost)
+        else { return nil }
+        let port = components.port ?? (scheme == "https" ? 443 : 80)
+        guard (1...Int(UInt16.max)).contains(port) else { return nil }
+        components.scheme = scheme
+        guard let url = components.url else { return nil }
+        self.url = url
+        self.host = host
+        self.port = port
+    }
 
     var displayName: String {
         "localhost:\(port)"
+    }
+
+    /// Host classification is independent of whether a Preview URL can be constructed.
+    static func connectHost(for rawHost: String) -> String? {
+        var host = rawHost.lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if host.hasSuffix(".") { host.removeLast() }
+        if host == "localhost" || host == "::1" { return host }
+        if host == "0.0.0.0" { return "127.0.0.1" }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4, octets[0] == "127",
+              octets.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy({ (48...57).contains($0) }) && UInt8($0) != nil })
+        else { return nil }
+        return host
     }
 }
 
@@ -85,7 +124,7 @@ struct TerminalPreviewCandidate: Equatable, Sendable {
               !value.contains("\r")
         else { return nil }
 
-        if let localhost = Self.localhostTarget(from: value) {
+        if let localhost = TerminalPreviewLocalhostTarget(selection: value) {
             self.target = .localhost(localhost)
             return
         }
@@ -122,61 +161,6 @@ struct TerminalPreviewCandidate: Equatable, Sendable {
             return target.displayName
         }
     }
-
-    private static func localhostTarget(
-        from value: String
-    ) -> TerminalPreviewLocalhostTarget? {
-        if let scheme = URL(string: value)?.scheme?.lowercased(),
-           scheme == "http" || scheme == "https" {
-            guard let components = URLComponents(string: value),
-                  let host = components.host?.lowercased(),
-                  let connectHost = loopbackConnectHost(host)
-            else { return nil }
-            let port = components.port ?? (scheme == "https" ? 443 : 80)
-            guard (1...Int(UInt16.max)).contains(port) else { return nil }
-            var pathQuery = components.percentEncodedPath
-            if let query = components.percentEncodedQuery {
-                pathQuery += "?\(query)"
-            }
-            return TerminalPreviewLocalhostTarget(
-                host: connectHost,
-                port: port,
-                scheme: scheme,
-                pathQuery: pathQuery
-            )
-        }
-
-        // Bare "localhost:3000" / "127.0.0.1:8000/path" server-log forms.
-        let head = value.prefix { $0 != "/" }
-        let pathQuery = String(value.dropFirst(head.count))
-        let hostPort = head.split(separator: ":", omittingEmptySubsequences: false)
-        guard hostPort.count == 2,
-              let connectHost = loopbackConnectHost(String(hostPort[0]).lowercased()),
-              let port = Int(hostPort[1]),
-              (1...Int(UInt16.max)).contains(port)
-        else { return nil }
-        return TerminalPreviewLocalhostTarget(
-            host: connectHost,
-            port: port,
-            scheme: "http",
-            pathQuery: pathQuery
-        )
-    }
-
-    private static func loopbackConnectHost(_ rawHost: String) -> String? {
-        var host = rawHost
-        if host.hasPrefix("["), host.hasSuffix("]") {
-            host = String(host.dropFirst().dropLast())
-        }
-        // A fully qualified "localhost." names the same loopback host.
-        if host.hasSuffix(".") { host.removeLast() }
-        if host == "localhost" || host == "::1" { return host }
-        if host == "0.0.0.0" { return "127.0.0.1" }
-        if host.hasPrefix("127."), host.split(separator: ".").count == 4 {
-            return host
-        }
-        return nil
-    }
 }
 
 /// A web link the terminal printed, which opens in the system browser rather
@@ -192,8 +176,9 @@ enum TerminalExternalLink {
               let url = URL(string: value),
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              url.host?.isEmpty == false,
-              TerminalPreviewCandidate(selection: value) == nil
+              let host = url.host, !host.isEmpty,
+              TerminalPreviewLocalhostTarget.connectHost(for: host) == nil,
+              url.port.map({ (1...Int(UInt16.max)).contains($0) }) != false
         else { return nil }
         return url
     }

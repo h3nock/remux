@@ -29,25 +29,37 @@ final class TerminalPreviewCandidateTests: XCTestCase {
     }
 
     func testAcceptsLoopbackURLTargets() {
-        let cases: [(String, String, Int, String, String)] = [
-            ("http://localhost:3000", "localhost", 3000, "http", ""),
-            (
-                "http://127.0.0.1:8000/docs/index.html?x=1",
-                "127.0.0.1", 8000, "http", "/docs/index.html?x=1"
-            ),
-            ("https://localhost:8443/", "localhost", 8443, "https", "/"),
-            ("http://0.0.0.0:5173/", "127.0.0.1", 5173, "http", "/"),
-            ("http://[::1]:9000", "::1", 9000, "http", ""),
-            ("http://localhost.:3000/", "localhost", 3000, "http", "/"),
-            ("localhost:3000", "localhost", 3000, "http", ""),
-            ("127.0.0.1:8000/health", "127.0.0.1", 8000, "http", "/health"),
+        let cases: [(String, String, Int)] = [
+            ("http://localhost:3000", "localhost", 3000),
+            ("http://127.0.0.1:8000/docs/index.html?x=1", "127.0.0.1", 8000),
+            ("https://localhost:8443/", "localhost", 8443),
+            ("http://0.0.0.0:5173/", "127.0.0.1", 5173),
+            ("http://[::1]:9000", "::1", 9000),
+            ("http://localhost.:3000/", "localhost", 3000),
+            ("localhost:3000", "localhost", 3000),
+            ("127.0.0.1:8000/health", "127.0.0.1", 8000),
         ]
-        for (value, host, port, scheme, pathQuery) in cases {
+        for (value, host, port) in cases {
             let target = TerminalPreviewCandidate(selection: value)?.localhostTarget
             XCTAssertEqual(target?.host, host, value)
             XCTAssertEqual(target?.port, port, value)
-            XCTAssertEqual(target?.scheme, scheme, value)
-            XCTAssertEqual(target?.pathQuery, pathQuery, value)
+            let expectedURL = value.hasPrefix("http") ? value : "http://" + value
+            XCTAssertEqual(target?.url.absoluteString, expectedURL, value)
+        }
+    }
+
+    func testDNSNamesBeginningWith127AreExternalLinks() {
+        let value = "http://127.demo.example.com:3000/"
+        XCTAssertNil(TerminalPreviewCandidate(selection: value))
+        XCTAssertEqual(TerminalExternalLink.url(selection: value)?.host, "127.demo.example.com")
+        XCTAssertNotNil(TerminalPreviewCandidate(selection: "http://127.23.4.5:3000/"))
+        XCTAssertNil(TerminalExternalLink.url(selection: "http://127.23.4.5:3000/"))
+    }
+
+    func testInvalidLoopbackPortsCannotFallThroughToExternalOpen() {
+        for value in ["http://localhost:70000/", "http://127.0.0.1:0/", "http://[::1]:70000/", "localhost:70000"] {
+            XCTAssertNil(TerminalPreviewCandidate(selection: value), value)
+            XCTAssertNil(TerminalExternalLink.url(selection: value), value)
         }
     }
 
