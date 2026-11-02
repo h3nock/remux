@@ -1,0 +1,154 @@
+diff --git a/src/remux/tmux/client.zig b/src/remux/tmux/client.zig
+index d9d52b6..7c4be90 100644
+--- a/src/remux/tmux/client.zig
++++ b/src/remux/tmux/client.zig
+@@ -887,7 +887,7 @@ test "control client hydrates as one group and keeps later command independent"
+     try testing.expect(std.mem.endsWith(u8, outbound, "\nlist-windows -F '#{session_id} #{window_id} #{window_active} #{pane_id} #{window_width} #{window_height} #{window_layout} #{window_visible_layout} #{window_name}'\n"));
+ }
+ 
+-test "control client close notifications produce no outbound work" {
++test "control client window-close removes tracked topology without outbound work" {
+     const testing = std.testing;
+ 
+     var client = try ControlClient.init(testing.io, testing.allocator, .{});
+@@ -899,18 +899,21 @@ test "control client close notifications produce no outbound work" {
+     try testing.expectEqualStrings("", client.outboundBytes());
+     try client.feed("%window-close @0\n", &actions);
+     try testing.expectEqualStrings("", client.outboundBytes());
+-    try testing.expectEqual(1, client.viewer.windows.items.len);
+-    try testing.expectEqual(1, client.viewer.panes.count());
++    try testing.expectEqual(0, client.viewer.windows.items.len);
++    try testing.expectEqual(0, client.viewer.panes.count());
++    try testing.expectEqual(1, actions.records.items.len);
++    try testing.expect(actions.records.items[0] == .windows);
+ 
++    actions.records.clearRetainingCapacity();
+     try client.feed(
+-        "%unlinked-window-close @0\n" ** 4,
++        "%window-close @0\n%window-close @99\n" ++
++            "%unlinked-window-close @0\n",
+         &actions,
+     );
+     try testing.expectEqualStrings("", client.outboundBytes());
+     try testing.expectEqual(0, client.viewer.windows.items.len);
+     try testing.expectEqual(0, client.viewer.panes.count());
+-    try testing.expectEqual(1, actions.records.items.len);
+-    try testing.expect(actions.records.items[0] == .windows);
++    try testing.expectEqual(0, actions.records.items.len);
+ }
+ 
+ test "control client hydration error skips only its group" {
+diff --git a/src/remux/tmux/control.zig b/src/remux/tmux/control.zig
+index d909f49..579a9d1 100644
+--- a/src/remux/tmux/control.zig
++++ b/src/remux/tmux/control.zig
+@@ -786,12 +786,13 @@ pub const Notification = union(enum) {
+         id: usize,
+     },
+ 
+-    /// A window still linked to the current session was unlinked elsewhere.
++    /// The window was closed. It may be present in the current session's
++    /// topology and should be removed if known.
+     window_close: struct {
+         id: usize,
+     },
+ 
+-    /// The window with ID window-id was unlinked from the current session.
++    /// The window was closed but is not linked to the current session.
+     unlinked_window_close: struct {
+         id: usize,
+     },
+diff --git a/src/remux/tmux/viewer.zig b/src/remux/tmux/viewer.zig
+index ae29d2c..fc6d307 100644
+--- a/src/remux/tmux/viewer.zig
++++ b/src/remux/tmux/viewer.zig
+@@ -1253,13 +1253,21 @@ pub const Viewer = struct {
+                 return self.defunct();
+             },
+ 
+-            // Another session unlinked a window that is still linked here.
+-            .window_close => {},
++            // A window was closed. Remove it if it is part of our current
++            // topology; notifications for windows outside this session are
++            // ignored by the idempotent removal helper.
++            .window_close => |info| self.removeClosedWindow(
++                &actions,
++                info.id,
++            ) catch {
++                log.warn("failed to remove closed window, becoming defunct", .{});
++                return self.defunct();
++            },
+ 
+             // This session no longer links the window. Removing known state
+             // is local and idempotent because duplicate notifications are
+             // normal tmux behavior.
+-            .unlinked_window_close => |info| self.unlinkedWindowClosed(
++            .unlinked_window_close => |info| self.removeClosedWindow(
+                 &actions,
+                 info.id,
+             ) catch {
+@@ -1501,7 +1509,7 @@ pub const Viewer = struct {
+         try self.queueCommands(&.{.list_windows});
+     }
+ 
+-    fn unlinkedWindowClosed(
++    fn removeClosedWindow(
+         self: *Viewer,
+         actions: *std.ArrayList(Action),
+         window_id: usize,
+@@ -5358,12 +5366,12 @@ test "invalid list-windows response fails without publishing topology" {
+     try testing.expectEqualStrings("one", viewer.windows.items[1].name);
+ }
+ 
+-test "window_close from another session does not change current topology" {
++test "window_close for an unknown window does not change current topology" {
+     var viewer = try Viewer.init(testing.io, testing.allocator, .{});
+     defer viewer.deinit();
+     try seedWindowCloseTestViewer(&viewer);
+ 
+-    const actions = viewer.next(.{ .tmux = .{ .window_close = .{ .id = 1 } } });
++    const actions = viewer.next(.{ .tmux = .{ .window_close = .{ .id = 99 } } });
+     try testing.expectEqual(0, actions.len);
+     try testing.expectEqual(2, viewer.windows.items.len);
+     try testing.expectEqual(2, viewer.panes.count());
+@@ -5371,6 +5379,40 @@ test "window_close from another session does not change current topology" {
+     try testing.expectEqual(0, viewer.sent_command_count);
+ }
+ 
++test "window_close removes tracked window after active-window fallback" {
++    var viewer = try Viewer.init(testing.io, testing.allocator, .{});
++    defer viewer.deinit();
++    try seedWindowCloseTestViewer(&viewer);
++
++    var actions = viewer.next(.{ .tmux = .{ .session_window_changed = .{
++        .session_id = 42,
++        .window_id = 1,
++    } } });
++    try testing.expectEqual(1, actions.len);
++    try testing.expect(actions[0] == .windows);
++    try testing.expect(!viewer.windows.items[0].is_active);
++    try testing.expect(viewer.windows.items[1].is_active);
++
++    actions = viewer.next(.{ .tmux = .{ .window_close = .{ .id = 0 } } });
++    try testing.expectEqual(1, actions.len);
++    try testing.expect(actions[0] == .windows);
++    try testing.expectEqual(1, viewer.windows.items.len);
++    try testing.expectEqual(1, viewer.windows.items[0].id);
++    try testing.expect(viewer.windows.items[0].is_active);
++    try testing.expectEqual(1, viewer.panes.count());
++    try testing.expect(viewer.panes.contains(1));
++    try testing.expect(!viewer.panes.contains(0));
++    try testing.expectEqual(0, viewer.command_queue.len());
++    try testing.expectEqual(0, viewer.sent_command_count);
++
++    actions = viewer.next(.{ .tmux = .{ .window_close = .{ .id = 0 } } });
++    try testing.expectEqual(0, actions.len);
++    actions = viewer.next(.{ .tmux = .{ .window_close = .{ .id = 99 } } });
++    try testing.expectEqual(0, actions.len);
++    try testing.expectEqual(1, viewer.windows.items.len);
++    try testing.expectEqual(1, viewer.panes.count());
++}
++
+ test "unlinked_window_close removes once without commands" {
+     var viewer = try Viewer.init(testing.io, testing.allocator, .{});
+     defer viewer.deinit();

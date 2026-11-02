@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+struct GhosttyKeyboardWindowGeometry {
+    let frameEnd: CGRect
+    let bounds: CGRect
+}
+
 @MainActor
 final class GhosttyKeyboardResponderHandoff {
     enum Target {
@@ -18,6 +23,20 @@ final class GhosttyKeyboardResponderHandoff {
         case .composer:
             composerResponder = responder
         }
+    }
+
+    /// Keyboard notifications use screen coordinates. Resolve the responders'
+    /// current window on each notification so resizing or changing displays
+    /// never compares those coordinates with a different screen's bounds.
+    func keyboardGeometry(frameEnd: CGRect?) -> GhosttyKeyboardWindowGeometry? {
+        let responders = [terminalResponder, composerResponder].compactMap { $0 }
+        guard let window = responders.first(where: { $0.isFirstResponder })?.window
+            ?? responders.compactMap(\.window).first else { return nil }
+        let bounds = window.bounds
+        let localFrame = frameEnd.map {
+            window.convert($0, from: window.screen.coordinateSpace)
+        } ?? CGRect(x: bounds.minX, y: bounds.maxY, width: bounds.width, height: 0)
+        return GhosttyKeyboardWindowGeometry(frameEnd: localFrame, bounds: bounds)
     }
 
     @discardableResult

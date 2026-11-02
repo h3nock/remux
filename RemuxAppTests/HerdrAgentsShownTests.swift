@@ -252,12 +252,15 @@ final class HerdrAgentsShownTests: XCTestCase {
             (.idle, [166, 227, 161], [64, 160, 43]),
             (.unknown, [108, 112, 134], [156, 160, 176]),
         ]
-        func rgb(_ status: TerminalAgentStatus, _ style: UIUserInterfaceStyle) -> [Int] {
-            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
-            UIColor(status.color)
-                .resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
-                .getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-            return [red, green, blue].map { Int(($0 * 255).rounded()) }
+        func rgb(_ status: TerminalAgentStatus, _ colorScheme: ColorScheme) -> [Int] {
+            var environment = EnvironmentValues()
+            environment.colorScheme = colorScheme
+
+            // Resolve the SwiftUI Color directly. Converting it back to UIColor before supplying
+            // explicit traits can freeze its current appearance on older OS releases.
+            let resolved = status.color.resolve(in: environment)
+            return [resolved.red, resolved.green, resolved.blue]
+                .map { Int(($0 * 255).rounded()) }
         }
         for (status, mocha, latte) in herdr {
             XCTAssertEqual(rgb(status, .dark), mocha, "\(status)")

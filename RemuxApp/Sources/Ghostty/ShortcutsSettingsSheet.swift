@@ -117,7 +117,7 @@ struct ShortcutsSettingsView: View {
             ShortcutCollectionEditorSheet(request: request) { collection in
                 store.update { $0.upsertCollection(collection) }
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation()
@@ -131,7 +131,7 @@ struct ShortcutsSettingsView: View {
                     }
                 }
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation()
@@ -509,12 +509,13 @@ struct ShortcutCollectionEditorSheet: View {
                     }
                 }
 
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: RemuxToolbarPlacement.confirmation) {
                     Button {
                         save()
                     } label: {
-                        Text("Save")
+                        Label("Save", systemImage: "checkmark")
                     }
+                    .accessibilityLabel("Save")
                     .disabled(!canSave)
                 }
             }
@@ -810,12 +811,13 @@ struct ShortcutEditorSheet: View {
                     }
                 }
 
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: RemuxToolbarPlacement.confirmation) {
                     Button {
                         save()
                     } label: {
-                        Text("Save")
+                        Label("Save", systemImage: "checkmark")
                     }
+                    .accessibilityLabel("Save")
                     .disabled(!canSave)
                 }
             }
@@ -1001,6 +1003,7 @@ private struct ShortcutEditorTextFieldRow: View {
 
     var body: some View {
         TextField(title, text: text, axis: axis)
+            .accessibilityLabel(title)
             .font(GhosttyShortcutTypography.rowText)
             .foregroundStyle(GhosttySheetPalette.primary)
             .tint(chromeStyle.accent)

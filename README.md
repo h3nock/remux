@@ -57,11 +57,19 @@ Requirements:
 
 - Xcode with iOS 18 SDK support
 - XcodeGen
+- Zig 0.16.0 for the patched GhosttyKit build
+- Xcode's Metal Toolchain component
 
-Fetch the prebuilt GhosttyKit framework:
+Build GhosttyKit from the pinned source. This revision carries a native window-close
+fix in `patches/ghostty-window-close.patch`; the older `ghosttykit-20261025`
+prebuilt asset does not include it. The build script applies the patch idempotently
+and validates `ReleaseFast`:
 
 ```bash
-scripts/fetch_ghosttykit.sh
+git clone https://github.com/h3nock/remux-ghostty.git ../ghostty-remux-upstream-rebuild
+git -C ../ghostty-remux-upstream-rebuild checkout 3306070c32d2591573928843cbd98fa8bb2ee384
+scripts/build_release_ghosttykit.sh \
+  -Dversion-string=1.3.2-dev+remux-window-close.3306070 -j2
 ```
 
 Generate the Xcode project and build:
@@ -78,13 +86,17 @@ xcodebuild build \
 Run the tests:
 
 ```bash
-xcodebuild test \
-  -project Remux.xcodeproj \
-  -scheme Remux \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+xcodebuild -showdestinations -project Remux.xcodeproj -scheme Remux
+xcodebuild test -project Remux.xcodeproj -scheme Remux \
+  -destination 'platform=iOS Simulator,id=<discovered-uuid>'
+xcodebuild test -project Remux.xcodeproj -scheme RemuxUIOnly \
+  -destination 'platform=iOS Simulator,id=<discovered-uuid>'
 ```
 
-To build GhosttyKit yourself instead of fetching it, see
+The phone layout, input, appearance and recovery acceptance checks are in
+[docs/development.md](docs/development.md#phone-acceptance-checks).
+
+The `Remux` scheme runs unit tests; `RemuxUIOnly` runs the UI suite. See
 [remux-ghostty](https://github.com/h3nock/remux-ghostty) and
 [scripts/build_release_ghosttykit.sh](scripts/build_release_ghosttykit.sh).
 
