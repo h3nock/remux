@@ -1462,7 +1462,13 @@ final class HerdrScreenModel {
             lines: Self.wheelLines
         )
         let events = Array(repeating: HerdrInputEvent.mouse(wheel), count: Int(steps.magnitude))
-        return send(events, to: target) == .accepted
+        guard send(events, to: target) == .accepted else { return false }
+        // Program-directed scrolling ends selection, as on the local terminal. History scrolling
+        // keeps the range anchored to its original rows.
+        if let scroll = paneScrolls[paneID], scroll.route != .remoteHistory {
+            surfaces[paneID]?.renderer.managedSurface?.endSelection()
+        }
+        return true
     }
 
     private func applyScroll(toPane paneID: String) {

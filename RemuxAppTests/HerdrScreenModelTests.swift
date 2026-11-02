@@ -4890,6 +4890,53 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertEqual(scroll.scrollState, GhosttySurfaceScrollState(total: .max, offset: .max - 50, len: 40, cellOffset: 0))
     }
 
+    func testProgramScrollingEndsOnlyItsPanesSelectionWhileHistoryScrollingKeepsIt() async throws {
+        for (mouseReporting, alternateScreen) in [(false, false), (true, false), (false, true), (true, true)] {
+            let harness = await makeHarness()
+            let session = try await shownSession(
+                harness, mouseReporting: mouseReporting, alternateScreen: alternateScreen
+            )
+            let adapter = harness.model.terminalScreenAdapter
+            let panes = adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id)
+            let selected = try XCTUnwrap(harness.model.paneSurface("w1:p1")?.renderer.managedSurface)
+            let other = try XCTUnwrap(harness.model.paneSurface("w1:p2")?.renderer.managedSurface)
+            for surface in [selected, other] {
+                let row = surface.scrollState.offset
+                _ = surface.select(GhosttyHistorySelection(
+                    start: GhosttyTerminalCell(row: row, column: 0),
+                    end: GhosttyTerminalCell(row: row, column: 2)
+                ))
+                XCTAssertNotNil(surface.historySelection)
+            }
+            let original = selected.historySelection
+            XCTAssertEqual(selected.controlSurface.readSelection(), "one")
+            let cellHeight = Double(try XCTUnwrap(harness.model.measurement).cellMetrics.pixelHeight)
+            func scroll(_ cells: Double, _ momentum: GhosttySurfaceMouseScrollMods.Momentum) -> GhosttyMouseInputSubmissionOutcome {
+                adapter.sendMouseScroll(to: panes[0], GhosttySurfaceMouseScrollEvent(
+                    deltaX: 0, deltaY: cells * cellHeight,
+                    mods: .init(precision: true, momentum: momentum)
+                ))
+            }
+            // Neither accumulated sub-cell travel nor cancellation sends a wheel step.
+            XCTAssertEqual(scroll(0.4, .began), .sent)
+            XCTAssertEqual(selected.historySelection, original)
+            XCTAssertEqual(scroll(0.8, .cancelled), .sent)
+            XCTAssertEqual(selected.historySelection, original)
+
+            XCTAssertEqual(scroll(1.1, .changed), .sent)
+            var index = session.next
+            _ = try await nextWrite(session.bridge, from: &index, paneInput)
+            if mouseReporting || alternateScreen {
+                XCTAssertNil(selected.historySelection)
+                XCTAssertNil(selected.controlSurface.readSelection())
+            } else {
+                XCTAssertEqual(selected.historySelection, original)
+                XCTAssertEqual(selected.controlSurface.readSelection(), "one")
+            }
+            XCTAssertNotNil(other.historySelection, "scrolling one pane ended another pane's selection")
+        }
+    }
+
     /// A scroll gesture's travel becomes Herdr wheel steps as Ghostty makes lines of it for tmux: one
     /// per cell height, the rest kept for the next, up or down with the travel, at the cell where the
     /// gesture is, each carrying Herdr's three history lines.
@@ -5527,6 +5574,7 @@ final class HerdrScreenModelTests: XCTestCase {
         _ harness: HerdrModelHarness,
         focusedPane: String = "w1:p1",
         mouseReporting: Bool = false,
+        alternateScreen: Bool = false,
         takingRightClicks: Set<String> = [],
         otherTabs: [String] = []
     ) async throws -> (bridge: FakeBridgeTransport, next: Int) {
@@ -5539,8 +5587,8 @@ final class HerdrScreenModelTests: XCTestCase {
                 + HerdrServerScript.snapshot(revision: 1, otherTabs: otherTabs, focusedPane: focusedPane, panes: snapshotPanes)
         )
         let panes: [HerdrServerScript.Pane] = [
-            .init(id: "w1:p1", x: 0, width: 3, height: 1, focused: true, mouseReporting: mouseReporting),
-            .init(id: "w1:p2", x: 4, width: 3, height: 1, mouseReporting: mouseReporting),
+            .init(id: "w1:p1", x: 0, width: 3, height: 1, focused: true, mouseReporting: mouseReporting, alternateScreen: alternateScreen),
+            .init(id: "w1:p2", x: 4, width: 3, height: 1, mouseReporting: mouseReporting, alternateScreen: alternateScreen),
         ]
         await bridge.serve(HerdrServerScript.surface(projection: 1, revision: 1, lines: ["one two"], panes: panes))
         harness.setScreenSize()
