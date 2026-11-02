@@ -168,7 +168,7 @@ final class HerdrPopupController {
     private var held = false
     private var activity = RendererActivity()
     private var cell: GhosttyTerminalCellDisplayMetrics?
-    /// The panes' grid, which the popup is framed on.
+    /// The phone's viewport grid, which the popup is framed on independently of its covered tab.
     private var viewport: (columns: UInt16, rows: UInt16)?
     /// The grid inside the frame now.
     private(set) var requested: HerdrPopupGrid?
@@ -312,6 +312,13 @@ final class HerdrPopupController {
     var popup: HerdrPaneLayout.Popup? {
         guard onItsTab, let known, inFrame || !framed.contains(known.popup.terminalID) else { return nil }
         return known.popup
+    }
+
+    /// The popup uses its terminal attachment, including opening and the existing busy retry. Renderer
+    /// availability and a temporary detach for background/reconnect do not change how it will be sized.
+    var resizesIndependently: Bool {
+        guard let popup else { return false }
+        return !framed.contains(popup.terminalID)
     }
 
     /// Whether the popup's program reads the mouse, as what it is drawn from says: its attach while attached,

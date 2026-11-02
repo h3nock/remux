@@ -65,6 +65,7 @@ struct HerdrCommandLane {
             case release(ReleaseStep)
             /// Anything else, whose caller gets its answer; it goes only while the session is shown.
             case other(answered: @Sendable (Result<HerdrCommandReply, HerdrCommandError>) -> Void)
+            case find(HerdrFindCommand)
         }
 
         /// A step of Remux's zooms coming off as the session ends.
@@ -133,6 +134,11 @@ struct HerdrCommandLane {
 
     mutating func append(_ command: Command) {
         waiting.append(command)
+    }
+
+    /// Find has one replaceable unsent intent. Sent requests still drain normally.
+    mutating func dropWaitingFind() {
+        waiting.removeAll { if case .find = $0.purpose { true } else { false } }
     }
 
     /// The other commands waiting, which won't go: Herdr refuses commands from a hidden session.

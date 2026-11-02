@@ -708,6 +708,30 @@ final class HerdrScreenModelTests: XCTestCase {
         }
     }
 
+    func testFindBlocksImmediateInputUntilExplicitResume() async throws {
+        let harness = await makeHarness()
+        _ = try await shownTab(harness)
+        XCTAssertTrue(harness.model.canFindInPane)
+        XCTAssertTrue(harness.model.beginFind(inPane: "w1:p1"))
+        XCTAssertEqual(harness.model.sendText("query must stay local"), .surfaceRejected)
+        XCTAssertEqual(harness.model.terminalScreenAdapter.sendPasteToFocusedSurface("paste"), .surfaceRejected)
+        harness.model.endFind()
+        XCTAssertEqual(harness.model.sendText("still reading"), .surfaceRejected)
+        harness.model.resumeFindInput()
+        XCTAssertEqual(harness.model.sendText("ok"), .accepted)
+    }
+
+    func testEndingAConnectionClearsFindPresentationAndCapability() async throws {
+        let harness = await makeHarness()
+        let session = try await shownTab(harness)
+        XCTAssertTrue(harness.model.beginFind(inPane: "w1:p1"))
+        XCTAssertNotNil(harness.model.findPresentation)
+        await session.bridge.finishServing()
+        try await harness.waitUntil("the ended connection retained Find") {
+            harness.model.findPresentation == nil && !harness.model.canFindInPane
+        }
+    }
+
     /// A pane's screen surface is made when its renderer is admitted, so the screen's lookups only read:
     /// it looks a surface up from inside that surface's own callbacks, such as a selection's.
     func testAPanesSurfaceIsMadeWhenItsRendererIsAdmittedSoLookupsOnlyRead() async throws {

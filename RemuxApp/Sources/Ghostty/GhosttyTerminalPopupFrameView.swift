@@ -1,7 +1,7 @@
 import UIKit
 
 /// A popup the backend shows over the terminal area, framed as Herdr's client frames one: a box of lines on
-/// the outer cells of the panes' grid, drawn as the panes' lines are, the popup's title in its top line, and
+/// the outer cells of its viewport grid, drawn as the panes' lines are, the popup's title in its top line, and
 /// the popup's terminal in the cells inside, at the panes' font. Remux adds the tab it is open over at the
 /// top line's other end. The terminal area hosts it over the panes and under the selection's handles, and a
 /// touch on its terminal does what it does on a pane's (`GhosttyCompositeViewportContainerView`). It takes
@@ -82,31 +82,33 @@ final class GhosttyTerminalPopupFrameView: UIView {
         )
     }
 
-    /// Lays the popup out on `layout`, the panes' grid on the area's bounds, which are this view's. Call it
-    /// without animation, as the panes are laid out: its cell geometry never animates.
+    /// Lays the popup out on its own viewport, at the panes' font. Its covered tab may keep another grid.
+    /// Call it without animation, as the panes are laid out: its cell geometry never animates.
     func place(
-        on layout: GhosttyCompositeViewportLayout?,
-        windowGrid: GhosttyTerminalGridSize?,
+        cellMetrics: GhosttyTerminalCellDisplayMetrics?,
         inks: GhosttyPaneLinesUIView.Inks,
         background: UIColor
     ) {
-        guard let popup, let layout, let windowGrid,
-              let contentFrame = Self.contentFrame(layout: layout, windowGrid: windowGrid, size: bounds.size)
+        guard let popup, let cellMetrics,
+              let layout = GhosttyCompositeViewportLayout(bounds: bounds, grid: popup.viewportGrid, cellMetrics: cellMetrics),
+              let contentFrame = Self.contentFrame(layout: layout, windowGrid: popup.viewportGrid, size: bounds.size)
         else {
             // Without the grid it is drawn on, the popup still hides the panes.
             backgroundColor = background
             for view in [lines, content, title, tab] { view.isHidden = true }
             return
         }
-        backgroundColor = .clear
+        // The held tab can have a larger grid than this viewport. Cover the margins as well as the
+        // popup's canvas, so none of the underlying panes can show through after a rotation.
+        backgroundColor = background
         lines.isHidden = false
         content.isHidden = false
-        // The canvas behind the frame's lines hides the panes, which are all on it.
+        // The frame's canvas uses the same background as its surrounding margins.
         if lines.backgroundColor != background { lines.backgroundColor = background }
         lines.frame = CGRect(origin: layout.origin, size: layout.canvasSize)
         lines.update(lines: popup.border, layout: layout, inks: inks)
         content.frame = contentFrame
-        placeLabels(on: layout, columns: windowGrid.columns, framed: Popup.isFramed(windowGrid), inks: inks, background: background)
+        placeLabels(on: layout, columns: popup.viewportGrid.columns, framed: Popup.isFramed(popup.viewportGrid), inks: inks, background: background)
         if let drawable {
             let frame = CGRect(origin: .zero, size: drawable)
             if terminal.frame != frame {

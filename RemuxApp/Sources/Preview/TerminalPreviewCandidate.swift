@@ -208,13 +208,6 @@ struct TerminalPreviewSelectionContext: Equatable {
         )
     }
 
-    func externalLink(for selection: String) -> URL? {
-        TerminalExternalLink.url(
-            selection: selection,
-            explicitTarget: explicitTarget(for: selection)
-        )
-    }
-
     /// Match the renderer's visible label, even when authoritative selection text joins wrapped rows.
     func explicitTarget(for selection: String) -> String? {
         automaticVisibleText == selection ? automaticExplicitTarget : nil

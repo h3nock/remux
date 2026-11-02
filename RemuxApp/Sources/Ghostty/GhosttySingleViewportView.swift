@@ -425,7 +425,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
               )
         else {
             linesView.update(lines: [], layout: nil, inks: inks)
-            UIView.performWithoutAnimation { placePopup(on: nil) }
+            UIView.performWithoutAnimation { placePopup() }
             return
         }
         var changed = false
@@ -447,7 +447,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                 container.layoutIfNeeded()
                 changed = true
             }
-            placePopup(on: layout)
+            placePopup()
         }
         if let startedAt {
             GhosttyRuntimeTrace.perf(
@@ -456,13 +456,12 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         }
     }
 
-    private func placePopup(on layout: GhosttyCompositeViewportLayout?) {
+    private func placePopup() {
         guard popupView.superview === self else { return }
         popupView.frame = bounds
         // A popup's frame draws the focus ink as the separator.
         popupView.place(
-            on: layout,
-            windowGrid: projection.windowGrid,
+            cellMetrics: projection.cellMetrics,
             inks: GhosttyPaneLinesUIView.Inks(separator: separatorColor, focus: separatorColor),
             background: backgroundColor ?? .clear
         )

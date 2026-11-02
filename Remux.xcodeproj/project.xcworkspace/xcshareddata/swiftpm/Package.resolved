@@ -15,7 +15,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/h3nock/Citadel.git",
       "state" : {
-        "revision" : "b3f200bf5e8cba9f5537b3643fe4d908b7fcd85c"
+        "revision" : "8034452ffa71b58782950a2ae541bd80733a6f78"
       }
     },
     {
@@ -77,7 +77,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/h3nock/swift-nio-ssh.git",
       "state" : {
-        "revision" : "a0625cab4539e4a89650ce4a77f4be02f71ea60e"
+        "revision" : "8d093c7befa47a48c866ce5a5c59ac10db2dde09"
       }
     },
     {
