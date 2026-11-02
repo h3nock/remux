@@ -21,7 +21,7 @@ settings:
 packages:
   Citadel:
     url: https://github.com/h3nock/Citadel.git
-    revision: 8034452ffa71b58782950a2ae541bd80733a6f78
+    revision: 1950f3b1e2620981536d8733e194cbbb3050051e
 targets:
   Remux:
     type: application
