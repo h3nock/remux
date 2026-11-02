@@ -979,9 +979,9 @@ final class HerdrPopupTests: XCTestCase {
         XCTAssertEqual(after, attachWrites, "the swipe went over the attach")
     }
 
-    /// Typing, a key, a paste and the composer's message end a selection in the popup, as Herdr's client ends
-    /// its own on a key, text or a paste, whatever sends it; a wheel step doesn't.
-    func testInputOtherThanTheWheelEndsThePopupsSelection() async throws {
+    /// Popup input ends selection through the session's common input boundary, including a wheel step:
+    /// unlike a pane's history, its displayed rows have no server history position to follow.
+    func testInputEndsThePopupsSelection() async throws {
         let harness = await makeHarness()
         let (_, _, cell) = try await attachedPopup(harness)
         let adapter = harness.model.terminalScreenAdapter
@@ -1001,8 +1001,9 @@ final class HerdrPopupTests: XCTestCase {
         _ = adapter.sendMousePosition(to: target, point, mods: [])
         let wheel = GhosttySurfaceMouseScrollEvent(deltaX: 0, deltaY: Double(cell.pixelHeight) * 1.2, mods: .init(precision: true, momentum: .began))
         XCTAssertEqual(adapter.sendMouseScroll(to: target, wheel), .sent)
-        XCTAssertTrue(selected(), "a wheel step ended the selection")
+        XCTAssertFalse(selected(), "a wheel step kept the selection")
 
+        select()
         XCTAssertEqual(adapter.sendInputToFocusedSurface("x"), .accepted)
         XCTAssertFalse(selected(), "typing kept the selection")
 
@@ -1018,6 +1019,47 @@ final class HerdrPopupTests: XCTestCase {
         let paste = Task { await adapter.sendPasteAwaitingCommandCompletion("message", to: target) }
         try await harness.waitUntil("the composer's paste kept the selection") { !selected() }
         paste.cancel()
+    }
+
+    func testOnlyAWholePopupWheelStepEndsSelectionForAttachedAndFramedPopups() async throws {
+        for framed in [false, true] {
+            for mouseReporting in [false, true] {
+                let harness = await makeHarness()
+                let (_, attach, cell) = try await attachedPopup(harness, mouseReporting: mouseReporting)
+                if framed {
+                    await attach.serve(DirectServer.shutdown(
+                        "terminal attach failed: terminal \(Self.popupID) already has an attached client; retry with --takeover"
+                    ))
+                    try await harness.waitUntil("the popup didn't fall back to its frame") {
+                        harness.model.popup.surface?.isAttached == false
+                    }
+                    show(try XCTUnwrap(harness.model.popup.surface?.renderer.view))
+                    try await harness.waitUntil("the framed popup wasn't drawn") { harness.model.popupPresentation == .ready }
+                }
+                let adapter = harness.model.terminalScreenAdapter
+                let target = try XCTUnwrap(popup(harness)?.id)
+                let surface = try XCTUnwrap(harness.model.popup.surface?.renderer.managedSurface)
+                let point = CGPoint(x: cell.pointWidth / 2, y: cell.pointHeight / 2)
+                _ = surface.selectWord(at: point)
+                let selected = try XCTUnwrap(surface.historySelection)
+                XCTAssertNotNil(surface.controlSurface.readSelection())
+                XCTAssertEqual(adapter.sendMousePosition(to: target, point, mods: []), .sent)
+                XCTAssertEqual(surface.historySelection, selected, "pointer movement ended selection")
+                func scroll(_ cells: Double, _ momentum: GhosttySurfaceMouseScrollMods.Momentum) -> GhosttyMouseInputSubmissionOutcome {
+                    adapter.sendMouseScroll(to: target, GhosttySurfaceMouseScrollEvent(
+                        deltaX: 0, deltaY: cells * Double(cell.pixelHeight),
+                        mods: .init(precision: true, momentum: momentum)
+                    ))
+                }
+                XCTAssertEqual(scroll(0.4, .began), .sent)
+                XCTAssertEqual(surface.historySelection, selected)
+                XCTAssertEqual(scroll(0.8, .cancelled), .sent)
+                XCTAssertEqual(surface.historySelection, selected)
+                XCTAssertEqual(scroll(1.1, .changed), .sent)
+                XCTAssertNil(surface.historySelection)
+                XCTAssertNil(surface.controlSurface.readSelection())
+            }
+        }
     }
 
     /// The composer's message and its Enter go to the popup it was written in, each once Herdr has it.

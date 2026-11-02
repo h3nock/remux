@@ -792,7 +792,7 @@ actor HerdrTerminalEngine {
         if findBlocksInput, !events.allSatisfy(\.releasesPress) {
             guard case .pane(let paneID) = target, let scroll = paneScrolls[paneID],
                   !scroll.mouseReporting, !scroll.alternateScreenActive,
-                  events.allSatisfy(\.isHistoryWheel) else { return .notTaken }
+                  events.allSatisfy(\.isVerticalWheel) else { return .notTaken }
         }
         guard events.allSatisfy(\.releasesPress) || takesInput(target) else { return .notTaken }
         switch target {

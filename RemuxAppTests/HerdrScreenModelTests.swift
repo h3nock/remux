@@ -4937,6 +4937,28 @@ final class HerdrScreenModelTests: XCTestCase {
         }
     }
 
+    func testAProgramWheelRejectedByFindKeepsItsSelection() async throws {
+        let harness = await makeHarness()
+        _ = try await shownSession(harness, mouseReporting: true)
+        let adapter = harness.model.terminalScreenAdapter
+        let target = adapter.terminalScreenPresentationProjection.viewport.panes[0].id
+        let surface = try XCTUnwrap(harness.model.paneSurface("w1:p1")?.renderer.managedSurface)
+        let row = surface.scrollState.offset
+        _ = surface.select(GhosttyHistorySelection(
+            start: GhosttyTerminalCell(row: row, column: 0),
+            end: GhosttyTerminalCell(row: row, column: 2)
+        ))
+        let selected = try XCTUnwrap(surface.historySelection)
+        XCTAssertTrue(harness.model.beginFind(inPane: "w1:p1"))
+        let cell = try XCTUnwrap(harness.model.measurement).cellMetrics
+        XCTAssertEqual(adapter.sendMouseScroll(to: target, GhosttySurfaceMouseScrollEvent(
+            deltaX: 0, deltaY: Double(cell.pixelHeight) * 1.1,
+            mods: .init(precision: true, momentum: .began)
+        )), .surfaceRejected)
+        XCTAssertEqual(surface.historySelection, selected)
+        XCTAssertEqual(surface.controlSurface.readSelection(), "one")
+    }
+
     /// A scroll gesture's travel becomes Herdr wheel steps as Ghostty makes lines of it for tmux: one
     /// per cell height, the rest kept for the next, up or down with the travel, at the cell where the
     /// gesture is, each carrying Herdr's three history lines.

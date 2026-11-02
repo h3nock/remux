@@ -1195,12 +1195,12 @@ final class HerdrScreenModel {
     private func allowsFindInput(_ events: [HerdrInputEvent], paneID: String) -> Bool {
         guard isFindInputBlocked, !events.allSatisfy(\.releasesPress) else { return true }
         guard let scroll = paneScrolls[paneID], !scroll.mouseReporting, !scroll.alternateScreenActive else { return false }
-        return events.allSatisfy(\.isHistoryWheel)
+        return events.allSatisfy(\.isVerticalWheel)
     }
 
-    /// All input over the session's connection goes this way. Input other than the wheel ends the selection
-    /// of the terminal it goes to, a pane's or the popup's, as Herdr's client ends its own on a key, text or a
-    /// paste, whatever sends it.
+    /// All input over the session's connection goes this way. Keys, text and paste end the target's
+    /// selection. A vertical wheel keeps a pane's selection only when its history rows can follow it;
+    /// popup history positions aren't exposed, so their wheel input ends selection too.
     private func ask(
         input events: [HerdrInputEvent],
         to target: HerdrTerminalTarget,
@@ -1213,7 +1213,16 @@ final class HerdrScreenModel {
                 return
             }
         }
-        if events.contains(where: { if case .mouse = $0 { false } else { true } }) {
+        if events.contains(where: { event in
+            guard case .mouse = event else { return true }
+            guard event.isVerticalWheel else { return false }
+            switch target {
+            case .pane(let paneID):
+                return paneScrolls[paneID].map { $0.route != .remoteHistory } ?? false
+            case .popup:
+                return true
+            }
+        }) {
             managedSurface(of: target)?.endSelection()
         }
         attempt.ask(.input(target, events: events, delivered: delivered))
@@ -1462,13 +1471,7 @@ final class HerdrScreenModel {
             lines: Self.wheelLines
         )
         let events = Array(repeating: HerdrInputEvent.mouse(wheel), count: Int(steps.magnitude))
-        guard send(events, to: target) == .accepted else { return false }
-        // Program-directed scrolling ends selection, as on the local terminal. History scrolling
-        // keeps the range anchored to its original rows.
-        if let scroll = paneScrolls[paneID], scroll.route != .remoteHistory {
-            surfaces[paneID]?.renderer.managedSurface?.endSelection()
-        }
-        return true
+        return send(events, to: target) == .accepted
     }
 
     private func applyScroll(toPane paneID: String) {
