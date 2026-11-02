@@ -1408,6 +1408,9 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         complete(.failure(error))
         context.fireErrorCaught(error)
+        // NIOSSH reports a failed key exchange here and leaves the connection open, so channel
+        // messages held for that exchange would wait forever unless the connection closes.
+        context.close(promise: nil)
     }
 
     func channelInactive(context: ChannelHandlerContext) {

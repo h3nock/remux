@@ -1,3 +1,4 @@
+import NIOCore
 import NIOEmbedded
 @preconcurrency import NIOSSH
 import XCTest
@@ -154,6 +155,28 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         }
         XCTAssertEqual(events[1], .finished(request.id))
         XCTAssertNoThrow(try channel.finish())
+    }
+
+    /// A failed key exchange mid-session reaches this handler long after authentication.
+    func testErrorAfterAuthenticationClosesTheConnection() throws {
+        struct KeyExchangeFailed: Error {}
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(
+            eventLoop: eventLoop,
+            timeout: .minutes(5),
+            onTailscaleSSHCheck: nil
+        )
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+
+        channel.pipeline.fireUserInboundEventTriggered(UserAuthSuccessEvent())
+        XCTAssertNoThrow(try handler.authenticated.wait())
+
+        channel.pipeline.fireErrorCaught(KeyExchangeFailed())
+        eventLoop.run()
+
+        XCTAssertThrowsError(try channel.finish()) { error in
+            XCTAssertEqual(error as? ChannelError, .alreadyClosed)
+        }
     }
 }
 
