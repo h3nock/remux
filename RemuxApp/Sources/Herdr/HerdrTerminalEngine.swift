@@ -790,8 +790,7 @@ actor HerdrTerminalEngine {
         guard state == .running, connection == self.connection, let outbox else { return .ended }
         guard outbox.isSurfaceActive else { return .inactive }
         if findBlocksInput, !events.allSatisfy(\.releasesPress) {
-            guard case .pane(let paneID) = target, let scroll = paneScrolls[paneID],
-                  !scroll.mouseReporting, !scroll.alternateScreenActive,
+            guard case .pane(let paneID) = target, paneScrolls[paneID]?.route == .remoteHistory,
                   events.allSatisfy(\.isVerticalWheel) else { return .notTaken }
         }
         guard events.allSatisfy(\.releasesPress) || takesInput(target) else { return .notTaken }

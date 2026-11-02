@@ -1194,7 +1194,7 @@ final class HerdrScreenModel {
 
     private func allowsFindInput(_ events: [HerdrInputEvent], paneID: String) -> Bool {
         guard isFindInputBlocked, !events.allSatisfy(\.releasesPress) else { return true }
-        guard let scroll = paneScrolls[paneID], !scroll.mouseReporting, !scroll.alternateScreenActive else { return false }
+        guard paneScrolls[paneID]?.route == .remoteHistory else { return false }
         return events.allSatisfy(\.isVerticalWheel)
     }
 
