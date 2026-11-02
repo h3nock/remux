@@ -167,6 +167,12 @@ enum HerdrInputEvent: Equatable, Sendable {
         }
     }
 
+    /// The target's modes decide whether a vertical wheel scrolls history or the program.
+    var isVerticalWheel: Bool {
+        guard case .mouse(let mouse) = self else { return false }
+        return switch mouse.kind { case .scrollUp, .scrollDown: true; default: false }
+    }
+
     func write(to writer: inout HerdrWireWriter) {
         switch self {
         case .key(let key):

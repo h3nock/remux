@@ -181,10 +181,3 @@ enum HerdrFindIntent: Sendable {
     case end
     case resumeInput
 }
-
-extension HerdrInputEvent {
-    var isHistoryWheel: Bool {
-        guard case .mouse(let mouse) = self else { return false }
-        return switch mouse.kind { case .scrollUp, .scrollDown: true; default: false }
-    }
-}
