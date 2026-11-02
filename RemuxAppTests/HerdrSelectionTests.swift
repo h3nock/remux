@@ -316,7 +316,8 @@ final class HerdrSelectionTests: XCTestCase {
     }
 
     /// A paste ends the pane's selection, as Herdr's client ends its own on pasted text, and so do the
-    /// composer's paste and Enter, which go to the pane they were written for; a wheel step doesn't.
+    /// composer's paste and Enter, which go to the pane they were written for; a wheel step over history
+    /// doesn't.
     func testAnyInputEndsTheSelection() async throws {
         let session = try await shownSession(scroll: (0, 40, 3))
         let surface = try session.surface()
