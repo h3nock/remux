@@ -1236,7 +1236,7 @@ enum RemuxSSHAlgorithmRegistration {
     }
 }
 
-private enum RemuxSSHRootBootstrap {
+enum RemuxSSHRootBootstrap {
     /// OpenSSH's channel packet size. swift-nio-ssh sizes each channel's receive window at 64
     /// packets, so this gives every channel the 2 MiB window OpenSSH (and so Herdr's own client)
     /// uses, which also bounds what a channel that stops reading can queue on the phone.
@@ -1251,44 +1251,12 @@ private enum RemuxSSHRootBootstrap {
         do {
             trace.event("bootstrap.configure.begin")
             let bootstrap = ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
-                .channelInitializer { channel in
-                    let handshake = RemuxSSHRootHandshakeHandler(
-                        eventLoop: channel.eventLoop,
-                        timeout: configuration.authenticationTimeout,
-                        onTailscaleSSHCheck: configuration.onTailscaleSSHCheck
-                    )
-                    let authenticationMethod: SSHAuthenticationMethod
-                    do {
-                        authenticationMethod = try configuration.authenticationMethod()
-                    } catch {
-                        return channel.eventLoop.makeFailedFuture(error)
-                    }
-
-                    var sshConfiguration = SSHClientConfiguration(
-                        userAuthDelegate: authenticationMethod,
-                        serverAuthDelegate: configuration.hostKeyValidator
-                    )
-                    sshConfiguration.maximumPacketSize = channelMaximumPacketSize
-                    let sshHandler = NIOSSHHandler(
-                        role: .client(sshConfiguration),
-                        allocator: channel.allocator,
-                        inboundChildChannelInitializer: { channel, _ in
-                            channel.eventLoop.makeFailedFuture(
-                                RemuxSSHRootServiceError.unsupportedInboundChannel
-                            )
-                        }
-                    )
-
-                    return channel.pipeline.addHandler(sshHandler).flatMap {
-                        channel.pipeline.addHandler(handshake)
-                    }
-                }
                 .connectTimeout(configuration.connectTimeout)
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
             trace.event("bootstrap.configure.end")
 
-            let channel = try await trace.stage(
+            let connection = try await trace.stage(
                 "tcpConnect",
                 fields: [
                     "host": configuration.host,
@@ -1297,16 +1265,17 @@ private enum RemuxSSHRootBootstrap {
             ) {
                 try await bootstrap.connect(
                     host: configuration.host,
-                    port: configuration.port
-                ).get()
+                    port: configuration.port,
+                    channelInitializer: { channel in
+                        configureChannel(channel, using: configuration)
+                    }
+                )
             }
+            let channel = connection.channel
             rootChannel = channel
 
-            let handshake = try await trace.stage("handshakeHandler.lookup") {
-                try await channel.pipeline.handler(type: RemuxSSHRootHandshakeHandler.self).get()
-            }
             try await trace.stage("sshAuthentication") {
-                try await handshake.authenticated.get()
+                try await connection.authenticated.get()
             }
 
             let sshHandler = try await trace.stage("sshHandler.lookup") {
@@ -1322,6 +1291,47 @@ private enum RemuxSSHRootBootstrap {
                 try? await rootChannel.close()
             }
             throw error
+        }
+    }
+
+    /// Retain each attempt's authentication result before the channel can close and remove its handlers.
+    /// Authentication is awaited after connect: waiting here would prevent socket registration.
+    static func configureChannel(
+        _ channel: Channel,
+        using configuration: RemuxSSHRootConfiguration
+    ) -> EventLoopFuture<(channel: Channel, authenticated: EventLoopFuture<Void>)> {
+        let handshake = RemuxSSHRootHandshakeHandler(
+            eventLoop: channel.eventLoop,
+            timeout: configuration.authenticationTimeout,
+            onTailscaleSSHCheck: configuration.onTailscaleSSHCheck
+        )
+        let authenticationMethod: SSHAuthenticationMethod
+        do {
+            authenticationMethod = try configuration.authenticationMethod()
+        } catch {
+            return channel.eventLoop.makeFailedFuture(error)
+        }
+
+        var sshConfiguration = SSHClientConfiguration(
+            userAuthDelegate: authenticationMethod,
+            serverAuthDelegate: configuration.hostKeyValidator
+        )
+        sshConfiguration.maximumPacketSize = channelMaximumPacketSize
+        let sshHandler = NIOSSHHandler(
+            role: .client(sshConfiguration),
+            allocator: channel.allocator,
+            inboundChildChannelInitializer: { channel, _ in
+                channel.eventLoop.makeFailedFuture(
+                    RemuxSSHRootServiceError.unsupportedInboundChannel
+                )
+            }
+        )
+
+        let authenticated = handshake.authenticated
+        return channel.pipeline.addHandler(sshHandler).flatMap {
+            channel.pipeline.addHandler(handshake)
+        }.map {
+            (channel: channel, authenticated: authenticated)
         }
     }
 }
@@ -1408,6 +1418,9 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         complete(.failure(error))
         context.fireErrorCaught(error)
+        // NIOSSH reports a failed key exchange here and leaves the connection open, so channel
+        // messages held for that exchange would wait forever unless the connection closes.
+        context.close(promise: nil)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
