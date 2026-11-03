@@ -36,10 +36,13 @@ struct GhosttyModifierState: Equatable {
         )
     }
 
+    /// The control character for text that is exactly one ASCII scalar Ctrl translates. Anything
+    /// else, as a letter with a combining mark or an input method's commit, has none.
     static func controlText(for text: String) -> String? {
+        let scalars = text.unicodeScalars
         guard
-            text.count == 1,
-            let scalar = text.unicodeScalars.first,
+            scalars.count == 1,
+            let scalar = scalars.first,
             let translated = controlScalar(for: scalar)
         else {
             return nil

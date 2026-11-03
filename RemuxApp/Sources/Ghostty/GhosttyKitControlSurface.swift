@@ -382,6 +382,20 @@ final class GhosttyKitControlSurface {
         return ghosttyTerminalCellFrame(geometry, scaleFactor: scaleFactor)
     }
 
+    /// Draws an input method's unfinished text over the cursor; nil clears it. It is display
+    /// only: nothing reaches the terminal.
+    @discardableResult
+    func setPreedit(_ text: String?) -> Bool {
+        guard !invalidated else { return false }
+        let value = text ?? ""
+        let result = value.withCString {
+            ghostty_terminal_surface_preedit(handle, $0, UInt(value.utf8.count))
+        }
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_FAILED else { return report(result) }
+        // The text was published before its wake failed; only the wake is retried.
+        return report(ghostty_terminal_surface_terminal_changed(handle))
+    }
+
     func selectWord(at point: CGPoint) -> GhosttyLocalSelectionOutcome {
         mutateSelection { snapshot in
             ghostty_terminal_surface_select_word(

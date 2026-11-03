@@ -400,6 +400,15 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     /// Herdr panes get Ctrl+B at once; Herdr's own keybindings aren't offered on the phone.
     var holdsTmuxPrefixKey: Bool { false }
 
+    /// The popup while it takes the input, else the pane Herdr takes the user's input for.
+    var focusedInputSurfaceID: UUID? {
+        guard let model else { return nil }
+        if model.popup.takesInput {
+            return model.popup.popup.map { surfaceID(forPopup: $0.terminalID) }
+        }
+        return model.inputPaneID.map(surfaceID(forPane:))
+    }
+
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         model?.sendText(text) ?? .transportUnavailable
     }

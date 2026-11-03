@@ -31,6 +31,40 @@ final class GhosttyKeyboardResponderHandoff {
         guard let responder, responder.window != nil else { return false }
         return responder.becomeFirstResponder()
     }
+
+    /// Settles the terminal keyboard's composition before an app action, as a toolbar key
+    /// (`GhosttyTerminalResponderUIView.resolveComposition(for:)`). Without a terminal responder
+    /// there is nothing to settle.
+    @discardableResult
+    func resolveTerminalComposition(
+        for action: GhosttyTerminalCompositionAction
+    ) -> GhosttyTerminalCompositionOutcome {
+        guard let responder = terminalResponder as? GhosttyTerminalResponderUIView else { return .noDraft }
+        return responder.resolveComposition(for: action)
+    }
+}
+
+/// What an app action, as a toolbar key, does to the terminal keyboard's unfinished composition.
+enum GhosttyTerminalCompositionAction: Equatable {
+    /// Commits the draft as typed. `preservingModifiers` leaves an armed Ctrl for the key that
+    /// finishes the draft instead of applying it to the draft.
+    case finish(preservingModifiers: Bool)
+    case cancel
+    /// Edits the draft, as the keyboard's own delete does.
+    case deleteBackward
+    case deleteForward
+}
+
+enum GhosttyTerminalCompositionOutcome: Equatable {
+    /// Nothing was composing. The keyboard's hidden context, as Korean's syllable assembly, was
+    /// synchronized, and the action goes on to the terminal.
+    case noDraft
+    case finished
+    case canceled
+    case edited
+    /// The draft couldn't be committed: its pane no longer takes the input, or the input was
+    /// refused. The draft is gone, and the action stops.
+    case refused
 }
 
 struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
@@ -40,12 +74,18 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let responderHandoff: GhosttyKeyboardResponderHandoff
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let keyboardAppearance: UIKeyboardAppearance
+    let inputSurface: () -> GhosttyManagedSurface?
     let sendText: (String) -> Bool
+    let sendFinishedText: (String) -> Bool
     let sendPaste: (String) -> Bool
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let onFirstResponderChange: (Bool) -> Void
 
+    /// `inputSurface` is the surface the focused input operations reach now, nil while they would
+    /// be refused; a composition is drawn on it and stays with it. `sendText` sends what the
+    /// keyboard commits, with an armed modifier applied. `sendFinishedText` sends a draft an app
+    /// action finishes while preserving the modifier for that action.
     init(
         isEnabled: Bool,
         wantsFirstResponder: Bool,
@@ -53,7 +93,9 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         responderHandoff: GhosttyKeyboardResponderHandoff,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         keyboardAppearance: UIKeyboardAppearance = .dark,
+        inputSurface: @escaping () -> GhosttyManagedSurface? = { nil },
         sendText: @escaping (String) -> Bool,
+        sendFinishedText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
@@ -65,7 +107,9 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.responderHandoff = responderHandoff
         self.trackpadDriver = trackpadDriver
         self.keyboardAppearance = keyboardAppearance
+        self.inputSurface = inputSurface
         self.sendText = sendText
+        self.sendFinishedText = sendFinishedText
         self.sendPaste = sendPaste
         self.sendKeyEvent = sendKeyEvent
         self.onTrackpadFeedbackChange = onTrackpadFeedbackChange
@@ -86,7 +130,9 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             wantsFirstResponder: wantsFirstResponder,
             activationToken: activationToken,
             keyboardAppearance: keyboardAppearance,
+            inputSurface: inputSurface,
             sendText: { sendText(GhosttyTerminalInputNormalizer.normalize($0)) },
+            sendFinishedText: { sendFinishedText(GhosttyTerminalInputNormalizer.normalize($0)) },
             sendPaste: sendPaste,
             sendKeyEvent: sendKeyEvent,
             onTrackpadFeedbackChange: onTrackpadFeedbackChange,
@@ -98,6 +144,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         // SwiftUI is dropping this representable while a trackpad gesture may
         // still be live (surface revision, screen transition, disconnect).
         uiView.cancelTrackpadGestureIfActive(reason: "dismantle")
+        uiView.resolveComposition(for: .cancel)
     }
 }
 
@@ -121,7 +168,23 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     var smartQuotesType: UITextSmartQuotesType = .no
     var smartDashesType: UITextSmartDashesType = .no
     var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+    /// A terminal takes literal input, so the keyboard offers no grey suggestion that a later
+    /// commit could send unseen.
+    var inlinePredictionType: UITextInlinePredictionType = .no
     var enablesReturnKeyAutomatically = false
+
+    /// The keyboard's document: the placeholder plus any unfinished composition.
+    private(set) var composition = GhosttyTerminalCompositionDocument()
+    /// The surface a composition belongs to, which draws it. It is bound when the composition
+    /// starts, and the composition is committed only while focused input still reaches it.
+    private weak var compositionSurface: GhosttyManagedSurface?
+    private var compositionSurfaceID: UUID?
+    /// The surface focused input reached at the last update; a change ends the composition.
+    private var observedInputSurfaceID: UUID?
+    /// A keyboard edit since the last synchronization may have left context the keyboard keeps
+    /// to revise what it sent, as Korean's syllable assembly does.
+    private var keyboardContextNeedsSync = false
+    private var inputSurfaceProvider: () -> GhosttyManagedSurface? = { nil }
 
     private var isInputEnabled = false
     private var wantsFirstResponder = false
@@ -129,6 +192,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var pendingFirstResponderRequest = false
     private var responderReconciliationScheduled = false
     private var sendTextHandler: ((String) -> Bool)?
+    private var sendFinishedTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
     private var trackpadFeedbackHandler: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
@@ -154,7 +218,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         wantsFirstResponder: Bool,
         activationToken: Int,
         keyboardAppearance: UIKeyboardAppearance = .dark,
+        inputSurface: @escaping () -> GhosttyManagedSurface? = { nil },
         sendText: @escaping (String) -> Bool,
+        sendFinishedText: ((String) -> Bool)? = nil,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void = { _ in },
@@ -183,7 +249,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.isInputEnabled = isEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.keyboardAppearance = keyboardAppearance
+        self.inputSurfaceProvider = inputSurface
         self.sendTextHandler = sendText
+        self.sendFinishedTextHandler = sendFinishedText ?? sendText
         self.sendPasteHandler = sendPaste
         self.sendKeyEventHandler = sendKeyEvent
         self.trackpadFeedbackHandler = onTrackpadFeedbackChange
@@ -191,6 +259,17 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
         if isFirstResponder, previousKeyboardAppearance != keyboardAppearance {
             reloadInputViews()
+        }
+
+        // A composition and the keyboard's context belong to where input went: another pane, a
+        // popup, a new connection or input becoming unavailable ends them.
+        let inputSurfaceID = isEnabled ? inputSurface()?.id : nil
+        if inputSurfaceID != observedInputSurfaceID {
+            GhosttyRuntimeTrace.diagnostics(
+                "responder.inputSurface \(ghosttyDiagnosticShortID(observedInputSurfaceID)) -> \(ghosttyDiagnosticShortID(inputSurfaceID))"
+            )
+            observedInputSurfaceID = inputSurfaceID
+            resolveComposition(for: .cancel)
         }
 
         if !isEnabled {
@@ -219,13 +298,32 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         scheduleResponderReconciliationIfNeeded(reason: "request")
     }
 
+    /// Committed keyboard text: an input method's commit replaces its composition; anything else
+    /// is sent as typed, as Korean's revised syllables are.
     func insertText(_ text: String) {
-        submitTextInput(text, source: "insertText")
+        guard isInputEnabled else { return }
+        keyboardContextNeedsSync = true
+        guard composition.marked != nil else {
+            composition.clear()
+            submitTextInput(text, source: "insertText")
+            return
+        }
+        commitComposition(text, source: "insertText", through: sendTextHandler)
     }
 
-    func submitTextInput(_ text: String, source: String) {
-        guard isInputEnabled else { return }
-        guard !text.isEmpty else { return }
+    @discardableResult
+    func submitTextInput(_ text: String, source: String) -> Bool {
+        submitTextInput(text, source: source, through: sendTextHandler)
+    }
+
+    @discardableResult
+    private func submitTextInput(
+        _ text: String,
+        source: String,
+        through send: ((String) -> Bool)?
+    ) -> Bool {
+        guard isInputEnabled else { return false }
+        guard !text.isEmpty else { return false }
         GhosttyRuntimeTrace.diagnostics(
             "responder.\(source) bytes=\(text.lengthOfBytes(using: .utf8)) firstResponder=\(isFirstResponder) token=\(activationToken)"
         )
@@ -238,7 +336,162 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
                 "token": "\(activationToken)",
             ],
         )
-        _ = sendTextHandler?(text)
+        return send?(text) ?? false
+    }
+
+    // MARK: Composition
+
+    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        guard isInputEnabled else { return }
+        keyboardContextNeedsSync = true
+        let startsComposition = composition.marked == nil
+        composition.setMarkedText(markedText, selectedRange: selectedRange)
+        if startsComposition, composition.marked != nil {
+            let surface = inputSurfaceProvider()
+            compositionSurface = surface
+            compositionSurfaceID = surface?.id
+        }
+        GhosttyRuntimeTrace.diagnostics(
+            "responder.setMarkedText marked=\(composition.marked.map(NSStringFromRange) ?? "nil") selection=\(NSStringFromRange(composition.selection)) surface=\(ghosttyDiagnosticShortID(compositionSurfaceID))"
+        )
+        presentComposition()
+    }
+
+    func unmarkText() {
+        guard let text = composition.markedText else { return }
+        keyboardContextNeedsSync = true
+        commitComposition(text, source: "unmarkText", through: sendTextHandler)
+    }
+
+    func replaceComposition(_ range: NSRange, with text: String) {
+        guard isInputEnabled else { return }
+        keyboardContextNeedsSync = true
+        let committed = composition.replace(range, with: text)
+        presentComposition()
+        if let committed {
+            submitTextInput(committed, source: "replaceText")
+        }
+    }
+
+    func selectComposition(_ range: NSRange) {
+        composition.select(range)
+    }
+
+    /// Settles the composition for an app action: commits or cancels a draft, or edits it as the
+    /// keyboard's delete does. Each brackets its local change with the input delegate's
+    /// notifications, which also end context the keyboard keeps between its own edits; with no
+    /// draft, that synchronization is all it does. Keyboard edits never come through here: they
+    /// change the document as the keyboard asks.
+    @discardableResult
+    func resolveComposition(
+        for action: GhosttyTerminalCompositionAction
+    ) -> GhosttyTerminalCompositionOutcome {
+        let outcome = settleComposition(for: action)
+        GhosttyRuntimeTrace.diagnostics("responder.composition action=\(action) outcome=\(outcome)")
+        return outcome
+    }
+
+    private func settleComposition(
+        for action: GhosttyTerminalCompositionAction
+    ) -> GhosttyTerminalCompositionOutcome {
+        guard composition.marked != nil else {
+            if keyboardContextNeedsSync { synchronizeKeyboardContext {} }
+            return .noDraft
+        }
+        switch action {
+        case .finish(let preservingModifiers):
+            var draft: (text: String, surfaceID: UUID?)?
+            synchronizeKeyboardContext { draft = takeComposition() }
+            guard let draft else { return .noDraft }
+            let committed = send(
+                draft,
+                source: "finish",
+                through: preservingModifiers ? sendFinishedTextHandler : sendTextHandler
+            )
+            return committed ? .finished : .refused
+        case .cancel:
+            synchronizeKeyboardContext { endComposition() }
+            return .canceled
+        case .deleteBackward:
+            synchronizeKeyboardContext {
+                _ = composition.deleteBackward()
+                presentComposition()
+            }
+            return .edited
+        case .deleteForward:
+            synchronizeKeyboardContext {
+                _ = composition.deleteForward()
+                presentComposition()
+            }
+            return .edited
+        }
+    }
+
+    /// A keyboard commit: `text` replaces the draft.
+    @discardableResult
+    private func commitComposition(
+        _ text: String,
+        source: String,
+        through sendText: ((String) -> Bool)?
+    ) -> Bool {
+        guard let draft = takeComposition() else { return false }
+        return send((text, draft.surfaceID), source: source, through: sendText)
+    }
+
+    /// The one take-and-clear of a draft, whether the keyboard commits it or an app action
+    /// finishes it: the draft is gone before anything is sent.
+    private func takeComposition() -> (text: String, surfaceID: UUID?)? {
+        guard let text = composition.markedText else { return nil }
+        let surfaceID = compositionSurfaceID
+        endComposition()
+        return (text, surfaceID)
+    }
+
+    /// Sends a taken draft only while focused input still reaches the surface it was typed on.
+    private func send(
+        _ draft: (text: String, surfaceID: UUID?),
+        source: String,
+        through sendText: ((String) -> Bool)?
+    ) -> Bool {
+        guard inputSurfaceProvider()?.id == draft.surfaceID else {
+            GhosttyRuntimeTrace.diagnostics("responder.\(source) dropped composition for another destination")
+            return false
+        }
+        return submitTextInput(draft.text, source: source, through: sendText)
+    }
+
+    private func endComposition() {
+        composition.clear()
+        presentComposition()
+    }
+
+    /// Draws the composition on its surface, and clears it there once it ends.
+    private func presentComposition() {
+        guard let text = composition.markedText else {
+            compositionSurface?.setPreedit(nil)
+            compositionSurface = nil
+            compositionSurfaceID = nil
+            return
+        }
+        compositionSurface?.setPreedit(text)
+    }
+
+    private func synchronizeKeyboardContext(_ change: () -> Void) {
+        inputDelegate?.textWillChange(self)
+        inputDelegate?.selectionWillChange(self)
+        change()
+        inputDelegate?.selectionDidChange(self)
+        inputDelegate?.textDidChange(self)
+        keyboardContextNeedsSync = false
+    }
+
+    /// The composition's surface cursor cell, in this view's coordinates.
+    func compositionCaretRect() -> CGRect? {
+        guard let surface = compositionSurface ?? inputSurfaceProvider() else { return nil }
+        let view = surface.view
+        let cell = surface.controlSurface.cursorGeometry()
+            ?? CGRect(x: 0, y: max(0, view.bounds.maxY - 1), width: 1, height: 1)
+        return view.convert(cell, to: self)
     }
 
     override func didMoveToWindow() {
@@ -273,6 +526,12 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     override func resignFirstResponder() -> Bool {
         cancelTrackpadGestureIfActive(reason: "resignFirstResponder")
         let didResignFirstResponder = super.resignFirstResponder()
+        // UIKit settles a composition as the keyboard leaves; a draft it leaves behind has no
+        // keyboard to finish it, so it isn't left drawn.
+        if didResignFirstResponder, composition.marked != nil {
+            GhosttyRuntimeTrace.diagnostics("responder.resign cancels unfinished composition")
+            resolveComposition(for: .cancel)
+        }
         reportFirstResponderStateIfChanged()
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
@@ -310,6 +569,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     func beginFloatingCursor(at point: CGPoint) {
         guard isInputEnabled else { return }
+        // The trackpad steers the terminal's cursor, so a draft is finished first.
+        guard resolveComposition(for: .finish(preservingModifiers: true)) != .refused else { return }
         trackpadDriver.begin(
             owner: self,
             at: point,
@@ -359,14 +620,25 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         )
     }
 
+    /// The keyboard's delete: within a composition it edits the draft; otherwise the terminal
+    /// deletes, as Korean's syllable revisions need.
     func deleteBackward() {
         guard isInputEnabled else { return }
+        keyboardContextNeedsSync = true
         GhosttyRuntimeTrace.diagnostics(
             "responder.deleteBackward firstResponder=\(isFirstResponder) token=\(activationToken)"
         )
-        _ = sendKeyEventHandler?(.init(keyCode: .backspace))
+        switch composition.deleteBackward() {
+        case .terminal:
+            _ = sendKeyEventHandler?(.init(keyCode: .backspace))
+        case .composition:
+            presentComposition()
+        case .none:
+            break
+        }
     }
 
+    /// A paste replaces an unfinished draft, as UIKit's own paste does, and goes once.
     override func paste(_ sender: Any?) {
         guard
             isInputEnabled,
@@ -379,6 +651,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         GhosttyRuntimeTrace.diagnostics(
             "responder.paste bytes=\(text.lengthOfBytes(using: .utf8)) firstResponder=\(isFirstResponder) token=\(activationToken)"
         )
+        resolveComposition(for: .cancel)
         _ = sendPasteHandler?(text)
     }
 
@@ -394,6 +667,11 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         GhosttyRuntimeTrace.diagnostics(
             "responder.pressesBegan count=\(presses.count) firstResponder=\(isFirstResponder) token=\(activationToken)"
         )
+        // While an input method composes, its keys edit, convert and confirm the draft.
+        guard composition.marked == nil else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
         var unhandledPresses = Set<UIPress>()
         for press in presses.sorted(by: Self.sortPressesByTimestamp) {
             guard let key = press.key else {
@@ -423,6 +701,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
                 GhosttyRuntimeTrace.diagnostics(
                     "responder.pressesBegan action keyCode=\(key.keyCode.rawValue) modifiers=\(key.modifierFlags.rawValue)"
                 )
+                // A terminal command, unlike typed text, ends the keyboard's context.
+                resolveComposition(for: .finish(preservingModifiers: true))
             }
             handleHardwareCommandAction(action)
         }

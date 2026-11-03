@@ -177,6 +177,13 @@ final class GhosttyManagedSurface {
         return delivered
     }
 
+    /// Draws an input method's unfinished text over the cursor, nil to clear it. Like typing,
+    /// composing ends the selection.
+    func setPreedit(_ text: String?) {
+        if text != nil { endSelection() }
+        controlSurface.setPreedit(text)
+    }
+
     func setVisible(_ visible: Bool) {
         guard visible != isVisible else { return }
         isVisible = visible
