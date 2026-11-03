@@ -74,6 +74,8 @@ extension SessionTarget {
             workspace.sessionName == target.workspace.sessionName &&
             sshAuth.username == target.sshAuth.username &&
             sshAuth.authFingerprint == target.sshAuth.authFingerprint &&
+            // A transport prepared without the user can't log in with a key they approve on this device.
+            sshKeyApproval == target.sshKeyApproval &&
             terminalSettings == target.terminalSettings
     }
 }

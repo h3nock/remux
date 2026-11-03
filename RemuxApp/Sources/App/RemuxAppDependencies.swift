@@ -226,14 +226,11 @@ struct RemuxAppDependencies: Sendable {
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
     }
 
-    /// The user asked for something on the server, so its next SSH login may ask them to approve the key.
-    /// Work that runs by itself only reuses an open connection.
-    func allowKeyApproval(forServerID serverID: SavedServer.ID) {
-        sshRootService.loginApprovals.allow(serverID: serverID)
-    }
-
+    /// The service the composer's Send makes for its uploads, which the user asked for.
     func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
-        attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
+        var target = target
+        target.keyApproval = .mayAsk
+        return attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
     }
 
     func discoverTmuxSessions(for target: SessionTarget) async throws -> SessionListing {
@@ -328,7 +325,7 @@ struct RemuxAppDependencies: Sendable {
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
             authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
-            loginNeedsApproval: target.sshAuth.usesSecureEnclaveKey,
+            keyApproval: target.sshKeyApproval,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
             sessionName: target.workspace.sessionName,
@@ -539,7 +536,7 @@ struct RemuxAppDependencies: Sendable {
             connectTimeout: connectTimeout,
             authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
-            loginNeedsApproval: target.sshAuth.usesSecureEnclaveKey
+            keyApproval: target.sshKeyApproval
         )
     }
 

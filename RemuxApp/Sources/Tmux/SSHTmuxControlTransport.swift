@@ -20,7 +20,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     let initialViewport: TmuxControlViewport
     let traceFlowID: String?
     let sshRootKey: RemuxSSHRootKey?
-    let loginNeedsApproval: Bool
+    let keyApproval: SSHKeyApproval?
 
     init(
         host: String,
@@ -30,7 +30,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         connectTimeout: TimeAmount = .seconds(30),
         authenticationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
-        loginNeedsApproval: Bool = false,
+        keyApproval: SSHKeyApproval? = nil,
         controlNoResponseTimeout: TimeAmount = .seconds(15),
         sftpOperationTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",
@@ -55,7 +55,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.initialViewport = initialViewport
         self.traceFlowID = traceFlowID
         self.sshRootKey = sshRootKey
-        self.loginNeedsApproval = loginNeedsApproval
+        self.keyApproval = keyApproval
     }
 
     var sshRootConfiguration: RemuxSSHRootConfiguration {
@@ -67,7 +67,7 @@ struct SSHTmuxControlConfiguration: Sendable {
             connectTimeout: connectTimeout,
             authenticationTimeout: authenticationTimeout,
             onTailscaleSSHCheck: onTailscaleSSHCheck,
-            loginNeedsApproval: loginNeedsApproval
+            keyApproval: keyApproval
         )
     }
 }

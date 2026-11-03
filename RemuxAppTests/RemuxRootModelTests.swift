@@ -1,4 +1,5 @@
 import CryptoKit
+import LocalAuthentication
 import GhosttyKit
 import Combine
 import SwiftUI
@@ -2043,22 +2044,146 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(verifiedTargets.isEmpty, "the login was checked again")
     }
 
+    /// Adding the server with another credential than the key installing verified checks that credential.
+    func testAddingWithAnotherCredentialAfterInstallingAKeyChecksIt() async throws {
+        let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
+        let harness = makeHarness(
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Mac mini"
+            draft.host = "mac-mini.local"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = key
+            draft.sessionName = "base"
+        }
+        let draft = try XCTUnwrap(harness.model.connectionSetup?.draft)
+        let installed = try harness.model.publicKeyInstallTarget(for: draft)
+        harness.model.updateDraft { draft in
+            draft.verifiedKeyLogin = installed
+            draft.authenticationKind = .password
+            draft.password = "not-checked-yet"
+        }
+
+        _ = await harness.model.saveAndConnect()
+
+        let verifiedTargets = await verifier.targets()
+        XCTAssertEqual(verifiedTargets.map(\.sshAuth.credential), [.password("not-checked-yet")])
+        XCTAssertEqual(verifiedTargets.first?.keyApproval, .mayAsk)
+    }
+
     /// A server whose key the user approves on the device is checked only when the user asks: discovery that
     /// runs by itself finds the key locked and says so, and a refresh the user pulls unlocks it.
     func testAKeyNeedingApprovalIsCheckedOnlyWhenTheUserAsks() async throws {
+        let login = ApprovalGatedLogin()
+        let (harness, server) = try await makeDeviceKeyServer(login: login)
+
+        await harness.model.load()
+        let locked = await waitUntil { harness.model.discoveryNotices(for: server.id).keyLocked }
+        XCTAssertTrue(locked, "discovery that ran by itself didn't stop at the locked key")
+        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.phase, .locked)
+        let promptsBeforeAsking = await login.approvalPrompts
+        XCTAssertEqual(promptsBeforeAsking, 0)
+
+        await harness.model.refreshSessionsAndWait(for: server.id, userInitiated: true)
+
+        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.sessionNames, ["main"])
+        XCTAssertFalse(harness.model.discoveryNotices(for: server.id).keyLocked)
+    }
+
+    /// Cancelling the prompt a refresh brought up leaves the key locked: the refresh doesn't ask again.
+    func testCancellingARefreshsApprovalDoesntAskAgain() async throws {
+        let login = ApprovalGatedLogin(answer: .cancel)
+        let (harness, server) = try await makeDeviceKeyServer(login: login)
+        await harness.model.load()
+        _ = await waitUntil { harness.model.discoveryNotices(for: server.id).keyLocked }
+
+        await harness.model.refreshSessionsAndWait(for: server.id, userInitiated: true)
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Each backend's discovery offers the key once, over what is one login on the server.
+        let prompts = await login.approvalPrompts
+        XCTAssertEqual(prompts, 2)
+        XCTAssertTrue(harness.model.discoveryNotices(for: server.id).keyLocked)
+    }
+
+    /// A refresh the user asks for while one that started by itself is still out replaces it, so the user's
+    /// request is the one that may ask to unlock the key, and the earlier one's late result is dropped.
+    func testARefreshTheUserAsksForReplacesOneThatStartedByItself() async throws {
+        let login = ApprovalGatedLogin(holdsUnaskedRequests: true)
+        let (harness, server) = try await makeDeviceKeyServer(login: login)
+        await harness.model.load()
+        for _ in 0..<100 where await login.heldRequests < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let held = await login.heldRequests
+        XCTAssertEqual(held, 2, "the refresh that started by itself wasn't still out")
+
+        await harness.model.refreshSessionsAndWait(for: server.id, userInitiated: true)
+        await login.release()
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.sessionNames, ["main"])
+        XCTAssertFalse(harness.model.discoveryNotices(for: server.id).keyLocked)
+    }
+
+    /// Only a request the user makes may ask them to approve a key: opening a session, their reconnect and
+    /// Send's uploads may; a reconnect that runs by itself may not.
+    func testOnlyTheUsersOwnRequestsMayAskToApproveTheKey() async throws {
+        let pair = makePasswordBackedServer()
+        let workspace = SavedWorkspace(serverID: pair.server.id, sessionName: "base")
+        let approvals = KeyApprovalRecorder()
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [workspace],
+            identities: [pair.identity],
+            transportFactory: { target, _, _ in
+                approvals.record("session", target.keyApproval)
+                return DeterministicTmuxControlTransport(chunks: [])
+            },
+            attachmentTransferServiceFactory: { target, _, _ in
+                approvals.record("upload", target.keyApproval)
+                return FailingGhosttyAttachmentTransferService()
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        await harness.model.connect(to: workspace.id)
+        harness.model.reconnectActiveSession(workspace.id, source: .transportLoss)
+        harness.model.reconnectActiveSession(workspace.id, source: .manualButton)
+        _ = harness.model.activeTerminalScreenEntries.first?.attachmentTransferServiceFactory()
+
+        XCTAssertEqual(approvals.values, [
+            "session mayAsk",
+            "session mustNotAsk",
+            "session mayAsk",
+            "upload mayAsk",
+        ])
+    }
+
+    private func makeDeviceKeyServer(
+        login: ApprovalGatedLogin
+    ) async throws -> (harness: RemuxRootModelHarness, server: SavedServer) {
         let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
         let identity = SSHIdentity(name: "Mac mini", authenticationKind: .privateKey)
         let server = SavedServer(displayName: "Mac mini", host: "mac-mini.local", username: "test", identityID: identity.id)
-        let login = ApprovalGatedLogin()
         let harness = makeHarness(
             servers: [server],
             identities: [identity],
-            tmuxSessionDiscoverer: { target, _, pool in
-                try await login.logIn(to: target, pool: pool)
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await login.logIn(to: target)
                 return ["main"]
             },
-            herdrSessionDiscoverer: { target, _, pool in
-                try await login.logIn(to: target, pool: pool)
+            herdrSessionDiscoverer: { target, _, _ in
+                try await login.logIn(to: target)
                 return []
             }
         )
@@ -2066,16 +2191,7 @@ final class RemuxRootModelTests: XCTestCase {
             .privateKey(SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key)),
             identityID: identity.id
         )
-
-        await harness.model.load()
-        let locked = await waitUntil { harness.model.discoveryNotices(for: server.id).keyLocked }
-        XCTAssertTrue(locked, "discovery that ran by itself didn't stop at the locked key")
-        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.phase, .locked)
-
-        await harness.model.refreshSessionsAndWait(for: server.id, userInitiated: true)
-
-        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.sessionNames, ["main"])
-        XCTAssertFalse(harness.model.discoveryNotices(for: server.id).keyLocked)
+        return (harness, server)
     }
 
     /// A session whose saved key isn't on this device, as after moving to a new one, opens Edit Server to add a
@@ -5410,17 +5526,55 @@ private enum RootModelSetupTestError: Error {
     case expectedSetup
 }
 
-/// A server's one SSH login as the pool makes it for a key the user approves on the device: it starts only
-/// with the user's allowance for the server, and then serves both backends' discovery.
-private actor ApprovalGatedLogin {
-    private var loggedIn: Set<SavedServer.ID> = []
+/// Each SSH request's approval, in the order they came, named by what made them.
+private final class KeyApprovalRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
 
-    func logIn(to target: SessionTarget, pool: RemuxSSHRootService) throws {
-        guard !loggedIn.contains(target.server.id) else { return }
-        guard pool.loginApprovals.take(serverID: target.server.id) else {
+    var values: [String] {
+        lock.withLock { recorded }
+    }
+
+    func record(_ request: String, _ approval: SSHKeyApproval) {
+        lock.withLock { recorded.append("\(request) \(approval)") }
+    }
+}
+
+/// A server's one SSH login as the pool makes it for a key the user approves on the device: a request that
+/// may ask starts it, and the user approves or cancels; an open login then serves every request, and a
+/// request that can't ask finds no login. `holdsUnaskedRequests` keeps those waiting until `release()`.
+private actor ApprovalGatedLogin {
+    enum Answer { case approve, cancel }
+
+    private let answer: Answer
+    private let holdsUnaskedRequests: Bool
+    private var loggedIn = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private(set) var approvalPrompts = 0
+
+    init(answer: Answer = .approve, holdsUnaskedRequests: Bool = false) {
+        self.answer = answer
+        self.holdsUnaskedRequests = holdsUnaskedRequests
+    }
+
+    func logIn(to target: SessionTarget) async throws {
+        guard !loggedIn else { return }
+        guard target.sshKeyApproval == .mayAsk else {
+            if holdsUnaskedRequests { await withCheckedContinuation { held.append($0) } }
             throw SSHKeyApprovalError.required
         }
-        loggedIn.insert(target.server.id)
+        approvalPrompts += 1
+        switch answer {
+        case .approve: loggedIn = true
+        case .cancel: throw LAError(.userCancel)
+        }
+    }
+
+    var heldRequests: Int { held.count }
+
+    func release() {
+        held.forEach { $0.resume() }
+        held.removeAll()
     }
 }
 

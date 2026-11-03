@@ -267,6 +267,9 @@ struct SessionTarget: Equatable, Sendable {
     let sshAuth: ResolvedSSHAuth
     let terminalSettings: TerminalSettings
     var opening: SessionOpening
+    /// Whether this request's SSH login may ask the user to approve a key on this device: only when the user
+    /// made the request. Each request sets its own.
+    var keyApproval: SSHKeyApproval = .mustNotAsk
 
     var locator: SessionLocator {
         workspace.locator
@@ -583,6 +586,15 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         }
     }
 
+    /// The private key the draft adds the server with: imported, pasted or made on this device.
+    var privateKeyCredential: SSHPrivateKeyCredential {
+        SSHPrivateKeyCredential(
+            privateKeyPEM: privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines),
+            passphrase: privateKeyPassphrase.isEmpty ? nil : privateKeyPassphrase,
+            secureEnclaveKey: secureEnclaveKey
+        )
+    }
+
     /// Whether the server's last check of `backend`, made with `server`'s saved settings, is about what this
     /// draft names: the same account at the same address and the same executable path. The sign-in method
     /// doesn't change what is installed for the account, so it doesn't count.
@@ -759,8 +771,7 @@ enum TmuxConnectionDraftValidator {
             ? nil
             : trimmedTmuxExecutablePath
         let password = draft.password
-        let privateKeyPEM = draft.privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
-        let privateKeyPassphrase = draft.privateKeyPassphrase.isEmpty ? nil : draft.privateKeyPassphrase
+        let privateKey = draft.privateKeyCredential
 
         if displayName.isEmpty {
             validation.displayName = "Name is required."
@@ -794,12 +805,12 @@ enum TmuxConnectionDraftValidator {
             credential = .password(password)
 
         case .privateKey:
-            if privateKeyPEM.isEmpty && draft.secureEnclaveKey == nil {
+            if privateKey.privateKeyPEM.isEmpty && privateKey.secureEnclaveKey == nil {
                 validation.privateKey = "Private key is required."
             } else {
                 do {
-                    let inspection = try SSHPrivateKeyCredential(privateKeyPEM: privateKeyPEM, secureEnclaveKey: draft.secureEnclaveKey).inspect()
-                    if inspection.isEncrypted && privateKeyPassphrase == nil {
+                    let inspection = try privateKey.inspect()
+                    if inspection.isEncrypted && privateKey.passphrase == nil {
                         validation.privateKeyPassphrase = "Passphrase is required for encrypted private keys."
                     }
                 } catch {
@@ -810,13 +821,7 @@ enum TmuxConnectionDraftValidator {
                     }
                 }
             }
-            credential = .privateKey(
-                SSHPrivateKeyCredential(
-                    privateKeyPEM: privateKeyPEM,
-                    passphrase: privateKeyPassphrase,
-                    secureEnclaveKey: draft.secureEnclaveKey
-                )
-            )
+            credential = .privateKey(privateKey)
 
         case .none:
             credential = .none
@@ -925,5 +930,12 @@ extension ResolvedSSHAuth {
     var usesSecureEnclaveKey: Bool {
         if case .privateKey(let key) = credential { return key.secureEnclaveKey != nil }
         return false
+    }
+}
+
+extension SessionTarget {
+    /// What the SSH pool needs of `keyApproval`: nil for a key that needs no approval.
+    var sshKeyApproval: SSHKeyApproval? {
+        sshAuth.usesSecureEnclaveKey ? keyApproval : nil
     }
 }

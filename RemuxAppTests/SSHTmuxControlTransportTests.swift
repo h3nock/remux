@@ -693,24 +693,30 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
-    /// A login whose key the user approves on the device starts only when the user asked for something on the
-    /// server: prewarming and work that runs by itself don't start one, and an allowance covers one login.
-    /// Giving that login up while it waits ends it, which takes its prompt away.
-    func testSSHRootServiceStartsALoginNeedingApprovalOnlyWhenTheUserAsked() async throws {
-        let listener = try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
-            .bind(host: "127.0.0.1", port: 0)
-            .get()
-        let port = try XCTUnwrap(listener.localAddress?.port)
+    /// A login whose key the user approves on the device starts only for a request that may ask them:
+    /// prewarming and a request that may not start none, and giving the login up while it waits ends it,
+    /// which takes its prompt away.
+    func testSSHRootServiceStartsALoginNeedingApprovalOnlyForARequestThatMayAsk() async throws {
+        let listener = try await makeSilentListener()
         let pool = RemuxSSHRootService()
         let key = makeSSHRootKey()
-        let configuration = makeApprovalConfiguration(port: port)
         let trace = RemuxTransportStartupTrace(flowID: nil)
+        let port = try XCTUnwrap(listener.localAddress?.port)
 
-        await pool.prewarmConnection(for: key, configuration: configuration, trace: trace, reason: "test")
+        await pool.prewarmConnection(
+            for: key,
+            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
+            trace: trace,
+            reason: "test"
+        )
         var entry = await pool.snapshot().entry(for: key)
         XCTAssertNil(entry, "prewarming started a login that needs approval")
 
-        let unasked = await pool.preparedRoot(for: key, configuration: configuration, trace: trace)
+        let unasked = await pool.preparedRoot(
+            for: key,
+            configuration: makeApprovalConfiguration(port: port, keyApproval: .mustNotAsk),
+            trace: trace
+        )
         do {
             _ = try await unasked.sshRoot()
             XCTFail("a login nobody asked for started")
@@ -720,11 +726,13 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         entry = await pool.snapshot().entry(for: key)
         XCTAssertNil(entry)
 
-        pool.loginApprovals.allow(serverID: key.serverID)
-        let asked = await pool.preparedRoot(for: key, configuration: configuration, trace: trace)
+        let asked = await pool.preparedRoot(
+            for: key,
+            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
+            trace: trace
+        )
         entry = await pool.snapshot().entry(for: key)
         XCTAssertEqual(entry?.readiness, .connecting)
-        XCTAssertFalse(pool.loginApprovals.take(serverID: key.serverID), "an allowance outlived its login")
 
         await asked.cancelAndCleanup()
         entry = await pool.snapshot().entry(for: key)
@@ -741,7 +749,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let prepared = await pool.preparedRoot(
             for: key,
-            configuration: makeApprovalConfiguration(port: 22),
+            configuration: makeApprovalConfiguration(port: 22, keyApproval: .mustNotAsk),
             trace: RemuxTransportStartupTrace(flowID: nil)
         )
         let entry = await pool.snapshot().entry(for: key)
@@ -751,7 +759,75 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
-    private func makeApprovalConfiguration(port: Int) -> RemuxSSHRootConfiguration {
+    /// A full connection sends a request to a login of its own: one that may ask gets it, as Send's upload
+    /// does, and one that may not is refused rather than prompting.
+    func testSSHRootServiceOverflowLoginNeedingApprovalFollowsTheRequest() async throws {
+        let listener = try await makeSilentListener()
+        let port = try XCTUnwrap(listener.localAddress?.port)
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        await pool.insertEntryForTesting(for: key, activeLeaseCount: RemuxSSHRootService.maxConcurrentLeases)
+        let trace = RemuxTransportStartupTrace(flowID: nil)
+
+        let unasked = await pool.preparedRoot(
+            for: key,
+            configuration: makeApprovalConfiguration(port: port, keyApproval: .mustNotAsk),
+            trace: trace
+        )
+        do {
+            _ = try await unasked.sshRoot()
+            XCTFail("an overflow login nobody asked for started")
+        } catch {
+            XCTAssertEqual(error as? SSHKeyApprovalError, .required)
+        }
+
+        let asked = await pool.preparedRoot(
+            for: key,
+            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
+            trace: trace
+        )
+        XCTAssertFalse(asked.isFinished, "the upload's own login didn't start")
+        await asked.cancelAndCleanup()
+        await pool.closeAllConnectionsForTesting()
+        try await listener.close()
+    }
+
+    /// A caller cancelled while its login waits, as for the user's approval, stops waiting at once, and its
+    /// cleanup ends the login nobody else waits for.
+    func testSSHRootServiceCancelledWaitForALoginReturnsAtOnce() async throws {
+        let listener = try await makeSilentListener()
+        let port = try XCTUnwrap(listener.localAddress?.port)
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let prepared = await pool.preparedRoot(
+            for: key,
+            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
+            trace: RemuxTransportStartupTrace(flowID: nil)
+        )
+        let waiting = Task { try await prepared.sshRoot() }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let cancelledAt = ContinuousClock.now
+        waiting.cancel()
+        let result = await waiting.result
+        XCTAssertLessThan(ContinuousClock.now - cancelledAt, .seconds(1))
+        XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
+
+        await prepared.cancelAndCleanup()
+        let entry = await pool.snapshot().entry(for: key)
+        XCTAssertNil(entry)
+        await pool.closeAllConnectionsForTesting()
+        try await listener.close()
+    }
+
+    /// A server that accepts the TCP connection and never answers, as one whose login waits.
+    private func makeSilentListener() async throws -> Channel {
+        try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .bind(host: "127.0.0.1", port: 0)
+            .get()
+    }
+
+    private func makeApprovalConfiguration(port: Int, keyApproval: SSHKeyApproval) -> RemuxSSHRootConfiguration {
         let server = SavedServer(displayName: "Mac mini", host: "127.0.0.1", port: port, username: "tester")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
@@ -761,7 +837,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             authenticationMethod: { _ in .passwordBased(username: "tester", password: "unused") },
             hostKeyValidator: TrustedHostStore(rootURL: directory).validator(for: server),
             connectTimeout: .seconds(30),
-            loginNeedsApproval: true
+            keyApproval: keyApproval
         )
     }
 

@@ -1802,10 +1802,9 @@ private struct DeviceKeyInfoButton: View {
         .accessibilityIdentifier("connection.private-key.device-key-info")
         .popover(isPresented: $isPresented) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Created inside this \(UIDevice.current.model) and can't be copied or exported.")
-                Text(SecureEnclaveSSHKey.biometryName.map { "Each new connection asks for \($0), or your passcode." }
-                    ?? "Each new connection asks for your passcode.")
-                Text("If you lose or reset this \(UIDevice.current.model), the key is gone, so keep another way to sign in.")
+                Text("The private key is created inside this \(UIDevice.current.model) and can't be copied or exported.")
+                Text(SecureEnclaveSSHKey.biometryName.map { "Each new SSH login asks for \($0), or your passcode." }
+                    ?? "Each new SSH login asks for your passcode.")
             }
             .font(.footnote)
             .fixedSize(horizontal: false, vertical: true)
@@ -3179,7 +3178,7 @@ struct ConnectionSetupView: View {
     }
 
     private var privateKeyInspection: SSHPrivateKeyInspection? {
-        try? SSHPrivateKeyCredential(privateKeyPEM: draft.privateKeyPEM, secureEnclaveKey: draft.secureEnclaveKey).inspect()
+        try? draft.privateKeyCredential.inspect()
     }
 
     private var shouldShowPrivateKeyPassphrase: Bool {

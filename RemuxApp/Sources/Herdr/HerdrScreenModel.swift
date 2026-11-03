@@ -34,7 +34,9 @@ final class HerdrPaneSurface: TerminalPaneInputSink {
 /// owns their renderers.
 @MainActor
 final class HerdrScreenModel {
-    typealias BridgeOpener = @Sendable (HerdrBridgeKind) async throws -> any HerdrBridgeTransport
+    /// Opens a bridge of a kind; the approval says whether its SSH login may ask the user to approve a key on
+    /// this device.
+    typealias BridgeOpener = @Sendable (HerdrBridgeKind, SSHKeyApproval) async throws -> any HerdrBridgeTransport
     typealias RendererFenceFactory = @MainActor (
         HerdrTerminalEngine,
         _ paneID: String,
@@ -181,9 +183,13 @@ final class HerdrScreenModel {
         private var operations: [Operation] = []
         private var operationWaiter: CheckedContinuation<Void, Never>?
         private var operationsFinished = false
+        /// Whether the attempt's login may ask the user to approve the server's key: only for an attempt the
+        /// user asked for.
+        let keyApproval: SSHKeyApproval
 
-        init(id: UInt64) {
+        init(id: UInt64, keyApproval: SSHKeyApproval) {
             self.id = id
+            self.keyApproval = keyApproval
         }
 
         var ended: Bool { closeCause != nil }
@@ -462,7 +468,7 @@ final class HerdrScreenModel {
                 self?.handle(update)
             }
         }
-        restart()
+        restart(keyApproval: target.keyApproval)
     }
 
     /// True when no connection is open or opening, so the root may replace this model without dropping
@@ -701,7 +707,7 @@ final class HerdrScreenModel {
 
     private func leaveBackground() {
         wokeAt = .now
-        if recoveryDue != nil { restart() }
+        if recoveryDue != nil { restart(keyApproval: .mustNotAsk) }
     }
 
     /// Live settings: the renderers take the new appearance in place, and Herdr gets the new colours.
@@ -774,15 +780,16 @@ final class HerdrScreenModel {
     /// Returns false when the model can't open a connection, because its terminal runtime didn't start
     /// or it has stopped; the root then replaces it.
     ///
-    /// A reconnect the user asks for runs now and starts the delays over, as in Herdr's client.
+    /// A reconnect the user asks for runs now and starts the delays over, as in Herdr's client, and may ask
+    /// them to approve the server's key.
     @discardableResult
-    func reconnect() -> Bool {
+    func reconnect(keyApproval: SSHKeyApproval = .mayAsk) -> Bool {
         guard !stopped, runtime != nil else { return false }
         isReconnecting = false
         failuresInARow = 0
         failure = nil
         popup.retryAttach()
-        restart()
+        restart(keyApproval: keyApproval)
         return true
     }
 
@@ -1165,7 +1172,7 @@ final class HerdrScreenModel {
         let openBridge = openBridge
         let engine = engine
         let makeAttachment = makePopupAttachment ?? { terminalID, geometry in
-            HerdrTerminalAttachment(terminalID: terminalID, geometry: geometry, openBridge: { try await openBridge(.terminal) })
+            HerdrTerminalAttachment(terminalID: terminalID, geometry: geometry, openBridge: { try await openBridge(.terminal, .mustNotAsk) })
         }
         return HerdrPopupController(
             theme: currentTerminalSettings.theme,
@@ -1721,11 +1728,11 @@ final class HerdrScreenModel {
     /// The panes keep their terminals, so the last frame stays on screen until the new connection's
     /// first; pane failures say to reconnect, so the failed panes are tried again. A recheck keeps saying
     /// what needs attention until it connects.
-    private func restart() {
+    private func restart(keyApproval: SSHKeyApproval) {
         cancelRecovery()
         if let attempt { giveUp(attempt) }
         attemptCount += 1
-        let attempt = Attempt(id: attemptCount)
+        let attempt = Attempt(id: attemptCount, keyApproval: keyApproval)
         self.attempt = attempt
         readySince = nil
         attempt.task = Task { [weak self] in await self?.run(attempt) }
@@ -1797,7 +1804,7 @@ final class HerdrScreenModel {
             let deadline = ContinuousClock.now + Self.helloDeadline
             let transport: any HerdrBridgeTransport
             do {
-                transport = try await openBridge(.session)
+                transport = try await openBridge(.session, attempt.keyApproval)
             } catch {
                 // A cancelled opening releases what it claimed.
                 if isCurrent(attempt) {
@@ -2111,7 +2118,7 @@ final class HerdrScreenModel {
         recoveryTimer = Task { [weak self] in
             try? await Task.sleep(until: due, clock: .continuous)
             guard !Task.isCancelled else { return }
-            self?.restart()
+            self?.restart(keyApproval: .mustNotAsk)
         }
     }
 
