@@ -1538,14 +1538,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     /// A toolbar key settles the keyboard's draft first: Return confirms it and Escape cancels it,
-    /// either without reaching the terminal; Backspace and Delete edit it; any other key finishes
-    /// it, keeping an armed Ctrl for the key itself. Without a draft the key goes to the terminal.
+    /// either without reaching the terminal; Backspace and Delete do nothing while it is open; any
+    /// other key finishes it, keeping an armed Ctrl for the key itself. Without a draft the key goes
+    /// to the terminal.
     private func performToolbarKey(_ event: GhosttySurfaceKeyEvent) -> Bool {
         let (action, consumesDraft): (GhosttyTerminalCompositionAction, Bool) = switch event.keyCode {
         case .enter: (.finish(preservingModifiers: false), true)
         case .escape: (.cancel, true)
-        case .backspace: (.deleteBackward, true)
-        case .delete: (.deleteForward, true)
+        case .backspace, .delete: (.delete, true)
         default: (.finish(preservingModifiers: true), false)
         }
         switch keyboardResponderHandoff.resolveTerminalComposition(for: action) {
@@ -1556,7 +1556,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         case .canceled:
             // Ctrl was armed for the draft that is gone, not for whatever comes next.
             terminalInputController.clearControl()
-        case .finished, .edited:
+        case .finished, .kept:
             break
         }
         return consumesDraft || sendTerminalKeyEvent(event)

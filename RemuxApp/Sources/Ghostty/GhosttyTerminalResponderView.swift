@@ -50,9 +50,9 @@ enum GhosttyTerminalCompositionAction: Equatable {
     /// finishes the draft instead of applying it to the draft.
     case finish(preservingModifiers: Bool)
     case cancel
-    /// Edits the draft, as the keyboard's own delete does.
-    case deleteBackward
-    case deleteForward
+    /// A delete key, which leaves a draft as it is. The keyboard keeps its own copy of what it
+    /// composes, so an edit it didn't make either undoes its buffer or is undone by it.
+    case delete
 }
 
 enum GhosttyTerminalCompositionOutcome: Equatable {
@@ -61,7 +61,8 @@ enum GhosttyTerminalCompositionOutcome: Equatable {
     case noDraft
     case finished
     case canceled
-    case edited
+    /// The draft stays as typed, and the action does nothing while it is open.
+    case kept
     /// The draft couldn't be committed: its pane no longer takes the input, or the input was
     /// refused. The draft is gone, and the action stops.
     case refused
@@ -377,8 +378,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         composition.select(range)
     }
 
-    /// Settles the composition for an app action: commits or cancels a draft, or edits it as the
-    /// keyboard's delete does. Each brackets its local change with the input delegate's
+    /// Settles the composition for an app action: commits or cancels a draft, or leaves it alone
+    /// for a delete key. A commit or cancel brackets its local change with the input delegate's
     /// notifications, which also end context the keyboard keeps between its own edits; with no
     /// draft, that synchronization is all it does. Keyboard edits never come through here: they
     /// change the document as the keyboard asks.
@@ -412,18 +413,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         case .cancel:
             synchronizeKeyboardContext { endComposition() }
             return .canceled
-        case .deleteBackward:
-            synchronizeKeyboardContext {
-                _ = composition.deleteBackward()
-                presentComposition()
-            }
-            return .edited
-        case .deleteForward:
-            synchronizeKeyboardContext {
-                _ = composition.deleteForward()
-                presentComposition()
-            }
-            return .edited
+        case .delete:
+            return .kept
         }
     }
 

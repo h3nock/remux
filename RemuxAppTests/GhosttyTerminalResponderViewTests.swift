@@ -1077,20 +1077,29 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testToolbarDeletesEditTheDraftLocally() throws {
+    func testToolbarDeletesLeaveTheDraftAndTheKeyboardAlone() throws {
         let sent = Sent()
         let view = composingView(sent)
+        let delegate = RecordingInputDelegate()
+        view.inputDelegate = delegate
 
-        view.setMarkedText("nihao", selectedRange: NSRange(location: 2, length: 0))
-        XCTAssertEqual(view.resolveComposition(for: .deleteForward), .edited)
-        XCTAssertEqual(view.text(in: try XCTUnwrap(view.markedTextRange)), "niao")
-        XCTAssertEqual(view.resolveComposition(for: .deleteBackward), .edited)
-        XCTAssertEqual(view.text(in: try XCTUnwrap(view.markedTextRange)), "nao")
+        view.setMarkedText("ni\u{2006}hao", selectedRange: NSRange(location: 6, length: 0))
+        XCTAssertEqual(view.resolveComposition(for: .delete), .kept)
+        XCTAssertEqual(view.resolveComposition(for: .delete), .kept)
 
+        XCTAssertEqual(view.text(in: try XCTUnwrap(view.markedTextRange)), "ni\u{2006}hao")
         XCTAssertTrue(sent.items.isEmpty)
-        XCTAssertEqual(view.resolveComposition(for: .deleteBackward), .edited)
-        XCTAssertEqual(view.resolveComposition(for: .deleteBackward), .edited)
-        XCTAssertTrue(sent.items.isEmpty)
+        XCTAssertTrue(delegate.calls.isEmpty)
+
+        // The keyboard goes on composing from its own buffer, and commits once.
+        view.setMarkedText("ni\u{2006}hao\u{2006}o", selectedRange: NSRange(location: 8, length: 0))
+        view.insertText("nihaoo")
+        XCTAssertEqual(sent.items, ["text:nihaoo"])
+
+        // With no draft, a delete key is the terminal's, after the keyboard's context is synchronized.
+        view.insertText("간")
+        XCTAssertEqual(view.resolveComposition(for: .delete), .noDraft)
+        XCTAssertEqual(delegate.calls.count, 4)
     }
 
     @MainActor

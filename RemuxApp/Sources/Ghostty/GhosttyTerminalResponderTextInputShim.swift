@@ -123,17 +123,6 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         return delete(target, in: marked)
     }
 
-    /// Deletes forward within the composition. Without one, the terminal deletes.
-    mutating func deleteForward() -> Deletion {
-        guard let marked else { return .terminal }
-        var target = selection
-        if target.length == 0 {
-            guard target.location < NSMaxRange(marked) else { return .none }
-            target = (text as NSString).rangeOfComposedCharacterSequence(at: target.location)
-        }
-        return delete(target, in: marked)
-    }
-
     /// Edits the composition when `range` lies inside it. Anything else is
     /// committed input: the text to send is returned and the document is idle.
     mutating func replace(_ range: NSRange, with replacement: String) -> String? {
