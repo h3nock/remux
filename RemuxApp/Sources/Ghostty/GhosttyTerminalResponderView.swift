@@ -264,7 +264,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         // A composition and the keyboard's context belong to where input went: another pane, a
         // popup, a new connection or input becoming unavailable ends them.
         let inputSurfaceID = isEnabled ? inputSurface()?.id : nil
-        if inputSurfaceID != observedInputSurfaceID {
+        if inputSurfaceID != observedInputSurfaceID || (!isEnabled && composition.marked != nil) {
             GhosttyRuntimeTrace.diagnostics(
                 "responder.inputSurface \(ghosttyDiagnosticShortID(observedInputSurfaceID)) -> \(ghosttyDiagnosticShortID(inputSurfaceID))"
             )
