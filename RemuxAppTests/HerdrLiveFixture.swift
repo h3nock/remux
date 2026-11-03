@@ -167,7 +167,7 @@ final class HerdrLiveFixture: @unchecked Sendable {
                 host: configuration.host,
                 port: configuration.port,
                 authenticationMethod: { _ in
-                    try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential))
+                    try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential), serverName: "herdr")
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),
                 connectTimeout: .seconds(10)

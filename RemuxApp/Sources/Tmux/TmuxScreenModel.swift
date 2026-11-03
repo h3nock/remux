@@ -328,6 +328,9 @@ final class TmuxScreenModel: ObservableObject {
         case .attaching, .syncing, .ready:
             return nil
         case .detached, .closed:
+            // A connection still opening hasn't dropped. The system prompt to approve a key makes the app
+            // inactive and active again while it opens.
+            if session.isConnecting { return nil }
             return currentRuntimeState(for: session.state, connecting: false)
         }
     }

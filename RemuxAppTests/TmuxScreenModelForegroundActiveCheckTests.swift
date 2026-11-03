@@ -196,6 +196,38 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         await model.stop()
     }
 
+    /// A session whose connection is still opening, as while the user approves its key, hasn't disconnected:
+    /// the system prompt makes the app inactive and active again meanwhile.
+    func testForegroundDoesNotReportASessionStillLoggingInAsDisconnected() async throws {
+        let transport = PendingLoginTransport()
+        var updates: [TerminalRuntimeStateUpdate] = []
+        let model = TmuxScreenModel(
+            target: makeTarget(),
+            sessionInstanceID: UUID(),
+            transportFactory: { _ in transport },
+            onRuntimeStateChange: { updates.append($0) },
+            initialClientSize: Self.initialClientSize
+        )
+        defer {
+            Task { @MainActor in
+                await model.stop()
+            }
+        }
+
+        try await waitUntil("the login did not start") {
+            await transport.isLoggingIn()
+        }
+        XCTAssertEqual(model.session?.state, .detached(nil))
+        updates.removeAll()
+
+        model.handleAppLifecyclePhase(.inactive)
+        model.handleAppLifecyclePhase(.active)
+        try await Task.sleep(for: .milliseconds(80))
+
+        XCTAssertFalse(updates.contains { $0.state.disconnectedReason != nil }, "\(updates)")
+        await model.stop()
+    }
+
     func testStaleForegroundProbeDoesNotInvalidateStoppedLink() async throws {
         let runtime = try GhosttyKitRuntime()
         let transport = ForegroundSuspendingTransport(isActiveAfterResume: false)
@@ -281,6 +313,30 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         cols: 47,
         rows: 38
     )
+}
+
+/// A transport whose SSH login doesn't finish until it closes, as one waiting for the user to approve its key.
+private actor PendingLoginTransport: TmuxControlTransport {
+    nonisolated let receivedBytes = AsyncThrowingStream<Data, Error> { _ in }
+
+    private var loggingIn = false
+    private var waiter: CheckedContinuation<Void, Error>?
+
+    func start(initialViewport: TmuxControlViewport?) async throws {
+        loggingIn = true
+        try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+
+    func send(_ data: Data) async throws {}
+
+    func close(disposition: TmuxControlTransportCloseDisposition) async {
+        waiter?.resume(throwing: CancellationError())
+        waiter = nil
+    }
+
+    func isLoggingIn() -> Bool {
+        loggingIn
+    }
 }
 
 private actor ForegroundInactiveTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking {

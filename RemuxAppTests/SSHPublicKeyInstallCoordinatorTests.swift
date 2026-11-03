@@ -126,6 +126,32 @@ final class SSHPublicKeyInstallCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.pendingTrust)
     }
 
+    /// Checking whether a key the user approves on the device is installed would ask them for nothing: it
+    /// goes to the password, and only verifying the installed key asks.
+    func testAKeyNeedingApprovalSkipsTheInstalledCheckAndIsVerifiedOnce() async {
+        var draft = TmuxConnectionDraft()
+        draft.secureEnclaveKey = SecureEnclaveSSHKey(representation: Data([1]), publicKey: Data())
+        var preflights = 0
+        var verifications = 0
+        let coordinator = makeCoordinator(
+            draft: draft,
+            preflight: { _ in
+                preflights += 1
+                return .alreadyInstalled
+            },
+            verify: { _ in verifications += 1 }
+        )
+
+        await coordinator.preflight()
+        XCTAssertEqual(coordinator.phase, .passwordRequired)
+        coordinator.password = "secret"
+        await coordinator.submitPassword()
+
+        XCTAssertEqual(coordinator.phase, .installed)
+        XCTAssertEqual(preflights, 0)
+        XCTAssertEqual(verifications, 1)
+    }
+
     func testPasswordRejectionClearsPasswordWithoutVerification() async {
         var verificationCount = 0
         let coordinator = makeCoordinator(

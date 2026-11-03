@@ -24,8 +24,8 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             )
         }
 
-        if error is LAError || error is SecureEnclaveSSHError {
-            return TerminalDisconnectReason(kind: .keyUnlock, message: error.localizedDescription)
+        if let message = keyUnlockMessage(for: error) {
+            return TerminalDisconnectReason(kind: .keyUnlock, message: message)
         }
 
         if isServerUnreachable(error) {
@@ -72,6 +72,34 @@ enum GhosttyTerminalDisconnectReasonClassifier {
         }
 
         return TerminalDisconnectReason(kind: .unknown, message: message)
+    }
+
+    /// Why a key the user approves on this device didn't log in, in Remux's words: iOS has already said its
+    /// own. Waiting for an action, a cancelled prompt and an unrecognized face all just need unlocking again.
+    static func keyUnlockMessage(for error: any Error) -> String? {
+        switch error {
+        case let error as SecureEnclaveSSHError:
+            return error.localizedDescription
+        case let error as LAError where error.code == .passcodeNotSet:
+            return SecureEnclaveSSHError.passcodeNotSet.localizedDescription
+        case is LAError, is SSHKeyApprovalError:
+            return "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect."
+        default:
+            return nil
+        }
+    }
+
+    /// Whether unlocking the key again could log in: it wasn't offered, the prompt was cancelled or the face
+    /// wasn't recognized, unlike a device without a passcode or a key that no longer works here.
+    static func isKeyLocked(_ error: any Error) -> Bool {
+        switch error {
+        case is SSHKeyApprovalError:
+            return true
+        case let error as LAError:
+            return error.code != .passcodeNotSet
+        default:
+            return false
+        }
     }
 
     private static func isServerUnreachable(_ error: any Error) -> Bool {

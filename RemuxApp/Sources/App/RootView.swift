@@ -213,7 +213,7 @@ private struct RemuxWorkspaceShell: View {
                         }
                     }
                 },
-                onRefresh: model.refreshSessions,
+                onRefresh: { model.refreshSessions(userInitiated: true) },
                 discoveries: model.sessionDiscoveries,
                 herdrPlaces: model.herdrPlaces(of:),
                 onSelectHerdrWorkspace: model.openHerdrWorkspace(_:bootID:in:),
@@ -648,8 +648,8 @@ private struct RemuxWorkspaceShell: View {
                         await model.connectToDiscoveredSession(locator, on: serverID)
                     }
                 },
-                onRefreshServerSessions: { serverID in
-                    await model.refreshSessionsAndWait(for: serverID)
+                onRefreshServerSessions: { serverID, userInitiated in
+                    await model.refreshSessionsAndWait(for: serverID, userInitiated: userInitiated)
                 },
                 onTrustDiscoveryHostKey: model.trustSessionDiscoveryHostKey,
                 onShowActiveSession: { workspaceID in
@@ -981,7 +981,8 @@ private struct ConnectionLibraryView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onConnectAvailableSession: (SavedServer.ID, SessionLocator) -> Void
-    let onRefreshServerSessions: (SavedServer.ID) async -> Void
+    /// `true` when the user asked, rather than the page checking by itself.
+    let onRefreshServerSessions: (SavedServer.ID, Bool) async -> Void
     let onTrustDiscoveryHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
@@ -1433,7 +1434,8 @@ private struct ServerDetailView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onConnectAvailableSession: (SavedServer.ID, SessionLocator) -> Void
-    let onRefreshSessions: (SavedServer.ID) async -> Void
+    /// `true` when the user asked, rather than the page checking by itself.
+    let onRefreshSessions: (SavedServer.ID, Bool) async -> Void
     let onTrustHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
 
@@ -1540,6 +1542,13 @@ private struct ServerDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("library.server.check-failed")
+                } else if notices.keyLocked {
+                    Button {
+                        Task { await onRefreshSessions(server.id, true) }
+                    } label: {
+                        Label("Unlock to check sessions", systemImage: "lock.open")
+                    }
+                    .accessibilityIdentifier("library.server.available.unlock")
                 }
 
                 if availableSessions.count > Self.maximumInlineAvailableSessionCount {
@@ -1561,11 +1570,11 @@ private struct ServerDetailView: View {
         .listStyle(.insetGrouped)
         .libraryHomeGroupedScrollBackground()
         .refreshable {
-            await onRefreshSessions(server.id)
+            await onRefreshSessions(server.id, true)
         }
         .task(id: server.id) {
             guard discovery.hasIdleBackend else { return }
-            await onRefreshSessions(server.id)
+            await onRefreshSessions(server.id, false)
         }
         .navigationTitle(server.displayName, withSubtitle: server.displayAddress)
         .navigationBarTitleDisplayMode(.inline)
@@ -1770,6 +1779,40 @@ struct DisclosureRowLabel: View {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// What a key made on this device means, behind an info button beside it, as iOS puts details beside a
+/// Wi-Fi network: the row itself still makes or shows the key.
+private struct DeviceKeyInfoButton: View {
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("About keys with \(SecureEnclaveSSHKey.approvalMethodName)")
+        .accessibilityIdentifier("connection.private-key.device-key-info")
+        .popover(isPresented: $isPresented) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Created inside this \(UIDevice.current.model) and can't be copied or exported.")
+                Text(SecureEnclaveSSHKey.biometryName.map { "Each new connection asks for \($0), or your passcode." }
+                    ?? "Each new connection asks for your passcode.")
+                Text("If you lose or reset this \(UIDevice.current.model), the key is gone, so keep another way to sign in.")
+            }
+            .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 280, alignment: .leading)
+            .padding()
+            .presentationCompactAdaptation(.popover)
+        }
     }
 }
 
@@ -3119,10 +3162,13 @@ struct ConnectionSetupView: View {
     }
 
     private var importedPrivateKeyTitle: String {
+        if draft.secureEnclaveKey != nil {
+            return "Key with \(SecureEnclaveSSHKey.approvalMethodName)"
+        }
         if !draft.privateKeyFileName.isEmpty {
             return draft.privateKeyFileName
         }
-        return draft.secureEnclaveKey != nil ? "Secure Enclave key" : (privateKeyInspection?.keyType.displayName ?? "Private key")
+        return privateKeyInspection?.keyType.displayName ?? "Private key"
     }
 
     private var importedPrivateKeySubtitle: String {
@@ -3147,7 +3193,6 @@ struct ConnectionSetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             privateKeyActionButton(
                 title: "Import private key",
-                subtitle: "Choose a private key file",
                 systemImage: "square.and.arrow.down",
                 accessibilityIdentifier: "connection.private-key.import"
             ) {
@@ -3158,7 +3203,6 @@ struct ConnectionSetupView: View {
 
             privateKeyActionButton(
                 title: "Paste private key",
-                subtitle: "Paste a private key block",
                 systemImage: "doc.on.clipboard",
                 accessibilityIdentifier: "connection.private-key.paste"
             ) {
@@ -3167,13 +3211,21 @@ struct ConnectionSetupView: View {
 
             privateKeyActionDivider()
 
-            secureEnclaveGenerateButton()
+            if SecureEnclaveSSHKey.isSupported {
+                privateKeyActionButton(
+                    title: "Generate key with \(SecureEnclaveSSHKey.approvalMethodName)",
+                    systemImage: "lock.shield",
+                    accessibilityIdentifier: "connection.private-key.generate-secure-enclave",
+                    showsDeviceKeyInfo: true
+                ) {
+                    generateSecureEnclaveKey()
+                }
 
-            privateKeyActionDivider()
+                privateKeyActionDivider()
+            }
 
             privateKeyActionButton(
                 title: "Generate ED25519 key",
-                subtitle: "Create a key pair on this device",
                 systemImage: "key.horizontal",
                 accessibilityIdentifier: "connection.private-key.generate"
             ) {
@@ -3201,21 +3253,23 @@ struct ConnectionSetupView: View {
     }
 
     private func privateKeySelectedSummary() -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(importedPrivateKeyTitle)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(importedPrivateKeyTitle)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
 
-            if draft.secureEnclaveKey != nil {
-                Text("Protected by Face ID, Touch ID, or passcode. Cannot be exported or transferred to another device.")
+                Text(importedPrivateKeySubtitle)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            Text(importedPrivateKeySubtitle)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            Spacer(minLength: 12)
+
+            if draft.secureEnclaveKey != nil {
+                DeviceKeyInfoButton()
+            }
         }
     }
 
@@ -3323,6 +3377,9 @@ struct ConnectionSetupView: View {
             success: completion.success,
             target: completion.target
         )
+        onChange { draft in
+            draft.verifiedKeyLogin = completion.target
+        }
     }
 
     private func privateKeyChangeMenu() -> some View {
@@ -3345,10 +3402,12 @@ struct ConnectionSetupView: View {
                 Label("Generate New ED25519 Key", systemImage: "key.horizontal")
             }
 
-            Button {
-                generateSecureEnclaveKey()
-            } label: {
-                Label("Generate Secure Enclave Key", systemImage: "lock.shield")
+            if SecureEnclaveSSHKey.isSupported {
+                Button {
+                    generateSecureEnclaveKey()
+                } label: {
+                    Label("Generate Key with \(SecureEnclaveSSHKey.approvalMethodName)", systemImage: "lock.shield")
+                }
             }
 
             Button(role: .destructive) {
@@ -3413,39 +3472,39 @@ struct ConnectionSetupView: View {
         }
     }
 
+    /// `showsDeviceKeyInfo` adds the info button about keys made on this device, apart from the row's own tap.
     private func privateKeyActionButton(
         title: String,
-        subtitle: String,
         systemImage: String,
         accessibilityIdentifier: String,
         isDestructive: Bool = false,
+        showsDeviceKeyInfo: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(isDestructive ? Color.red : Color.secondary)
-                    .frame(width: 22)
+        HStack(spacing: 0) {
+            Button(action: action) {
+                HStack(spacing: 12) {
+                    Image(systemName: systemImage)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(isDestructive ? Color.red : Color.secondary)
+                        .frame(width: 22)
 
-                VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .foregroundStyle(isDestructive ? Color.red : Color.primary)
                         .lineLimit(1)
 
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    Spacer(minLength: 12)
                 }
-
-                Spacer(minLength: 12)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(accessibilityIdentifier)
+
+            if showsDeviceKeyInfo {
+                DeviceKeyInfoButton()
+            }
         }
-        .padding(.vertical, 6)
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
     private func privateKeyActionDivider() -> some View {
@@ -3545,15 +3604,6 @@ struct ConnectionSetupView: View {
         }
     }
 
-    private func secureEnclaveGenerateButton() -> some View {
-        privateKeyActionButton(
-            title: "Generate Secure Enclave key",
-            subtitle: "Device-only P-256 key, unlocked with biometrics or passcode",
-            systemImage: "lock.shield",
-            accessibilityIdentifier: "connection.private-key.generate-secure-enclave"
-        ) { generateSecureEnclaveKey() }
-    }
-
     private func generateSecureEnclaveKey() {
         do {
             let key = try SecureEnclaveSSHKey.generate()
@@ -3563,7 +3613,7 @@ struct ConnectionSetupView: View {
                 draft.authenticationKind = .privateKey
                 draft.privateKeyPEM = ""
                 draft.privateKeyPassphrase = ""
-                draft.privateKeyFileName = "Secure Enclave P-256 key"
+                draft.privateKeyFileName = ""
                 draft.secureEnclaveKey = key
             }
             Haptic.tap()

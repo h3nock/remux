@@ -7,7 +7,7 @@ import NIOConcurrencyHelpers
 struct SSHTmuxControlConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable (EventLoopFuture<Void>) throws -> SSHAuthenticationMethod
+    let authenticationMethod: @Sendable (RemuxSSHLogin) throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount?
@@ -20,15 +20,17 @@ struct SSHTmuxControlConfiguration: Sendable {
     let initialViewport: TmuxControlViewport
     let traceFlowID: String?
     let sshRootKey: RemuxSSHRootKey?
+    let loginNeedsApproval: Bool
 
     init(
         host: String,
         port: Int = 22,
-        authenticationMethod: @escaping @Sendable (EventLoopFuture<Void>) throws -> SSHAuthenticationMethod,
+        authenticationMethod: @escaping @Sendable (RemuxSSHLogin) throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount = .seconds(30),
         authenticationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
+        loginNeedsApproval: Bool = false,
         controlNoResponseTimeout: TimeAmount = .seconds(15),
         sftpOperationTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",
@@ -53,6 +55,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.initialViewport = initialViewport
         self.traceFlowID = traceFlowID
         self.sshRootKey = sshRootKey
+        self.loginNeedsApproval = loginNeedsApproval
     }
 
     var sshRootConfiguration: RemuxSSHRootConfiguration {
@@ -63,7 +66,8 @@ struct SSHTmuxControlConfiguration: Sendable {
             hostKeyValidator: hostKeyValidator,
             connectTimeout: connectTimeout,
             authenticationTimeout: authenticationTimeout,
-            onTailscaleSSHCheck: onTailscaleSSHCheck
+            onTailscaleSSHCheck: onTailscaleSSHCheck,
+            loginNeedsApproval: loginNeedsApproval
         )
     }
 }

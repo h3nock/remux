@@ -2011,6 +2011,95 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(installTarget.publicKeyLine, try key.inspect().publicKeyLine)
     }
 
+    /// Adding the server doesn't ask for the key again when installing it has just logged in with it to the same
+    /// address and user.
+    func testAddingAServerAfterInstallingItsKeyDoesntCheckTheLoginAgain() async throws {
+        let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
+        let harness = makeHarness(
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Mac mini"
+            draft.host = "mac-mini.local"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = key
+            draft.sessionName = "base"
+        }
+        let draft = try XCTUnwrap(harness.model.connectionSetup?.draft)
+        let installed = try harness.model.publicKeyInstallTarget(for: draft)
+        harness.model.updateDraft { $0.verifiedKeyLogin = installed }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertNotNil(savedServerID)
+        let verifiedTargets = await verifier.targets()
+        XCTAssertTrue(verifiedTargets.isEmpty, "the login was checked again")
+    }
+
+    /// A server whose key the user approves on the device is checked only when the user asks: discovery that
+    /// runs by itself finds the key locked and says so, and a refresh the user pulls unlocks it.
+    func testAKeyNeedingApprovalIsCheckedOnlyWhenTheUserAsks() async throws {
+        let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
+        let identity = SSHIdentity(name: "Mac mini", authenticationKind: .privateKey)
+        let server = SavedServer(displayName: "Mac mini", host: "mac-mini.local", username: "test", identityID: identity.id)
+        let login = ApprovalGatedLogin()
+        let harness = makeHarness(
+            servers: [server],
+            identities: [identity],
+            tmuxSessionDiscoverer: { target, _, pool in
+                try await login.logIn(to: target, pool: pool)
+                return ["main"]
+            },
+            herdrSessionDiscoverer: { target, _, pool in
+                try await login.logIn(to: target, pool: pool)
+                return []
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .privateKey(SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key)),
+            identityID: identity.id
+        )
+
+        await harness.model.load()
+        let locked = await waitUntil { harness.model.discoveryNotices(for: server.id).keyLocked }
+        XCTAssertTrue(locked, "discovery that ran by itself didn't stop at the locked key")
+        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.phase, .locked)
+
+        await harness.model.refreshSessionsAndWait(for: server.id, userInitiated: true)
+
+        XCTAssertEqual(harness.model.sessionDiscovery(for: server.id).tmux.sessionNames, ["main"])
+        XCTAssertFalse(harness.model.discoveryNotices(for: server.id).keyLocked)
+    }
+
+    /// A session whose saved key isn't on this device, as after moving to a new one, opens Edit Server to add a
+    /// key instead of failing the app.
+    func testOpeningASessionWhoseKeyIsMissingOpensEditServer() async throws {
+        let identity = SSHIdentity(name: "Mac mini", authenticationKind: .privateKey)
+        let server = SavedServer(displayName: "Mac mini", host: "mac-mini.local", username: "test", identityID: identity.id)
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let harness = makeHarness(servers: [server], workspaces: [workspace], identities: [identity])
+
+        await harness.model.load()
+        await harness.model.connect(to: workspace.id)
+
+        XCTAssertEqual(harness.model.state, .library)
+        guard case .editServer(let serverID, let reconnectWorkspaceID)? = harness.model.connectionSetup?.mode else {
+            return XCTFail("expected Edit Server, got \(String(describing: harness.model.connectionSetup?.mode))")
+        }
+        XCTAssertEqual(serverID, server.id)
+        XCTAssertEqual(reconnectWorkspaceID, workspace.id)
+        XCTAssertEqual(harness.model.connectionSetup?.draft.authenticationKind, .privateKey)
+        XCTAssertNil(harness.model.connectionSetup?.draft.secureEnclaveKey)
+        XCTAssertEqual(harness.model.connectionSetup?.draft.privateKeyPEM, "")
+    }
+
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {
         let server = SavedServer(
             displayName: "Build Host",
@@ -5319,6 +5408,20 @@ private struct RemuxRootModelHarness {
 
 private enum RootModelSetupTestError: Error {
     case expectedSetup
+}
+
+/// A server's one SSH login as the pool makes it for a key the user approves on the device: it starts only
+/// with the user's allowance for the server, and then serves both backends' discovery.
+private actor ApprovalGatedLogin {
+    private var loggedIn: Set<SavedServer.ID> = []
+
+    func logIn(to target: SessionTarget, pool: RemuxSSHRootService) throws {
+        guard !loggedIn.contains(target.server.id) else { return }
+        guard pool.loginApprovals.take(serverID: target.server.id) else {
+            throw SSHKeyApprovalError.required
+        }
+        loggedIn.insert(target.server.id)
+    }
 }
 
 private actor RecordingSSHAccessVerifier {

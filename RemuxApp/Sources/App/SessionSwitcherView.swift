@@ -47,6 +47,8 @@ struct SessionSwitcherProjection: Equatable {
     let recentSessions: [RecentSessionSwitcherItem]
     /// Servers none of whose sessions could be listed: a host key to review, or a failed check.
     let uncheckedServerIDs: Set<SavedServer.ID>
+    /// Servers whose sessions are listed once the user unlocks the server's key, as Refresh does.
+    let lockedServerIDs: Set<SavedServer.ID>
 
     var inlineAvailableSessions: [AvailableSessionSwitcherItem] {
         Array(availableSessions.prefix(Self.maximumInlineAvailableSessionCount))
@@ -145,6 +147,9 @@ struct SessionSwitcherProjection: Equatable {
 
         self.uncheckedServerIDs = Set(snapshot.servers.compactMap { server in
             (discoveries[server.id] ?? .idle).notices.isServerUnchecked ? server.id : nil
+        })
+        self.lockedServerIDs = Set(snapshot.servers.compactMap { server in
+            (discoveries[server.id] ?? .idle).notices.keyLocked ? server.id : nil
         })
     }
 
@@ -685,6 +690,12 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         }
     }
 
+    private var lockedServerNames: [String] {
+        servers.compactMap { server in
+            projection.lockedServerIDs.contains(server.id) ? server.displayName : nil
+        }
+    }
+
     private var hasUndiscoveredServer: Bool {
         servers.contains { (discoveries[$0.id] ?? .idle).hasIdleBackend }
     }
@@ -700,6 +711,13 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             discoveryStatusRow(
                 discoveryFailureMessage,
                 systemImage: "exclamationmark.triangle"
+            )
+        } else if !lockedServerNames.isEmpty {
+            discoveryStatusRow(
+                lockedServerNames.count == 1
+                    ? "Refresh to unlock sessions on \(lockedServerNames[0])"
+                    : "Refresh to unlock sessions on \(lockedServerNames.count) servers",
+                systemImage: "lock"
             )
         } else if projection.availableSessions.isEmpty,
                   hasUndiscoveredServer {

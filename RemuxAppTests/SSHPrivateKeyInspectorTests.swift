@@ -36,14 +36,14 @@ final class SSHPrivateKeyInspectorTests: XCTestCase {
                        .privateKey(SSHPrivateKeyCredential(privateKeyPEM: "legacy", passphrase: "passphrase")))
     }
 
-    func testEnclaveAuthRequiresUserPresenceAndUsesDistinctPoolIdentity() throws {
+    func testEnclaveAuthNeedsApprovalAndUsesDistinctPoolIdentity() throws {
         let (key, _) = enclaveFixture()
         let auth = try ResolvedSSHAuth.privateKey(username: "test", credential:
             SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key),
             identityID: UUID(), displayLabel: "test")
-        XCTAssertTrue(auth.requiresInteractiveAuthentication)
+        XCTAssertTrue(auth.usesSecureEnclaveKey)
         XCTAssertTrue(auth.authFingerprint.hasPrefix("secure-enclave:"))
-        XCTAssertFalse(ResolvedSSHAuth.password(username: "test", password: "fixture", identityID: UUID(), displayLabel: "test").requiresInteractiveAuthentication)
+        XCTAssertFalse(ResolvedSSHAuth.password(username: "test", password: "fixture", identityID: UUID(), displayLabel: "test").usesSecureEnclaveKey)
     }
 
     func testEnclaveDraftSurvivesValidationAndEditingWithoutPEM() throws {

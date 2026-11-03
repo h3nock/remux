@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import CryptoKit
+import LocalAuthentication
 
 struct SSHPrivateKeyCredential: Equatable, Codable, Sendable {
     var privateKeyPEM: String
@@ -148,8 +149,11 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
             kSecValueData: data,
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlocked,
         ]
+        // A Secure Enclave key works only on the device that made it, so its reference stays here too. It
+        // isn't secret, and iOS deletes passcode-bound items when the passcode is turned off, so it doesn't
+        // need one.
         if case .privateKey(let key) = credential, key.secureEnclaveKey != nil {
-            attributes[kSecAttrAccessible] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+            attributes[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         }
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
@@ -197,51 +201,62 @@ struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
     let representation: Data
     let publicKey: Data
 
+    /// Whether this device can make such a key: one with a Secure Enclave.
+    static let isSupported = SecureEnclave.isAvailable
+
+    /// How this device approves the key, as the user knows it.
+    static var approvalMethodName: String {
+        biometryName ?? "your passcode"
+    }
+
+    /// The device's Face ID, Touch ID or Optic ID; without one, the passcode approves the key. Read once: the
+    /// kind of sensor doesn't change while the app runs.
+    static let biometryName: String? = {
+        let context = LAContext()
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+        switch context.biometryType {
+        case .faceID: return "Face ID"
+        case .touchID: return "Touch ID"
+        case .opticID: return "Optic ID"
+        default: return nil
+        }
+    }()
+
     static func generate() throws -> Self {
-        guard SecureEnclave.isAvailable else {
+        guard isSupported else {
             throw SecureEnclaveSSHError.unavailable
         }
-        var error: Unmanaged<CFError>?
+        guard LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
+            throw SecureEnclaveSSHError.passcodeNotSet
+        }
         guard let access = SecAccessControlCreateWithFlags(
             nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
-            [.privateKeyUsage, .userPresence], &error
-        ) else {
-            if let error { throw error.takeRetainedValue() as Error }
+            [.privateKeyUsage, .userPresence], nil
+        ), let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else {
             throw SecureEnclaveSSHError.unavailable
         }
-        let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
         return Self(representation: key.dataRepresentation, publicKey: key.publicKey.x963Representation)
     }
 
     func inspect() throws -> SSHPrivateKeyInspection {
-        guard !representation.isEmpty else { throw SecureEnclaveSSHError.unavailable }
+        guard !representation.isEmpty else { throw SecureEnclaveSSHError.keyUnusable }
         _ = try P256.Signing.PublicKey(x963Representation: publicKey)
-        var blob = Data()
-        for field in [Data("ecdsa-sha2-nistp256".utf8), Data("nistp256".utf8), publicKey] {
-            var length = UInt32(field.count).bigEndian
-            withUnsafeBytes(of: &length) { blob.append(contentsOf: $0) }
-            blob.append(field)
-        }
-        let fingerprint = Data(SHA256.hash(data: blob)).base64EncodedString()
-            .replacingOccurrences(of: "=", with: "")
-        return SSHPrivateKeyInspection(
-            keyType: .ecdsaP256, publicFingerprint: "SHA256:\(fingerprint)",
-            publicKeyLine: "ecdsa-sha2-nistp256 \(blob.base64EncodedString())",
-            normalizedPEM: "", isEncrypted: false
-        )
+        return SSHPrivateKeyInspector.inspectECDSAP256PublicKey(x963: publicKey)
     }
 }
 
 enum SecureEnclaveSSHError: LocalizedError {
+    /// The device has no Secure Enclave, or couldn't make the key.
     case unavailable
-    case appNotActive
-    case publicKeyMismatch
+    case passcodeNotSet
+    /// The saved key is no longer usable here: the passcode was turned off, or the key came from another device.
+    case keyUnusable
 
     var errorDescription: String? {
         switch self {
-        case .unavailable: "Secure Enclave keys require a supported physical device with a passcode."
-        case .appNotActive: "Open Remux to unlock your Secure Enclave SSH key."
-        case .publicKeyMismatch: "The Secure Enclave key does not match its saved public key."
+        case .unavailable: "This device can't create this key."
+        case .passcodeNotSet: "Set a passcode on this device to use this key."
+        case .keyUnusable: "This key no longer works on this device. Add a new key in Edit Server."
         }
     }
 }

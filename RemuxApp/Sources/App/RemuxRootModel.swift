@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 import SwiftUI
 
 enum SSHPublicKeyInstallDraftError: Error, Equatable, LocalizedError {
@@ -192,6 +191,8 @@ struct SessionDiscoveryState: Equatable {
         case loading
         case loaded
         case failed
+        /// Logging in needs the user to approve the server's key on this device, and nobody asked to check.
+        case locked
     }
 
     static let idle = SessionDiscoveryState(
@@ -251,6 +252,16 @@ struct SessionDiscoveryState: Equatable {
             lastSuccessfulSessions: lastSuccessfulSessions,
             hostKeyChallenge: hostKeyChallenge,
             problem: problem,
+            executablePath: nil
+        )
+    }
+
+    func lockingRefresh() -> Self {
+        Self(
+            phase: .locked,
+            lastSuccessfulSessions: lastSuccessfulSessions,
+            hostKeyChallenge: nil,
+            problem: nil,
             executablePath: nil
         )
     }
@@ -343,6 +354,9 @@ struct ServerSessionDiscovery: Equatable {
         if let hostKeyChallenge {
             return ServerDiscoveryNotices(hostKey: hostKeyChallenge, checkFailed: false, backendProblems: [:])
         }
+        if tmux.phase == .locked || herdr.phase == .locked {
+            return ServerDiscoveryNotices(hostKey: nil, checkFailed: false, backendProblems: [:], keyLocked: true)
+        }
         let checkFailed = tmux.phase == .failed && herdr.phase == .failed
             && tmux.problem == nil && herdr.problem == nil
         var backendProblems: [SessionBackend: BackendProblem] = [:]
@@ -370,6 +384,8 @@ struct ServerDiscoveryNotices: Equatable {
     /// signing in failed, or the connection dropped.
     let checkFailed: Bool
     let backendProblems: [SessionBackend: BackendProblem]
+    /// Listing the server's sessions needs the user to unlock its key, and only their own request does that.
+    var keyLocked = false
 
     /// Nothing that can run was found for either backend, on Automatic or at the path set.
     var isNeitherBackendInstalled: Bool {
@@ -727,6 +743,17 @@ final class RemuxRootModel: ObservableObject {
         let credential: SSHCredential?
         do {
             (identity, credential) = try await loadDraftIdentityCredential(for: server)
+        } catch SSHAuthResolverError.missingCredential {
+            // The saved key isn't on this device, as a key made on another one isn't: the form opens without
+            // it, to add one.
+            guard let savedIdentity = library.identity(id: server.identityID) else {
+                guard activeSetupAction == nil, currentSetupID == setupID else { return }
+                finishSetupSession(setupID)
+                transitionToFailed(SSHAuthResolverError.missingIdentity(server.identityID))
+                return
+            }
+            identity = savedIdentity
+            credential = nil
         } catch {
             guard activeSetupAction == nil, currentSetupID == setupID else { return }
             finishSetupSession(setupID)
@@ -1012,14 +1039,20 @@ final class RemuxRootModel: ObservableObject {
                     identityCredential: identityCredential
                 )
                 // Only SSH is checked: a server is valid without tmux, for
-                // example one that runs only Herdr.
-                try await dependencies.verifySSHAccess(
-                    for: target(
-                        server: server,
-                        workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
-                        sshAuth: sshAuth
+                // example one that runs only Herdr. Installing the key has
+                // just checked it.
+                let verifiedByInstall = setup.draft.verifiedKeyLogin != nil
+                    && (try? publicKeyInstallTarget(for: setup.draft)) == setup.draft.verifiedKeyLogin
+                if !verifiedByInstall {
+                    dependencies.allowKeyApproval(forServerID: server.id)
+                    try await dependencies.verifySSHAccess(
+                        for: target(
+                            server: server,
+                            workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
+                            sshAuth: sshAuth
+                        )
                     )
-                )
+                }
                 guard isCurrentSetupAction(action) else { return nil }
                 return await persistVerifiedNewServer(
                     server,
@@ -1463,6 +1496,7 @@ final class RemuxRootModel: ObservableObject {
             event: "model.connect.begin",
             fields: ["workspaceID": workspaceID.uuidString]
         )
+        dependencies.allowKeyApproval(forServerID: server.id)
         switch workspace.backend {
         case .tmux:
             cancelSessionRefreshForInteractiveConnection(serverID: server.id)
@@ -1475,6 +1509,11 @@ final class RemuxRootModel: ObservableObject {
         let sshAuth: ResolvedSSHAuth
         do {
             sshAuth = try await resolveSSHAuth(for: server)
+        } catch SSHAuthResolverError.missingCredential {
+            // Without its saved key the server needs another one, which Edit Server takes.
+            let savedWorkspaceID = library.workspace(id: workspaceID) == nil ? nil : workspaceID
+            await beginEditServer(serverID: server.id, reconnectWorkspaceID: savedWorkspaceID)
+            return
         } catch {
             GhosttyRuntimeTrace.flowEnd(
                 flow,
@@ -1533,16 +1572,20 @@ final class RemuxRootModel: ObservableObject {
         return sessionDiscovery(for: serverID).notices
     }
 
-    func refreshSessions() {
+    /// `userInitiated`: the user asked, so a server whose key they approve on this device may ask them to.
+    func refreshSessions(userInitiated: Bool = false) {
         for server in library.servers {
-            refreshSessions(for: server.id)
+            refreshSessions(for: server.id, userInitiated: userInitiated)
         }
     }
 
     /// Coalesces launch and explicit refresh requests for one server. A
     /// completed result must still match the server profile it started with;
     /// editing or deleting that server makes the result stale.
-    func refreshSessions(for serverID: SavedServer.ID) {
+    func refreshSessions(for serverID: SavedServer.ID, userInitiated: Bool = false) {
+        if userInitiated {
+            dependencies.allowKeyApproval(forServerID: serverID)
+        }
         guard sessionRefreshes[serverID] == nil,
               let server = library.server(id: serverID) else {
             return
@@ -1561,10 +1604,15 @@ final class RemuxRootModel: ObservableObject {
         sessionRefreshes[serverID] = SessionRefresh(id: refreshID, task: task)
     }
 
-    func refreshSessionsAndWait(for serverID: SavedServer.ID) async {
-        refreshSessions(for: serverID)
+    func refreshSessionsAndWait(for serverID: SavedServer.ID, userInitiated: Bool = false) async {
+        refreshSessions(for: serverID, userInitiated: userInitiated)
         guard let refresh = sessionRefreshes[serverID] else { return }
         await refresh.task.value
+        // The request may have joined a refresh that started by itself and found the key locked.
+        if userInitiated, sessionDiscovery(for: serverID).notices.keyLocked {
+            refreshSessions(for: serverID, userInitiated: true)
+            await sessionRefreshes[serverID]?.task.value
+        }
     }
 
     func trustSessionDiscoveryHostKey(_ challenge: SSHHostKeyTrustChallenge) {
@@ -1575,7 +1623,7 @@ final class RemuxRootModel: ObservableObject {
 
         do {
             try dependencies.trustedHostStore.trustHostKey(challenge)
-            refreshSessions(for: challenge.serverID)
+            refreshSessions(for: challenge.serverID, userInitiated: true)
         } catch {
             sessionDiscoveries[challenge.serverID] = sessionDiscovery(
                 for: challenge.serverID
@@ -1624,6 +1672,9 @@ final class RemuxRootModel: ObservableObject {
         guard let currentSession = RemuxActiveSessionCollection.session(id, in: activeSessions) else {
             state = .library
             return
+        }
+        if !source.isAutomatic {
+            dependencies.allowKeyApproval(forServerID: currentSession.target.server.id)
         }
 
         GhosttyRuntimeTrace.flowBegin(
@@ -2142,7 +2193,6 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private static func newServerVerificationMessage(for error: any Error) -> String {
-        if error is LAError || error is SecureEnclaveSSHError { return error.localizedDescription }
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
         }
@@ -2434,6 +2484,8 @@ final class RemuxRootModel: ObservableObject {
             return state.cancellingRefresh()
         case .failure(TrustedHostStoreError.hostKeyTrustRequired(let challenge)):
             return state.failingRefresh(hostKeyChallenge: challenge)
+        case .failure(let error) where GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(error):
+            return state.lockingRefresh()
         case .failure(let error):
             return state.failingRefresh(
                 problem: backend == nil ? nil : BackendProblem(discoveryError: error, path: configuredPath)

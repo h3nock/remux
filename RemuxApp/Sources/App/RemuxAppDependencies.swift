@@ -223,8 +223,13 @@ struct RemuxAppDependencies: Sendable {
     }
 
     func prewarmSSHConnection(for target: SessionTarget) async {
-        guard !target.sshAuth.requiresInteractiveAuthentication else { return }
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
+    }
+
+    /// The user asked for something on the server, so its next SSH login may ask them to approve the key.
+    /// Work that runs by itself only reuses an open connection.
+    func allowKeyApproval(forServerID serverID: SavedServer.ID) {
+        sshRootService.loginApprovals.allow(serverID: serverID)
     }
 
     func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
@@ -277,7 +282,7 @@ struct RemuxAppDependencies: Sendable {
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async {
-        guard !target.sshAuth.requiresInteractiveAuthentication else {
+        guard target.sshAuth.credential != .none else {
             return
         }
 
@@ -311,17 +316,19 @@ struct RemuxAppDependencies: Sendable {
         return SSHTmuxControlConfiguration(
             host: target.server.host,
             port: target.server.port,
-            authenticationMethod: { connectionClosed in
+            authenticationMethod: { login in
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
                     credential: target.sshAuth.credential,
-                    connectionClosed: connectionClosed
+                    serverName: target.server.displayName,
+                    login: login
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
-            authenticationTimeout: target.sshAuth.usesSecureEnclaveKey ? .seconds(120) : tailscaleSSHCheck?.authenticationTimeout,
+            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
+            loginNeedsApproval: target.sshAuth.usesSecureEnclaveKey,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
             sessionName: target.workspace.sessionName,
@@ -520,17 +527,19 @@ struct RemuxAppDependencies: Sendable {
         return RemuxSSHRootConfiguration(
             host: target.server.host,
             port: target.server.port,
-            authenticationMethod: { connectionClosed in
+            authenticationMethod: { login in
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
                     credential: target.sshAuth.credential,
-                    connectionClosed: connectionClosed
+                    serverName: target.server.displayName,
+                    login: login
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: connectTimeout,
-            authenticationTimeout: target.sshAuth.usesSecureEnclaveKey ? .seconds(120) : tailscaleSSHCheck?.authenticationTimeout,
-            onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent
+            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
+            loginNeedsApproval: target.sshAuth.usesSecureEnclaveKey
         )
     }
 

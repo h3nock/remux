@@ -355,7 +355,8 @@ final class RemuxSSHExecSessionTests: XCTestCase {
                 authenticationMethod: { _ in
                     try SSHAuthenticationMethodFactory.make(
                         username: "remux",
-                        credential: .privateKey(privateKey)
+                        credential: .privateKey(privateKey),
+                        serverName: "remux"
                     )
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),
@@ -710,7 +711,8 @@ extension XCTestCase {
                 authenticationMethod: { _ in
                     try SSHAuthenticationMethodFactory.make(
                         username: "remux",
-                        credential: .privateKey(privateKey)
+                        credential: .privateKey(privateKey),
+                        serverName: "remux"
                     )
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),

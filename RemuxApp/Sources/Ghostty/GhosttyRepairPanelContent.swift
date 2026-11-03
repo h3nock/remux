@@ -71,15 +71,19 @@ struct GhosttyRepairPanelContent: Equatable {
                 isPrimary: true
             )]
         case .keyUnlock:
+            // A key that no longer works here is replaced in Edit Server; every other case unlocks again.
             title = "Key Locked"
             message = reason?.message ?? ""
-            actions = [Action(
-                kind: .retry,
-                title: "Unlock Key",
-                systemImage: "lock.open",
-                accessibilityIdentifier: "terminal.status.keyUnlock.retry",
-                isPrimary: true
-            )]
+            actions = [
+                Action(
+                    kind: .retry,
+                    title: "Unlock Key",
+                    systemImage: "lock.open",
+                    accessibilityIdentifier: "terminal.status.keyUnlock.retry",
+                    isPrimary: true
+                ),
+                Self.editServer("keyUnlock"),
+            ]
         case .verificationExpired:
             title = "Verification Expired"
             message = "Tailscale verification wasn't completed in time."

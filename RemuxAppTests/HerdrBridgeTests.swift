@@ -181,7 +181,7 @@ final class HerdrBridgeTests: XCTestCase {
         let configuration = RemuxSSHRootConfiguration(
             host: "127.0.0.1",
             port: server.port,
-            authenticationMethod: { _ in try SSHAuthenticationMethodFactory.make(username: "remux", credential: .password("pool")) },
+            authenticationMethod: { _ in try SSHAuthenticationMethodFactory.make(username: "remux", credential: .password("pool"), serverName: "pool") },
             hostKeyValidator: trustedHostStore.validator(for: saved),
             connectTimeout: .seconds(10)
         )

@@ -537,6 +537,9 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var authenticationKind: SSHAuthenticationKind = .password
     var password: String = ""
     var secureEnclaveKey: SecureEnclaveSSHKey?
+    /// The key's login that installing it verified, which adding the server needn't ask the user for again
+    /// while the address, user and key are the same.
+    var verifiedKeyLogin: SSHPublicKeyInstallTarget?
     var privateKeyPEM: String = ""
     var privateKeyFileName: String = ""
     var privateKeyPassphrase: String = ""
@@ -922,13 +925,5 @@ extension ResolvedSSHAuth {
     var usesSecureEnclaveKey: Bool {
         if case .privateKey(let key) = credential { return key.secureEnclaveKey != nil }
         return false
-    }
-
-    var requiresInteractiveAuthentication: Bool {
-        switch credential {
-        case .none: true
-        case .password: false
-        case .privateKey(let key): key.secureEnclaveKey != nil
-        }
     }
 }

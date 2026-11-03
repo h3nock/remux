@@ -157,6 +157,43 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         XCTAssertNoThrow(try channel.finish())
     }
 
+    /// The login's timeout stops while the user approves the key on the device, so a slow approval isn't an
+    /// unreachable server; the server then answers within the timeout, counted again from the approval.
+    func testApprovingTheKeyStopsTheLoginsTimeoutUntilItEnds() {
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(eventLoop: eventLoop, timeout: .seconds(10))
+        var result: Result<Void, Error>?
+        handler.authenticated.whenComplete { result = $0 }
+
+        eventLoop.advanceTime(by: .seconds(5))
+        handler.approvalStarted()
+        eventLoop.advanceTime(by: .seconds(120))
+        XCTAssertNil(result, "the login timed out while the user approved the key")
+
+        handler.approvalEnded()
+        eventLoop.advanceTime(by: .seconds(9))
+        XCTAssertNil(result)
+        eventLoop.advanceTime(by: .seconds(1))
+        guard case .failure(let error)? = result, case .connectTimeout? = error as? ChannelError else {
+            return XCTFail("expected the login to time out after the approval, got \(String(describing: result))")
+        }
+    }
+
+    /// A connection that closes while the device waits for approval, as when the server's grace period ends,
+    /// says so rather than reporting a bare disconnect.
+    func testAConnectionClosedDuringApprovalSaysSo() {
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(eventLoop: eventLoop, timeout: .seconds(10))
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+
+        handler.approvalStarted()
+        channel.pipeline.fireChannelInactive()
+
+        XCTAssertThrowsError(try handler.authenticated.wait()) { error in
+            XCTAssertEqual(error as? SSHKeyApprovalError, .interrupted)
+        }
+    }
+
     /// A failed key exchange mid-session reaches this handler long after authentication.
     func testErrorAfterAuthenticationClosesTheConnection() throws {
         struct KeyExchangeFailed: Error {}
