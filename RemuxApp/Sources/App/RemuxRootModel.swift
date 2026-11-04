@@ -1990,15 +1990,9 @@ final class RemuxRootModel: ObservableObject {
         // and library, not internal activation order.
         let displayedIndex = RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
             .firstIndex { $0.id == id }
-        let serverID = RemuxActiveSessionCollection.session(id, in: activeSessions)?.target.server.id
         closePreparedTransport(for: id)
         stopTerminalRuntimes(workspaceID: id)
-        RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
-        // Disconnecting the server's last session ends the user's approval of its key; closing one of several
-        // doesn't.
-        if let serverID, !RemuxActiveSessionCollection.hasActiveSession(onServer: serverID, in: activeSessions) {
-            dependencies.secureEnclaveApprovals.revoke(serverID: serverID)
-        }
+        removeActiveSession(id)
 
         guard case .terminal(let selectedID) = state, selectedID == id else {
             return
@@ -2014,11 +2008,23 @@ final class RemuxRootModel: ObservableObject {
         scheduleLibrarySSHPrewarm(snapshot: library)
     }
 
+    /// Takes a session out of the open ones. Removing the server's last open session ends the user's approval of
+    /// its key; removing one of several doesn't.
+    private func removeActiveSession(_ id: SavedWorkspace.ID) {
+        let serverID = RemuxActiveSessionCollection.session(id, in: activeSessions)?.target.server.id
+        RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
+        if let serverID, !RemuxActiveSessionCollection.hasActiveSession(onServer: serverID, in: activeSessions) {
+            dependencies.secureEnclaveApprovals.revoke(serverID: serverID)
+        }
+    }
+
     func deleteServer(_ id: SavedServer.ID) async {
         do {
             let deletedServer = library.server(id: id)
             invalidateSessionRefresh(for: id)
             try await dependencies.profileRepository.deleteServer(id: id)
+            // The server is gone, whatever the cleanup after this does.
+            dependencies.secureEnclaveApprovals.revoke(serverID: id)
             try dependencies.trustedHostStore.deleteIdentity(for: id)
             var snapshot = try await dependencies.profileRepository.loadSnapshot()
             if let identityID = deletedServer?.identityID,
@@ -2033,7 +2039,6 @@ final class RemuxRootModel: ObservableObject {
             }
             closePreparedTransports(forServerID: id)
             dependencies.closeIdleSSHConnections(forServerID: id)
-            dependencies.secureEnclaveApprovals.revoke(serverID: id)
             stopTerminalRuntimes(serverID: id)
             RemuxActiveSessionCollection.removeServer(id, from: &activeSessions)
             updateLibrary(snapshot)
@@ -2049,7 +2054,7 @@ final class RemuxRootModel: ObservableObject {
             try await dependencies.profileRepository.deleteWorkspace(id: id)
             closePreparedTransport(for: id)
             stopTerminalRuntimes(workspaceID: id)
-            RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
+            removeActiveSession(id)
             updateLibrary(try await dependencies.profileRepository.loadSnapshot())
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)

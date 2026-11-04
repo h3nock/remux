@@ -2199,6 +2199,31 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(prompts.count, 2)
     }
 
+    /// Deleting one of the server's open sessions keeps its approval, and deleting the last ends it, as
+    /// disconnecting does. Deleting a saved session that isn't open keeps the approval the session list had.
+    func testDeletingTheServersLastOpenSessionEndsItsApproval() async throws {
+        let prompts = DeviceKeyPrompts()
+        let device = try await makeDeviceKeyServer(prompts: prompts)
+        await device.harness.model.load()
+        let check = try XCTUnwrap(device.sshRootService.secureEnclaveApprovals.check(for: DeviceKeyFixture.target(server: device.server)))
+        await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
+        let saved = SavedWorkspace(serverID: device.server.id, sessionName: "saved")
+        try await device.harness.profileRepository.saveWorkspace(saved)
+        await device.harness.model.deleteWorkspace(saved.id)
+        XCTAssertTrue(check.isApproved, "deleting a session that wasn't open ended the approval")
+
+        await device.harness.model.connect(to: device.workspace.id)
+        let other = SavedWorkspace(serverID: device.server.id, sessionName: "other")
+        await device.harness.model.connectToDiscoveredSession(other.locator, on: device.server.id)
+        let otherID = try XCTUnwrap(device.harness.model.activeSessions.first { $0.target.workspace.sessionName == "other" }?.id)
+        await device.harness.model.deleteWorkspace(otherID)
+        XCTAssertTrue(check.isApproved, "deleting one of two open sessions ended the approval")
+
+        await device.harness.model.deleteWorkspace(device.workspace.id)
+        XCTAssertFalse(check.isApproved, "deleting the last open session kept the approval")
+        XCTAssertEqual(prompts.count, 1)
+    }
+
     /// Removing the server ends its approval.
     func testRemovingTheServerEndsItsApproval() async throws {
         let device = try await makeDeviceKeyServer(prompts: DeviceKeyPrompts())

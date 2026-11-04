@@ -265,7 +265,8 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
         }
     }
 
-    /// A server's prompt, and the callers still waiting for its answer.
+    /// A server's prompt, and the callers still waiting for its answer. It's here only while someone waits: the last
+    /// caller to leave, and the server's approvals ending, take it out, and only one still here can grant.
     private struct Pending {
         let id: UUID
         let request: Task<Void, Never>
@@ -274,8 +275,6 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
 
     private let lock = NIOLock()
     private var approved: Set<Scope> = []
-    /// How many times each server's approvals have ended, so a prompt answered after an end grants nothing.
-    private var revocations: [SavedServer.ID: Int] = [:]
     private var pending: [Scope: Pending] = [:]
     /// The latest prompt: the device shows one at a time, so a server's prompt waits for the one before.
     private var lastPrompt: Task<Void, Never>?
@@ -338,17 +337,27 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
     func admit(_ scope: Scope) async throws {
         guard isApproved(scope) else { throw SSHKeyApprovalError.required }
         guard await isProtectedDataAvailable() else { throw SecureEnclaveSSHError.unavailableWhileLocked }
+        // The approval may have ended while the device was checked.
+        guard isApproved(scope) else { throw SSHKeyApprovalError.required }
     }
 
-    /// Ends the server's approvals: the user disconnected its last session, or removed it. A prompt for it still
-    /// out grants nothing, and the next request asks again.
+    /// Ends the server's approvals: the user disconnected its last session, or removed it. Its prompts still out
+    /// grant nothing, and whoever waits for them hears that the key is locked; the next request asks again.
     func revoke(serverID: SavedServer.ID) {
-        let requests: [Task<Void, Never>] = lock.withLock {
+        let retired: [Pending] = lock.withLock {
             approved = approved.filter { $0.serverID != serverID }
-            revocations[serverID, default: 0] += 1
-            return pending.filter { $0.key.serverID == serverID }.map(\.value.request)
+            let entries = pending.filter { $0.key.serverID == serverID }
+            for scope in entries.keys {
+                pending[scope] = nil
+            }
+            return Array(entries.values)
         }
-        requests.forEach { $0.cancel() }
+        for entry in retired {
+            entry.request.cancel()
+            for waiter in entry.waiters.values {
+                waiter.finish(.failure(SSHKeyApprovalError.required))
+            }
+        }
     }
 
     /// Asks the user to approve the server's key, unless they have. Requests for one server while its prompt is up
@@ -365,18 +374,15 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
                 return false
             }
             let id = UUID()
-            let revocation = revocations[scope.serverID, default: 0]
             let previous = lastPrompt
             let request = Task { @MainActor in
                 await previous?.value
-                let answer: Result<Void, Error>
                 do {
-                    try await self.prompt(for: scope, reason: "Connect to \(serverName)", unlessRevokedAfter: revocation)
-                    answer = .success(())
+                    try await self.prompt(for: scope, reason: "Connect to \(serverName)", request: id)
+                    self.grant(scope, request: id)
                 } catch {
-                    answer = .failure(error)
+                    self.give(.failure(error), for: scope, request: id)
                 }
-                self.give(answer, for: scope, request: id)
             }
             pending[scope] = Pending(id: id, request: request, waiters: [ObjectIdentifier(waiter): waiter])
             lastPrompt = request
@@ -392,43 +398,38 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
         try Task.checkCancellation()
     }
 
-    /// A prompt that the server's approvals ending takes away answers that the key is locked; one that everyone who
-    /// asked went away from answers that it was cancelled.
+    /// Brings up the request's prompt, unless nobody waits for it any more.
     @MainActor
-    private func prompt(for scope: Scope, reason: String, unlessRevokedAfter revocation: Int) async throws {
-        guard !isRevoked(scope, since: revocation) else { throw SSHKeyApprovalError.required }
-        try Task.checkCancellation()
+    private func prompt(for scope: Scope, reason: String, request id: UUID) async throws {
+        guard isWaitedFor(scope, request: id) else { throw CancellationError() }
         // A prompt over another app, or while Remux leaves the screen, isn't one the user asked for; and a locked
         // device can't use the key.
         guard isActive(), isProtectedDataAvailable() else { throw SSHKeyApprovalError.required }
         let context = ContextBox(LAContext())
         defer { context.context.invalidate() }
-        do {
-            try await withTaskCancellationHandler {
-                try await evaluate(context.context, reason)
-            } onCancel: {
-                Task { @MainActor in context.context.invalidate() }
-            }
-        } catch {
-            if isRevoked(scope, since: revocation) { throw SSHKeyApprovalError.required }
-            throw error
-        }
-        enum Outcome { case granted, revoked, abandoned }
-        let outcome: Outcome = lock.withLock {
-            guard revocations[scope.serverID, default: 0] == revocation else { return .revoked }
-            guard !Task.isCancelled else { return .abandoned }
-            approved.insert(scope)
-            return .granted
-        }
-        switch outcome {
-        case .granted: return
-        case .revoked: throw SSHKeyApprovalError.required
-        case .abandoned: throw CancellationError()
+        try await withTaskCancellationHandler {
+            try await evaluate(context.context, reason)
+        } onCancel: {
+            Task { @MainActor in context.context.invalidate() }
         }
     }
 
-    private func isRevoked(_ scope: Scope, since revocation: Int) -> Bool {
-        lock.withLock { revocations[scope.serverID, default: 0] != revocation }
+    private func isWaitedFor(_ scope: Scope, request id: UUID) -> Bool {
+        lock.withLock { pending[scope]?.id == id }
+    }
+
+    /// Grants what the user approved, if the request still has someone waiting for it: once the last caller left,
+    /// or the server's approvals ended, it grants nothing.
+    private func grant(_ scope: Scope, request id: UUID) {
+        let waiters: [Waiter] = lock.withLock {
+            guard let entry = pending[scope], entry.id == id, !entry.waiters.isEmpty else { return [] }
+            approved.insert(scope)
+            pending[scope] = nil
+            return Array(entry.waiters.values)
+        }
+        for waiter in waiters {
+            waiter.finish(.success(()))
+        }
     }
 
     /// Gives a prompt's answer to the callers still waiting for it.

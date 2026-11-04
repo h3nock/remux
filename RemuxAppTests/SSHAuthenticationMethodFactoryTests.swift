@@ -286,6 +286,57 @@ final class SecureEnclaveSSHApprovalsTests: XCTestCase {
         XCTAssertTrue(approvals.isApproved(second))
     }
 
+    /// Ending a server's approvals while its prompt is up retires that prompt: a request right after, as an
+    /// immediate reconnect makes, asks again and gets its own answer, not the retired one's.
+    func testARequestAfterTheApprovalEndsAsksAgain() async throws {
+        let started = expectation(description: "first prompt")
+        var release: CheckedContinuation<Void, Never>?
+        var prompts = 0
+        let approvals = DeviceKeyFixture.approvals(evaluate: { _, _ in
+            prompts += 1
+            guard prompts == 1 else { return }
+            started.fulfill()
+            await withCheckedContinuation { release = $0 }
+        })
+        let scope = try DeviceKeyFixture.scope(approvals)
+
+        let retired = Task { try await approvals.approve(scope, serverName: "Mac mini") }
+        await fulfillment(of: [started], timeout: 3)
+        approvals.revoke(serverID: scope.serverID)
+        let retiredResult = await retired.result
+        let again = Task { try await approvals.approve(scope, serverName: "Mac mini") }
+        try await Task.sleep(for: .milliseconds(50))
+        release?.resume()
+
+        XCTAssertThrowsError(try retiredResult.get()) { XCTAssertEqual($0 as? SSHKeyApprovalError, .required) }
+        try await again.value
+        XCTAssertEqual(prompts, 2)
+        XCTAssertTrue(approvals.isApproved(scope))
+    }
+
+    /// A new login whose server's approval ends while the device is checked doesn't start.
+    func testALoginWhoseApprovalEndsDuringItsCheckDoesntStart() async throws {
+        var approvals: SecureEnclaveSSHApprovals?
+        var scope: SecureEnclaveSSHApprovals.Scope?
+        var endsDuringCheck = false
+        let owner = SecureEnclaveSSHApprovals(
+            isActive: { true },
+            isProtectedDataAvailable: {
+                if endsDuringCheck, let scope { approvals?.revoke(serverID: scope.serverID) }
+                return true
+            },
+            evaluate: { _, _ in }
+        )
+        approvals = owner
+        let approved = try DeviceKeyFixture.scope(owner)
+        scope = approved
+        try await owner.approve(approved, serverName: "Mac mini")
+
+        endsDuringCheck = true
+        await assertLocked { try await owner.admit(approved) }
+        XCTAssertFalse(owner.isApproved(approved))
+    }
+
     /// No prompt over another app, or while the device is locked and the key can't be used.
     func testNoPromptOverAnotherAppOrWhileTheDeviceIsLocked() async throws {
         for (isActive, isProtectedDataAvailable) in [(false, true), (true, false)] {
