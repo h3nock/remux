@@ -7,7 +7,8 @@ import NIOConcurrencyHelpers
 struct SSHTmuxControlConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable (RemuxSSHLogin) throws -> SSHAuthenticationMethod
+    let loginPrecondition: @Sendable () throws -> Void
+    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount?
@@ -20,17 +21,16 @@ struct SSHTmuxControlConfiguration: Sendable {
     let initialViewport: TmuxControlViewport
     let traceFlowID: String?
     let sshRootKey: RemuxSSHRootKey?
-    let keyApproval: SSHKeyApproval?
 
     init(
         host: String,
         port: Int = 22,
-        authenticationMethod: @escaping @Sendable (RemuxSSHLogin) throws -> SSHAuthenticationMethod,
+        loginPrecondition: @escaping @Sendable () throws -> Void = {},
+        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount = .seconds(30),
         authenticationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
-        keyApproval: SSHKeyApproval? = nil,
         controlNoResponseTimeout: TimeAmount = .seconds(15),
         sftpOperationTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",
@@ -42,6 +42,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     ) {
         self.host = host
         self.port = port
+        self.loginPrecondition = loginPrecondition
         self.authenticationMethod = authenticationMethod
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
@@ -55,19 +56,18 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.initialViewport = initialViewport
         self.traceFlowID = traceFlowID
         self.sshRootKey = sshRootKey
-        self.keyApproval = keyApproval
     }
 
     var sshRootConfiguration: RemuxSSHRootConfiguration {
         RemuxSSHRootConfiguration(
             host: host,
             port: port,
+            loginPrecondition: loginPrecondition,
             authenticationMethod: authenticationMethod,
             hostKeyValidator: hostKeyValidator,
             connectTimeout: connectTimeout,
             authenticationTimeout: authenticationTimeout,
-            onTailscaleSSHCheck: onTailscaleSSHCheck,
-            keyApproval: keyApproval
+            onTailscaleSSHCheck: onTailscaleSSHCheck
         )
     }
 }

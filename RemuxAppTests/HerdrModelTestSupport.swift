@@ -623,8 +623,6 @@ final class HerdrModelHarness {
         private(set) var opened: [FakeBridgeTransport] = []
         /// What each opened bridge is for.
         private(set) var kinds: [HerdrBridgeKind] = []
-        /// Whether each opening, opened or not, could ask the user to approve the server's key.
-        private(set) var keyApprovals: [SSHKeyApproval] = []
         /// When each opening started.
         private(set) var openingsStartedAt: [ContinuousClock.Instant] = []
         private let openingTakes: Duration
@@ -638,9 +636,8 @@ final class HerdrModelHarness {
             failure = error
         }
 
-        func open(_ kind: HerdrBridgeKind, keyApproval: SSHKeyApproval = .mustNotAsk) async throws -> FakeBridgeTransport {
+        func open(_ kind: HerdrBridgeKind) async throws -> FakeBridgeTransport {
             openingsStartedAt.append(.now)
-            keyApprovals.append(keyApproval)
             if let failure {
                 self.failure = nil
                 throw failure
@@ -680,7 +677,7 @@ final class HerdrModelHarness {
         let stateLog = StateLog()
         if let openError { await bridges.failNextOpen(with: openError) }
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "main")
-        var target = SessionTarget(
+        let target = SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: .password(
@@ -691,8 +688,6 @@ final class HerdrModelHarness {
             ),
             terminalSettings: settings
         )
-        // As the root opens a session the user asked for.
-        target.keyApproval = .mayAsk
         let pasteboard = FakePasteboard()
         self.bridges = bridges
         self.stateLog = stateLog
@@ -700,7 +695,7 @@ final class HerdrModelHarness {
         model = HerdrScreenModel(
             target: target,
             sessionInstanceID: UUID(),
-            openBridge: { kind, keyApproval in try await bridges.open(kind, keyApproval: keyApproval) },
+            openBridge: { kind in try await bridges.open(kind) },
             onRuntimeStateChange: { stateLog.updates.append($0) },
             onNotification: { stateLog.notifications.append($0) },
             connectionTiming: timing,

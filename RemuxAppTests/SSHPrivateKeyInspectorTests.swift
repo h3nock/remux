@@ -36,14 +36,27 @@ final class SSHPrivateKeyInspectorTests: XCTestCase {
                        .privateKey(SSHPrivateKeyCredential(privateKeyPEM: "legacy", passphrase: "passphrase")))
     }
 
-    func testEnclaveAuthNeedsApprovalAndUsesDistinctPoolIdentity() throws {
+    func testEnclaveAuthUsesDistinctPoolIdentity() throws {
         let (key, _) = enclaveFixture()
         let auth = try ResolvedSSHAuth.privateKey(username: "test", credential:
             SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key),
             identityID: UUID(), displayLabel: "test")
-        XCTAssertTrue(auth.usesSecureEnclaveKey)
         XCTAssertTrue(auth.authFingerprint.hasPrefix("secure-enclave:"))
-        XCTAssertFalse(ResolvedSSHAuth.password(username: "test", password: "fixture", identityID: UUID(), displayLabel: "test").usesSecureEnclaveKey)
+    }
+
+    /// A key saved before keys recorded how they sign asks on every use, which can't change, so it's replaced.
+    func testASavedKeyThatDoesntSayHowItSignsAsksOnEveryUse() throws {
+        let (key, _) = enclaveFixture()
+        XCTAssertTrue(key.signsWithoutPrompt)
+        let saved = try JSONEncoder().encode(key)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        fields["signsWithoutPrompt"] = nil
+        let older = try JSONSerialization.data(withJSONObject: fields)
+
+        let decoded = try JSONDecoder().decode(SecureEnclaveSSHKey.self, from: older)
+
+        XCTAssertFalse(decoded.signsWithoutPrompt)
+        XCTAssertEqual(decoded.publicKey, key.publicKey)
     }
 
     func testEnclaveDraftSurvivesValidationAndEditingWithoutPEM() throws {

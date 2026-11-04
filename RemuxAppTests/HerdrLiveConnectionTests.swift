@@ -1728,7 +1728,7 @@ final class HerdrLiveConnectionTests: XCTestCase {
                 terminalSettings: settings
             ),
             sessionInstanceID: UUID(),
-            openBridge: { kind, _ in
+            openBridge: { kind in
                 wrap(try await HerdrSSHBridge.open(
                     using: try await fixture.claimRoot(trace: trace),
                     herdrExecutable: fixture.executable,

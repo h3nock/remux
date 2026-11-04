@@ -1,40 +1,24 @@
 @preconcurrency import Citadel
 import NIO
-import LocalAuthentication
 import XCTest
 @preconcurrency import NIOSSH
 @testable import Remux
 
 final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
-    /// A key the user approves on the device that didn't log in says so, not that the server rejected it, and
-    /// never reconnects by itself: a login no one asked for, a cancelled prompt and an unrecognized face all
-    /// unlock again, in Remux's words; no passcode and a key that no longer works here need Edit Server.
+    /// A key made on the device that didn't log in says so, not that the server rejected it, and never reconnects
+    /// by itself: one the user hasn't approved for the server unlocks, in Remux's words; one that no longer works
+    /// here needs Edit Server.
     func testKeyUnlockFailuresSayHowToUnlockAndNeverReconnectByThemselves() {
-        let unlockAgain: [any Error] = [
-            SSHKeyApprovalError.required,
-            SSHKeyApprovalError.interrupted,
-            LAError(.userCancel),
-            LAError(.systemCancel),
-            LAError(.authenticationFailed),
-        ]
-        for error in unlockAgain {
-            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
-            XCTAssertEqual(reason.kind, .keyUnlock, "\(error)")
-            XCTAssertFalse(reason.allowsAutomaticReconnect, "\(error)")
-            XCTAssertEqual(reason.message, "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect.")
-            XCTAssertTrue(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(error), "\(error)")
-        }
+        let locked = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SSHKeyApprovalError.required)
+        XCTAssertEqual(locked.kind, .keyUnlock)
+        XCTAssertFalse(locked.allowsAutomaticReconnect)
+        XCTAssertEqual(locked.message, "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect.")
+        XCTAssertTrue(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SSHKeyApprovalError.required))
 
-        let replaceKey: [(any Error, String)] = [
-            (LAError(.passcodeNotSet), SecureEnclaveSSHError.passcodeNotSet.localizedDescription),
-            (SecureEnclaveSSHError.keyUnusable, SecureEnclaveSSHError.keyUnusable.localizedDescription),
-        ]
-        for (error, message) in replaceKey {
-            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
-            XCTAssertEqual(reason.kind, .keyUnlock, "\(error)")
-            XCTAssertEqual(reason.message, message)
-            XCTAssertFalse(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(error), "\(error)")
-        }
+        let unusable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnusable)
+        XCTAssertEqual(unusable.kind, .keyUnlock)
+        XCTAssertEqual(unusable.message, SecureEnclaveSSHError.keyUnusable.localizedDescription)
+        XCTAssertFalse(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SecureEnclaveSSHError.keyUnusable))
 
         let panel = GhosttyRepairPanelContent(
             reason: TerminalDisconnectReason(kind: .keyUnlock, message: "Unlock it with Face ID to connect."),

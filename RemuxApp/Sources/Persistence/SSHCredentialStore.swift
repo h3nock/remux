@@ -200,6 +200,29 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
 struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
     let representation: Data
     let publicKey: Data
+    /// Whether the Secure Enclave signs with the key without asking the user itself, which Remux's approval of
+    /// the server does instead. A key that asks on every use can't change that, so it's replaced.
+    let signsWithoutPrompt: Bool
+
+    init(representation: Data, publicKey: Data, signsWithoutPrompt: Bool = true) {
+        self.representation = representation
+        self.publicKey = publicKey
+        self.signsWithoutPrompt = signsWithoutPrompt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case representation
+        case publicKey
+        case signsWithoutPrompt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        representation = try container.decode(Data.self, forKey: .representation)
+        publicKey = try container.decode(Data.self, forKey: .publicKey)
+        // A saved key without the field asks on every use.
+        signsWithoutPrompt = try container.decodeIfPresent(Bool.self, forKey: .signsWithoutPrompt) ?? false
+    }
 
     /// Whether this device can make such a key: one with a Secure Enclave.
     static let isSupported = SecureEnclave.isAvailable
@@ -229,9 +252,11 @@ struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
         guard LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
             throw SecureEnclaveSSHError.passcodeNotSet
         }
+        // Usable only while the device is unlocked, and gone with its passcode. The user's approval is Remux's, per
+        // server, so the key itself asks for nothing.
         guard let access = SecAccessControlCreateWithFlags(
             nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
-            [.privateKeyUsage, .userPresence], nil
+            [.privateKeyUsage], nil
         ), let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else {
             throw SecureEnclaveSSHError.unavailable
         }

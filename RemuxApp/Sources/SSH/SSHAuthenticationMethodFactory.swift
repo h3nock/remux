@@ -1,11 +1,12 @@
 @preconcurrency import Citadel
 @preconcurrency import Crypto
-import Foundation
 import CryptoKit
+import Foundation
 import LocalAuthentication
-import UIKit
+import NIOConcurrencyHelpers
 import NIOCore
 @preconcurrency import NIOSSH
+import UIKit
 
 /// Offers SSH's `none` authentication method once, then fails further offers.
 /// Used for Tailscale SSH and other servers explicitly configured to accept
@@ -34,14 +35,39 @@ final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegat
     }
 }
 
+/// Offers a key made on this device once, then fails further offers.
+final class SecureEnclaveSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
+    private let username: String
+    private let signingKey: SecureEnclave.P256.Signing.PrivateKey
+    private var hasOffered = false
+
+    init(username: String, signingKey: SecureEnclave.P256.Signing.PrivateKey) {
+        self.username = username
+        self.signingKey = signingKey
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        guard !hasOffered else {
+            nextChallengePromise.fail(SSHClientError.allAuthenticationOptionsFailed)
+            return
+        }
+
+        hasOffered = true
+        nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(
+            username: username,
+            serviceName: "",
+            offer: .privateKey(.init(privateKey: NIOSSHPrivateKey(secureEnclaveP256Key: signingKey)))
+        ))
+    }
+}
+
 enum SSHAuthenticationMethodFactory {
-    /// `serverName` names the server in the prompt to approve a Secure Enclave key; `login` is the connection
-    /// that key's approval waits on.
     static func make(
         username: String,
-        credential: ResolvedSSHAuth.Credential,
-        serverName: String,
-        login: RemuxSSHLogin? = nil
+        credential: ResolvedSSHAuth.Credential
     ) throws -> SSHAuthenticationMethod {
         switch credential {
         case .password(let password):
@@ -52,9 +78,7 @@ enum SSHAuthenticationMethodFactory {
             if let key = credential.secureEnclaveKey {
                 return .custom(SecureEnclaveSSHAuthenticationDelegate(
                     username: username,
-                    key: key,
-                    reason: "Connect to \(serverName)",
-                    login: login
+                    signingKey: try key.signingKey()
                 ))
             }
             let inspection = try credential.inspect()
@@ -106,151 +130,230 @@ enum SSHAuthenticationMethodFactory {
 
     static func make(
         username: String,
-        storedCredential: SSHCredential,
-        serverName: String,
-        login: RemuxSSHLogin? = nil
+        storedCredential: SSHCredential
     ) throws -> SSHAuthenticationMethod {
         switch storedCredential {
         case .password(let password):
             return try make(
                 username: username,
-                credential: ResolvedSSHAuth.Credential.password(password),
-                serverName: serverName
+                credential: ResolvedSSHAuth.Credential.password(password)
             )
         case .privateKey(let privateKey):
             return try make(
                 username: username,
-                credential: ResolvedSSHAuth.Credential.privateKey(privateKey),
-                serverName: serverName,
-                login: login
+                credential: ResolvedSSHAuth.Credential.privateKey(privateKey)
             )
         }
     }
 }
 
-/// Offers the Secure Enclave key once the user approves it on this device. The approval runs off the
-/// connection's event loop; NIOSSH then signs with the approved key, which can't ask again.
-final class SecureEnclaveSSHAuthenticationDelegate:
-    NIOSSHClientUserAuthenticationDelegate, @unchecked Sendable {
-    typealias Approve = @MainActor @Sendable (SecureEnclaveSSHKey, String) async throws
-        -> SecureEnclave.P256.Signing.PrivateKey
+/// A login with a key made on this device that the user hasn't approved for the server. Only their own request
+/// asks them to.
+enum SSHKeyApprovalError: Error, Equatable, LocalizedError {
+    case required
 
-    private let username: String
-    private let key: SecureEnclaveSSHKey
-    private let reason: String
-    private let login: RemuxSSHLogin?
-    private let approve: Approve
-
-    init(
-        username: String,
-        key: SecureEnclaveSSHKey,
-        reason: String,
-        login: RemuxSSHLogin?,
-        approve: @escaping Approve = { try await SecureEnclaveSSHApproval.approve($0, reason: $1) }
-    ) {
-        self.username = username
-        self.key = key
-        self.reason = reason
-        self.login = login
-        self.approve = approve
-    }
-
-    func nextAuthenticationType(
-        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
-        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
-    ) {
-        login?.approvalStarted()
-        let task = Task { @MainActor [username, key, reason, login, approve] in
-            let offer: Result<NIOSSHUserAuthenticationOffer?, Error>
-            do {
-                let signingKey = try await approve(key, reason)
-                try Task.checkCancellation()
-                offer = .success(NIOSSHUserAuthenticationOffer(
-                    username: username,
-                    serviceName: "",
-                    offer: .privateKey(.init(privateKey: NIOSSHPrivateKey(secureEnclaveP256Key: signingKey)))
-                ))
-            } catch {
-                offer = .failure(error)
-            }
-            login?.approvalEnded()
-            nextChallengePromise.completeWith(offer)
-        }
-        login?.closeFuture.whenComplete { _ in task.cancel() }
+    var errorDescription: String? {
+        "Unlock this server's key to connect."
     }
 }
 
-/// The user's approval of a Secure Enclave key on this device, with Face ID, Touch ID or the passcode in one
-/// system prompt, which retries a failed face or finger itself. The device shows one prompt at a time, so
-/// approvals for different servers wait their turn. Cancelling the wait takes its prompt away.
-@MainActor
-enum SecureEnclaveSSHApproval {
-    typealias Evaluate = @MainActor (LAContext, String) async throws -> Void
-    typealias SigningKey = @MainActor (SecureEnclaveSSHKey, LAContext) throws
-        -> SecureEnclave.P256.Signing.PrivateKey
-
-    private static var previous: Task<Void, Never>?
-
-    static func approve(
-        _ key: SecureEnclaveSSHKey,
-        reason: String
-    ) async throws -> SecureEnclave.P256.Signing.PrivateKey {
-        try await approve(
-            key,
-            reason: reason,
-            isActive: { UIApplication.shared.applicationState == .active },
-            evaluate: { context, reason in
-                _ = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-            },
-            signingKey: signingKey
-        )
-    }
-
-    static func approve(
-        _ key: SecureEnclaveSSHKey,
-        reason: String,
-        isActive: @escaping @MainActor () -> Bool,
-        evaluate: @escaping Evaluate,
-        signingKey: @escaping SigningKey
-    ) async throws -> SecureEnclave.P256.Signing.PrivateKey {
-        let context = ContextBox(LAContext())
-        let waitFor = previous
-        let turn = Task { @MainActor () throws -> SecureEnclave.P256.Signing.PrivateKey in
-            await waitFor?.value
-            try Task.checkCancellation()
-            // A prompt over another app, or while Remux is going away, isn't one the user asked for.
-            guard isActive() else { throw SSHKeyApprovalError.required }
-            try await evaluate(context.context, reason)
-            // Signing on the connection's event loop must never bring up a second prompt.
-            context.context.interactionNotAllowed = true
-            return try signingKey(key, context.context)
-        }
-        previous = Task { _ = await turn.result }
-        return try await withTaskCancellationHandler {
-            try await turn.value
-        } onCancel: {
-            turn.cancel()
-            Task { @MainActor in context.context.invalidate() }
-        }
-    }
-
-    private static func signingKey(
-        _ key: SecureEnclaveSSHKey,
-        context: LAContext
-    ) throws -> SecureEnclave.P256.Signing.PrivateKey {
+extension SecureEnclaveSSHKey {
+    /// The key, to sign a login the user's approval of its server let start. It signs without asking: the
+    /// approval was given to Remux, and signing on the connection's event loop must never bring up a prompt.
+    func signingKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
+        // One that asks for the user itself, on every use, would ask in the middle of a login.
+        guard signsWithoutPrompt else { throw SecureEnclaveSSHError.keyUnusable }
+        let context = LAContext()
+        context.interactionNotAllowed = true
         let signingKey: SecureEnclave.P256.Signing.PrivateKey
         do {
             signingKey = try SecureEnclave.P256.Signing.PrivateKey(
-                dataRepresentation: key.representation,
+                dataRepresentation: representation,
                 authenticationContext: context
             )
+        } catch where Self.isUnavailableWhileLocked(error) {
+            // The key works again once the device is unlocked and the server approved.
+            throw SSHKeyApprovalError.required
         } catch {
             throw SecureEnclaveSSHError.keyUnusable
         }
-        guard signingKey.publicKey.x963Representation == key.publicKey else {
+        guard signingKey.publicKey.x963Representation == publicKey else {
             throw SecureEnclaveSSHError.keyUnusable
         }
         return signingKey
+    }
+
+    /// Whether the Secure Enclave refused the key because the device is locked, rather than because the key can't
+    /// work here.
+    private static func isUnavailableWhileLocked(_ error: any Error) -> Bool {
+        if case CryptoKitError.underlyingCoreCryptoError(let code) = error {
+            return code == errSecInteractionNotAllowed
+        }
+        let error = error as NSError
+        return error.domain == NSOSStatusErrorDomain && error.code == Int(errSecInteractionNotAllowed)
+    }
+}
+
+/// The user's approvals of keys made on this device, one server at a time, for as long as Remux runs and the
+/// device stays unlocked. Approving a server's key once with Face ID, Touch ID or the passcode lets every later
+/// login to it sign without asking, however many connections Remux opens and whether or not the user asked for
+/// them. Locking the device ends every approval, which iOS reports as protected data going away or, after a lock
+/// Remux slept through, coming back; quitting ends them too, since nothing is stored.
+final class SecureEnclaveSSHApprovals: @unchecked Sendable {
+    /// What one approval covers: one server's address and account, with one key. Changing any of them needs a
+    /// new approval.
+    struct Scope: Hashable, Sendable {
+        let serverID: SavedServer.ID
+        let host: String
+        let port: Int
+        let username: String
+        let publicKey: Data
+    }
+
+    /// One login's check of its server's approval.
+    struct Check: Sendable {
+        let approvals: SecureEnclaveSSHApprovals
+        let scope: Scope
+
+        var isApproved: Bool {
+            approvals.isApproved(scope)
+        }
+
+        /// What a login to the server checks before it starts: one the user hasn't approved stops at the locked key.
+        func requireApproval() throws {
+            guard isApproved else { throw SSHKeyApprovalError.required }
+        }
+    }
+
+    typealias Evaluate = @MainActor (LAContext, String) async throws -> Void
+
+    private let lock = NIOLock()
+    private var approved: Set<Scope> = []
+    /// How many times every approval has ended, so a prompt answered after an end grants nothing.
+    private var revocations = 0
+    private var pending: [Scope: Task<Void, Error>] = [:]
+    /// The latest prompt: the device shows one at a time, so a server's prompt waits for the one before.
+    private var lastPrompt: Task<Void, Never>?
+    private let isActive: @MainActor () -> Bool
+    private let isProtectedDataAvailable: @MainActor () -> Bool
+    private let evaluate: Evaluate
+    private let notificationCenter: NotificationCenter
+    private var observers: [any NSObjectProtocol] = []
+
+    init(
+        notificationCenter: NotificationCenter = .default,
+        isActive: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .active },
+        isProtectedDataAvailable: @escaping @MainActor () -> Bool = { UIApplication.shared.isProtectedDataAvailable },
+        evaluate: @escaping Evaluate = { context, reason in
+            _ = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+        }
+    ) {
+        self.notificationCenter = notificationCenter
+        self.isActive = isActive
+        self.isProtectedDataAvailable = isProtectedDataAvailable
+        self.evaluate = evaluate
+        observers = [
+            UIApplication.protectedDataWillBecomeUnavailableNotification,
+            UIApplication.protectedDataDidBecomeAvailableNotification,
+        ].map { name in
+            notificationCenter.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                self?.revokeAll()
+            }
+        }
+    }
+
+    deinit {
+        for observer in observers {
+            notificationCenter.removeObserver(observer)
+        }
+    }
+
+    /// The check a login to `target` makes, when its key was made on this device.
+    func check(for target: SessionTarget) -> Check? {
+        guard case .privateKey(let credential) = target.sshAuth.credential,
+              let key = credential.secureEnclaveKey else { return nil }
+        return Check(approvals: self, scope: Scope(
+            serverID: target.server.id,
+            host: target.server.host,
+            port: target.server.port,
+            username: target.sshAuth.username,
+            publicKey: key.publicKey
+        ))
+    }
+
+    /// The check installing a key makes, when the key was made on this device. It covers the server the draft
+    /// adds, so adding it and listing its sessions use the same approval.
+    func check(for target: SSHPublicKeyInstallTarget) -> Check? {
+        guard let key = target.privateKey.secureEnclaveKey else { return nil }
+        return Check(approvals: self, scope: Scope(
+            serverID: target.serverID,
+            host: target.host,
+            port: target.port,
+            username: target.username,
+            publicKey: key.publicKey
+        ))
+    }
+
+    func isApproved(_ scope: Scope) -> Bool {
+        lock.withLock { approved.contains(scope) }
+    }
+
+    /// Asks the user to approve the server's key, unless they have. Requests for one server while its prompt is up
+    /// share that prompt; a caller that stops waiting leaves it to the others.
+    @MainActor
+    func approve(_ scope: Scope, serverName: String) async throws {
+        let request: Task<Void, Error>? = lock.withLock {
+            if approved.contains(scope) { return nil }
+            if let pending = pending[scope] { return pending }
+            let revocation = revocations
+            let previous = lastPrompt
+            let request = Task { @MainActor in
+                await previous?.value
+                try await self.prompt(for: scope, reason: "Connect to \(serverName)", unlessRevokedAfter: revocation)
+            }
+            pending[scope] = request
+            lastPrompt = Task { _ = await request.result }
+            return request
+        }
+        guard let request else { return }
+        defer {
+            lock.withLock {
+                if pending[scope] == request { pending[scope] = nil }
+            }
+        }
+        try await request.value
+    }
+
+    @MainActor
+    private func prompt(for scope: Scope, reason: String, unlessRevokedAfter revocation: Int) async throws {
+        try Task.checkCancellation()
+        // A prompt over another app, or while Remux leaves the screen, isn't one the user asked for; and a locked
+        // device can't use the key.
+        guard isActive(), isProtectedDataAvailable() else { throw SSHKeyApprovalError.required }
+        let context = ContextBox(LAContext())
+        defer { context.context.invalidate() }
+        try await withTaskCancellationHandler {
+            try await evaluate(context.context, reason)
+        } onCancel: {
+            Task { @MainActor in context.context.invalidate() }
+        }
+        let granted = lock.withLock {
+            guard revocations == revocation else { return false }
+            approved.insert(scope)
+            return true
+        }
+        // The device locked while the prompt was up, which ended the approval it gave.
+        guard granted else { throw SSHKeyApprovalError.required }
+    }
+
+    /// Ends every approval, then gives up the prompts still out, which can no longer grant one.
+    private func revokeAll() {
+        let requests = lock.withLock {
+            approved.removeAll()
+            revocations += 1
+            return Array(pending.values)
+        }
+        requests.forEach { $0.cancel() }
     }
 
     private final class ContextBox: @unchecked Sendable {

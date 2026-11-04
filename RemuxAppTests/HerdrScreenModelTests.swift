@@ -1128,23 +1128,6 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertFalse(harness.states.contains { $0.disconnectedReason != nil }, "\(harness.states)")
     }
 
-    /// The session's first connection and the user's reconnect may ask them to approve the server's key; a
-    /// reconnect by itself may not, so it reuses an open connection or stops at Key Locked.
-    func testOnlyTheFirstConnectionAndTheUsersReconnectMayAskToApproveTheKey() async throws {
-        var recovery = HerdrScreenModel.RecoveryTiming()
-        recovery.firstRetry = .milliseconds(100)
-        let harness = await makeHarness(recovery: recovery)
-        let first = try await connectedSession(harness, lines: ["one"])
-
-        await first.finishServing()
-        _ = try await harness.bridge(1)
-        XCTAssertTrue(harness.model.reconnect())
-        _ = try await harness.bridge(2)
-
-        let approvals = await harness.bridges.keyApprovals
-        XCTAssertEqual(Array(approvals.prefix(3)), [.mayAsk, .mustNotAsk, .mayAsk])
-    }
-
     /// Delays start over once a connection has stayed up a while, as in Herdr's client: a drop after
     /// that waits the first delay again, not the one the earlier failures had reached.
     func testDelaysStartOverOnceAConnectionStaysUp() async throws {

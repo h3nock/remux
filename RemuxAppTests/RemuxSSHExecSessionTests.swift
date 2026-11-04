@@ -352,11 +352,10 @@ final class RemuxSSHExecSessionTests: XCTestCase {
             configuration: RemuxSSHRootConfiguration(
                 host: "127.0.0.1",
                 port: server.port,
-                authenticationMethod: { _ in
+                authenticationMethod: {
                     try SSHAuthenticationMethodFactory.make(
                         username: "remux",
-                        credential: .privateKey(privateKey),
-                        serverName: "remux"
+                        credential: .privateKey(privateKey)
                     )
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),
@@ -708,11 +707,10 @@ extension XCTestCase {
             configuration: RemuxSSHRootConfiguration(
                 host: "127.0.0.1",
                 port: server.port,
-                authenticationMethod: { _ in
+                authenticationMethod: {
                     try SSHAuthenticationMethodFactory.make(
                         username: "remux",
-                        credential: .privateKey(privateKey),
-                        serverName: "remux"
+                        credential: .privateKey(privateKey)
                     )
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),

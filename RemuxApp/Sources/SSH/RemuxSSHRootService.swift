@@ -24,66 +24,33 @@ struct RemuxSSHRootKey: Hashable, Sendable {
 struct RemuxSSHRootConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable (RemuxSSHLogin) throws -> SSHAuthenticationMethod
+    /// Whether a login may start now: one that throws ends there, with its error, before any connection, so a
+    /// request that comes after it never joins a login that can't succeed. A login already under way goes on.
+    let loginPrecondition: @Sendable () throws -> Void
+    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount
     let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
-    /// For a key the user approves on this device, whether this request's new login may ask them; nil for
-    /// any other key. An open connection serves every request without asking.
-    let keyApproval: SSHKeyApproval?
 
     init(
         host: String,
         port: Int,
-        authenticationMethod: @escaping @Sendable (RemuxSSHLogin) throws -> SSHAuthenticationMethod,
+        loginPrecondition: @escaping @Sendable () throws -> Void = {},
+        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
         authenticationTimeout: TimeAmount? = nil,
-        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
-        keyApproval: SSHKeyApproval? = nil
+        onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
         self.host = host
         self.port = port
+        self.loginPrecondition = loginPrecondition
         self.authenticationMethod = authenticationMethod
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
         self.authenticationTimeout = authenticationTimeout ?? connectTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
-        self.keyApproval = keyApproval
-    }
-}
-
-/// Whether a request's new SSH login may ask the user to approve the key on this device: only a request
-/// the user made, as opening a session or pulling to refresh. Work that runs by itself must not.
-enum SSHKeyApproval: Equatable, Sendable {
-    case mayAsk
-    case mustNotAsk
-}
-
-/// The connection a login authenticates, as its authentication method sees it.
-struct RemuxSSHLogin: Sendable {
-    /// Completes when the connection closes.
-    let closeFuture: EventLoopFuture<Void>
-    /// Called around a wait for the user to approve the key on this device. The login's timeout stops
-    /// meanwhile: the device's prompt has no time limit of its own, and the server's grace period still
-    /// ends a login left waiting.
-    let approvalStarted: @Sendable () -> Void
-    let approvalEnded: @Sendable () -> Void
-}
-
-/// Why a login whose key needs the user's approval on this device didn't happen.
-enum SSHKeyApprovalError: LocalizedError, Equatable {
-    /// The request couldn't ask the user, so no login started.
-    case required
-    /// The connection closed while the device waited for approval.
-    case interrupted
-
-    var errorDescription: String? {
-        switch self {
-        case .required: "Unlock this server's key to connect."
-        case .interrupted: "The server closed the connection before the key was unlocked."
-        }
     }
 }
 
@@ -357,32 +324,6 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
     }
 }
 
-/// One wait for a root, resumed once: by the root's attempt, or by its caller's cancellation, whichever
-/// comes first, even before the wait is installed.
-private final class RemuxSSHRootWait: @unchecked Sendable {
-    private let lock = NIOLock()
-    private var continuation: CheckedContinuation<RemuxSSHRoot, Error>?
-    private var result: Result<RemuxSSHRoot, Error>?
-
-    func install(_ continuation: CheckedContinuation<RemuxSSHRoot, Error>) {
-        let finished: Result<RemuxSSHRoot, Error>? = lock.withLock {
-            if result == nil { self.continuation = continuation }
-            return result
-        }
-        if let finished { continuation.resume(with: finished) }
-    }
-
-    func finish(with result: Result<RemuxSSHRoot, Error>) {
-        let continuation: CheckedContinuation<RemuxSSHRoot, Error>? = lock.withLock {
-            guard self.result == nil else { return nil }
-            self.result = result
-            defer { self.continuation = nil }
-            return self.continuation
-        }
-        continuation?.resume(with: result)
-    }
-}
-
 /// One authentication of an SSH root. The attempt records its own outcome as it finishes, so whoever holds it
 /// can tell at once whether its result is in, before the pool's observer of the same attempt has run.
 struct RemuxSSHRootAttempt: Sendable {
@@ -414,14 +355,6 @@ struct RemuxSSHRootAttempt: Sendable {
         outcome.withLockedValue { outcome in
             if case .pending = outcome { return false }
             return true
-        }
-    }
-
-    /// The root, once the attempt has made it.
-    var authenticatedRoot: RemuxSSHRoot? {
-        outcome.withLockedValue { outcome in
-            if case .authenticated(let root) = outcome { return root }
-            return nil
         }
     }
 
@@ -479,37 +412,13 @@ struct RemuxSSHPreparedRoot {
         )
     }
 
-    /// A root that won't be made, which reports `error` to whoever waits for it.
-    fileprivate static func failed(_ error: Error, trace: RemuxTransportStartupTrace) -> RemuxSSHPreparedRoot {
-        RemuxSSHPreparedRoot(
-            trace: trace,
-            ownership: .dedicated,
-            cancelAuthenticationOnClose: false,
-            attempt: RemuxSSHRootAttempt { throw error }
-        )
-    }
-
     /// Whether the root's authentication had its result when this was read.
     var isFinished: Bool {
         attempt.isFinished
     }
 
-    /// Waits for the root, and stops as soon as the caller is cancelled, as when the user leaves while the
-    /// key waits for approval: the caller's cleanup then gives up its place, and a login nobody else waits
-    /// for ends with its prompt.
     func sshRoot() async throws -> RemuxSSHRoot {
-        // An open root, as a reused one is, needs no wait.
-        if let root = attempt.authenticatedRoot { return root }
-        let attempt = attempt
-        let wait = RemuxSSHRootWait()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                wait.install(continuation)
-                Task { wait.finish(with: await attempt.task.result) }
-            }
-        } onCancel: {
-            wait.finish(with: .failure(CancellationError()))
-        }
+        try await attempt.task.value
     }
 
     func claim(
@@ -608,6 +517,9 @@ struct RemuxSSHClaimedRoot: Sendable {
 
 actor RemuxSSHRootService {
     nonisolated let tailscaleSSHCheckChallengeBroker = TailscaleSSHCheckChallengeBroker()
+    /// The user's approvals of keys made on this device, which every login to these servers checks before it
+    /// starts, as their Tailscale checks go through the broker. The pool itself doesn't use them.
+    nonisolated let secureEnclaveApprovals: SecureEnclaveSSHApprovals
 
     private struct Entry {
         let generation: UUID
@@ -616,7 +528,6 @@ actor RemuxSSHRootService {
         var reservationIDs: Set<UUID>
         var idleCloseTask: Task<Void, Never>?
         var readiness: RemuxSSHRootReadiness
-        var loginNeedsApproval = false
     }
 
     /// A root removed from the pool while sessions still lease it: no
@@ -636,14 +547,6 @@ actor RemuxSSHRootService {
         let didReuse: Bool
         let readiness: RemuxSSHRootReadiness
         let reservationID: UUID?
-    }
-
-    private enum Reservation {
-        case reserved(EntrySnapshot)
-        /// The root serves as many requests as it may, so the request needs a login of its own.
-        case busy
-        /// The request needs a new login, which would ask the user to approve the key, and it can't ask.
-        case approvalRequired
     }
 
     private enum LeaseEntryResult: Equatable {
@@ -669,8 +572,12 @@ actor RemuxSSHRootService {
     private var entries: [RemuxSSHRootKey: Entry] = [:]
     private var retiredEntries: [UUID: RetiredEntry] = [:]
 
-    init(idleTimeout: Duration = .seconds(120)) {
+    init(
+        idleTimeout: Duration = .seconds(120),
+        secureEnclaveApprovals: SecureEnclaveSSHApprovals = SecureEnclaveSSHApprovals()
+    ) {
         self.idleTimeout = idleTimeout
+        self.secureEnclaveApprovals = secureEnclaveApprovals
     }
 
     func snapshot() -> RemuxSSHRootServiceSnapshot {
@@ -694,17 +601,11 @@ actor RemuxSSHRootService {
         trace: RemuxTransportStartupTrace,
         reason: String
     ) {
-        guard let snapshot = entrySnapshot(
+        let snapshot = entrySnapshot(
             for: key,
             configuration: configuration,
             trace: trace
-        ) else {
-            trace.event(
-                "sshRoot.prewarm.skipped",
-                fields: poolTraceFields(key: key, reason: "key_needs_approval", readiness: .connecting)
-            )
-            return
-        }
+        )
         let eventPrefix = snapshot.didReuse ? "sshRoot.prewarm.hit" : "sshRoot.prewarm.miss"
         trace.event(
             eventPrefix,
@@ -746,11 +647,11 @@ actor RemuxSSHRootService {
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) -> RemuxSSHPreparedRoot {
-        let snapshot: EntrySnapshot
-        switch reserveEntry(for: key, configuration: configuration, trace: trace) {
-        case .reserved(let reserved):
-            snapshot = reserved
-        case .busy:
+        guard let snapshot = reserveEntry(
+            for: key,
+            configuration: configuration,
+            trace: trace
+        ) else {
             trace.event(
                 "sshRoot.pool.busy",
                 fields: poolTraceFields(key: key, readiness: entries[key]?.readiness ?? .connecting)
@@ -759,12 +660,6 @@ actor RemuxSSHRootService {
                 configuration: configuration,
                 trace: trace
             )
-        case .approvalRequired:
-            trace.event(
-                "sshRoot.pool.approvalRequired",
-                fields: poolTraceFields(key: key, readiness: entries[key]?.readiness ?? .connecting)
-            )
-            return .failed(SSHKeyApprovalError.required, trace: trace)
         }
         trace.event(
             snapshot.didReuse ? "sshRoot.pool.hit" : "sshRoot.pool.miss",
@@ -921,15 +816,6 @@ actor RemuxSSHRootService {
         }
 
         entry.reservationIDs.remove(reservationID)
-        // Nobody waits for a login the user was asked to approve any more: give it up, which takes its
-        // prompt away. Other logins finish, for the next caller.
-        if entry.loginNeedsApproval, entry.readiness == .connecting,
-           entry.activeLeaseCount == 0, entry.reservationIDs.isEmpty {
-            entry.idleCloseTask?.cancel()
-            entries.removeValue(forKey: key)
-            closeEntryTask(entry.attempt.task, reason: "approval_abandoned")
-            return
-        }
         entries[key] = entry
         scheduleIdleCloseIfNeeded(for: key, generation: generation)
     }
@@ -949,13 +835,11 @@ actor RemuxSSHRootService {
         }
     }
 
-    /// The entry a prewarm warms: the open or opening one, or a new login, except for a key the user approves
-    /// on this device, which a prewarm never asks for.
     private func entrySnapshot(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
-    ) -> EntrySnapshot? {
+    ) -> EntrySnapshot {
         removeEntryIfSpent(for: key)
         if let existing = entries[key] {
             return EntrySnapshot(
@@ -966,7 +850,6 @@ actor RemuxSSHRootService {
                 reservationID: nil
             )
         }
-        guard configuration.keyApproval == nil else { return nil }
 
         let generation = UUID()
         let attempt = makeAuthenticationAttempt(configuration: configuration, trace: trace)
@@ -990,23 +873,19 @@ actor RemuxSSHRootService {
         )
     }
 
-    /// Reserves the open or opening root, or starts a new login. A new login for a key the user approves on
-    /// this device starts only for a request that may ask them.
     private func reserveEntry(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
-    ) -> Reservation {
+    ) -> EntrySnapshot? {
         let reservationID = UUID()
-        let mayStartLogin = configuration.keyApproval != .mustNotAsk
         removeEntryIfSpent(for: key)
         if entries[key] != nil {
-            if let snapshot = reserveExistingEntry(for: key, reservationID: reservationID) {
-                return .reserved(snapshot)
-            }
-            return mayStartLogin ? .busy : .approvalRequired
+            return reserveExistingEntry(
+                for: key,
+                reservationID: reservationID
+            )
         }
-        guard mayStartLogin else { return .approvalRequired }
 
         let generation = UUID()
         let attempt = makeAuthenticationAttempt(configuration: configuration, trace: trace)
@@ -1016,19 +895,18 @@ actor RemuxSSHRootService {
             activeLeaseCount: 0,
             reservationIDs: [reservationID],
             idleCloseTask: nil,
-            readiness: .connecting,
-            loginNeedsApproval: configuration.keyApproval != nil
+            readiness: .connecting
         )
 
         observeAuthenticationResult(attempt.task, for: key, generation: generation)
 
-        return .reserved(EntrySnapshot(
+        return EntrySnapshot(
             generation: generation,
             attempt: attempt,
             didReuse: false,
             readiness: .connecting,
             reservationID: reservationID
-        ))
+        )
     }
 
     private func reserveExistingEntry(
@@ -1380,6 +1258,7 @@ enum RemuxSSHRootBootstrap {
         using configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) async throws -> RemuxSSHRoot {
+        try configuration.loginPrecondition()
         var rootChannel: Channel?
 
         do {
@@ -1409,12 +1288,7 @@ enum RemuxSSHRootBootstrap {
             rootChannel = channel
 
             try await trace.stage("sshAuthentication") {
-                try await withTaskCancellationHandler {
-                    try Task.checkCancellation()
-                    try await connection.authenticated.get()
-                } onCancel: {
-                    channel.close(promise: nil)
-                }
+                try await connection.authenticated.get()
             }
 
             let sshHandler = try await trace.stage("sshHandler.lookup") {
@@ -1446,11 +1320,7 @@ enum RemuxSSHRootBootstrap {
         )
         let authenticationMethod: SSHAuthenticationMethod
         do {
-            authenticationMethod = try configuration.authenticationMethod(RemuxSSHLogin(
-                closeFuture: channel.closeFuture,
-                approvalStarted: { [weak handshake] in handshake?.approvalStarted() },
-                approvalEnded: { [weak handshake] in handshake?.approvalEnded() }
-            ))
+            authenticationMethod = try configuration.authenticationMethod()
         } catch {
             return channel.eventLoop.makeFailedFuture(error)
         }
@@ -1487,8 +1357,6 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     private struct State {
         var isComplete = false
         var challenge: TailscaleSSHCheckChallenge?
-        var timeoutTask: Scheduled<Void>?
-        var isAwaitingApproval = false
     }
 
     private enum Completion {
@@ -1501,8 +1369,6 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     private let state: NIOLockedValueBox<State>
     private let requestID: TailscaleSSHCheckRequest.ID
     private let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
-    private let eventLoop: EventLoop
-    private let timeout: TimeAmount
 
     var authenticated: EventLoopFuture<Void> {
         promise.futureResult
@@ -1521,39 +1387,7 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
         self.state = state
         self.requestID = requestID
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
-        self.eventLoop = eventLoop
-        self.timeout = timeout
 
-        startTimeout()
-        promise.futureResult.whenComplete { _ in
-            state.withLockedValue { $0.timeoutTask?.cancel() }
-        }
-    }
-
-    /// The login's timeout stops while the user approves the key on this device.
-    func approvalStarted() {
-        state.withLockedValue { state in
-            state.timeoutTask?.cancel()
-            state.timeoutTask = nil
-            state.isAwaitingApproval = true
-        }
-    }
-
-    /// The server answers the approved key within the login's timeout, counted again from here.
-    func approvalEnded() {
-        let wasAwaiting = state.withLockedValue { state in
-            defer { state.isAwaitingApproval = false }
-            return state.isAwaitingApproval && !state.isComplete
-        }
-        if wasAwaiting { startTimeout() }
-    }
-
-    private func startTimeout() {
-        let promise = promise
-        let state = state
-        let requestID = requestID
-        let onTailscaleSSHCheck = onTailscaleSSHCheck
-        let timeout = timeout
         let timeoutTask = eventLoop.scheduleTask(in: timeout) {
             Self.complete(
                 .timeout(timeout),
@@ -1563,11 +1397,9 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
                 onTailscaleSSHCheck: onTailscaleSSHCheck
             )
         }
-        let isComplete = state.withLockedValue { state in
-            if !state.isComplete { state.timeoutTask = timeoutTask }
-            return state.isComplete
+        promise.futureResult.whenComplete { _ in
+            timeoutTask.cancel()
         }
-        if isComplete { timeoutTask.cancel() }
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -1605,8 +1437,7 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        let wasAwaitingApproval = state.withLockedValue { $0.isAwaitingApproval }
-        complete(.failure(wasAwaitingApproval ? SSHKeyApprovalError.interrupted : Disconnected()))
+        complete(.failure(Disconnected()))
         context.fireChannelInactive()
     }
 

@@ -60,7 +60,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let defaultConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: { _ in
+            authenticationMethod: {
                 .passwordBased(username: server.username, password: "pw")
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
@@ -72,7 +72,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let tracedConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: { _ in
+            authenticationMethod: {
                 .passwordBased(username: server.username, password: "pw")
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
@@ -109,6 +109,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let configuration = RemuxAppDependencies.sshConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
+            secureEnclaveApprovals: SecureEnclaveSSHApprovals(),
             traceFlowID: nil
         )
 
@@ -143,15 +144,18 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             sshAuth: makePasswordAuth(server: server, password: "pw")
         )
 
+        let approvals = SecureEnclaveSSHApprovals()
         let tailscale = RemuxAppDependencies.sshConfiguration(
             for: tailscaleTarget,
             trustedHostStore: trustedHostStore,
+            secureEnclaveApprovals: approvals,
             tailscaleSSHCheckChallengeBroker: broker,
             traceFlowID: nil
         )
         let password = RemuxAppDependencies.sshConfiguration(
             for: passwordTarget,
             trustedHostStore: trustedHostStore,
+            secureEnclaveApprovals: approvals,
             tailscaleSSHCheckChallengeBroker: broker,
             traceFlowID: nil
         )
@@ -691,154 +695,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.reservationCount, 0)
         XCTAssertEqual(entry?.isIdleCloseScheduled, false)
         await pool.closeAllConnectionsForTesting()
-    }
-
-    /// A login whose key the user approves on the device starts only for a request that may ask them:
-    /// prewarming and a request that may not start none, and giving the login up while it waits ends it,
-    /// which takes its prompt away.
-    func testSSHRootServiceStartsALoginNeedingApprovalOnlyForARequestThatMayAsk() async throws {
-        let listener = try await makeSilentListener()
-        let pool = RemuxSSHRootService()
-        let key = makeSSHRootKey()
-        let trace = RemuxTransportStartupTrace(flowID: nil)
-        let port = try XCTUnwrap(listener.localAddress?.port)
-
-        await pool.prewarmConnection(
-            for: key,
-            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
-            trace: trace,
-            reason: "test"
-        )
-        var entry = await pool.snapshot().entry(for: key)
-        XCTAssertNil(entry, "prewarming started a login that needs approval")
-
-        let unasked = await pool.preparedRoot(
-            for: key,
-            configuration: makeApprovalConfiguration(port: port, keyApproval: .mustNotAsk),
-            trace: trace
-        )
-        do {
-            _ = try await unasked.sshRoot()
-            XCTFail("a login nobody asked for started")
-        } catch {
-            XCTAssertEqual(error as? SSHKeyApprovalError, .required)
-        }
-        entry = await pool.snapshot().entry(for: key)
-        XCTAssertNil(entry)
-
-        let asked = await pool.preparedRoot(
-            for: key,
-            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
-            trace: trace
-        )
-        entry = await pool.snapshot().entry(for: key)
-        XCTAssertEqual(entry?.readiness, .connecting)
-
-        await asked.cancelAndCleanup()
-        entry = await pool.snapshot().entry(for: key)
-        XCTAssertNil(entry, "a login nobody waits for kept its prompt")
-        await pool.closeAllConnectionsForTesting()
-        try await listener.close()
-    }
-
-    /// An open connection is reused without asking the user, whatever its key.
-    func testSSHRootServiceReusesAnOpenConnectionWithoutApproval() async throws {
-        let pool = RemuxSSHRootService()
-        let key = makeSSHRootKey()
-        let generation = await pool.insertEntryForTesting(for: key)
-
-        let prepared = await pool.preparedRoot(
-            for: key,
-            configuration: makeApprovalConfiguration(port: 22, keyApproval: .mustNotAsk),
-            trace: RemuxTransportStartupTrace(flowID: nil)
-        )
-        let entry = await pool.snapshot().entry(for: key)
-        XCTAssertEqual(entry?.generation, generation)
-        XCTAssertEqual(entry?.reservationCount, 1)
-        await prepared.cancelAndCleanup()
-        await pool.closeAllConnectionsForTesting()
-    }
-
-    /// A full connection sends a request to a login of its own: one that may ask gets it, as Send's upload
-    /// does, and one that may not is refused rather than prompting.
-    func testSSHRootServiceOverflowLoginNeedingApprovalFollowsTheRequest() async throws {
-        let listener = try await makeSilentListener()
-        let port = try XCTUnwrap(listener.localAddress?.port)
-        let pool = RemuxSSHRootService()
-        let key = makeSSHRootKey()
-        await pool.insertEntryForTesting(for: key, activeLeaseCount: RemuxSSHRootService.maxConcurrentLeases)
-        let trace = RemuxTransportStartupTrace(flowID: nil)
-
-        let unasked = await pool.preparedRoot(
-            for: key,
-            configuration: makeApprovalConfiguration(port: port, keyApproval: .mustNotAsk),
-            trace: trace
-        )
-        do {
-            _ = try await unasked.sshRoot()
-            XCTFail("an overflow login nobody asked for started")
-        } catch {
-            XCTAssertEqual(error as? SSHKeyApprovalError, .required)
-        }
-
-        let asked = await pool.preparedRoot(
-            for: key,
-            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
-            trace: trace
-        )
-        XCTAssertFalse(asked.isFinished, "the upload's own login didn't start")
-        await asked.cancelAndCleanup()
-        await pool.closeAllConnectionsForTesting()
-        try await listener.close()
-    }
-
-    /// A caller cancelled while its login waits, as for the user's approval, stops waiting at once, and its
-    /// cleanup ends the login nobody else waits for.
-    func testSSHRootServiceCancelledWaitForALoginReturnsAtOnce() async throws {
-        let listener = try await makeSilentListener()
-        let port = try XCTUnwrap(listener.localAddress?.port)
-        let pool = RemuxSSHRootService()
-        let key = makeSSHRootKey()
-        let prepared = await pool.preparedRoot(
-            for: key,
-            configuration: makeApprovalConfiguration(port: port, keyApproval: .mayAsk),
-            trace: RemuxTransportStartupTrace(flowID: nil)
-        )
-        let waiting = Task { try await prepared.sshRoot() }
-        try await Task.sleep(for: .milliseconds(50))
-
-        let cancelledAt = ContinuousClock.now
-        waiting.cancel()
-        let result = await waiting.result
-        XCTAssertLessThan(ContinuousClock.now - cancelledAt, .seconds(1))
-        XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
-
-        await prepared.cancelAndCleanup()
-        let entry = await pool.snapshot().entry(for: key)
-        XCTAssertNil(entry)
-        await pool.closeAllConnectionsForTesting()
-        try await listener.close()
-    }
-
-    /// A server that accepts the TCP connection and never answers, as one whose login waits.
-    private func makeSilentListener() async throws -> Channel {
-        try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
-            .bind(host: "127.0.0.1", port: 0)
-            .get()
-    }
-
-    private func makeApprovalConfiguration(port: Int, keyApproval: SSHKeyApproval) -> RemuxSSHRootConfiguration {
-        let server = SavedServer(displayName: "Mac mini", host: "127.0.0.1", port: port, username: "tester")
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return RemuxSSHRootConfiguration(
-            host: "127.0.0.1",
-            port: port,
-            authenticationMethod: { _ in .passwordBased(username: "tester", password: "unused") },
-            hostKeyValidator: TrustedHostStore(rootURL: directory).validator(for: server),
-            connectTimeout: .seconds(30),
-            keyApproval: keyApproval
-        )
     }
 
     func testSSHRootServiceSecondReservationSharesRoot() async throws {
@@ -1660,7 +1516,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let transport = SSHTmuxControlTransport(
             configuration: SSHTmuxControlConfiguration(
                 host: server.host,
-                authenticationMethod: { _ in
+                authenticationMethod: {
                     .passwordBased(username: server.username, password: "pw")
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),
@@ -1863,7 +1719,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         SSHTmuxControlConfiguration(
             host: loopback.server.host,
             port: loopback.server.port,
-            authenticationMethod: { _ in .passwordBased(username: "remux", password: "pw") },
+            authenticationMethod: { .passwordBased(username: "remux", password: "pw") },
             hostKeyValidator: loopback.trustedHostStore.validator(for: loopback.server),
             connectTimeout: .seconds(5),
             controlNoResponseTimeout: .milliseconds(300),
@@ -1882,7 +1738,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         return RemuxSSHRootConfiguration(
             host: server.host,
             port: server.port,
-            authenticationMethod: { _ in .passwordBased(username: "tester", password: "pw") },
+            authenticationMethod: { .passwordBased(username: "tester", password: "pw") },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(2)
         )

@@ -267,9 +267,6 @@ struct SessionTarget: Equatable, Sendable {
     let sshAuth: ResolvedSSHAuth
     let terminalSettings: TerminalSettings
     var opening: SessionOpening
-    /// Whether this request's SSH login may ask the user to approve a key on this device: only when the user
-    /// made the request. Each request sets its own.
-    var keyApproval: SSHKeyApproval = .mustNotAsk
 
     var locator: SessionLocator {
         workspace.locator
@@ -540,9 +537,6 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var authenticationKind: SSHAuthenticationKind = .password
     var password: String = ""
     var secureEnclaveKey: SecureEnclaveSSHKey?
-    /// The key's login that installing it verified, which adding the server needn't ask the user for again
-    /// while the address, user and key are the same.
-    var verifiedKeyLogin: SSHPublicKeyInstallTarget?
     var privateKeyPEM: String = ""
     var privateKeyFileName: String = ""
     var privateKeyPassphrase: String = ""
@@ -923,19 +917,5 @@ private extension TmuxConnectionDraftValidation {
         privateKey = privateKey ?? other.privateKey
         privateKeyPassphrase = privateKeyPassphrase ?? other.privateKeyPassphrase
         sessionName = sessionName ?? other.sessionName
-    }
-}
-
-extension ResolvedSSHAuth {
-    var usesSecureEnclaveKey: Bool {
-        if case .privateKey(let key) = credential { return key.secureEnclaveKey != nil }
-        return false
-    }
-}
-
-extension SessionTarget {
-    /// What the SSH pool needs of `keyApproval`: nil for a key that needs no approval.
-    var sshKeyApproval: SSHKeyApproval? {
-        sshAuth.usesSecureEnclaveKey ? keyApproval : nil
     }
 }

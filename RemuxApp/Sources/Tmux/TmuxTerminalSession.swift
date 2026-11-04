@@ -67,11 +67,6 @@ final class TmuxTerminalSession: ObservableObject {
     private var didStartLink = false
     private var linkIsActive = false
     private var isShutDown = false
-
-    /// Whether the session's first connection is still opening, as while the user approves its key.
-    var isConnecting: Bool {
-        linkIsActive && state == .detached(nil) && transportFailure == nil
-    }
     private var shutdownDrainContinuation: CheckedContinuation<Void, Never>?
     /// Renderers whose surfaces aren't freed yet. Ghostty requires the app to outlive every surface,
     /// so a shutdown returns, and its owner frees the app, only once this is back to zero.

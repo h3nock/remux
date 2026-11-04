@@ -1787,6 +1787,12 @@ struct DisclosureRowLabel: View {
 private struct DeviceKeyInfoButton: View {
     @State private var isPresented = false
 
+    private static var approvalText: String {
+        let method = SecureEnclaveSSHKey.biometryName.map { "\($0), or your passcode," } ?? "your passcode"
+        return "Remux asks for \(method) once for each server, and again after this \(UIDevice.current.model) "
+            + "locks or Remux closes."
+    }
+
     var body: some View {
         Button {
             isPresented = true
@@ -1803,8 +1809,7 @@ private struct DeviceKeyInfoButton: View {
         .popover(isPresented: $isPresented) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("The private key is created inside this \(UIDevice.current.model) and can't be copied or exported.")
-                Text(SecureEnclaveSSHKey.biometryName.map { "Each new SSH login asks for \($0), or your passcode." }
-                    ?? "Each new SSH login asks for your passcode.")
+                Text(Self.approvalText)
             }
             .font(.footnote)
             .fixedSize(horizontal: false, vertical: true)
@@ -3376,9 +3381,6 @@ struct ConnectionSetupView: View {
             success: completion.success,
             target: completion.target
         )
-        onChange { draft in
-            draft.verifiedKeyLogin = completion.target
-        }
     }
 
     private func privateKeyChangeMenu() -> some View {
