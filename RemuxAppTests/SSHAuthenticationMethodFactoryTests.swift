@@ -337,6 +337,30 @@ final class SecureEnclaveSSHApprovalsTests: XCTestCase {
         XCTAssertFalse(owner.isApproved(approved))
     }
 
+    /// Only a prompt nobody wanted any more counts as cancelled: the user or iOS dismissing it, what asked for it
+    /// going away, or its not being able to come up. Any other failure is one to say.
+    func testOnlyAPromptNobodyWantedCountsAsCancelled() {
+        let cancellations: [any Error] = [
+            CancellationError(),
+            LAError(.userCancel),
+            LAError(.systemCancel),
+            LAError(.appCancel),
+            SSHKeyApprovalError.required,
+        ]
+        for error in cancellations {
+            XCTAssertTrue(SecureEnclaveSSHApprovals.isCancellation(error), "\(error)")
+        }
+        let failures: [any Error] = [
+            LAError(.passcodeNotSet),
+            LAError(.authenticationFailed),
+            LAError(.biometryLockout),
+            SecureEnclaveSSHError.keyUnreadable,
+        ]
+        for error in failures {
+            XCTAssertFalse(SecureEnclaveSSHApprovals.isCancellation(error), "\(error)")
+        }
+    }
+
     /// No prompt over another app, or while the device is locked and the key can't be used.
     func testNoPromptOverAnotherAppOrWhileTheDeviceIsLocked() async throws {
         for (isActive, isProtectedDataAvailable) in [(false, true), (true, false)] {

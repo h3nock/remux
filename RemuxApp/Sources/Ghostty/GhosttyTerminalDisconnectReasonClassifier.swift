@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import NIOCore
 import NIOPosix
 
@@ -79,11 +80,13 @@ enum GhosttyTerminalDisconnectReasonClassifier {
         return TerminalDisconnectReason(kind: .unknown, message: message)
     }
 
-    /// Why a key made on this device didn't log in, in Remux's words: one the user hasn't approved for the server
-    /// needs unlocking; one that no longer works here needs replacing.
+    /// Why a key made on this device didn't log in: one the user hasn't approved for the server needs unlocking,
+    /// in Remux's words, or says why approving it failed, in iOS's; one that no longer works here needs replacing.
     static func keyUnlockMessage(for error: any Error) -> String? {
         switch error {
         case let error as SecureEnclaveSSHError where error == .keyUnusable:
+            return error.localizedDescription
+        case let error as LAError:
             return error.localizedDescription
         case is SSHKeyApprovalError:
             return "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect."

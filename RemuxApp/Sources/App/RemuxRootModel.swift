@@ -516,6 +516,8 @@ final class RemuxRootModel: ObservableObject {
         didSet { Haptic.follow(terminalSettings) }
     }
     @Published private(set) var terminalSettingsSaveFailed = false
+    /// Why approving a server's key on this device failed, for a session the user opened or reconnected.
+    @Published private(set) var deviceKeyApprovalFailure: String?
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
     @Published private(set) var isSetupActionInProgress = false
     @Published private(set) var sessionDiscoveries: [SavedServer.ID: ServerSessionDiscovery] = [:]
@@ -907,8 +909,8 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// Logging in with a key made on this device first asks the user to approve it, for the server the draft adds,
-    /// so adding the server and listing its sessions don't ask again. A user who doesn't approve it stops the check
-    /// there, to try again.
+    /// so adding the server and listing its sessions don't ask again. A user who cancels stops the check there, to
+    /// try again; an approval that failed otherwise stops it saying why.
     func verifyPublicKeyInstallation(
         _ draft: TmuxConnectionDraft,
         setupSessionID: UUID?
@@ -917,7 +919,11 @@ final class RemuxRootModel: ObservableObject {
         let target = try publicKeyInstallTarget(for: draft)
         if let check = dependencies.secureEnclaveApprovals.check(for: target), check.needsApproval {
             let serverName = draft.displayName.isEmpty ? target.host : draft.displayName
-            guard await approve(check, serverName: serverName) else { throw SSHKeyApprovalError.required }
+            switch await approve(check, serverName: serverName) {
+            case .approved: break
+            case .cancelled: throw SSHKeyApprovalError.required
+            case .failed(let error): throw error
+            }
         }
         try await dependencies.publicKeyInstaller.verify(target)
     }
@@ -1048,8 +1054,13 @@ final class RemuxRootModel: ObservableObject {
                     workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
                     sshAuth: sshAuth
                 )
-                // A user who doesn't approve the key leaves the form as it was.
-                guard await approveDeviceKeyIfNeeded(for: verification) else { return nil }
+                // A user who cancels leaves the form as it was; an approval that failed otherwise says why, as a
+                // failed check does.
+                switch await approveDeviceKeyIfNeeded(for: verification) {
+                case .approved: break
+                case .cancelled: return nil
+                case .failed(let error): throw error
+                }
                 try await dependencies.verifySSHAccess(for: verification)
                 guard isCurrentSetupAction(action) else { return nil }
                 return await persistVerifiedNewServer(
@@ -1676,7 +1687,7 @@ final class RemuxRootModel: ObservableObject {
            let session = RemuxActiveSessionCollection.session(id, in: activeSessions),
            dependencies.secureEnclaveApprovals.check(for: session.target)?.needsApproval == true {
             Task { [weak self] in
-                guard let self, await self.approveDeviceKeyIfNeeded(for: session.target) else { return }
+                guard let self, await self.approvesDeviceKeyForSession(session.target) else { return }
                 self.restartActiveSession(id, source: source)
             }
             return
@@ -2159,7 +2170,7 @@ final class RemuxRootModel: ObservableObject {
         var target = target(server: server, workspace: workspace, sshAuth: sshAuth)
         target.opening = opening
         let flow = sessionOpenFlowID(workspace.id)
-        guard await approveDeviceKeyIfNeeded(for: target) else {
+        guard await approvesDeviceKeyForSession(target) else {
             GhosttyRuntimeTrace.flowEnd(
                 flow,
                 event: "model.activate.keyNotApproved",
@@ -2448,22 +2459,49 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    /// For something the user just asked for: asks them to approve the server's key on this device, unless the key
-    /// isn't one made here or they have. Returns false when they didn't approve, which ends what they asked for.
-    private func approveDeviceKeyIfNeeded(for target: SessionTarget) async -> Bool {
+    /// What the user's approval of a server's key, asked for something they just requested, says of that request:
+    /// it goes on, or it stops, quietly when they cancelled and saying why when the approval failed otherwise.
+    private enum DeviceKeyApproval {
+        case approved
+        case cancelled
+        case failed(any Error)
+    }
+
+    /// Asks the user to approve the server's key on this device, unless the key isn't one made here or they have.
+    private func approveDeviceKeyIfNeeded(for target: SessionTarget) async -> DeviceKeyApproval {
         guard let check = dependencies.secureEnclaveApprovals.check(for: target), check.needsApproval else {
-            return true
+            return .approved
         }
         return await approve(check, serverName: target.server.displayName)
     }
 
-    private func approve(_ check: SecureEnclaveSSHApprovals.Check, serverName: String) async -> Bool {
+    private func approve(_ check: SecureEnclaveSSHApprovals.Check, serverName: String) async -> DeviceKeyApproval {
         do {
             try await check.approvals.approve(check.scope, serverName: serverName)
-            return true
+            return .approved
+        } catch where SecureEnclaveSSHApprovals.isCancellation(error) {
+            return .cancelled
         } catch {
+            return .failed(error)
+        }
+    }
+
+    /// For opening or reconnecting a session: whether it goes on. An approval that failed other than by cancelling
+    /// says why, over whatever is on screen, and nothing else stops.
+    private func approvesDeviceKeyForSession(_ target: SessionTarget) async -> Bool {
+        switch await approveDeviceKeyIfNeeded(for: target) {
+        case .approved:
+            return true
+        case .cancelled:
+            return false
+        case .failed(let error):
+            deviceKeyApprovalFailure = error.localizedDescription
             return false
         }
+    }
+
+    func dismissDeviceKeyApprovalFailure() {
+        deviceKeyApprovalFailure = nil
     }
 
     /// Lists both backends' sessions over the server's SSH connection, each applied as it arrives, so a
@@ -2492,10 +2530,19 @@ final class RemuxRootModel: ObservableObject {
             sshAuth: sshAuth
         )
         if userInitiated {
-            let approved = await approveDeviceKeyIfNeeded(for: discoveryTarget)
+            let approval = await approveDeviceKeyIfNeeded(for: discoveryTarget)
             guard isCurrentSessionRefresh(server, refreshID: refreshID) else { return }
-            guard approved else {
+            switch approval {
+            case .approved:
+                break
+            case .cancelled:
                 sessionDiscoveries[server.id] = sessionDiscovery(for: server.id).mapping { $0.lockingRefresh() }
+                return
+            case .failed(let error):
+                // The server's own notice says the check failed.
+                sessionDiscoveries[server.id] = sessionDiscovery(for: server.id).mapping {
+                    Self.applying(.failure(error), to: $0, backend: nil, configuredPath: nil)
+                }
                 return
             }
         }

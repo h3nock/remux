@@ -280,6 +280,27 @@ private struct RemuxWorkspaceShell: View {
         } message: {
             Text("Your previous settings are still in use. Try again.")
         }
+        .alert(
+            "Key Not Unlocked",
+            isPresented: deviceKeyApprovalFailureIsPresented,
+            presenting: model.deviceKeyApprovalFailure
+        ) { _ in
+            Button("OK", role: .cancel) {
+                model.dismissDeviceKeyApprovalFailure()
+            }
+        } message: { message in
+            Text(message)
+        }
+    }
+
+    private var deviceKeyApprovalFailureIsPresented: Binding<Bool> {
+        Binding(
+            get: { model.deviceKeyApprovalFailure != nil },
+            set: { isPresented in
+                guard !isPresented else { return }
+                model.dismissDeviceKeyApprovalFailure()
+            }
+        )
     }
 
     private var terminalSettingsSaveFailureIsPresented: Binding<Bool> {

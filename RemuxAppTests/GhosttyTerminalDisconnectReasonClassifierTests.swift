@@ -1,4 +1,5 @@
 @preconcurrency import Citadel
+import LocalAuthentication
 import NIO
 import XCTest
 @preconcurrency import NIOSSH
@@ -24,6 +25,12 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         let unreadable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnreadable)
         XCTAssertEqual(unreadable.kind, .unknown)
         XCTAssertEqual(unreadable.message, SecureEnclaveSSHError.keyUnreadable.localizedDescription)
+
+        // Why approving the key failed, in iOS's words, with the same ways on as a locked key.
+        let failedApproval = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(LAError(.passcodeNotSet))
+        XCTAssertEqual(failedApproval.kind, .keyUnlock)
+        XCTAssertEqual(failedApproval.message, LAError(.passcodeNotSet).localizedDescription)
+        XCTAssertFalse(failedApproval.allowsAutomaticReconnect)
 
         // A locked device only pauses the key: nothing to unlock in Remux, and the session reconnects by itself.
         let paused = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.unavailableWhileLocked)

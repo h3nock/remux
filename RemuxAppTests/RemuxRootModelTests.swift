@@ -2073,6 +2073,78 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertFalse(device.harness.model.activeSessions.contains { $0.target.workspace.sessionName == "other" })
     }
 
+    /// An approval that fails other than by cancelling stops what the user asked for, though a connection still
+    /// open could serve it without one, and says why: the session list's check fails, and opening or reconnecting a
+    /// session says so over the screen, leaving the open session as it was.
+    func testAFailedApprovalStopsWhatTheUserAskedForAndSaysWhy() async throws {
+        let prompts = DeviceKeyPrompts()
+        let discoveries = DeviceKeyLoginCount()
+        let sessionLogins = DeviceKeySessionLogins()
+        let device = try await makeDeviceKeyServer(
+            prompts: prompts,
+            sessionLogins: sessionLogins,
+            discoveries: discoveries,
+            servesWithoutApproval: true
+        )
+        await device.harness.model.load()
+        await device.harness.model.connect(to: device.workspace.id)
+        device.sshRootService.secureEnclaveApprovals.revoke(serverID: device.server.id)
+        prompts.answer = .fail
+        let discoveriesBeforeAsking = discoveries.count
+        let sessionLoginsBeforeAsking = sessionLogins.approved.count
+        let reason = LAError(.passcodeNotSet).localizedDescription
+
+        await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
+        XCTAssertEqual(discoveries.count, discoveriesBeforeAsking, "the refresh logged in after a failed approval")
+        XCTAssertTrue(device.harness.model.discoveryNotices(for: device.server.id).checkFailed)
+
+        device.harness.model.reconnectActiveSession(device.workspace.id, source: .manualButton)
+        _ = await waitUntil { device.harness.model.deviceKeyApprovalFailure != nil }
+        XCTAssertEqual(device.harness.model.deviceKeyApprovalFailure, reason)
+        XCTAssertEqual(sessionLogins.approved.count, sessionLoginsBeforeAsking, "the reconnect ran after a failed approval")
+        device.harness.model.dismissDeviceKeyApprovalFailure()
+
+        let other = SavedWorkspace(serverID: device.server.id, sessionName: "other")
+        await device.harness.model.connectToDiscoveredSession(other.locator, on: device.server.id)
+        XCTAssertEqual(device.harness.model.deviceKeyApprovalFailure, reason)
+        XCTAssertFalse(device.harness.model.activeSessions.contains { $0.target.workspace.sessionName == "other" })
+        XCTAssertTrue(device.harness.model.activeSessions.contains { $0.target.workspace.id == device.workspace.id })
+        XCTAssertEqual(prompts.count, 4)
+    }
+
+    /// Adding a server whose key's approval fails other than by cancelling doesn't log in, and says why, as a failed
+    /// check does.
+    func testAFailedApprovalSaysWhyAddingTheServerFailed() async throws {
+        let prompts = DeviceKeyPrompts(answer: .fail)
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
+        let harness = makeHarness(
+            sshAccessVerifier: { target, _, _ in try await verifier.verify(target) },
+            sshRootService: RemuxSSHRootService(secureEnclaveApprovals: DeviceKeyFixture.approvals(evaluate: { _, _ in
+                try await prompts.evaluate()
+            }))
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Mac mini"
+            draft.host = "mac-mini.local"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = SecureEnclaveSSHKey(representation: Data([1]), publicKey: DeviceKeyFixture.publicKey)
+            draft.sessionName = "base"
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertNil(savedServerID)
+        XCTAssertEqual(
+            harness.model.connectionSetup?.submissionIssue,
+            .verificationFailed(LAError(.passcodeNotSet).localizedDescription)
+        )
+        let verified = await verifier.targets()
+        XCTAssertTrue(verified.isEmpty, "adding the server logged in after a failed approval")
+    }
+
     /// Declining the approval adding a server asks for leaves the form as it was, unsaved.
     func testDecliningTheApprovalLeavesTheNewServerUnsaved() async throws {
         let prompts = DeviceKeyPrompts(answer: .cancel)
@@ -2332,7 +2404,9 @@ final class RemuxRootModelTests: XCTestCase {
         held: HeldLockedLogins? = nil,
         sessionLogins: DeviceKeySessionLogins = DeviceKeySessionLogins(),
         uploads: DeviceKeyUploads = DeviceKeyUploads(),
-        discoveries: DeviceKeyLoginCount = DeviceKeyLoginCount()
+        discoveries: DeviceKeyLoginCount = DeviceKeyLoginCount(),
+        // As a connection still open does: discovery over it needs no new login, so no approval.
+        servesWithoutApproval: Bool = false
     ) async throws -> (
         harness: RemuxRootModelHarness,
         server: SavedServer,
@@ -2354,7 +2428,9 @@ final class RemuxRootModelTests: XCTestCase {
             if let held, service.secureEnclaveApprovals.check(for: target)?.isApproved == false {
                 await held.hold()
             }
-            try await Self.logIn(to: target, through: service)
+            if !servesWithoutApproval {
+                try await Self.logIn(to: target, through: service)
+            }
         }
         let harness = makeHarness(
             servers: [server],
@@ -5730,7 +5806,7 @@ private enum RootModelSetupTestError: Error {
 /// stay up until `release()`.
 @MainActor
 private final class DeviceKeyPrompts {
-    enum Answer { case approve, cancel }
+    enum Answer { case approve, cancel, fail }
 
     var answer: Answer
     private var holds: Bool
@@ -5745,7 +5821,11 @@ private final class DeviceKeyPrompts {
     func evaluate() async throws {
         count += 1
         if holds { await withCheckedContinuation { waiting.append($0) } }
-        if answer == .cancel { throw LAError(.userCancel) }
+        switch answer {
+        case .approve: return
+        case .cancel: throw LAError(.userCancel)
+        case .fail: throw LAError(.passcodeNotSet)
+        }
     }
 
     func release() {

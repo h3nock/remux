@@ -341,6 +341,21 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
         guard isApproved(scope) else { throw SSHKeyApprovalError.required }
     }
 
+    /// Whether `error` says only that nobody wanted the approval any more: the user or iOS dismissed the prompt,
+    /// what asked for it went away, or the prompt couldn't come up then. Anything else is a failure worth saying.
+    static func isCancellation(_ error: any Error) -> Bool {
+        switch error {
+        case is CancellationError:
+            return true
+        case let error as LAError:
+            return [.userCancel, .systemCancel, .appCancel].contains(error.code)
+        case let error as SSHKeyApprovalError:
+            return error == .required
+        default:
+            return false
+        }
+    }
+
     /// Ends the server's approvals: the user disconnected its last session, or removed it. Its prompts still out
     /// grant nothing, and whoever waits for them hears that the key is locked; the next request asks again.
     func revoke(serverID: SavedServer.ID) {
@@ -444,8 +459,9 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
         }
     }
 
+    /// The caller is out of the request before its wait ends, so a prompt answered meanwhile can't count it as
+    /// still waiting.
     private func leave(_ scope: Scope, _ waiter: Waiter) {
-        waiter.finish(.failure(CancellationError()))
         let abandoned: Task<Void, Never>? = lock.withLock {
             guard var entry = pending[scope],
                   entry.waiters.removeValue(forKey: ObjectIdentifier(waiter)) != nil else { return nil }
@@ -456,6 +472,7 @@ final class SecureEnclaveSSHApprovals: @unchecked Sendable {
             pending[scope] = nil
             return entry.request
         }
+        waiter.finish(.failure(CancellationError()))
         abandoned?.cancel()
     }
 
