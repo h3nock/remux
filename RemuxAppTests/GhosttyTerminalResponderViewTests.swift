@@ -1192,6 +1192,34 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testKoreanReassemblyOverThePlaceholderTypesOnlyTheSyllable() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        // The iOS 27 Korean keyboard reassembles a syllable by selecting it together with the
+        // character before it, here the placeholder, deleting both and typing them back: ㄱ, then
+        // ㅏ makes 가, ㄴ makes 간, and ㅏ makes 가나.
+        view.insertText("ㄱ")
+        for syllable in ["가", "간", "가나"] {
+            view.selectedTextRange = typedRange(0, 2)
+            view.deleteBackward()
+            view.insertText(" ")
+            view.insertText(syllable)
+        }
+
+        XCTAssertEqual(
+            sent.items,
+            ["text:ㄱ", "key:backspace", "text:가", "key:backspace", "text:간", "key:backspace", "text:가나"]
+        )
+        XCTAssertEqual(terminalLine(sent.items), "가나")
+        XCTAssertEqual(view.text(in: typedRange(0, 3)), " 가나")
+
+        // A space typed after anything else is typed.
+        view.insertText(" ")
+        XCTAssertEqual(terminalLine(sent.items), "가나 ")
+    }
+
+    @MainActor
     func testKeyboardSelectionsInTypedTextAreEditedInTheTerminal() {
         let sent = Sent()
         let view = composingView(sent)
@@ -1212,7 +1240,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertEqual(view.text(in: typedRange(0, 9)), " spacing ")
 
         // The caret never moves into the placeholder.
-        view.selectedTextRange = typedRange(0, 1)
+        view.selectedTextRange = typedRange(0, 0)
         XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 8, length: 0))
     }
 

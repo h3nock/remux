@@ -93,6 +93,9 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     private(set) var text = Self.placeholder
     private(set) var selection = Self.idleSelection
     private(set) var marked: NSRange?
+    /// The keyboard deleted a selection that included the placeholder, which stayed, since it
+    /// stands for nothing the terminal holds.
+    private var keptPlaceholder = false
 
     private static let typedStart = (placeholder as NSString).length
     private static let idleSelection = NSRange(location: typedStart, length: 0)
@@ -123,6 +126,7 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     /// Replaces the composition, or starts one at the selection. `selectedRange`
     /// is relative to the new marked text.
     mutating func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        keptPlaceholder = false
         let target = marked ?? selection
         guard isValid(target) else { return }
         let value = markedText ?? ""
@@ -151,6 +155,14 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     /// caret at the end, and becomes typed text. Nil while composing.
     mutating func type(_ inserted: String) -> TypedEdit? {
         guard marked == nil else { return nil }
+        var inserted = inserted
+        // A keyboard that deleted the placeholder with typed text types it back first, as the
+        // Korean keyboard does when it reassembles a syllable. The placeholder stayed, so that copy
+        // isn't typed.
+        if keptPlaceholder, inserted.hasPrefix(Self.placeholder) {
+            inserted.removeFirst(Self.placeholder.count)
+        }
+        keptPlaceholder = false
         return editTyped(selection, with: inserted)
     }
 
@@ -159,10 +171,15 @@ struct GhosttyTerminalCompositionDocument: Equatable {
             var target = selection
             if target.length == 0 {
                 // With no typed text before the caret, the terminal deletes what came before.
-                guard target.location > Self.typedStart else { return .terminal }
+                guard target.location > Self.typedStart else {
+                    keptPlaceholder = false
+                    return .terminal
+                }
                 target = (text as NSString).rangeOfComposedCharacterSequence(at: target.location - 1)
             }
-            return editTyped(target, with: "").map(Deletion.typed) ?? .terminal
+            let deletion = editTyped(target, with: "").map(Deletion.typed) ?? .terminal
+            keptPlaceholder = target.location < Self.typedStart
+            return deletion
         }
         var target = selection
         if target.length == 0 {
@@ -175,6 +192,7 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     /// Edits the composition when `range` lies inside it, or the typed text while nothing composes.
     /// A replacement beyond the composition is committed input, and the document is idle.
     mutating func replace(_ range: NSRange, with replacement: String) -> Replacement {
+        keptPlaceholder = false
         guard isValid(range) else { return .none }
         guard let marked else {
             return editTyped(range, with: replacement).map(Replacement.typed) ?? .none
@@ -194,13 +212,14 @@ struct GhosttyTerminalCompositionDocument: Equatable {
 
     /// Moves the selection inside the composition, or within the typed text while nothing
     /// composes. The caret never moves into the placeholder, so Backspace keeps a character to
-    /// delete.
+    /// delete, but a selection can take it in, as the Korean keyboard's does before it reassembles
+    /// a syllable.
     mutating func select(_ range: NSRange) {
         guard isValid(range) else { return }
         if let marked {
             guard range.location >= marked.location, NSMaxRange(range) <= NSMaxRange(marked) else { return }
         } else {
-            guard range.location >= Self.typedStart else { return }
+            guard range.location >= Self.typedStart || range.length > 0 else { return }
         }
         selection = range
     }
@@ -210,6 +229,7 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         text = Self.placeholder
         selection = Self.idleSelection
         marked = nil
+        keptPlaceholder = false
     }
 
     /// Replaces `range` of the typed text, as the terminal must receive it. The edit erases from

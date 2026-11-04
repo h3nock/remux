@@ -409,6 +409,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     func replaceComposition(_ range: NSRange, with text: String) {
         guard isInputEnabled else { return }
         keyboardContextNeedsSync = true
+        GhosttyRuntimeTrace.diagnostics(
+            "responder.replace range=\(NSStringFromRange(range)) utf16=\((text as NSString).length) document=\(composition.length) marked=\(composition.marked.map(NSStringFromRange) ?? "nil")"
+        )
         switch composition.replace(range, with: text) {
         case .composition:
             presentComposition()
