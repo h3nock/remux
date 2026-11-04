@@ -4,8 +4,8 @@ import NIOSSH
 @testable import Remux
 
 final class SSHPrivateKeyInspectorTests: XCTestCase {
-    // A software public key exercises metadata paths without accessing the SEP
-    // or prompting on a simulator. The opaque representation is a test fixture.
+    // A software public key exercises metadata paths without the Secure Enclave,
+    // which the simulator doesn't have. The opaque representation is a test fixture.
     private func enclaveFixture() -> (SecureEnclaveSSHKey, P256.Signing.PrivateKey) {
         let softwareKey = P256.Signing.PrivateKey()
         return (SecureEnclaveSSHKey(
@@ -14,7 +14,7 @@ final class SSHPrivateKeyInspectorTests: XCTestCase {
         ), softwareKey)
     }
 
-    func testEnclavePublicKeyMatchesNIOSSHEncodingWithoutUnlocking() throws {
+    func testEnclavePublicKeyMatchesNIOSSHEncoding() throws {
         let (key, softwareKey) = enclaveFixture()
         let inspection = try key.inspect()
         XCTAssertEqual(inspection.publicKeyLine, String(openSSHPublicKey: NIOSSHPrivateKey(p256Key: softwareKey).publicKey))
@@ -34,14 +34,6 @@ final class SSHPrivateKeyInspectorTests: XCTestCase {
         let data = Data(#"{"kind":"privateKey","privateKeyPEM":"legacy","privateKeyPassphrase":"passphrase"}"#.utf8)
         XCTAssertEqual(try JSONDecoder().decode(SSHCredential.self, from: data),
                        .privateKey(SSHPrivateKeyCredential(privateKeyPEM: "legacy", passphrase: "passphrase")))
-    }
-
-    func testEnclaveAuthUsesDistinctPoolIdentity() throws {
-        let (key, _) = enclaveFixture()
-        let auth = try ResolvedSSHAuth.privateKey(username: "test", credential:
-            SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key),
-            identityID: UUID(), displayLabel: "test")
-        XCTAssertTrue(auth.authFingerprint.hasPrefix("secure-enclave:"))
     }
 
     /// A key saved before keys recorded how they sign asks on every use, which can't change, so it's replaced.

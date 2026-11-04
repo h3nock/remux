@@ -80,7 +80,7 @@ struct ResolvedSSHAuth: Equatable, Sendable {
             username: username,
             displayLabel: displayLabel,
             authFingerprint: [
-                credential.secureEnclaveKey == nil ? "private-key" : "secure-enclave",
+                "private-key",
                 inspection.publicFingerprint,
                 fingerprint(credential.passphrase ?? ""),
             ].joined(separator: ":"),
