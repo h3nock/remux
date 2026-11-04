@@ -583,6 +583,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     var holdsTmuxPrefixKey: Bool { true }
 
+    var focusedInputSurfaceID: UUID? {
+        guard preflightFocusedInput() == nil else { return nil }
+        return focusedManagedSurface?.id
+    }
+
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         if let preflight = preflightFocusedInput() { return preflight }
         return focusedManagedSurface?.sendInput(text) ?? .noFocusedSurface

@@ -640,6 +640,26 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertFalse(controller.isControlArmed)
     }
 
+    func testInputControllerTextWithoutModifiersKeepsControlForTheNextKey() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleControl()
+
+        XCTAssertEqual(controller.receiveText("c", appliesModifiers: false), .submit("c"))
+        XCTAssertTrue(controller.isControlArmed)
+
+        let action = controller.receiveKeyEvent(GhosttySurfaceKeyEvent(keyCode: .arrowUp))
+        XCTAssertEqual(action.event, GhosttySurfaceKeyEvent(keyCode: .arrowUp, mods: [.ctrl]))
+        XCTAssertFalse(controller.isControlArmed)
+    }
+
+    func testInputControllerTextWithoutModifiersStillHoldsTheTmuxPrefix() {
+        var controller = GhosttyTerminalInputController()
+
+        guard case .schedulePrefixFlush = controller.receiveText("\u{02}", appliesModifiers: false) else {
+            return XCTFail("Ctrl+B is held as tmux's prefix")
+        }
+    }
+
     func testInputControllerControlKeyAddsCtrlModifierAndClearsControl() {
         var controller = GhosttyTerminalInputController()
         controller.toggleControl()

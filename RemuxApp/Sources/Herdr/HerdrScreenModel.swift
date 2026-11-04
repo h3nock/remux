@@ -936,6 +936,11 @@ final class HerdrScreenModel {
         userPaneID.flatMap(inputTarget(forPane:))
     }
 
+    /// The pane the user's input goes to now (`inputTarget`); nil while it would be dropped.
+    var inputPaneID: String? {
+        inputTarget?.paneID
+    }
+
     /// Where input for `paneID` goes, the one rule for every input: Herdr takes it (`herdrInputTarget`), and
     /// the frame on screen draws the pane (`isDrawn`), so nothing typed goes to a pane the user doesn't see,
     /// as one on the tab a move is going to while the tab left is still on screen. As it goes, the engine

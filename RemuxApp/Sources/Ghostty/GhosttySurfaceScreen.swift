@@ -264,7 +264,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onPreviewSelection: onPreviewSelection,
                             onWindowSwipe: handleWindowSwipe,
                             sendKeyEventToSurface: { event, surfaceID in
-                                model.sendKeyEvent(event, to: surfaceID).isAccepted
+                                // The terminal trackpad steers the cursor, so a draft is finished first.
+                                guard keyboardResponderHandoff.resolveTerminalComposition(
+                                    for: .finish(preservingModifiers: true)
+                                ) != .refused else { return false }
+                                return model.sendKeyEvent(event, to: surfaceID).isAccepted
                             },
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             isMouseCaptured: { surfaceID in
@@ -302,7 +306,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             responderHandoff: keyboardResponderHandoff,
                             trackpadDriver: trackpadDriver,
                             keyboardAppearance: presentation.terminalTheme.terminalKeyboardAppearance,
-                            sendText: sendTerminalText,
+                            inputSurface: {
+                                model.focusedInputSurfaceID.flatMap {
+                                    model.terminalManagedSurfaceLookup.managedSurface(for: $0)
+                                }
+                            },
+                            sendText: { sendTerminalText($0) },
+                            sendFinishedText: { sendTerminalText($0, appliesModifiers: false) },
                             sendPaste: sendTerminalPaste,
                             sendKeyEvent: sendTerminalKeyEvent,
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
@@ -479,7 +489,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     onToggleKeyboard: toggleKeyboardChrome,
                                     onToggleControl: toggleControlModifier,
                                     onShowShortcuts: showShortcutPalette,
-                                    sendKey: sendTerminalKeyEvent,
+                                    sendKey: performToolbarKey,
                                     composerContent: { selectedComposerBar() },
                                     allowsTerminalKeys: !isReadingAfterFind
                                 )
@@ -1080,6 +1090,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .background {
+            keyboardResponderHandoff.resolveTerminalComposition(for: .cancel)
+        }
         if terminalCoverPhase.isRestoringKeyboard {
             guard phase == .active else { return }
             resumeTerminalCoverKeyboardRestorationIfPossible()
@@ -1495,9 +1508,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func executeShortcut(_ shortcut: Shortcut) {
+        // A shortcut's sequence follows what was typed, so a draft is finished once before it.
+        guard keyboardResponderHandoff.resolveTerminalComposition(
+            for: .finish(preservingModifiers: true)
+        ) != .refused else { return }
         Task { @MainActor in
             let executor = ShortcutExecutor(
-                sendText: sendTerminalText,
+                sendText: { sendTerminalText($0) },
                 sendKey: sendTerminalKeyEvent
             )
             if await executor.execute(shortcut) {
@@ -1507,10 +1524,42 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleControlModifier() {
+        // Ctrl arms for what comes next, so a draft typed before it is finished first.
+        if !terminalInputController.isControlArmed,
+           keyboardResponderHandoff.resolveTerminalComposition(
+               for: .finish(preservingModifiers: true)
+           ) == .refused {
+            return
+        }
         terminalInputController.toggleControl()
         if terminalInputController.isControlArmed, inputCoordinator.keyboardMode == .hidden {
             showSystemKeyboard()
         }
+    }
+
+    /// A toolbar key settles the keyboard's draft first: Return confirms it and Escape cancels it,
+    /// either without reaching the terminal; Backspace and Delete do nothing while it is open; any
+    /// other key finishes it, keeping an armed Ctrl for the key itself. Without a draft the key goes
+    /// to the terminal.
+    private func performToolbarKey(_ event: GhosttySurfaceKeyEvent) -> Bool {
+        let (action, consumesDraft): (GhosttyTerminalCompositionAction, Bool) = switch event.keyCode {
+        case .enter: (.finish(preservingModifiers: false), true)
+        case .escape: (.cancel, true)
+        case .backspace, .delete: (.delete, true)
+        default: (.finish(preservingModifiers: true), false)
+        }
+        switch keyboardResponderHandoff.resolveTerminalComposition(for: action) {
+        case .refused:
+            return false
+        case .noDraft:
+            return sendTerminalKeyEvent(event)
+        case .canceled:
+            // Ctrl was armed for the draft that is gone, not for whatever comes next.
+            terminalInputController.clearControl()
+        case .finished, .kept:
+            break
+        }
+        return consumesDraft || sendTerminalKeyEvent(event)
     }
 
     private func showWindows(availableSize: CGSize) {
@@ -1593,11 +1642,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func sendTerminalText(_ text: String) -> Bool {
+    private func sendTerminalText(_ text: String, appliesModifiers: Bool = true) -> Bool {
         guard !isFindPresented, !isReadingAfterFind else { return false }
         return terminalInputController.performTextInput(
             text,
             holdsTmuxPrefix: model.holdsTmuxPrefixKey,
+            appliesModifiers: appliesModifiers,
             submit: submitTerminalText(_:),
             schedulePrefixFlush: scheduleTmuxPrefixInputFlush(token:),
             enterCopyMode: {

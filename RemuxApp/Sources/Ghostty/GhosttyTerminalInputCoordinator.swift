@@ -158,9 +158,15 @@ struct GhosttyTerminalInputController: Equatable {
         }
     }
 
-    /// `holdsTmuxPrefix` is the session's `holdsTmuxPrefixKey`.
-    mutating func receiveText(_ text: String, holdsTmuxPrefix: Bool = true) -> TextAction {
-        let outbound = modifierState.apply(to: text)
+    /// `holdsTmuxPrefix` is the session's `holdsTmuxPrefixKey`. An armed modifier applies to the
+    /// text unless `appliesModifiers` is false, as for a draft an app action finishes, which leaves
+    /// it armed for that action's own key.
+    mutating func receiveText(
+        _ text: String,
+        holdsTmuxPrefix: Bool = true,
+        appliesModifiers: Bool = true
+    ) -> TextAction {
+        let outbound = appliesModifiers ? modifierState.apply(to: text) : text
         guard holdsTmuxPrefix else { return .submit(outbound) }
         switch tmuxPrefixInputBuffer.handleText(outbound) {
         case .submit(let input):
@@ -175,11 +181,12 @@ struct GhosttyTerminalInputController: Equatable {
     mutating func performTextInput(
         _ text: String,
         holdsTmuxPrefix: Bool = true,
+        appliesModifiers: Bool = true,
         submit: (String) -> Bool,
         schedulePrefixFlush: (UInt64) -> Void,
         enterCopyMode: () -> Bool
     ) -> Bool {
-        switch receiveText(text, holdsTmuxPrefix: holdsTmuxPrefix) {
+        switch receiveText(text, holdsTmuxPrefix: holdsTmuxPrefix, appliesModifiers: appliesModifiers) {
         case .submit(let input):
             return submit(input)
         case .schedulePrefixFlush(let token):

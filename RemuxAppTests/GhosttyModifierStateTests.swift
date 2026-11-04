@@ -46,4 +46,23 @@ final class GhosttyModifierStateTests: XCTestCase {
         XCTAssertFalse(state.isControlArmed)
     }
 
+    func testControlTextRequiresExactlyOneASCIIScalar() {
+        XCTAssertEqual(GhosttyModifierState.controlText(for: "c"), "\u{03}")
+        // One Character, two scalars: c with a combining acute.
+        XCTAssertNil(GhosttyModifierState.controlText(for: "c\u{0301}"))
+        XCTAssertNil(GhosttyModifierState.controlText(for: "你"))
+        XCTAssertNil(GhosttyModifierState.controlText(for: "ni"))
+    }
+
+    func testControlLatchPassesInputMethodCommitsThroughAndClears() {
+        var state = GhosttyModifierState()
+        state.toggleControl()
+
+        XCTAssertEqual(state.apply(to: "c\u{0301}"), "c\u{0301}")
+        XCTAssertFalse(state.isControlArmed)
+
+        state.toggleControl()
+        XCTAssertEqual(state.apply(to: "你好"), "你好")
+        XCTAssertFalse(state.isControlArmed)
+    }
 }
