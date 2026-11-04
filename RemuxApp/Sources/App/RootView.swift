@@ -2387,6 +2387,14 @@ private struct SSHPublicKeyInstallRequest: Identifiable {
     let setupSessionID: UUID
 }
 
+/// What a private key action row shows once its action has run.
+private struct PrivateKeyActionOutcome {
+    let message: String
+    let systemImage: String
+    let style: AnyShapeStyle
+    let accessibilityIdentifier: String
+}
+
 struct ConnectionSetupView: View {
     let draft: TmuxConnectionDraft
     let validation: TmuxConnectionDraftValidation
@@ -3217,8 +3225,14 @@ struct ConnectionSetupView: View {
                 title: "Copy public key",
                 subtitle: "Add to ~/.ssh/authorized_keys on the server",
                 systemImage: "doc.on.doc",
-                outcome: publicKeyCopyMessage,
-                outcomeAccessibilityIdentifier: "connection.private-key.copy-status"
+                outcome: publicKeyCopyMessage.map { message in
+                    PrivateKeyActionOutcome(
+                        message: message,
+                        systemImage: "checkmark",
+                        style: AnyShapeStyle(.secondary),
+                        accessibilityIdentifier: "connection.private-key.copy-status"
+                    )
+                }
             )
         }
         .buttonStyle(.plain)
@@ -3232,10 +3246,15 @@ struct ConnectionSetupView: View {
         } catch {
             target = nil
         }
-        let outcome: String? = if let confirmation = publicKeyInstallConfirmation,
-                                  let target,
-                                  confirmation.matches(target) {
-            confirmation.success.message
+        let outcome: PrivateKeyActionOutcome? = if let confirmation = publicKeyInstallConfirmation,
+                                                   let target,
+                                                   confirmation.matches(target) {
+            PrivateKeyActionOutcome(
+                message: confirmation.success.message,
+                systemImage: "checkmark.circle.fill",
+                style: AnyShapeStyle(.green),
+                accessibilityIdentifier: "connection.private-key.install-status"
+            )
         } else {
             nil
         }
@@ -3253,8 +3272,7 @@ struct ConnectionSetupView: View {
                 title: "Install on Server",
                 subtitle: "Add this public key using a one-time password",
                 systemImage: "square.and.arrow.down.on.square",
-                outcome: outcome,
-                outcomeAccessibilityIdentifier: "connection.private-key.install-status"
+                outcome: outcome
             )
         }
         .buttonStyle(.plain)
@@ -3262,19 +3280,19 @@ struct ConnectionSetupView: View {
         .accessibilityIdentifier("connection.private-key.install")
     }
 
-    /// Once the row's action has run, the icon becomes a checkmark and the
-    /// subtitle reports the outcome in place of the explanation.
+    /// Once the row's action has run, its outcome takes the place of the
+    /// icon and the explanatory subtitle.
     private func privateKeyOutcomeLabel(
         title: String,
         subtitle: String,
         systemImage: String,
-        outcome: String?,
-        outcomeAccessibilityIdentifier: String
+        outcome: PrivateKeyActionOutcome?
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: outcome == nil ? systemImage : "checkmark")
+        let style = outcome?.style ?? AnyShapeStyle(.secondary)
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: outcome?.systemImage ?? systemImage)
                 .font(.body.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(style)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -3283,14 +3301,14 @@ struct ConnectionSetupView: View {
 
                 Group {
                     if let outcome {
-                        Text(outcome)
-                            .accessibilityIdentifier(outcomeAccessibilityIdentifier)
+                        Text(outcome.message)
+                            .accessibilityIdentifier(outcome.accessibilityIdentifier)
                     } else {
                         Text(subtitle)
                     }
                 }
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(style)
             }
 
             Spacer(minLength: 12)
