@@ -48,7 +48,7 @@ struct SSHPublicKeyInstallSheet: View {
                 phaseContent
             }
         }
-        .navigationTitle("Install on Host")
+        .navigationTitle("Install on Server")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             start {
@@ -130,10 +130,10 @@ struct SSHPublicKeyInstallSheet: View {
             ProgressView("Verifying public key")
 
         case .alreadyInstalled:
-            installStatus("Already installed")
+            installStatus(SSHPublicKeyInstallSuccess.alreadyInstalled.message)
 
         case .installed:
-            installStatus("Installed on host")
+            installStatus(SSHPublicKeyInstallSuccess.installed.message)
 
         case .failed(let message):
             Text(message)
