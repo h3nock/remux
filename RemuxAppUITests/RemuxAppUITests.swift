@@ -910,8 +910,8 @@ final class RemuxAppUITests: XCTestCase {
 
         let inlineStatus = app.staticTexts["connection.private-key.install-status"]
         XCTAssertTrue(inlineStatus.waitForExistence(timeout: 5))
-        XCTAssertEqual(inlineStatus.label, "Installed on host")
-        XCTAssertFalse(app.navigationBars["Install on Host"].exists)
+        XCTAssertEqual(inlineStatus.label, "Installed")
+        XCTAssertFalse(app.navigationBars["Install on Server"].exists)
         XCTAssertFalse(app.buttons["connection.private-key.install-cancel"].exists)
         XCTAssertTrue(app.buttons["connection.private-key.install"].exists)
         XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)
@@ -1021,7 +1021,7 @@ final class RemuxAppUITests: XCTestCase {
         let inlineStatus = app.staticTexts["connection.private-key.install-status"]
         XCTAssertTrue(inlineStatus.waitForExistence(timeout: 5))
         XCTAssertEqual(inlineStatus.label, "Already installed")
-        XCTAssertFalse(app.navigationBars["Install on Host"].exists)
+        XCTAssertFalse(app.navigationBars["Install on Server"].exists)
         XCTAssertFalse(app.buttons["connection.private-key.install-cancel"].exists)
         XCTAssertTrue(app.buttons["connection.private-key.install"].exists)
         XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)

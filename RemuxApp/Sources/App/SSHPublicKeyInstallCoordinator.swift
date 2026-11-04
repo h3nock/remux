@@ -21,7 +21,7 @@ enum SSHPublicKeyInstallSuccess: Equatable {
         case .alreadyInstalled:
             "Already installed"
         case .installed:
-            "Installed on host"
+            "Installed"
         }
     }
 }

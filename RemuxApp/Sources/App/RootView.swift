@@ -3213,31 +3213,13 @@ struct ConnectionSetupView: View {
         Button {
             copyPublicKey(inspection.publicKeyLine)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: publicKeyCopyMessage == nil ? "doc.on.doc" : "checkmark")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 22)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Copy public key")
-                        .foregroundStyle(.primary)
-
-                    Text("Add to ~/.ssh/authorized_keys on the server")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-
-                if publicKeyCopyMessage != nil {
-                    Text("Copied")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .foregroundStyle(Color.accentColor)
-            .contentShape(Rectangle())
+            privateKeyOutcomeLabel(
+                title: "Copy public key",
+                subtitle: "Add to ~/.ssh/authorized_keys on the server",
+                systemImage: "doc.on.doc",
+                outcome: publicKeyCopyMessage,
+                outcomeAccessibilityIdentifier: "connection.private-key.copy-status"
+            )
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("connection.private-key.copy-public")
@@ -3250,6 +3232,13 @@ struct ConnectionSetupView: View {
         } catch {
             target = nil
         }
+        let outcome: String? = if let confirmation = publicKeyInstallConfirmation,
+                                  let target,
+                                  confirmation.matches(target) {
+            confirmation.success.message
+        } else {
+            nil
+        }
 
         return Button {
             dismissKeyboard()
@@ -3260,38 +3249,53 @@ struct ConnectionSetupView: View {
                 setupSessionID: setupSessionID
             )
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "square.and.arrow.down.on.square")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 22)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Install on Host")
-                        .foregroundStyle(.primary)
-
-                    Text("Add this public key using a one-time password")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-
-                if let confirmation = publicKeyInstallConfirmation,
-                   let target,
-                   confirmation.matches(target) {
-                    Label(confirmation.success.message, systemImage: "checkmark.circle.fill")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.green)
-                        .accessibilityIdentifier("connection.private-key.install-status")
-                }
-            }
-            .foregroundStyle(Color.accentColor)
-            .contentShape(Rectangle())
+            privateKeyOutcomeLabel(
+                title: "Install on Server",
+                subtitle: "Add this public key using a one-time password",
+                systemImage: "square.and.arrow.down.on.square",
+                outcome: outcome,
+                outcomeAccessibilityIdentifier: "connection.private-key.install-status"
+            )
         }
         .buttonStyle(.plain)
         .disabled(isActionInProgress || target == nil || setupSessionID == nil)
         .accessibilityIdentifier("connection.private-key.install")
+    }
+
+    /// Once the row's action has run, the icon becomes a checkmark and the
+    /// subtitle reports the outcome in place of the explanation.
+    private func privateKeyOutcomeLabel(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        outcome: String?,
+        outcomeAccessibilityIdentifier: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: outcome == nil ? systemImage : "checkmark")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .foregroundStyle(.primary)
+
+                Group {
+                    if let outcome {
+                        Text(outcome)
+                            .accessibilityIdentifier(outcomeAccessibilityIdentifier)
+                    } else {
+                        Text(subtitle)
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+        }
+        .contentShape(Rectangle())
     }
 
     private func acceptPublicKeyInstallCompletion(
@@ -3354,7 +3358,6 @@ struct ConnectionSetupView: View {
                     Text("Import, paste, generate, remove")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 12)
@@ -3420,7 +3423,6 @@ struct ConnectionSetupView: View {
                     Text(subtitle)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 12)
@@ -3541,7 +3543,7 @@ struct ConnectionSetupView: View {
 
     private func copyPublicKey(_ publicKeyLine: String) {
         UIPasteboard.general.string = publicKeyLine
-        publicKeyCopyMessage = "Public key copied"
+        publicKeyCopyMessage = "Copied"
         Haptic.tap()
     }
 
