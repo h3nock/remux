@@ -66,7 +66,7 @@ final class SSHPublicKeyInstallCoordinatorTests: XCTestCase {
             )
         )
         XCTAssertEqual(SSHPublicKeyInstallSuccess.alreadyInstalled.message, "Already installed")
-        XCTAssertEqual(SSHPublicKeyInstallSuccess.installed.message, "Installed on host")
+        XCTAssertEqual(SSHPublicKeyInstallSuccess.installed.message, "Installed")
     }
 
     func testCancelledAppendIgnoresLateHostKeyFailure() async {
