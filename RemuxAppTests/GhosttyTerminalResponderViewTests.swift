@@ -1284,6 +1284,27 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testBackspaceOverTheSelectedPlaceholderDeletesInTheTerminal() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        // On a fresh context, as after the app comes back, an iPhone selected the placeholder
+        // before each Backspace of a repeat.
+        for _ in 0..<3 {
+            view.selectedTextRange = typedRange(0, 1)
+            view.deleteBackward()
+        }
+
+        XCTAssertEqual(sent.items, Array(repeating: "key:backspace", count: 3))
+        XCTAssertEqual(view.text(in: typedRange(0, 1)), " ")
+        XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 1, length: 0))
+
+        // Typing goes on as usual, a space included.
+        view.insertText(" x")
+        XCTAssertEqual(sent.items.last, "text: x")
+    }
+
+    @MainActor
     func testBackspaceWithTheCaretBeforeTypedTextEndsTheContext() {
         let sent = Sent()
         let view = composingView(sent)

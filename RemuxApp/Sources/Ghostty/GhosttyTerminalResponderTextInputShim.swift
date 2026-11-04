@@ -175,13 +175,16 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     mutating func deleteBackward() -> Deletion {
         guard let marked else {
             var target = selection
-            if target.length == 0 {
-                // With no typed text before the caret, the terminal deletes what came before.
-                guard target.location > Self.typedStart else {
-                    keptPlaceholder = false
-                    return .terminal
-                }
+            if target.length == 0, target.location > Self.typedStart {
                 target = (text as NSString).rangeOfComposedCharacterSequence(at: target.location - 1)
+            }
+            // With no typed text to delete, the terminal deletes what came before it. The keyboard
+            // also selects the placeholder alone before a Backspace on a fresh context, as when the
+            // app comes back to the foreground.
+            guard NSMaxRange(target) > Self.typedStart else {
+                keptPlaceholder = false
+                selection = Self.idleSelection
+                return .terminal
             }
             let deletion = editTyped(target, with: "").map(Deletion.typed) ?? .terminal
             keptPlaceholder = target.location < Self.typedStart
