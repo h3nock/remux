@@ -498,6 +498,65 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
+    /// Uses the simulated transport: rotating must resize the existing terminal while preserving input.
+    func testSimulatorTerminalPreservesComposerDraftAcrossResizing() {
+        XCUIDevice.shared.orientation = .portrait
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        launchSeededSimulatorTerminal()
+
+        let terminal = app.otherElements["terminal.screen"]
+        let toggle = app.buttons["terminal.composer.toggle"]
+        toggle.tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        typeTextAndConfirm("Keep this draft", into: field)
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "draft before resizing"))
+        guard let initial = waitForKeyboardContinuity(owner: "composer") else { return }
+        let initialWidth = terminal.frame.width
+
+        for orientation: UIDeviceOrientation in [.landscapeLeft, .portrait] {
+            let previousWidth = terminal.frame.width
+            XCUIDevice.shared.orientation = orientation
+            let resized = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    abs(terminal.frame.width - previousWidth) > 1
+                },
+                object: nil
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed)
+            XCTAssertTrue(waitForElementToSettle(field))
+            XCTAssertEqual(field.value as? String, "Keep this draft")
+            guard let continuity = waitForKeyboardContinuity(owner: "composer") else { return }
+            if orientation == .landscapeLeft {
+                XCTAssertNotEqual(continuity.effectiveViewport, initial.effectiveViewport)
+            } else {
+                XCTAssertEqual(terminal.frame.width, initialWidth, accuracy: 1)
+            }
+            let screenBounds = app.frame.insetBy(dx: -1, dy: -1)
+            XCTAssertGreaterThan(terminal.frame.width, 100)
+            XCTAssertGreaterThan(terminal.frame.height, 40)
+            XCTAssertTrue(screenBounds.contains(terminal.frame), "Terminal extends outside the app after resize.")
+            XCTAssertTrue(screenBounds.contains(field.frame), "Composer extends outside the app after resize.")
+            waitForLiveTerminalInputReady(timeout: 5)
+            attachScreenshot(named: "terminal-draft-\(orientation == .portrait ? "portrait" : "landscape")")
+        }
+
+        field.typeText(" retained")
+        XCTAssertEqual(field.value as? String, "Keep this draft retained")
+        toggle.tap()
+        openSessionSwitcherFromTerminal()
+        let active = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", "ui-test"))
+        XCTAssertTrue(active.firstMatch.waitForExistence(timeout: 5), "Resizing lost the active session.")
+        app.buttons["terminal.sessions.close"].tap()
+        waitForLiveTerminalInputReady(timeout: 5)
+        toggle.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, "Keep this draft retained")
+    }
+
     func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
         launchSeededSimulatorTerminal()
 

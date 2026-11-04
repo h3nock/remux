@@ -25,6 +25,26 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         XCTAssertEqual(Int(Double(Float(renderer.bounds.height)) * renderer.contentsScale), 2310)
     }
 
+    func testSurfaceRendererUsesLocalDisplayScaleAfterResize() {
+        let view = GhosttyKitSurfaceView(frame: CGRect(x: 0, y: 0, width: 200, height: 300))
+        let window = UIWindow(frame: view.frame)
+        window.addSubview(view)
+        let renderer = CALayer()
+        view.layer.addSublayer(renderer)
+        for scale: CGFloat in [2, 3] {
+            view.traitOverrides.displayScale = scale
+            // UIKit batches override propagation until the next trait update.
+            view.updateTraitsIfNeeded()
+            XCTAssertEqual(view.traitCollection.displayScale, scale)
+            view.bounds.size = CGSize(width: 600, height: 400)
+            view.alignGhosttyRendererSublayers()
+            XCTAssertEqual(view.contentScaleFactor, scale)
+            XCTAssertEqual(view.layer.contentsScale, scale)
+            XCTAssertEqual(renderer.contentsScale, scale)
+            XCTAssertEqual(renderer.frame, view.bounds)
+        }
+    }
+
     func testReleaseBuildModePolicyAcceptsReleaseFastGhosttyKit() {
         XCTAssertNil(
             GhosttyKitBuildModePolicy.releaseValidationFailure(

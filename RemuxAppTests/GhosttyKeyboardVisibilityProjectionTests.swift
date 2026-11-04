@@ -1,5 +1,6 @@
 import CoreGraphics
 import XCTest
+import UIKit
 @testable import Remux
 
 final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
@@ -600,5 +601,67 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
         )
 
         XCTAssertEqual(projection.action, .ignorePolicy)
+    }
+}
+
+@MainActor
+final class GhosttyKeyboardWindowGeometryTests: XCTestCase {
+    func testLayoutGuideReconciliationExcludesHiddenSafeAreaStrip() {
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        XCTAssertEqual(GhosttyKeyboardWindowGeometry.dockedOverlapHeight(
+            layoutFrame: CGRect(x: 0, y: 566, width: 800, height: 34),
+            windowBounds: bounds, bottomSafeAreaInset: 34), 0)
+        XCTAssertEqual(GhosttyKeyboardWindowGeometry.dockedOverlapHeight(
+            layoutFrame: CGRect(x: 0, y: 300, width: 800, height: 300),
+            windowBounds: bounds, bottomSafeAreaInset: 34), 300)
+    }
+
+    func testLayoutGuideReconciliationUsesNewWindowGeometryAfterFold() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 800)
+        XCTAssertEqual(GhosttyKeyboardWindowGeometry.dockedOverlapHeight(
+            layoutFrame: CGRect(x: 0, y: 500, width: 400, height: 300),
+            windowBounds: bounds, bottomSafeAreaInset: 20), 300)
+        XCTAssertEqual(GhosttyKeyboardWindowGeometry.dockedOverlapHeight(
+            layoutFrame: CGRect(x: 0, y: 780, width: 400, height: 20),
+            windowBounds: bounds, bottomSafeAreaInset: 20), 0)
+    }
+
+    func testKeyboardFrameConvertsFromSourceCoordinatesIntoWindow() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 500, height: 800))
+        let source = UIView(frame: CGRect(x: -500, y: 0, width: 1000, height: 800))
+        window.addSubview(source)
+        let notification = Notification(name: UIResponder.keyboardWillChangeFrameNotification,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect:
+                CGRect(x: 500, y: 500, width: 500, height: 300))])
+        let frame = GhosttyKeyboardWindowGeometry.frameEnd(notification: notification,
+            window: window, coordinateSpace: source)
+        XCTAssertEqual(frame, CGRect(x: 0, y: 500, width: 500, height: 300))
+        XCTAssertEqual(GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
+            frameEnd: frame, screenBounds: window.bounds), 300)
+    }
+
+    func testKeyboardOutsideSplitWindowDoesNotCountAsVisible() {
+        let bounds = CGRect(x: 0, y: 0, width: 500, height: 800)
+        let projection = GhosttyKeyboardVisibilityProjection(
+            frameEnd: CGRect(x: 500, y: 500, width: 500, height: 300),
+            screenBounds: bounds, animationDuration: 0,
+            keyboardMode: .system, isDismissSystemKeyboardRequested: false)
+        XCTAssertFalse(projection.isVisible)
+        XCTAssertEqual(projection.overlapHeight, 0)
+    }
+
+    func testMissingOrHiddenKeyboardUsesCurrentWindowBoundsAfterResize() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        window.bounds.size = CGSize(width: 800, height: 600)
+        for notification in [
+            Notification(name: UIResponder.keyboardWillChangeFrameNotification),
+            Notification(name: UIResponder.keyboardWillHideNotification,
+                userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect:
+                    CGRect(x: 0, y: 300, width: 800, height: 300))])
+        ] {
+            let frame = GhosttyKeyboardWindowGeometry.frameEnd(notification: notification,
+                window: window, coordinateSpace: window)
+            XCTAssertEqual(frame, CGRect(x: 0, y: 600, width: 800, height: 0))
+        }
     }
 }

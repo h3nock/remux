@@ -210,6 +210,10 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         addInteraction(selectionEditMenuInteraction)
         addSubview(startSelectionHandle)
         addSubview(endSelectionHandle)
+        registerForTraitChanges([UITraitDisplayScale.self]) { (view: GhosttyCompositeViewportContainerView, _: UITraitCollection) in
+            view.layoutVisibleSurfaces()
+            view.layoutSelectionHandles()
+        }
     }
 
     @available(*, unavailable)
@@ -1152,6 +1156,10 @@ final class GhosttyPaneLinesUIView: UIView {
         backgroundColor = .clear
         isUserInteractionEnabled = false
         contentMode = .redraw
+        registerForTraitChanges([UITraitDisplayScale.self]) { (view: GhosttyPaneLinesUIView, _: UITraitCollection) in
+            view.contentScaleFactor = view.paneDisplayScale
+            view.setNeedsDisplay()
+        }
     }
 
     @available(*, unavailable)
@@ -1187,10 +1195,9 @@ final class GhosttyPaneLinesUIView: UIView {
 }
 
 private extension UIView {
-    /// The scale the panes' cells and lines are laid out on, so the two meet on the same pixels: the window's
-    /// screen's, or the main screen's before the view is in a window.
+    /// The current view's display scale keeps pane cells and separator lines on the same pixel grid.
     var paneDisplayScale: CGFloat {
-        max(window?.screen.scale ?? UIScreen.main.scale, 1)
+        max(traitCollection.displayScale, 1)
     }
 }
 

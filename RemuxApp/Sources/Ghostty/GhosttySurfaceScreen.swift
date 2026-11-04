@@ -81,6 +81,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     /// screen.
     @State private var shownWindowGroupID: UUID?
     @State private var bottomChromeReservation = GhosttyBottomChromeReservation()
+    @State private var keyboardWindowContext = GhosttyKeyboardWindowContext()
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
@@ -510,6 +511,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .bottom)
+            }
+            .background {
+                GhosttyKeyboardWindowReader(context: keyboardWindowContext) {
+                    reconcileKeyboardWindowGeometry()
+                }
+                .allowsHitTesting(false)
             }
             .onPreferenceChange(GhosttyRenderedBottomChromeHeightPreferenceKey.self) { renderedHeight in
                 let previousHeight = bottomChromeReservation.settledHeight
@@ -1837,19 +1844,41 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
+    private func reconcileKeyboardWindowGeometry() {
+        guard shouldHandleTerminalKeyboardNotification,
+              let window = keyboardWindowContext.window else { return }
+        // A resize is not a new keyboard appearance. Read the live layout guide
+        // instead of replaying a notification from a previous display geometry.
+        let overlap = GhosttyKeyboardWindowGeometry.dockedOverlapHeight(
+            layoutFrame: window.keyboardLayoutGuide.layoutFrame,
+            windowBounds: window.bounds,
+            bottomSafeAreaInset: window.safeAreaInsets.bottom
+        )
+        if softwareKeyboardOverlapHeight != overlap {
+            softwareKeyboardOverlapHeight = overlap
+        }
+        if overlap > 0, lastSoftwareKeyboardOverlapHeight != overlap {
+            lastSoftwareKeyboardOverlapHeight = overlap
+        }
+    }
+
     private func updateKeyboardVisibility(with notification: Notification) {
-        let frameEnd = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?
-            .cgRectValue
-            ?? CGRect(
-                x: 0,
-                y: UIScreen.main.bounds.maxY,
-                width: UIScreen.main.bounds.width,
-                height: 0
-            )
+        guard let window = keyboardWindowContext.window,
+              let screen = window.windowScene?.screen else { return }
+        if let sourceScreen = notification.object as? UIScreen, sourceScreen !== screen {
+            return
+        }
+        // Keyboard notifications use screen coordinates; the terminal may occupy
+        // only part of that display, and its window changes size while folding.
+        let frameEnd = GhosttyKeyboardWindowGeometry.frameEnd(
+            notification: notification,
+            window: window,
+            coordinateSpace: screen.coordinateSpace
+        )
 
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: frameEnd,
-            screenBounds: UIScreen.main.bounds,
+            screenBounds: window.bounds,
             animationDuration: (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
                 .doubleValue,
             keyboardMode: inputCoordinator.keyboardMode,
@@ -2678,7 +2707,7 @@ struct GhosttySoftwareKeyboardVisibility {
         guard frameEnd.minY < screenBounds.maxY - 1 else { return 0 }
 
         let overlap = frameEnd.intersection(screenBounds)
-        guard !overlap.isNull, overlap.height.isFinite, overlap.height > 0 else {
+        guard !overlap.isNull, overlap.width > 0, overlap.height.isFinite, overlap.height > 0 else {
             return 0
         }
         return overlap.height
@@ -2728,6 +2757,69 @@ struct GhosttySurfaceScreenLifecycleProjection: Equatable {
             self.shouldRefocusSystemKeyboard = false
         @unknown default:
             self.shouldRefocusSystemKeyboard = false
+        }
+    }
+}
+
+/// Holds the owning window weakly without publishing UIKit layout callbacks into SwiftUI.
+@MainActor
+private final class GhosttyKeyboardWindowContext {
+    weak var window: UIWindow?
+}
+
+@MainActor
+private struct GhosttyKeyboardWindowReader: UIViewRepresentable {
+    let context: GhosttyKeyboardWindowContext
+    let onWindowGeometryChanged: () -> Void
+
+    func makeUIView(context: Context) -> Probe {
+        Probe(windowContext: self.context, onWindowGeometryChanged: onWindowGeometryChanged)
+    }
+
+    func updateUIView(_ view: Probe, context: Context) {
+        view.onWindowGeometryChanged = onWindowGeometryChanged
+    }
+
+    final class Probe: UIView {
+        let windowContext: GhosttyKeyboardWindowContext
+        var onWindowGeometryChanged: () -> Void
+        private var previousBounds: CGRect?
+        private var previousKeyboardFrame: CGRect?
+        private var previousBottomSafeAreaInset: CGFloat?
+        private weak var previousWindow: UIWindow?
+
+        init(windowContext: GhosttyKeyboardWindowContext, onWindowGeometryChanged: @escaping () -> Void) {
+            self.windowContext = windowContext
+            self.onWindowGeometryChanged = onWindowGeometryChanged
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            windowContext.window = window
+            setNeedsLayout()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let window else { return }
+            let keyboardFrame = window.keyboardLayoutGuide.layoutFrame
+            let bottomInset = window.safeAreaInsets.bottom
+            guard window !== previousWindow || window.bounds != previousBounds
+                || keyboardFrame != previousKeyboardFrame
+                || bottomInset != previousBottomSafeAreaInset else { return }
+            previousWindow = window
+            previousBounds = window.bounds
+            previousKeyboardFrame = keyboardFrame
+            previousBottomSafeAreaInset = bottomInset
+            // Updating SwiftUI state during layout would trigger a recursive update.
+            Task { @MainActor [weak self] in
+                guard let self, self.window != nil else { return }
+                self.onWindowGeometryChanged()
+            }
         }
     }
 }

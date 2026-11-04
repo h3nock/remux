@@ -175,6 +175,7 @@ final class GhosttyKitSurfaceView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        alignGhosttyRendererSublayers()
         onWindowAttachmentChange?()
     }
 
@@ -196,7 +197,10 @@ final class GhosttyKitSurfaceView: UIView {
     }
 
     func alignGhosttyRendererSublayers() {
-        let scale = max(window?.screen.scale ?? contentScaleFactor, 1)
+        // Detached previews and newly created surfaces carry an explicit render scale.
+        // Once attached, follow the local display's traits as the window moves.
+        let scale = max(window == nil ? contentScaleFactor : traitCollection.displayScale, 1)
+        contentScaleFactor = scale
         layer.contentsScale = scale
         for sublayer in layer.sublayers ?? [] {
             sublayer.frame = bounds
@@ -229,7 +233,11 @@ final class GhosttyKitSurfaceView: UIView {
         applyTerminalTheme(.ghosttyDefault)
         clipsToBounds = true
         isOpaque = true
-        contentScaleFactor = max(UIScreen.main.scale, 1)
+        contentScaleFactor = max(traitCollection.displayScale, 1)
+        registerForTraitChanges([UITraitDisplayScale.self]) { (view: GhosttyKitSurfaceView, _: UITraitCollection) in
+            guard view.window != nil else { return }
+            view.alignGhosttyRendererSublayers()
+        }
     }
 }
 
@@ -270,11 +278,19 @@ final class GhosttyKitRuntime {
         ghostty_terminal_surface_config_new()
     }
 
+    @available(*, deprecated, message: "Pass the presenting view's trait collection")
     static func prewarmTerminalRenderer(terminalSettings: TerminalSettings) {
+        prewarmTerminalRenderer(terminalSettings: terminalSettings, traitCollection: .current)
+    }
+
+    static func prewarmTerminalRenderer(
+        terminalSettings: TerminalSettings,
+        traitCollection: UITraitCollection
+    ) {
         let key = GhosttyTerminalRendererWarmupKey(
             terminalSettings: terminalSettings,
-            screenScale: UIScreen.main.scale,
-            contentSizeCategory: UIApplication.shared.preferredContentSizeCategory
+            screenScale: traitCollection.displayScale,
+            contentSizeCategory: traitCollection.preferredContentSizeCategory
         )
         guard terminalRendererWarmupKeys.insert(key).inserted else { return }
 
@@ -282,7 +298,7 @@ final class GhosttyKitRuntime {
             let runtime = try GhosttyKitRuntime(terminalSettings: terminalSettings)
             _ = try runtime.measureTmuxViewport(
                 size: CGSize(width: 96, height: 96),
-                scale: UIScreen.main.scale
+                scale: traitCollection.displayScale
             )
         } catch {
             terminalRendererWarmupKeys.remove(key)

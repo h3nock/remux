@@ -92,7 +92,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     /// The viewport borrows the one retained pane surface it currently shows.
     /// `TmuxTerminalSession` owns that surface independently of UIKit attachment.
     private var surface: GhosttyManagedSurface?
-    private var displayScale: CGFloat = max(UIScreen.main.scale, 1)
+    private var displayScale: CGFloat = 1
     private var displayLink: CADisplayLink?
     private var pendingContentOffset: CGPoint?
     private var isApplyingProgrammaticUpdate = false
@@ -147,7 +147,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        displayScale = max(traitCollection.displayScale, 1)
         configure()
+        registerForTraitChanges([UITraitDisplayScale.self]) { (view: GhosttyPaneScrollContainerView, _: UITraitCollection) in
+            view.displayScale = max(view.traitCollection.displayScale, 1)
+            view.synchronizeRendererRecovery()
+            view.synchronizeFromSurface()
+            view.setNeedsLayout()
+        }
     }
 
     @available(*, unavailable)
