@@ -1,5 +1,6 @@
 @preconcurrency import Citadel
 @preconcurrency import Crypto
+import CryptoKit
 import Foundation
 import NIOCore
 @preconcurrency import NIOSSH
@@ -31,6 +32,33 @@ final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegat
     }
 }
 
+/// Offers a key made on this device as Citadel offers an imported one. Citadel's `.custom` method asks it once.
+final class SecureEnclaveSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
+    private let username: String
+    private let signingKey: SecureEnclave.P256.Signing.PrivateKey
+
+    init(username: String, signingKey: SecureEnclave.P256.Signing.PrivateKey) {
+        self.username = username
+        self.signingKey = signingKey
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        guard availableMethods.contains(.publicKey) else {
+            nextChallengePromise.fail(SSHClientError.unsupportedPrivateKeyAuthentication)
+            return
+        }
+
+        nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(
+            username: username,
+            serviceName: "",
+            offer: .privateKey(.init(privateKey: NIOSSHPrivateKey(secureEnclaveP256Key: signingKey)))
+        ))
+    }
+}
+
 enum SSHAuthenticationMethodFactory {
     static func make(
         username: String,
@@ -42,6 +70,12 @@ enum SSHAuthenticationMethodFactory {
         case .none:
             return .custom(NoneSSHAuthenticationDelegate(username: username))
         case .privateKey(let credential):
+            if let key = credential.secureEnclaveKey {
+                return .custom(SecureEnclaveSSHAuthenticationDelegate(
+                    username: username,
+                    signingKey: try key.signingKey()
+                ))
+            }
             let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
             let decryptionKey = credential.passphrase.map { Data($0.utf8) }
             switch inspection.keyType {

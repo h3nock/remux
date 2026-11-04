@@ -1,13 +1,21 @@
 import Foundation
 import Security
+import CryptoKit
+import LocalAuthentication
 
 struct SSHPrivateKeyCredential: Equatable, Codable, Sendable {
     var privateKeyPEM: String
     var passphrase: String?
+    var secureEnclaveKey: SecureEnclaveSSHKey?
 
-    init(privateKeyPEM: String, passphrase: String? = nil) {
+    init(
+        privateKeyPEM: String,
+        passphrase: String? = nil,
+        secureEnclaveKey: SecureEnclaveSSHKey? = nil
+    ) {
         self.privateKeyPEM = privateKeyPEM
         self.passphrase = passphrase
+        self.secureEnclaveKey = secureEnclaveKey
     }
 }
 
@@ -34,6 +42,7 @@ enum SSHCredential: Equatable, Codable, Sendable {
         case password
         case privateKeyPEM
         case privateKeyPassphrase
+        case secureEnclaveKey
     }
 
     init(from decoder: Decoder) throws {
@@ -47,7 +56,8 @@ enum SSHCredential: Equatable, Codable, Sendable {
             self = .privateKey(
                 SSHPrivateKeyCredential(
                     privateKeyPEM: try container.decode(String.self, forKey: .privateKeyPEM),
-                    passphrase: try container.decodeIfPresent(String.self, forKey: .privateKeyPassphrase)
+                    passphrase: try container.decodeIfPresent(String.self, forKey: .privateKeyPassphrase),
+                    secureEnclaveKey: try container.decodeIfPresent(SecureEnclaveSSHKey.self, forKey: .secureEnclaveKey)
                 )
             )
         }
@@ -64,6 +74,7 @@ enum SSHCredential: Equatable, Codable, Sendable {
             try container.encode(Kind.privateKey, forKey: .kind)
             try container.encode(credential.privateKeyPEM, forKey: .privateKeyPEM)
             try container.encodeIfPresent(credential.passphrase, forKey: .privateKeyPassphrase)
+            try container.encodeIfPresent(credential.secureEnclaveKey, forKey: .secureEnclaveKey)
         }
     }
 }
@@ -134,11 +145,20 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
     func saveCredential(_ credential: SSHCredential, identityID: SSHIdentity.ID) async throws {
         let data = try encoder.encode(credential)
         let query = baseQuery(for: identityID, returnData: false)
-        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        var attributes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlocked,
+        ]
+        // A key made in the Secure Enclave works only on this device, so the item holding its reference stays on
+        // it too: another device finds no key, and asks for one in Edit Server.
+        if case .privateKey(let key) = credential, key.secureEnclaveKey != nil {
+            attributes[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        }
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
         if updateStatus == errSecItemNotFound {
             var addQuery = query
-            addQuery[kSecValueData] = data
+            addQuery.merge(attributes) { _, new in new }
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
                 throw KeychainSSHCredentialStoreError.saveFailed(addStatus)
@@ -171,5 +191,125 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         }
 
         return query
+    }
+}
+
+/// The representation is an opaque blob only this device's Secure Enclave can use, never a plaintext private key.
+struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
+    let representation: Data
+    let publicKey: Data
+    /// Whether the Secure Enclave signs with the key without asking the user. One that asks on every use would ask
+    /// in the middle of a login, and can't change, so it's replaced.
+    let signsWithoutPrompt: Bool
+
+    init(representation: Data, publicKey: Data, signsWithoutPrompt: Bool = true) {
+        self.representation = representation
+        self.publicKey = publicKey
+        self.signsWithoutPrompt = signsWithoutPrompt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case representation
+        case publicKey
+        case signsWithoutPrompt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        representation = try container.decode(Data.self, forKey: .representation)
+        publicKey = try container.decode(Data.self, forKey: .publicKey)
+        // A saved key without the field asks on every use.
+        signsWithoutPrompt = try container.decodeIfPresent(Bool.self, forKey: .signsWithoutPrompt) ?? false
+    }
+
+    /// Whether this device can make such a key: one with a Secure Enclave.
+    static let isSupported = SecureEnclave.isAvailable
+
+    static func generate() throws -> Self {
+        guard isSupported else {
+            throw SecureEnclaveSSHError.unavailable
+        }
+        // The key needs a device passcode, so a missing one is named here; making the key decides the rest.
+        var passcodeCheck: NSError?
+        if !LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &passcodeCheck),
+           (passcodeCheck as? LAError)?.code == .passcodeNotSet {
+            throw SecureEnclaveSSHError.passcodeNotSet
+        }
+        // Usable only while the device is unlocked, and gone with its passcode; it signs without asking.
+        guard let access = SecAccessControlCreateWithFlags(
+            nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+            [.privateKeyUsage], nil
+        ), let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else {
+            throw SecureEnclaveSSHError.unavailable
+        }
+        return Self(representation: key.dataRepresentation, publicKey: key.publicKey.x963Representation)
+    }
+
+    func inspect() throws -> SSHPrivateKeyInspection {
+        guard !representation.isEmpty else { throw SecureEnclaveSSHError.keyUnusable }
+        _ = try P256.Signing.PublicKey(x963Representation: publicKey)
+        return SSHPrivateKeyInspector.inspectECDSAP256PublicKey(x963: publicKey)
+    }
+
+    /// The key read back from its reference, to sign a login. Signing happens on the connection's event loop, which
+    /// must never bring up a prompt, and later than this, so its failures aren't seen here.
+    func signingKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
+        guard signsWithoutPrompt else { throw SecureEnclaveSSHError.keyUnusable }
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let signingKey: SecureEnclave.P256.Signing.PrivateKey
+        do {
+            signingKey = try SecureEnclave.P256.Signing.PrivateKey(
+                dataRepresentation: representation,
+                authenticationContext: context
+            )
+        } catch where Self.isUnavailableWhileLocked(error) {
+            throw SecureEnclaveSSHError.unavailableWhileLocked
+        } catch {
+            // Nothing here says the key is lost, so this isn't advice to replace it.
+            throw SecureEnclaveSSHError.keyUnreadable
+        }
+        guard signingKey.publicKey.x963Representation == publicKey else {
+            throw SecureEnclaveSSHError.keyUnusable
+        }
+        return signingKey
+    }
+
+    /// Whether the Secure Enclave refused to read the key back because the device is locked.
+    private static func isUnavailableWhileLocked(_ error: any Error) -> Bool {
+        if case CryptoKitError.underlyingCoreCryptoError(let code) = error {
+            return code == errSecInteractionNotAllowed
+        }
+        let error = error as NSError
+        return error.domain == NSOSStatusErrorDomain && error.code == Int(errSecInteractionNotAllowed)
+    }
+}
+
+enum SecureEnclaveSSHError: LocalizedError {
+    /// The device has no Secure Enclave, or couldn't make the key.
+    case unavailable
+    case passcodeNotSet
+    /// The saved key can't sign here: it asks for the user on every use, or isn't the key its reference names.
+    case keyUnusable
+    /// The Secure Enclave didn't give the key back, for a reason it doesn't say.
+    case keyUnreadable
+    /// The key can't sign while the device is locked; it can once it's unlocked.
+    case unavailableWhileLocked
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: "This device can't create this key."
+        case .passcodeNotSet: "This key couldn’t be created because no device passcode is set."
+        case .keyUnusable: "This key no longer works on this device. Add a new key in Edit Server."
+        case .keyUnreadable: "Remux couldn't read this key on this device."
+        case .unavailableWhileLocked: "The key can't be used while this device is locked."
+        }
+    }
+}
+
+extension SSHPrivateKeyCredential {
+    func inspect() throws -> SSHPrivateKeyInspection {
+        if let secureEnclaveKey { return try secureEnclaveKey.inspect() }
+        return try SSHPrivateKeyInspector.inspect(privateKeyPEM)
     }
 }

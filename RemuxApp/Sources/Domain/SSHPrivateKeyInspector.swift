@@ -146,17 +146,38 @@ enum SSHPrivateKeyInspector {
             }
         }
 
-        let fingerprint = Data(SHA256.hash(data: publicKeyBlob))
-            .base64EncodedString()
-            .replacingOccurrences(of: "=", with: "")
-
         return SSHPrivateKeyInspection(
             keyType: keyType,
-            publicFingerprint: "SHA256:\(fingerprint)",
+            publicFingerprint: fingerprint(of: publicKeyBlob),
             publicKeyLine: "\(rawKeyType) \(publicKeyBlob.base64EncodedString())",
             normalizedPEM: normalizedPEM,
             isEncrypted: cipherName != "none"
         )
+    }
+
+    /// An ECDSA P-256 public key in X9.63 form, as the Secure Enclave makes one, with its private part held
+    /// there: no PEM, and nothing to decrypt.
+    static func inspectECDSAP256PublicKey(x963 publicKey: Data) -> SSHPrivateKeyInspection {
+        let keyType = SSHPrivateKeyType.ecdsaP256.rawValue
+        var blob = SSHPrivateKeyPayloadWriter()
+        blob.writeSSHString(keyType)
+        blob.writeSSHString("nistp256")
+        blob.writeSSHString(publicKey)
+        return SSHPrivateKeyInspection(
+            keyType: .ecdsaP256,
+            publicFingerprint: fingerprint(of: blob.data),
+            publicKeyLine: "\(keyType) \(blob.data.base64EncodedString())",
+            normalizedPEM: "",
+            isEncrypted: false
+        )
+    }
+
+    /// OpenSSH's SHA256 fingerprint of a public key's wire form.
+    private static func fingerprint(of publicKeyBlob: Data) -> String {
+        let digest = Data(SHA256.hash(data: publicKeyBlob))
+            .base64EncodedString()
+            .replacingOccurrences(of: "=", with: "")
+        return "SHA256:\(digest)"
     }
 
     private static func validatePublicKeyBlob(
@@ -326,13 +347,10 @@ enum SSHPrivateKeyInspector {
         \(wrapped)
         -----END OPENSSH PRIVATE KEY-----
         """
-        let fingerprint = Data(SHA256.hash(data: publicKeyBlob))
-            .base64EncodedString()
-            .replacingOccurrences(of: "=", with: "")
         return SSHGeneratedPrivateKey(
             privateKeyPEM: privateKeyPEM,
             publicKeyLine: "\(keyType) \(publicKeyBlob.base64EncodedString())",
-            publicFingerprint: "SHA256:\(fingerprint)"
+            publicFingerprint: fingerprint(of: publicKeyBlob)
         )
     }
 

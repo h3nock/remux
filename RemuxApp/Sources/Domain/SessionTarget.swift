@@ -74,7 +74,7 @@ struct ResolvedSSHAuth: Equatable, Sendable {
         identityID: UUID,
         displayLabel: String
     ) throws -> ResolvedSSHAuth {
-        let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+        let inspection = try credential.inspect()
         return ResolvedSSHAuth(
             identityID: identityID,
             username: username,
@@ -532,6 +532,7 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var herdrExecutablePath: String = ""
     var authenticationKind: SSHAuthenticationKind = .password
     var password: String = ""
+    var secureEnclaveKey: SecureEnclaveSSHKey?
     var privateKeyPEM: String = ""
     var privateKeyFileName: String = ""
     var privateKeyPassphrase: String = ""
@@ -567,11 +568,21 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         case .some(.password(let password)):
             self.password = password
         case .some(.privateKey(let credential)):
+            self.secureEnclaveKey = credential.secureEnclaveKey
             self.privateKeyPEM = credential.privateKeyPEM
             self.privateKeyPassphrase = credential.passphrase ?? ""
         case .none:
             break
         }
+    }
+
+    /// The private key the draft adds the server with: imported, pasted or made on this device.
+    var privateKeyCredential: SSHPrivateKeyCredential {
+        SSHPrivateKeyCredential(
+            privateKeyPEM: privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines),
+            passphrase: privateKeyPassphrase.isEmpty ? nil : privateKeyPassphrase,
+            secureEnclaveKey: secureEnclaveKey
+        )
     }
 
     /// Whether the server's last check of `backend`, made with `server`'s saved settings, is about what this
@@ -750,8 +761,7 @@ enum TmuxConnectionDraftValidator {
             ? nil
             : trimmedTmuxExecutablePath
         let password = draft.password
-        let privateKeyPEM = draft.privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
-        let privateKeyPassphrase = draft.privateKeyPassphrase.isEmpty ? nil : draft.privateKeyPassphrase
+        let privateKey = draft.privateKeyCredential
 
         if displayName.isEmpty {
             validation.displayName = "Name is required."
@@ -785,12 +795,12 @@ enum TmuxConnectionDraftValidator {
             credential = .password(password)
 
         case .privateKey:
-            if privateKeyPEM.isEmpty {
+            if privateKey.privateKeyPEM.isEmpty && privateKey.secureEnclaveKey == nil {
                 validation.privateKey = "Private key is required."
             } else {
                 do {
-                    let inspection = try SSHPrivateKeyInspector.inspect(privateKeyPEM)
-                    if inspection.isEncrypted && privateKeyPassphrase == nil {
+                    let inspection = try privateKey.inspect()
+                    if inspection.isEncrypted && privateKey.passphrase == nil {
                         validation.privateKeyPassphrase = "Passphrase is required for encrypted private keys."
                     }
                 } catch {
@@ -801,12 +811,7 @@ enum TmuxConnectionDraftValidator {
                     }
                 }
             }
-            credential = .privateKey(
-                SSHPrivateKeyCredential(
-                    privateKeyPEM: privateKeyPEM,
-                    passphrase: privateKeyPassphrase
-                )
-            )
+            credential = .privateKey(privateKey)
 
         case .none:
             credential = .none

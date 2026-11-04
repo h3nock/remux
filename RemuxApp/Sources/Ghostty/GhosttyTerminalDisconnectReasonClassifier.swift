@@ -23,6 +23,17 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             )
         }
 
+        // A key made on this device that can't be used here is replaced like credentials the server turned down; a
+        // locked device only pauses it, so the session reconnects by itself once it's unlocked.
+        if let error = error as? SecureEnclaveSSHError {
+            let kind: TerminalDisconnectReason.Kind = switch error {
+            case .keyUnusable: .authentication
+            case .unavailableWhileLocked: .transportIO
+            case .unavailable, .passcodeNotSet, .keyUnreadable: .unknown
+            }
+            return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
+        }
+
         if isServerUnreachable(error) {
             return TerminalDisconnectReason(kind: .serverUnreachable, message: message)
         }

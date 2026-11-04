@@ -1773,6 +1773,35 @@ struct DisclosureRowLabel: View {
     }
 }
 
+/// What a key made on this device means, behind an info button beside it, as iOS puts details beside a
+/// Wi-Fi network: the row itself still makes or shows the key.
+private struct DeviceKeyInfoButton: View {
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("About Secure Enclave keys")
+        .accessibilityIdentifier("connection.private-key.device-key-info")
+        .popover(isPresented: $isPresented) {
+            Text("The private key is generated and used inside this \(UIDevice.current.model)’s security hardware, the Secure Enclave. It can’t be exported or transferred to another device.")
+                .font(.footnote)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 280, alignment: .leading)
+                .padding()
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
 private struct LibraryEmptyState: View {
     let onAddServer: () -> Void
 
@@ -3121,6 +3150,9 @@ struct ConnectionSetupView: View {
     }
 
     private var importedPrivateKeyTitle: String {
+        if draft.secureEnclaveKey != nil {
+            return "Secure Enclave key"
+        }
         if !draft.privateKeyFileName.isEmpty {
             return draft.privateKeyFileName
         }
@@ -3135,7 +3167,7 @@ struct ConnectionSetupView: View {
     }
 
     private var privateKeyInspection: SSHPrivateKeyInspection? {
-        try? SSHPrivateKeyInspector.inspect(draft.privateKeyPEM)
+        try? draft.privateKeyCredential.inspect()
     }
 
     private var shouldShowPrivateKeyPassphrase: Bool {
@@ -3149,7 +3181,6 @@ struct ConnectionSetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             privateKeyActionButton(
                 title: "Import private key",
-                subtitle: "Choose a private key file",
                 systemImage: "square.and.arrow.down",
                 accessibilityIdentifier: "connection.private-key.import"
             ) {
@@ -3160,7 +3191,6 @@ struct ConnectionSetupView: View {
 
             privateKeyActionButton(
                 title: "Paste private key",
-                subtitle: "Paste a private key block",
                 systemImage: "doc.on.clipboard",
                 accessibilityIdentifier: "connection.private-key.paste"
             ) {
@@ -3169,9 +3199,21 @@ struct ConnectionSetupView: View {
 
             privateKeyActionDivider()
 
+            if SecureEnclaveSSHKey.isSupported {
+                privateKeyActionButton(
+                    title: "Generate Secure Enclave key",
+                    systemImage: "lock.shield",
+                    accessibilityIdentifier: "connection.private-key.generate-secure-enclave",
+                    showsDeviceKeyInfo: true
+                ) {
+                    generateSecureEnclaveKey()
+                }
+
+                privateKeyActionDivider()
+            }
+
             privateKeyActionButton(
                 title: "Generate ED25519 key",
-                subtitle: "Create a key pair on this device",
                 systemImage: "key.horizontal",
                 accessibilityIdentifier: "connection.private-key.generate"
             ) {
@@ -3199,15 +3241,23 @@ struct ConnectionSetupView: View {
     }
 
     private func privateKeySelectedSummary() -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(importedPrivateKeyTitle)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(importedPrivateKeyTitle)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
 
-            Text(importedPrivateKeySubtitle)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                Text(importedPrivateKeySubtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            if draft.secureEnclaveKey != nil {
+                DeviceKeyInfoButton()
+            }
         }
     }
 
@@ -3351,6 +3401,14 @@ struct ConnectionSetupView: View {
                 Label("Generate New ED25519 Key", systemImage: "key.horizontal")
             }
 
+            if SecureEnclaveSSHKey.isSupported {
+                Button {
+                    generateSecureEnclaveKey()
+                } label: {
+                    Label("Generate Secure Enclave Key", systemImage: "lock.shield")
+                }
+            }
+
             Button(role: .destructive) {
                 removePrivateKey()
             } label: {
@@ -3412,38 +3470,39 @@ struct ConnectionSetupView: View {
         }
     }
 
+    /// `showsDeviceKeyInfo` adds the info button about keys made on this device, apart from the row's own tap.
     private func privateKeyActionButton(
         title: String,
-        subtitle: String,
         systemImage: String,
         accessibilityIdentifier: String,
         isDestructive: Bool = false,
+        showsDeviceKeyInfo: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(isDestructive ? Color.red : Color.secondary)
-                    .frame(width: 22)
+        HStack(spacing: 0) {
+            Button(action: action) {
+                HStack(spacing: 12) {
+                    Image(systemName: systemImage)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(isDestructive ? Color.red : Color.secondary)
+                        .frame(width: 22)
 
-                VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .foregroundStyle(isDestructive ? Color.red : Color.primary)
                         .lineLimit(1)
 
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
                 }
-
-                Spacer(minLength: 12)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(accessibilityIdentifier)
+
+            if showsDeviceKeyInfo {
+                DeviceKeyInfoButton()
+            }
         }
-        .padding(.vertical, 6)
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
     private func privateKeyActionDivider() -> some View {
@@ -3488,6 +3547,7 @@ struct ConnectionSetupView: View {
             publicKeyCopyMessage = nil
             onChange { draft in
                 draft.authenticationKind = .privateKey
+                draft.secureEnclaveKey = nil
                 draft.privateKeyPEM = inspection.normalizedPEM
                 draft.privateKeyFileName = url.lastPathComponent
                 draft.privateKeyPassphrase = ""
@@ -3506,6 +3566,7 @@ struct ConnectionSetupView: View {
         publicKeyCopyMessage = nil
         Haptic.tap()
         onChange { draft in
+            draft.secureEnclaveKey = nil
             draft.privateKeyPEM = ""
             draft.privateKeyFileName = ""
             draft.privateKeyPassphrase = ""
@@ -3526,6 +3587,7 @@ struct ConnectionSetupView: View {
             Haptic.tap()
             onChange { draft in
                 draft.authenticationKind = .privateKey
+                draft.secureEnclaveKey = nil
                 draft.privateKeyPEM = inspection.normalizedPEM
                 draft.privateKeyFileName = "Pasted private key"
                 draft.privateKeyPassphrase = ""
@@ -3540,6 +3602,25 @@ struct ConnectionSetupView: View {
         }
     }
 
+    private func generateSecureEnclaveKey() {
+        do {
+            let key = try SecureEnclaveSSHKey.generate()
+            privateKeyImportError = nil
+            publicKeyCopyMessage = nil
+            onChange { draft in
+                draft.authenticationKind = .privateKey
+                draft.privateKeyPEM = ""
+                draft.privateKeyPassphrase = ""
+                draft.privateKeyFileName = ""
+                draft.secureEnclaveKey = key
+            }
+            Haptic.tap()
+        } catch {
+            privateKeyImportError = error.localizedDescription
+            Haptic.error()
+        }
+    }
+
     private func generatePrivateKey() {
         let generated = SSHPrivateKeyInspector.generateEd25519()
         privateKeyImportError = nil
@@ -3547,6 +3628,7 @@ struct ConnectionSetupView: View {
         Haptic.tap()
         onChange { draft in
             draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = nil
             draft.privateKeyPEM = generated.privateKeyPEM
             draft.privateKeyFileName = "Generated ED25519 key"
             draft.privateKeyPassphrase = ""

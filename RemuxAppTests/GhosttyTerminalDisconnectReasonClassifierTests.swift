@@ -5,6 +5,23 @@ import XCTest
 @testable import Remux
 
 final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
+    /// A key made on the device that can't be used here is replaced like credentials the server turned down; one
+    /// the Secure Enclave didn't give back, for no reason it says, isn't one to replace; and a locked device only
+    /// pauses the key, so the session reconnects by itself once it's unlocked.
+    func testDeviceKeyFailuresSayWhatToDo() {
+        let unusable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnusable)
+        XCTAssertEqual(unusable.kind, .authentication)
+        XCTAssertEqual(unusable.message, SecureEnclaveSSHError.keyUnusable.localizedDescription)
+
+        let unreadable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnreadable)
+        XCTAssertEqual(unreadable.kind, .unknown)
+        XCTAssertEqual(unreadable.message, SecureEnclaveSSHError.keyUnreadable.localizedDescription)
+
+        let paused = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.unavailableWhileLocked)
+        XCTAssertEqual(paused.kind, .transportIO)
+        XCTAssertTrue(paused.allowsAutomaticReconnect)
+    }
+
     func testTransportStartFailureMapsKnownBoundaryErrors() {
         let hostKeyChallenge = SSHHostKeyTrustChallenge(
             kind: .changed,

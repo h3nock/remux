@@ -1,3 +1,4 @@
+import CryptoKit
 import GhosttyKit
 import Combine
 import SwiftUI
@@ -1815,6 +1816,35 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(credentials, [:])
     }
 
+    /// A key made on this device that can't sign fails before the server sees it, so Add Server says what's wrong
+    /// with the key, not that the server rejected it.
+    func testNewServerWithADeviceKeyThatCantSignSaysWhyNotThatTheServerRejectedIt() async throws {
+        let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
+        let harness = makeHarness(
+            sshAccessVerifier: { _, _, _ in
+                throw SecureEnclaveSSHError.keyUnusable
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = key
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertNil(savedServerID)
+        XCTAssertEqual(
+            harness.model.connectionSetup?.submissionIssue,
+            .verificationFailed(SecureEnclaveSSHError.keyUnusable.localizedDescription)
+        )
+    }
+
     func testNewServerHostKeyTrustRetriesVerificationBeforePersistence() async throws {
         let verifier = RecordingSSHAccessVerifier(results: [])
         let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base"])])
@@ -1964,6 +1994,72 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(identity.authenticationKind, .none)
         XCTAssertNil(savedCredential)
         XCTAssertEqual(verifiedTarget.sshAuth.credential, .none)
+    }
+
+    func testSaveNewServerPersistsEnclaveReferenceAndPublicKeyMetadata() async throws {
+        let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
+        let credential = SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key)
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
+        let harness = makeHarness(
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Tailscale Server"
+            draft.host = "100.64.0.1"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = key
+            draft.password = ""
+            draft.sessionName = "base"
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+        let serverID = try XCTUnwrap(savedServerID)
+
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let identity = try XCTUnwrap(snapshot.identities.first)
+        let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
+        let verifiedTargets = await verifier.targets()
+        let verifiedTarget = try XCTUnwrap(verifiedTargets.first)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertTrue(harness.model.activeSessions.isEmpty)
+        XCTAssertEqual(snapshot.server(id: serverID)?.identityID, identity.id)
+        XCTAssertTrue(snapshot.workspaces.isEmpty)
+        XCTAssertEqual(identity.authenticationKind, .privateKey)
+        XCTAssertEqual(identity.publicFingerprint, try key.inspect().publicFingerprint)
+        XCTAssertEqual(savedCredential, .privateKey(credential))
+        XCTAssertEqual(verifiedTarget.sshAuth.credential, .privateKey(credential))
+        let draft = TmuxConnectionDraft(server: verifiedTarget.server, workspace: verifiedTarget.workspace, identity: identity, credential: savedCredential)
+        let installTarget = try harness.model.publicKeyInstallTarget(for: draft)
+        XCTAssertEqual(installTarget.privateKey, credential)
+        XCTAssertEqual(installTarget.publicKeyLine, try key.inspect().publicKeyLine)
+    }
+
+    /// A session whose saved key isn't on this device, as after moving to a new one, opens Edit Server to add a
+    /// key instead of failing the app.
+    func testOpeningASessionWhoseKeyIsMissingOpensEditServer() async throws {
+        let identity = SSHIdentity(name: "Mac mini", authenticationKind: .privateKey)
+        let server = SavedServer(displayName: "Mac mini", host: "mac-mini.local", username: "test", identityID: identity.id)
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let harness = makeHarness(servers: [server], workspaces: [workspace], identities: [identity])
+
+        await harness.model.load()
+        await harness.model.connect(to: workspace.id)
+
+        XCTAssertEqual(harness.model.state, .library)
+        guard case .editServer(let serverID, let reconnectWorkspaceID)? = harness.model.connectionSetup?.mode else {
+            return XCTFail("expected Edit Server, got \(String(describing: harness.model.connectionSetup?.mode))")
+        }
+        XCTAssertEqual(serverID, server.id)
+        XCTAssertEqual(reconnectWorkspaceID, workspace.id)
+        XCTAssertEqual(harness.model.connectionSetup?.draft.authenticationKind, .privateKey)
+        XCTAssertNil(harness.model.connectionSetup?.draft.secureEnclaveKey)
+        XCTAssertEqual(harness.model.connectionSetup?.draft.privateKeyPEM, "")
     }
 
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {

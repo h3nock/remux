@@ -62,7 +62,7 @@ struct GhosttyRepairPanelContent: Equatable {
         switch reason?.kind {
         case .authentication:
             title = "Authentication Failed"
-            message = "\(serverName) rejected the saved password or key."
+            message = "Check the saved credentials for \(serverName)."
             actions = [Action(
                 kind: .updateCredentials,
                 title: "Update Credentials",

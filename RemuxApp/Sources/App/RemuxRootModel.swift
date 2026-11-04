@@ -838,22 +838,17 @@ final class RemuxRootModel: ObservableObject {
         guard !username.isEmpty else {
             throw SSHPublicKeyInstallDraftError.invalidUsername
         }
-        guard let inspection = try? SSHPrivateKeyInspector.inspect(draft.privateKeyPEM) else {
+        let privateKey = draft.privateKeyCredential
+        guard let inspection = try? privateKey.inspect() else {
             throw SSHPublicKeyInstallDraftError.invalidPrivateKey
         }
-        let passphrase = draft.privateKeyPassphrase.isEmpty
-            ? nil
-            : draft.privateKeyPassphrase
 
         return SSHPublicKeyInstallTarget(
             serverID: draft.serverID,
             host: host,
             port: port,
             username: username,
-            privateKey: SSHPrivateKeyCredential(
-                privateKeyPEM: inspection.normalizedPEM,
-                passphrase: passphrase
-            ),
+            privateKey: privateKey,
             publicKeyLine: inspection.publicKeyLine
         )
     }
@@ -1473,6 +1468,11 @@ final class RemuxRootModel: ObservableObject {
         let sshAuth: ResolvedSSHAuth
         do {
             sshAuth = try await resolveSSHAuth(for: server)
+        } catch SSHAuthResolverError.missingCredential {
+            // Without its saved key the server needs another one, which Edit Server takes.
+            let savedWorkspaceID = library.workspace(id: workspaceID) == nil ? nil : workspaceID
+            await beginEditServer(serverID: server.id, reconnectWorkspaceID: savedWorkspaceID)
+            return
         } catch {
             GhosttyRuntimeTrace.flowEnd(
                 flow,
@@ -2143,6 +2143,9 @@ final class RemuxRootModel: ObservableObject {
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
         }
+        if let deviceKeyError = error as? SecureEnclaveSSHError {
+            return deviceKeyError.localizedDescription
+        }
 
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
         switch reason.kind {
@@ -2180,7 +2183,7 @@ final class RemuxRootModel: ObservableObject {
             )
 
         case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+            let inspection = try credential.inspect()
             let identity = SSHIdentity(
                 name: draft.displayName,
                 authenticationKind: .privateKey,
@@ -2220,7 +2223,7 @@ final class RemuxRootModel: ObservableObject {
             )
 
         case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
+            let inspection = try credential.inspect()
             let identity = SSHIdentity(
                 id: existingIdentity.id,
                 name: draft.displayName,
@@ -2267,7 +2270,9 @@ final class RemuxRootModel: ObservableObject {
         guard let credential = try await dependencies.credentialStore.loadCredential(
             identityID: identity.id
         ) else {
-            throw SSHAuthResolverError.missingCredential(identity.id)
+            // The saved key isn't on this device, as a key made on another one isn't: the form opens without
+            // it, to add one.
+            return (identity, nil)
         }
         guard identity.authenticationKind == credential.authenticationKind else {
             throw SSHAuthResolverError.credentialKindMismatch(
@@ -2428,6 +2433,9 @@ final class RemuxRootModel: ObservableObject {
                 sessions: normalizedSessions(listing.sessions)
             ))
         case .failure(let error) where error is CancellationError:
+            return state.cancellingRefresh()
+        case .failure(SecureEnclaveSSHError.unavailableWhileLocked):
+            // The key waits for the device to be unlocked: the check didn't run, as one cancelled didn't.
             return state.cancellingRefresh()
         case .failure(TrustedHostStoreError.hostKeyTrustRequired(let challenge)):
             return state.failingRefresh(hostKeyChallenge: challenge)

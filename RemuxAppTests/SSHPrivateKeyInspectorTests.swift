@@ -1,8 +1,77 @@
 @preconcurrency import Crypto
 import XCTest
+import NIOSSH
 @testable import Remux
 
 final class SSHPrivateKeyInspectorTests: XCTestCase {
+    // A software public key exercises metadata paths without the Secure Enclave,
+    // which the simulator doesn't have. The opaque representation is a test fixture.
+    private func enclaveFixture() -> (SecureEnclaveSSHKey, P256.Signing.PrivateKey) {
+        let softwareKey = P256.Signing.PrivateKey()
+        return (SecureEnclaveSSHKey(
+            representation: Data("opaque-test-reference".utf8),
+            publicKey: softwareKey.publicKey.x963Representation
+        ), softwareKey)
+    }
+
+    func testEnclavePublicKeyMatchesNIOSSHEncoding() throws {
+        let (key, softwareKey) = enclaveFixture()
+        let inspection = try key.inspect()
+        XCTAssertEqual(inspection.publicKeyLine, String(openSSHPublicKey: NIOSSHPrivateKey(p256Key: softwareKey).publicKey))
+        XCTAssertEqual(inspection.keyType, .ecdsaP256)
+        XCTAssertEqual(inspection.normalizedPEM, "")
+        XCTAssertFalse(inspection.isEncrypted)
+    }
+
+    func testEnclaveCredentialRoundTripsWithoutPEM() throws {
+        let (key, _) = enclaveFixture()
+        let credential = SSHCredential.privateKey(SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key))
+        let encoded = try JSONEncoder().encode(credential)
+        XCTAssertEqual(try JSONDecoder().decode(SSHCredential.self, from: encoded), credential)
+    }
+
+    func testLegacyCredentialDecodesWithoutEnclaveReference() throws {
+        let data = Data(#"{"kind":"privateKey","privateKeyPEM":"legacy","privateKeyPassphrase":"passphrase"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(SSHCredential.self, from: data),
+                       .privateKey(SSHPrivateKeyCredential(privateKeyPEM: "legacy", passphrase: "passphrase")))
+    }
+
+    /// A key saved before keys recorded how they sign asks on every use, which can't change, so it's replaced.
+    func testASavedKeyThatDoesntSayHowItSignsAsksOnEveryUse() throws {
+        let (key, _) = enclaveFixture()
+        XCTAssertTrue(key.signsWithoutPrompt)
+        let saved = try JSONEncoder().encode(key)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        fields["signsWithoutPrompt"] = nil
+        let older = try JSONSerialization.data(withJSONObject: fields)
+
+        let decoded = try JSONDecoder().decode(SecureEnclaveSSHKey.self, from: older)
+
+        XCTAssertFalse(decoded.signsWithoutPrompt)
+        XCTAssertEqual(decoded.publicKey, key.publicKey)
+    }
+
+    func testEnclaveDraftSurvivesValidationAndEditingWithoutPEM() throws {
+        let (key, _) = enclaveFixture()
+        var draft = TmuxConnectionDraft()
+        draft.host = "server.example.test"
+        draft.username = "test"
+        draft.displayName = "Test"
+        draft.authenticationKind = .privateKey
+        draft.secureEnclaveKey = key
+        guard case .valid(let submission) = TmuxConnectionDraftValidator.validateServer(draft, existingServerID: nil) else {
+            return XCTFail("Expected a valid Secure Enclave credential without PEM")
+        }
+        let credential = SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key)
+        XCTAssertEqual(submission.credential, .privateKey(credential))
+        let identity = SSHIdentity(name: "Test", authenticationKind: .privateKey)
+        let server = SavedServer(displayName: "Test", host: draft.host, username: draft.username, identityID: identity.id)
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "test")
+        let edited = TmuxConnectionDraft(server: server, workspace: workspace, identity: identity, credential: .privateKey(credential))
+        XCTAssertEqual(edited.secureEnclaveKey, key)
+        XCTAssertTrue(edited.privateKeyPEM.isEmpty)
+    }
+
     func testInspectsUnencryptedEd25519Key() throws {
         let inspection = try SSHPrivateKeyInspector.inspect(Self.ed25519Key)
 
