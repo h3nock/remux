@@ -2143,6 +2143,9 @@ final class RemuxRootModel: ObservableObject {
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
         }
+        if let deviceKeyError = error as? SecureEnclaveSSHError {
+            return deviceKeyError.localizedDescription
+        }
 
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
         switch reason.kind {

@@ -225,29 +225,14 @@ struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
     /// Whether this device can make such a key: one with a Secure Enclave.
     static let isSupported = SecureEnclave.isAvailable
 
-    /// How this device approves the key, as the user knows it.
-    static var approvalMethodName: String {
-        biometryName ?? "your passcode"
-    }
-
-    /// The device's Face ID, Touch ID or Optic ID; without one, the passcode approves the key. Read once: the
-    /// kind of sensor doesn't change while the app runs.
-    static let biometryName: String? = {
-        let context = LAContext()
-        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
-        switch context.biometryType {
-        case .faceID: return "Face ID"
-        case .touchID: return "Touch ID"
-        case .opticID: return "Optic ID"
-        default: return nil
-        }
-    }()
-
     static func generate() throws -> Self {
         guard isSupported else {
             throw SecureEnclaveSSHError.unavailable
         }
-        guard LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
+        // The key needs a device passcode, so a missing one is named here; making the key decides the rest.
+        var passcodeCheck: NSError?
+        if !LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &passcodeCheck),
+           (passcodeCheck as? LAError)?.code == .passcodeNotSet {
             throw SecureEnclaveSSHError.passcodeNotSet
         }
         // Usable only while the device is unlocked, and gone with its passcode; it signs without asking.

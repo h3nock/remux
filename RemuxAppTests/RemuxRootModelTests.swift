@@ -1816,6 +1816,35 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(credentials, [:])
     }
 
+    /// A key made on this device that can't sign fails before the server sees it, so Add Server says what's wrong
+    /// with the key, not that the server rejected it.
+    func testNewServerWithADeviceKeyThatCantSignSaysWhyNotThatTheServerRejectedIt() async throws {
+        let key = SecureEnclaveSSHKey(representation: Data([1]), publicKey: P256.Signing.PrivateKey().publicKey.x963Representation)
+        let harness = makeHarness(
+            sshAccessVerifier: { _, _, _ in
+                throw SecureEnclaveSSHError.keyUnusable
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = key
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertNil(savedServerID)
+        XCTAssertEqual(
+            harness.model.connectionSetup?.submissionIssue,
+            .verificationFailed(SecureEnclaveSSHError.keyUnusable.localizedDescription)
+        )
+    }
+
     func testNewServerHostKeyTrustRetriesVerificationBeforePersistence() async throws {
         let verifier = RecordingSSHAccessVerifier(results: [])
         let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base"])])

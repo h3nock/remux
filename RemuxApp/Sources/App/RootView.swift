@@ -1778,12 +1778,6 @@ struct DisclosureRowLabel: View {
 private struct DeviceKeyInfoButton: View {
     @State private var isPresented = false
 
-    private static var approvalText: String {
-        let method = SecureEnclaveSSHKey.biometryName.map { "\($0), or your passcode," } ?? "your passcode"
-        return "Remux asks for \(method) when you connect to a server, and again only after you disconnect from it "
-            + "or Remux closes."
-    }
-
     var body: some View {
         Button {
             isPresented = true
@@ -1795,12 +1789,12 @@ private struct DeviceKeyInfoButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("About keys with \(SecureEnclaveSSHKey.approvalMethodName)")
+        .accessibilityLabel("About Secure Enclave keys")
         .accessibilityIdentifier("connection.private-key.device-key-info")
         .popover(isPresented: $isPresented) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("The private key is created inside this \(UIDevice.current.model) and can't be copied or exported.")
-                Text(Self.approvalText)
+                Text("The private key is created inside this \(UIDevice.current.model) and can’t be copied or exported.")
+                Text("A device passcode is required. The key is available while this \(UIDevice.current.model) is unlocked.")
             }
             .font(.footnote)
             .fixedSize(horizontal: false, vertical: true)
@@ -3158,7 +3152,7 @@ struct ConnectionSetupView: View {
 
     private var importedPrivateKeyTitle: String {
         if draft.secureEnclaveKey != nil {
-            return "Key with \(SecureEnclaveSSHKey.approvalMethodName)"
+            return "Secure Enclave key"
         }
         if !draft.privateKeyFileName.isEmpty {
             return draft.privateKeyFileName
@@ -3208,7 +3202,7 @@ struct ConnectionSetupView: View {
 
             if SecureEnclaveSSHKey.isSupported {
                 privateKeyActionButton(
-                    title: "Generate key with \(SecureEnclaveSSHKey.approvalMethodName)",
+                    title: "Generate Secure Enclave key",
                     systemImage: "lock.shield",
                     accessibilityIdentifier: "connection.private-key.generate-secure-enclave",
                     showsDeviceKeyInfo: true
@@ -3398,7 +3392,7 @@ struct ConnectionSetupView: View {
                 Button {
                     generateSecureEnclaveKey()
                 } label: {
-                    Label("Generate Key with \(SecureEnclaveSSHKey.approvalMethodName)", systemImage: "lock.shield")
+                    Label("Generate Secure Enclave Key", systemImage: "lock.shield")
                 }
             }
 

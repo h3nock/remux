@@ -32,11 +32,10 @@ final class NoneSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegat
     }
 }
 
-/// Offers a key made on this device once, then fails further offers.
+/// Offers a key made on this device as Citadel offers an imported one. Citadel's `.custom` method asks it once.
 final class SecureEnclaveSSHAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
     private let username: String
     private let signingKey: SecureEnclave.P256.Signing.PrivateKey
-    private var hasOffered = false
 
     init(username: String, signingKey: SecureEnclave.P256.Signing.PrivateKey) {
         self.username = username
@@ -47,12 +46,11 @@ final class SecureEnclaveSSHAuthenticationDelegate: NIOSSHClientUserAuthenticati
         availableMethods: NIOSSHAvailableUserAuthenticationMethods,
         nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
     ) {
-        guard !hasOffered else {
-            nextChallengePromise.fail(SSHClientError.allAuthenticationOptionsFailed)
+        guard availableMethods.contains(.publicKey) else {
+            nextChallengePromise.fail(SSHClientError.unsupportedPrivateKeyAuthentication)
             return
         }
 
-        hasOffered = true
         nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(
             username: username,
             serviceName: "",
