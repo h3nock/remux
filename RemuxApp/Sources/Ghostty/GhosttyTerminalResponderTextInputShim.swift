@@ -1,12 +1,14 @@
 import UIKit
 
 // The terminal responder conforms to UITextInput for the spacebar long-press
-// trackpad (beginFloatingCursor/updateFloatingCursor/endFloatingCursor) and for
-// input methods, which compose marked text before they commit it. Its document
-// is bounded to what the keyboard needs: a virtual placeholder that gives UIKit
-// one character to delete, plus the unfinished composition. It is never a copy
-// of the remote terminal's text. The stubs must not enable autocorrect or an
-// edit menu.
+// trackpad (beginFloatingCursor/updateFloatingCursor/endFloatingCursor), for
+// input methods, which compose marked text before they commit it, and for
+// dictation, which revises text it has already inserted. Its document is
+// bounded to what the keyboard needs: a virtual placeholder that gives UIKit
+// one character to delete, the text the keyboard typed since its context last
+// ended, and the unfinished composition. The typed text is the keyboard's
+// context, not a copy of the remote line, which may hold more. The stubs must
+// not enable autocorrect or an edit menu.
 
 /// UITextPosition backed by a UTF-16 offset in the responder's document.
 final class GhosttyVirtualTextPosition: UITextPosition {
@@ -43,20 +45,48 @@ final class GhosttyVirtualTextRange: UITextRange {
     override var isEmpty: Bool { from.offset == to.offset }
 }
 
-/// The terminal keyboard's document, in UTF-16 offsets as UIKit addresses it.
-/// While idle it holds only the placeholder, with the caret after it, so UIKit
-/// sees one deletable character and drives its native Backspace repeat. An
-/// input method's marked text follows the placeholder and stays local until it
-/// is committed; committed and unmarked text goes straight to the terminal.
+/// The terminal keyboard's document, in UTF-16 offsets as UIKit addresses it:
+/// the placeholder, then the text the keyboard typed since its context last
+/// ended, then any marked text, with the caret normally at the end. While idle
+/// it holds only the placeholder, with the caret after it, so UIKit sees one
+/// deletable character and drives its native Backspace repeat.
+///
+/// Typed text has already reached the terminal, whose caret stays after it. The
+/// keyboard still edits it, as dictation does when it revises what it heard,
+/// and each edit becomes what the terminal receives: Backspaces from the end
+/// back to where the text changes, then the new text from there. An input
+/// method's marked text stays local until it is committed.
 struct GhosttyTerminalCompositionDocument: Equatable {
     static let placeholder = " "
+    /// Typed text longer than this ends the keyboard's context, so the document stays small.
+    static let typedCapacity = 4096
+
+    /// What the terminal receives for an edit of typed text: Backspaces from the end of the
+    /// typed text back to where it changes, then the text that follows from there.
+    struct TypedEdit: Equatable {
+        let backspaces: Int
+        let text: String
+    }
 
     enum Deletion: Equatable {
-        /// Nothing is composing: the terminal deletes.
+        /// Nothing is typed or composing: the terminal deletes.
         case terminal
+        /// Typed text was deleted; the terminal receives this edit.
+        case typed(TypedEdit)
         /// The composition changed.
         case composition
         /// The caret is at the composition's start.
+        case none
+    }
+
+    enum Replacement: Equatable {
+        /// The edit stayed inside the composition.
+        case composition
+        /// Typed text changed; the terminal receives this edit.
+        case typed(TypedEdit)
+        /// A replacement beyond the composition commits as input, and the document is idle.
+        case committed(String)
+        /// The range isn't in the document.
         case none
     }
 
@@ -64,12 +94,15 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     private(set) var selection = Self.idleSelection
     private(set) var marked: NSRange?
 
-    private static let idleSelection = NSRange(
-        location: (placeholder as NSString).length,
-        length: 0
-    )
+    private static let typedStart = (placeholder as NSString).length
+    private static let idleSelection = NSRange(location: typedStart, length: 0)
 
     var length: Int { (text as NSString).length }
+
+    var isIdle: Bool { marked == nil && length == Self.typedStart }
+
+    /// The UTF-16 length of the typed text, which runs from the placeholder to the composition.
+    var typedLength: Int { (marked?.location ?? length) - Self.typedStart }
 
     var markedText: String? {
         marked.map { (text as NSString).substring(with: $0) }
@@ -103,18 +136,34 @@ struct GhosttyTerminalCompositionDocument: Equatable {
             location: target.location + start,
             length: min(max(0, selectedRange.length), count - start)
         )
-        if marked == nil { clear() }
+        if marked == nil { endEmptyComposition(at: target.location) }
     }
 
-    /// The composition's text, removed with it; nil when nothing is composing.
+    /// The composition's text, removed with it; nil when nothing is composing. A commit ends the
+    /// keyboard's context, so the document is idle.
     mutating func unmark() -> String? {
         guard let committed = markedText else { return nil }
         clear()
         return committed
     }
 
+    /// Text the keyboard commits while nothing composes: it replaces the selection, normally the
+    /// caret at the end, and becomes typed text. Nil while composing.
+    mutating func type(_ inserted: String) -> TypedEdit? {
+        guard marked == nil else { return nil }
+        return editTyped(selection, with: inserted)
+    }
+
     mutating func deleteBackward() -> Deletion {
-        guard let marked else { return .terminal }
+        guard let marked else {
+            var target = selection
+            if target.length == 0 {
+                // With no typed text before the caret, the terminal deletes what came before.
+                guard target.location > Self.typedStart else { return .terminal }
+                target = (text as NSString).rangeOfComposedCharacterSequence(at: target.location - 1)
+            }
+            return editTyped(target, with: "").map(Deletion.typed) ?? .terminal
+        }
         var target = selection
         if target.length == 0 {
             guard target.location > marked.location else { return .none }
@@ -123,37 +172,70 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         return delete(target, in: marked)
     }
 
-    /// Edits the composition when `range` lies inside it. Anything else is
-    /// committed input: the text to send is returned and the document is idle.
-    mutating func replace(_ range: NSRange, with replacement: String) -> String? {
-        guard isValid(range) else { return nil }
-        if let marked, range.location >= marked.location, NSMaxRange(range) <= NSMaxRange(marked) {
+    /// Edits the composition when `range` lies inside it, or the typed text while nothing composes.
+    /// A replacement beyond the composition is committed input, and the document is idle.
+    mutating func replace(_ range: NSRange, with replacement: String) -> Replacement {
+        guard isValid(range) else { return .none }
+        guard let marked else {
+            return editTyped(range, with: replacement).map(Replacement.typed) ?? .none
+        }
+        if range.location >= marked.location, NSMaxRange(range) <= NSMaxRange(marked) {
             text = (text as NSString).replacingCharacters(in: range, with: replacement)
             let count = (replacement as NSString).length
             let markedLength = marked.length - range.length + count
             self.marked = markedLength == 0 ? nil : NSRange(location: marked.location, length: markedLength)
             selection = NSRange(location: range.location + count, length: 0)
-            if self.marked == nil { clear() }
-            return nil
+            if self.marked == nil { endEmptyComposition(at: marked.location) }
+            return .composition
         }
         clear()
-        return replacement
+        return .committed(replacement)
     }
 
-    /// Moves the selection inside the composition. While idle the caret stays
-    /// after the placeholder, so Backspace keeps a character to delete.
+    /// Moves the selection inside the composition, or within the typed text while nothing
+    /// composes. The caret never moves into the placeholder, so Backspace keeps a character to
+    /// delete.
     mutating func select(_ range: NSRange) {
-        guard let marked, isValid(range),
-              range.location >= marked.location,
-              NSMaxRange(range) <= NSMaxRange(marked)
-        else { return }
+        guard isValid(range) else { return }
+        if let marked {
+            guard range.location >= marked.location, NSMaxRange(range) <= NSMaxRange(marked) else { return }
+        } else {
+            guard range.location >= Self.typedStart else { return }
+        }
         selection = range
     }
 
+    /// Ends the keyboard's context: the document holds only the placeholder.
     mutating func clear() {
         text = Self.placeholder
         selection = Self.idleSelection
         marked = nil
+    }
+
+    /// Replaces `range` of the typed text, as the terminal must receive it. The edit erases from
+    /// the end of the typed text back to where the old and new text first differ, and types the
+    /// new text from there. The placeholder is never part of it.
+    private mutating func editTyped(_ range: NSRange, with replacement: String) -> TypedEdit? {
+        guard marked == nil, isValid(range) else { return nil }
+        let current = text as NSString
+        let start = max(range.location, Self.typedStart)
+        let end = max(NSMaxRange(range), start)
+        let oldTail = current.substring(from: start)
+        let newTail = replacement + current.substring(from: end)
+        let unchanged = zip(oldTail, newTail).prefix { pair in pair.0 == pair.1 }.count
+        text = current.substring(to: start) + newTail
+        selection = NSRange(location: start + (replacement as NSString).length, length: 0)
+        return TypedEdit(
+            backspaces: oldTail.count - unchanged,
+            text: String(newTail.dropFirst(unchanged))
+        )
+    }
+
+    /// A composition emptied by an edit ends without committing anything; typed text before it
+    /// stays.
+    private mutating func endEmptyComposition(at location: Int) {
+        marked = nil
+        selection = NSRange(location: location, length: 0)
     }
 
     private mutating func delete(_ target: NSRange, in marked: NSRange) -> Deletion {
@@ -165,7 +247,7 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         selection = NSRange(location: target.location, length: 0)
         let remaining = marked.length - target.length
         self.marked = remaining == 0 ? nil : NSRange(location: marked.location, length: remaining)
-        if self.marked == nil { clear() }
+        if self.marked == nil { endEmptyComposition(at: marked.location) }
         return .composition
     }
 }

@@ -315,6 +315,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendFinishedText: { sendTerminalText($0, appliesModifiers: false) },
                             sendPaste: sendTerminalPaste,
                             sendKeyEvent: sendTerminalKeyEvent,
+                            isModifierArmed: { terminalInputController.isControlArmed },
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
                         )
