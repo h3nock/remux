@@ -1220,6 +1220,26 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testADraftOverASelectionThatTakesInThePlaceholderLeavesThePlaceholder() throws {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        view.insertText("a")
+        view.selectedTextRange = typedRange(0, 2)
+        view.setMarkedText("n", selectedRange: NSRange(location: 1, length: 0))
+        XCTAssertEqual((view.markedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 1, length: 1))
+        XCTAssertEqual(view.text(in: typedRange(0, 1)), " ")
+
+        // Emptying the draft leaves the placeholder, and typing goes on.
+        view.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertEqual(view.text(in: typedRange(0, 1)), " ")
+        view.insertText("b")
+        XCTAssertEqual(sent.items.last, "text:b")
+        XCTAssertEqual(view.text(in: typedRange(0, 2)), " b")
+    }
+
+    @MainActor
     func testKeyboardSelectionsInTypedTextAreEditedInTheTerminal() {
         let sent = Sent()
         let view = composingView(sent)

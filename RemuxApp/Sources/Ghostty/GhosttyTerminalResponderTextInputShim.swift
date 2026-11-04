@@ -127,7 +127,13 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     /// is relative to the new marked text.
     mutating func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         keptPlaceholder = false
-        let target = marked ?? selection
+        var target = marked ?? selection
+        // A composition starts in the typed text, never over the placeholder, which every other
+        // edit relies on.
+        if marked == nil, target.location < Self.typedStart {
+            let end = max(NSMaxRange(target), Self.typedStart)
+            target = NSRange(location: Self.typedStart, length: end - Self.typedStart)
+        }
         guard isValid(target) else { return }
         let value = markedText ?? ""
         text = (text as NSString).replacingCharacters(in: target, with: value)
