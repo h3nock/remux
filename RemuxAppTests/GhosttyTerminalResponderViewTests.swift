@@ -1342,6 +1342,13 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         view.deleteBackward()
         XCTAssertEqual(sent.items, ["text:ls", "text:\n", "text:c", "key:backspace"])
 
+        // The same holds for text a keyboard inserts through a replacement.
+        modifierArmed = true
+        view.replace(typedRange(1, 0), withText: "c")
+        modifierArmed = false
+        XCTAssertNil(view.text(in: typedRange(0, 2)))
+        XCTAssertEqual(sent.items.last, "text:c")
+
         // What the terminal holds after a refused send is unknown, so nothing is kept.
         delegate.calls.removeAll()
         delivers = false

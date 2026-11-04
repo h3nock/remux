@@ -416,7 +416,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         case .composition:
             presentComposition()
         case .typed(let edit):
+            let modifierArmed = modifierArmedProvider()
             submitTypedEdit(edit, source: "replaceText")
+            // As for an insert, text an armed modifier turns into a key isn't kept.
+            if modifierArmed { endKeyboardContext() }
         case .committed(let committed):
             presentComposition()
             submitTextInput(committed, source: "replaceText")
