@@ -213,7 +213,7 @@ private struct RemuxWorkspaceShell: View {
                         }
                     }
                 },
-                onRefresh: { model.refreshSessions(userInitiated: true) },
+                onRefresh: model.refreshSessions,
                 discoveries: model.sessionDiscoveries,
                 herdrPlaces: model.herdrPlaces(of:),
                 onSelectHerdrWorkspace: model.openHerdrWorkspace(_:bootID:in:),
@@ -280,27 +280,6 @@ private struct RemuxWorkspaceShell: View {
         } message: {
             Text("Your previous settings are still in use. Try again.")
         }
-        .alert(
-            "Key Not Unlocked",
-            isPresented: deviceKeyApprovalFailureIsPresented,
-            presenting: model.deviceKeyApprovalFailure
-        ) { _ in
-            Button("OK", role: .cancel) {
-                model.dismissDeviceKeyApprovalFailure()
-            }
-        } message: { message in
-            Text(message)
-        }
-    }
-
-    private var deviceKeyApprovalFailureIsPresented: Binding<Bool> {
-        Binding(
-            get: { model.deviceKeyApprovalFailure != nil },
-            set: { isPresented in
-                guard !isPresented else { return }
-                model.dismissDeviceKeyApprovalFailure()
-            }
-        )
     }
 
     private var terminalSettingsSaveFailureIsPresented: Binding<Bool> {
@@ -669,8 +648,8 @@ private struct RemuxWorkspaceShell: View {
                         await model.connectToDiscoveredSession(locator, on: serverID)
                     }
                 },
-                onRefreshServerSessions: { serverID, userInitiated in
-                    await model.refreshSessionsAndWait(for: serverID, userInitiated: userInitiated)
+                onRefreshServerSessions: { serverID in
+                    await model.refreshSessionsAndWait(for: serverID)
                 },
                 onTrustDiscoveryHostKey: model.trustSessionDiscoveryHostKey,
                 onShowActiveSession: { workspaceID in
@@ -1002,8 +981,7 @@ private struct ConnectionLibraryView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onConnectAvailableSession: (SavedServer.ID, SessionLocator) -> Void
-    /// `true` when the user asked, rather than the page checking by itself.
-    let onRefreshServerSessions: (SavedServer.ID, Bool) async -> Void
+    let onRefreshServerSessions: (SavedServer.ID) async -> Void
     let onTrustDiscoveryHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
@@ -1455,8 +1433,7 @@ private struct ServerDetailView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onConnectAvailableSession: (SavedServer.ID, SessionLocator) -> Void
-    /// `true` when the user asked, rather than the page checking by itself.
-    let onRefreshSessions: (SavedServer.ID, Bool) async -> Void
+    let onRefreshSessions: (SavedServer.ID) async -> Void
     let onTrustHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
 
@@ -1563,13 +1540,6 @@ private struct ServerDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("library.server.check-failed")
-                } else if notices.keyLocked {
-                    Button {
-                        Task { await onRefreshSessions(server.id, true) }
-                    } label: {
-                        Label("Unlock to check sessions", systemImage: "lock.open")
-                    }
-                    .accessibilityIdentifier("library.server.available.unlock")
                 }
 
                 if availableSessions.count > Self.maximumInlineAvailableSessionCount {
@@ -1591,11 +1561,11 @@ private struct ServerDetailView: View {
         .listStyle(.insetGrouped)
         .libraryHomeGroupedScrollBackground()
         .refreshable {
-            await onRefreshSessions(server.id, true)
+            await onRefreshSessions(server.id)
         }
         .task(id: server.id) {
             guard discovery.hasIdleBackend else { return }
-            await onRefreshSessions(server.id, false)
+            await onRefreshSessions(server.id)
         }
         .navigationTitle(server.displayName, withSubtitle: server.displayAddress)
         .navigationBarTitleDisplayMode(.inline)

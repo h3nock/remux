@@ -136,19 +136,13 @@ struct SSHPublicKeyInstaller: Sendable {
         self.commandRunner = commandRunner
     }
 
-    /// `secureEnclaveApprovals` are the app's own, so the approval installing a key made on this device needs
-    /// covers the server's later logins too.
     init(
         trustedHostStore: TrustedHostStore,
-        secureEnclaveApprovals: SecureEnclaveSSHApprovals,
         bundle: Bundle = .main
     ) throws {
         self.init(
             installationCommand: try SSHPublicKeyRemoteInstaller.command(bundle: bundle),
-            commandRunner: Self.liveCommandRunner(
-                trustedHostStore: trustedHostStore,
-                secureEnclaveApprovals: secureEnclaveApprovals
-            )
+            commandRunner: Self.liveCommandRunner(trustedHostStore: trustedHostStore)
         )
     }
 
@@ -240,8 +234,7 @@ struct SSHPublicKeyInstaller: Sendable {
     }
 
     private static func liveCommandRunner(
-        trustedHostStore: TrustedHostStore,
-        secureEnclaveApprovals: SecureEnclaveSSHApprovals
+        trustedHostStore: TrustedHostStore
     ) -> CommandRunner {
         { target, credential, command, stdin in
             let server = SavedServer(
@@ -252,16 +245,9 @@ struct SSHPublicKeyInstaller: Sendable {
                 username: target.username,
                 identityID: target.serverID
             )
-            // A password login, as installing the key makes, needs no approval.
-            let deviceKeyApproval: SecureEnclaveSSHApprovals.Check? = if case .privateKey = credential {
-                secureEnclaveApprovals.check(for: target)
-            } else {
-                nil
-            }
             let configuration = RemuxSSHRootConfiguration(
                 host: target.host,
                 port: target.port,
-                loginPrecondition: { try await deviceKeyApproval?.admitLogin() },
                 authenticationMethod: {
                     try SSHAuthenticationMethodFactory.make(
                         username: target.username,

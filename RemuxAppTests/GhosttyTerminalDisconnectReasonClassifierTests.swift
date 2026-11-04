@@ -1,51 +1,24 @@
 @preconcurrency import Citadel
-import LocalAuthentication
 import NIO
 import XCTest
 @preconcurrency import NIOSSH
 @testable import Remux
 
 final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
-    /// A key made on the device that didn't log in says so, not that the server rejected it, and never reconnects
-    /// by itself: one the user hasn't approved for the server unlocks, in Remux's words; one that no longer works
-    /// here needs Edit Server.
-    func testKeyUnlockFailuresSayHowToUnlockAndNeverReconnectByThemselves() {
-        let locked = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SSHKeyApprovalError.required)
-        XCTAssertEqual(locked.kind, .keyUnlock)
-        XCTAssertFalse(locked.allowsAutomaticReconnect)
-        XCTAssertEqual(locked.message, "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect.")
-        XCTAssertTrue(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SSHKeyApprovalError.required))
-
+    /// A key made on the device that can't sign here goes to Edit Server, as a rejected key does; one the Secure
+    /// Enclave didn't give back, for no reason it says, isn't one to replace; and a locked device only pauses the key,
+    /// so the session reconnects by itself once it's unlocked.
+    func testDeviceKeyFailuresSayWhatToDo() {
         let unusable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnusable)
-        XCTAssertEqual(unusable.kind, .keyUnlock)
+        XCTAssertEqual(unusable.kind, .authentication)
         XCTAssertEqual(unusable.message, SecureEnclaveSSHError.keyUnusable.localizedDescription)
-        XCTAssertFalse(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SecureEnclaveSSHError.keyUnusable))
 
-        // A key the Secure Enclave didn't give back for no reason it says isn't one to replace or unlock.
         let unreadable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnreadable)
         XCTAssertEqual(unreadable.kind, .unknown)
-        XCTAssertEqual(unreadable.message, SecureEnclaveSSHError.keyUnreadable.localizedDescription)
 
-        // Why approving the key failed, in iOS's words, with the same ways on as a locked key.
-        let failedApproval = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(LAError(.passcodeNotSet))
-        XCTAssertEqual(failedApproval.kind, .keyUnlock)
-        XCTAssertEqual(failedApproval.message, LAError(.passcodeNotSet).localizedDescription)
-        XCTAssertFalse(failedApproval.allowsAutomaticReconnect)
-
-        // A locked device only pauses the key: nothing to unlock in Remux, and the session reconnects by itself.
         let paused = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.unavailableWhileLocked)
         XCTAssertEqual(paused.kind, .transportIO)
         XCTAssertTrue(paused.allowsAutomaticReconnect)
-        XCTAssertFalse(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SecureEnclaveSSHError.unavailableWhileLocked))
-
-        let panel = GhosttyRepairPanelContent(
-            reason: TerminalDisconnectReason(kind: .keyUnlock, message: "Unlock it with Face ID to connect."),
-            sessionName: "main",
-            serverName: "Mac mini"
-        )
-        XCTAssertEqual(panel.title, "Key Locked")
-        XCTAssertEqual(panel.actions.map(\.kind), [.retry, .editServer])
-        XCTAssertEqual(panel.actions.first?.title, "Unlock Key")
     }
 
     func testTransportStartFailureMapsKnownBoundaryErrors() {

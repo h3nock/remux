@@ -323,7 +323,6 @@ struct TerminalDisconnectReason: Equatable, Sendable {
         case verificationExpired
         /// The session is gone from the server: it was ended or killed, or it never existed.
         case sessionEnded
-        case keyUnlock
         case hostKey
         case profile
         /// The session's program isn't installed on the server, or can't be run there.
@@ -339,8 +338,6 @@ struct TerminalDisconnectReason: Equatable, Sendable {
                 "transport_io"
             case .serverUnreachable:
                 "server_unreachable"
-            case .keyUnlock:
-                "key_unlock"
             case .authentication:
                 "authentication"
             case .verificationExpired:
@@ -393,7 +390,6 @@ struct TerminalDisconnectReason: Equatable, Sendable {
              .authentication,
              .verificationExpired,
              .sessionEnded,
-             .keyUnlock,
              .hostKey,
              .profile,
              .backendUnavailable,

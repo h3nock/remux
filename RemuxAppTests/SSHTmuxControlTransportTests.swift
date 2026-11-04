@@ -109,7 +109,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let configuration = RemuxAppDependencies.sshConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: SecureEnclaveSSHApprovals(),
             traceFlowID: nil
         )
 
@@ -144,18 +143,15 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             sshAuth: makePasswordAuth(server: server, password: "pw")
         )
 
-        let approvals = SecureEnclaveSSHApprovals()
         let tailscale = RemuxAppDependencies.sshConfiguration(
             for: tailscaleTarget,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: approvals,
             tailscaleSSHCheckChallengeBroker: broker,
             traceFlowID: nil
         )
         let password = RemuxAppDependencies.sshConfiguration(
             for: passwordTarget,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: approvals,
             tailscaleSSHCheckChallengeBroker: broker,
             traceFlowID: nil
         )

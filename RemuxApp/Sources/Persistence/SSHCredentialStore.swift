@@ -200,8 +200,8 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
 struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
     let representation: Data
     let publicKey: Data
-    /// Whether the Secure Enclave signs with the key without asking the user itself, which Remux's approval of
-    /// the server does instead. A key that asks on every use can't change that, so it's replaced.
+    /// Whether the Secure Enclave signs with the key without asking the user. One that asks on every use would ask
+    /// in the middle of a login, and can't change, so it's replaced.
     let signsWithoutPrompt: Bool
 
     init(representation: Data, publicKey: Data, signsWithoutPrompt: Bool = true) {
@@ -252,8 +252,7 @@ struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
         guard LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
             throw SecureEnclaveSSHError.passcodeNotSet
         }
-        // Usable only while the device is unlocked, and gone with its passcode. The user's approval is Remux's, per
-        // server, so the key itself asks for nothing.
+        // Usable only while the device is unlocked, and gone with its passcode; it signs without asking.
         guard let access = SecAccessControlCreateWithFlags(
             nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
             [.privateKeyUsage], nil
@@ -268,6 +267,39 @@ struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
         _ = try P256.Signing.PublicKey(x963Representation: publicKey)
         return SSHPrivateKeyInspector.inspectECDSAP256PublicKey(x963: publicKey)
     }
+
+    /// The key read back from its reference, to sign a login. Signing happens on the connection's event loop, which
+    /// must never bring up a prompt, and later than this, so its failures aren't seen here.
+    func signingKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
+        guard signsWithoutPrompt else { throw SecureEnclaveSSHError.keyUnusable }
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let signingKey: SecureEnclave.P256.Signing.PrivateKey
+        do {
+            signingKey = try SecureEnclave.P256.Signing.PrivateKey(
+                dataRepresentation: representation,
+                authenticationContext: context
+            )
+        } catch where Self.isUnavailableWhileLocked(error) {
+            throw SecureEnclaveSSHError.unavailableWhileLocked
+        } catch {
+            // Nothing here says the key is lost, so this isn't advice to replace it.
+            throw SecureEnclaveSSHError.keyUnreadable
+        }
+        guard signingKey.publicKey.x963Representation == publicKey else {
+            throw SecureEnclaveSSHError.keyUnusable
+        }
+        return signingKey
+    }
+
+    /// Whether the Secure Enclave refused to read the key back because the device is locked.
+    private static func isUnavailableWhileLocked(_ error: any Error) -> Bool {
+        if case CryptoKitError.underlyingCoreCryptoError(let code) = error {
+            return code == errSecInteractionNotAllowed
+        }
+        let error = error as NSError
+        return error.domain == NSOSStatusErrorDomain && error.code == Int(errSecInteractionNotAllowed)
+    }
 }
 
 enum SecureEnclaveSSHError: LocalizedError {
@@ -278,7 +310,7 @@ enum SecureEnclaveSSHError: LocalizedError {
     case keyUnusable
     /// The Secure Enclave didn't give the key back, for a reason it doesn't say.
     case keyUnreadable
-    /// The key can't sign while the device is locked; it can once it's unlocked, with no new approval.
+    /// The key can't sign while the device is locked; it can once it's unlocked.
     case unavailableWhileLocked
 
     var errorDescription: String? {

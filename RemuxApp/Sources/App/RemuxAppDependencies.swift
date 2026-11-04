@@ -183,7 +183,6 @@ struct RemuxAppDependencies: Sendable {
         let credentialStore: any SSHCredentialStore = KeychainSSHCredentialStore()
 #endif
         let trustedHostStore = TrustedHostStore(rootURL: root)
-        let sshRootService = RemuxSSHRootService()
         return RemuxAppDependencies(
             profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
             settingsRepository: FileBackedTerminalSettingsRepository(
@@ -194,11 +193,9 @@ struct RemuxAppDependencies: Sendable {
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,
             publicKeyInstaller: try SSHPublicKeyInstaller(
-                trustedHostStore: trustedHostStore,
-                secureEnclaveApprovals: sshRootService.secureEnclaveApprovals
+                trustedHostStore: trustedHostStore
             ),
-            herdrOwnedZoomStore: FileBackedHerdrOwnedZoomStore(rootURL: root),
-            sshRootService: sshRootService
+            herdrOwnedZoomStore: FileBackedHerdrOwnedZoomStore(rootURL: root)
         )
     }
 
@@ -227,11 +224,6 @@ struct RemuxAppDependencies: Sendable {
 
     func prewarmSSHConnection(for target: SessionTarget) async {
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
-    }
-
-    /// The user's approvals of keys made on this device, which every login checks.
-    var secureEnclaveApprovals: SecureEnclaveSSHApprovals {
-        sshRootService.secureEnclaveApprovals
     }
 
     func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
@@ -272,7 +264,6 @@ struct RemuxAppDependencies: Sendable {
             configuration: sshConfiguration(
                 for: target,
                 trustedHostStore: trustedHostStore,
-                secureEnclaveApprovals: sshRootService.secureEnclaveApprovals,
                 tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
                 traceFlowID: "session.open.\(target.workspace.id.uuidString)"
             ),
@@ -293,7 +284,6 @@ struct RemuxAppDependencies: Sendable {
         let configuration = sshConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: sshRootService.secureEnclaveApprovals,
             tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
             traceFlowID: nil
         )
@@ -310,7 +300,6 @@ struct RemuxAppDependencies: Sendable {
     static func sshConfiguration(
         for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
-        secureEnclaveApprovals: SecureEnclaveSSHApprovals,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil,
         traceFlowID: String?
     ) -> SSHTmuxControlConfiguration {
@@ -318,11 +307,9 @@ struct RemuxAppDependencies: Sendable {
             credential: target.sshAuth.credential,
             broker: tailscaleSSHCheckChallengeBroker
         )
-        let deviceKeyApproval = secureEnclaveApprovals.check(for: target)
         return SSHTmuxControlConfiguration(
             host: target.server.host,
             port: target.server.port,
-            loginPrecondition: { try await deviceKeyApproval?.admitLogin() },
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
@@ -345,13 +332,11 @@ struct RemuxAppDependencies: Sendable {
     static func attachmentSSHRootConfiguration(
         for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
-        secureEnclaveApprovals: SecureEnclaveSSHApprovals,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil
     ) -> RemuxSSHRootConfiguration {
         sshRootConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: secureEnclaveApprovals,
             tailscaleSSHCheckChallengeBroker: tailscaleSSHCheckChallengeBroker,
             connectTimeout: RemuxConnectionTimeouts.sftpSSHConnect
         )
@@ -365,7 +350,6 @@ struct RemuxAppDependencies: Sendable {
         let rootConfiguration = attachmentSSHRootConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: sshRootService.secureEnclaveApprovals,
             tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker
         )
         let provider = RemuxCitadelSFTPClientProvider(
@@ -450,7 +434,6 @@ struct RemuxAppDependencies: Sendable {
             configuration: sshRootConfiguration(
                 for: target,
                 trustedHostStore: trustedHostStore,
-                secureEnclaveApprovals: sshRootService.secureEnclaveApprovals,
                 tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
                 connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect
             ),
@@ -498,7 +481,6 @@ struct RemuxAppDependencies: Sendable {
         let configuration = sshConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: sshRootService.secureEnclaveApprovals,
             tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker,
             traceFlowID: nil
         )
@@ -526,7 +508,6 @@ struct RemuxAppDependencies: Sendable {
     private static func sshRootConfiguration(
         for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
-        secureEnclaveApprovals: SecureEnclaveSSHApprovals,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker?,
         connectTimeout: TimeAmount
     ) -> RemuxSSHRootConfiguration {
@@ -534,11 +515,9 @@ struct RemuxAppDependencies: Sendable {
             credential: target.sshAuth.credential,
             broker: tailscaleSSHCheckChallengeBroker
         )
-        let deviceKeyApproval = secureEnclaveApprovals.check(for: target)
         return RemuxSSHRootConfiguration(
             host: target.server.host,
             port: target.server.port,
-            loginPrecondition: { try await deviceKeyApproval?.admitLogin() },
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,

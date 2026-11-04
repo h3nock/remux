@@ -191,8 +191,6 @@ struct SessionDiscoveryState: Equatable {
         case loading
         case loaded
         case failed
-        /// Logging in needs the user to approve the server's key on this device, and nobody asked to check.
-        case locked
     }
 
     static let idle = SessionDiscoveryState(
@@ -252,16 +250,6 @@ struct SessionDiscoveryState: Equatable {
             lastSuccessfulSessions: lastSuccessfulSessions,
             hostKeyChallenge: hostKeyChallenge,
             problem: problem,
-            executablePath: nil
-        )
-    }
-
-    func lockingRefresh() -> Self {
-        Self(
-            phase: .locked,
-            lastSuccessfulSessions: lastSuccessfulSessions,
-            hostKeyChallenge: nil,
-            problem: nil,
             executablePath: nil
         )
     }
@@ -354,9 +342,6 @@ struct ServerSessionDiscovery: Equatable {
         if let hostKeyChallenge {
             return ServerDiscoveryNotices(hostKey: hostKeyChallenge, checkFailed: false, backendProblems: [:])
         }
-        if tmux.phase == .locked || herdr.phase == .locked {
-            return ServerDiscoveryNotices(hostKey: nil, checkFailed: false, backendProblems: [:], keyLocked: true)
-        }
         let checkFailed = tmux.phase == .failed && herdr.phase == .failed
             && tmux.problem == nil && herdr.problem == nil
         var backendProblems: [SessionBackend: BackendProblem] = [:]
@@ -384,8 +369,6 @@ struct ServerDiscoveryNotices: Equatable {
     /// signing in failed, or the connection dropped.
     let checkFailed: Bool
     let backendProblems: [SessionBackend: BackendProblem]
-    /// Listing the server's sessions needs the user to unlock its key, and only their own request does that.
-    var keyLocked = false
 
     /// Nothing that can run was found for either backend, on Automatic or at the path set.
     var isNeitherBackendInstalled: Bool {
@@ -423,9 +406,6 @@ final class RemuxRootModel: ObservableObject {
     private struct SessionRefresh {
         let id: UUID
         let task: Task<Void, Never>
-        let userInitiated: Bool
-        /// The user asked for a refresh while this one, which started by itself, was out.
-        var userAskedMeanwhile = false
     }
 
     private static let libraryPrewarmServerLimit = 3
@@ -516,8 +496,6 @@ final class RemuxRootModel: ObservableObject {
         didSet { Haptic.follow(terminalSettings) }
     }
     @Published private(set) var terminalSettingsSaveFailed = false
-    /// Why approving a server's key on this device failed, for a session the user opened or reconnected.
-    @Published private(set) var deviceKeyApprovalFailure: String?
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
     @Published private(set) var isSetupActionInProgress = false
     @Published private(set) var sessionDiscoveries: [SavedServer.ID: ServerSessionDiscovery] = [:]
@@ -908,24 +886,14 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    /// Logging in with a key made on this device first asks the user to approve it, for the server the draft adds,
-    /// so adding the server and listing its sessions don't ask again. A user who cancels stops the check there, to
-    /// try again; an approval that failed otherwise stops it saying why.
     func verifyPublicKeyInstallation(
         _ draft: TmuxConnectionDraft,
         setupSessionID: UUID?
     ) async throws {
         try requireSetupInstallerAccess(setupSessionID)
-        let target = try publicKeyInstallTarget(for: draft)
-        if let check = dependencies.secureEnclaveApprovals.check(for: target), check.needsApproval {
-            let serverName = draft.displayName.isEmpty ? target.host : draft.displayName
-            switch await approve(check, serverName: serverName) {
-            case .approved: break
-            case .cancelled: throw SSHKeyApprovalError.required
-            case .failed(let error): throw error
-            }
-        }
-        try await dependencies.publicKeyInstaller.verify(target)
+        try await dependencies.publicKeyInstaller.verify(
+            publicKeyInstallTarget(for: draft)
+        )
     }
 
     func trustSetupHostKey(
@@ -1049,19 +1017,13 @@ final class RemuxRootModel: ObservableObject {
                 )
                 // Only SSH is checked: a server is valid without tmux, for
                 // example one that runs only Herdr.
-                let verification = target(
-                    server: server,
-                    workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
-                    sshAuth: sshAuth
+                try await dependencies.verifySSHAccess(
+                    for: target(
+                        server: server,
+                        workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
+                        sshAuth: sshAuth
+                    )
                 )
-                // A user who cancels leaves the form as it was; an approval that failed otherwise says why, as a
-                // failed check does.
-                switch await approveDeviceKeyIfNeeded(for: verification) {
-                case .approved: break
-                case .cancelled: return nil
-                case .failed(let error): throw error
-                }
-                try await dependencies.verifySSHAccess(for: verification)
                 guard isCurrentSetupAction(action) else { return nil }
                 return await persistVerifiedNewServer(
                     server,
@@ -1278,7 +1240,7 @@ final class RemuxRootModel: ObservableObject {
                 guard isCurrentSetupAction(action) else { return }
                 updateLibrary(reloadedLibrary)
                 finishSetupSession(action.setupID)
-                await activate(
+                activate(
                     server: server,
                     workspace: workspace,
                     sshAuth: updatedSSHAuth
@@ -1394,7 +1356,7 @@ final class RemuxRootModel: ObservableObject {
                 let sshAuth = try await resolveSSHAuth(for: server)
 
                 finishSetupSession(action.setupID)
-                await activate(
+                activate(
                     server: server,
                     workspace: submission.workspace,
                     sshAuth: sshAuth,
@@ -1543,7 +1505,7 @@ final class RemuxRootModel: ObservableObject {
         // lastOpenedAt is saved and the library reloads. The awaits stay
         // sequential in this call so a later delete or edit cannot interleave
         // with a dangling save and resurrect a removed profile.
-        guard await activate(server: server, workspace: openedWorkspace, sshAuth: sshAuth) else { return }
+        activate(server: server, workspace: openedWorkspace, sshAuth: sshAuth)
 
         do {
             try await dependencies.profileRepository.saveProfile(server: server, workspace: openedWorkspace)
@@ -1580,26 +1542,18 @@ final class RemuxRootModel: ObservableObject {
         return sessionDiscovery(for: serverID).notices
     }
 
-    /// `userInitiated`: the user asked, so a server whose key on this device they haven't approved asks them to.
-    func refreshSessions(userInitiated: Bool = false) {
+    func refreshSessions() {
         for server in library.servers {
-            refreshSessions(for: server.id, userInitiated: userInitiated)
+            refreshSessions(for: server.id)
         }
     }
 
     /// Coalesces launch and explicit refresh requests for one server. A
     /// completed result must still match the server profile it started with;
-    /// editing or deleting that server makes the result stale. A refresh that
-    /// started by itself can't ask the user to approve the server's key, so one
-    /// they ask for while it's out runs after it if it finds the key locked.
-    func refreshSessions(for serverID: SavedServer.ID, userInitiated: Bool = false) {
-        if let running = sessionRefreshes[serverID] {
-            if userInitiated, !running.userInitiated {
-                sessionRefreshes[serverID]?.userAskedMeanwhile = true
-            }
-            return
-        }
-        guard let server = library.server(id: serverID) else {
+    /// editing or deleting that server makes the result stale.
+    func refreshSessions(for serverID: SavedServer.ID) {
+        guard sessionRefreshes[serverID] == nil,
+              let server = library.server(id: serverID) else {
             return
         }
 
@@ -1610,20 +1564,16 @@ final class RemuxRootModel: ObservableObject {
             guard let self else { return }
             await self.performSessionRefresh(
                 for: server,
-                refreshID: refreshID,
-                userInitiated: userInitiated
+                refreshID: refreshID
             )
         }
-        sessionRefreshes[serverID] = SessionRefresh(id: refreshID, task: task, userInitiated: userInitiated)
+        sessionRefreshes[serverID] = SessionRefresh(id: refreshID, task: task)
     }
 
-    func refreshSessionsAndWait(for serverID: SavedServer.ID, userInitiated: Bool = false) async {
-        refreshSessions(for: serverID, userInitiated: userInitiated)
-        // Including the user's own refresh that runs after the one they joined.
-        var awaited: Set<UUID> = []
-        while let refresh = sessionRefreshes[serverID], awaited.insert(refresh.id).inserted {
-            await refresh.task.value
-        }
+    func refreshSessionsAndWait(for serverID: SavedServer.ID) async {
+        refreshSessions(for: serverID)
+        guard let refresh = sessionRefreshes[serverID] else { return }
+        await refresh.task.value
     }
 
     func trustSessionDiscoveryHostKey(_ challenge: SSHHostKeyTrustChallenge) {
@@ -1634,7 +1584,7 @@ final class RemuxRootModel: ObservableObject {
 
         do {
             try dependencies.trustedHostStore.trustHostKey(challenge)
-            refreshSessions(for: challenge.serverID, userInitiated: true)
+            refreshSessions(for: challenge.serverID)
         } catch {
             sessionDiscoveries[challenge.serverID] = sessionDiscovery(
                 for: challenge.serverID
@@ -1676,26 +1626,7 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    /// A reconnect the user asks for first asks them to approve the server's key on this device, if they haven't,
-    /// and doesn't run when they don't. One that runs by itself uses an approval they gave, or stops at the locked
-    /// key.
     func reconnectActiveSession(
-        _ id: SavedWorkspace.ID,
-        source: TerminalReconnectSource
-    ) {
-        if !source.isAutomatic,
-           let session = RemuxActiveSessionCollection.session(id, in: activeSessions),
-           dependencies.secureEnclaveApprovals.check(for: session.target)?.needsApproval == true {
-            Task { [weak self] in
-                guard let self, await self.approvesDeviceKeyForSession(session.target) else { return }
-                self.restartActiveSession(id, source: source)
-            }
-            return
-        }
-        restartActiveSession(id, source: source)
-    }
-
-    private func restartActiveSession(
         _ id: SavedWorkspace.ID,
         source: TerminalReconnectSource
     ) {
@@ -1937,8 +1868,7 @@ final class RemuxRootModel: ObservableObject {
                 discovery[backend] = discovery[backend]
                     .confirmingExistingSession(named: session.target.workspace.sessionName)
                 sessionDiscoveries[serverID] = discovery
-                // A list locked by the server's key fills now, with the approval this connection had.
-                if previousPhase == .failed || discovery.hasIdleBackend || discovery.notices.keyLocked {
+                if previousPhase == .failed || discovery.hasIdleBackend {
                     refreshSessions(for: serverID)
                 }
             }
@@ -2003,7 +1933,7 @@ final class RemuxRootModel: ObservableObject {
             .firstIndex { $0.id == id }
         closePreparedTransport(for: id)
         stopTerminalRuntimes(workspaceID: id)
-        removeActiveSession(id)
+        RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
 
         guard case .terminal(let selectedID) = state, selectedID == id else {
             return
@@ -2019,23 +1949,11 @@ final class RemuxRootModel: ObservableObject {
         scheduleLibrarySSHPrewarm(snapshot: library)
     }
 
-    /// Takes a session out of the open ones. Removing the server's last open session ends the user's approval of
-    /// its key; removing one of several doesn't.
-    private func removeActiveSession(_ id: SavedWorkspace.ID) {
-        let serverID = RemuxActiveSessionCollection.session(id, in: activeSessions)?.target.server.id
-        RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
-        if let serverID, !RemuxActiveSessionCollection.hasActiveSession(onServer: serverID, in: activeSessions) {
-            dependencies.secureEnclaveApprovals.revoke(serverID: serverID)
-        }
-    }
-
     func deleteServer(_ id: SavedServer.ID) async {
         do {
             let deletedServer = library.server(id: id)
             invalidateSessionRefresh(for: id)
             try await dependencies.profileRepository.deleteServer(id: id)
-            // The server is gone, whatever the cleanup after this does.
-            dependencies.secureEnclaveApprovals.revoke(serverID: id)
             try dependencies.trustedHostStore.deleteIdentity(for: id)
             var snapshot = try await dependencies.profileRepository.loadSnapshot()
             if let identityID = deletedServer?.identityID,
@@ -2065,7 +1983,7 @@ final class RemuxRootModel: ObservableObject {
             try await dependencies.profileRepository.deleteWorkspace(id: id)
             closePreparedTransport(for: id)
             stopTerminalRuntimes(workspaceID: id)
-            removeActiveSession(id)
+            RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
             updateLibrary(try await dependencies.profileRepository.loadSnapshot())
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
@@ -2158,26 +2076,13 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    /// Opening a session is the user's request, so it first asks them to approve the server's key on this device,
-    /// if they haven't. Returns false, opening nothing, when they don't.
-    @discardableResult
     private func activate(
         server: SavedServer,
         workspace: SavedWorkspace,
         sshAuth: ResolvedSSHAuth,
         opening: SessionOpening = .attach
-    ) async -> Bool {
-        var target = target(server: server, workspace: workspace, sshAuth: sshAuth)
-        target.opening = opening
+    ) {
         let flow = sessionOpenFlowID(workspace.id)
-        guard await approvesDeviceKeyForSession(target) else {
-            GhosttyRuntimeTrace.flowEnd(
-                flow,
-                event: "model.activate.keyNotApproved",
-                fields: ["workspaceID": workspace.id.uuidString]
-            )
-            return false
-        }
         GhosttyRuntimeTrace.flowEvent(
             flow,
             event: "model.activate.begin",
@@ -2189,6 +2094,8 @@ final class RemuxRootModel: ObservableObject {
         )
         cancelLibrarySSHPrewarm()
         closePreparedTransports(forServerID: server.id, excludingWorkspaceID: workspace.id)
+        var target = target(server: server, workspace: workspace, sshAuth: sshAuth)
+        target.opening = opening
         let activeSession = ActiveTerminalSession(target: target)
         prepareTmuxTransport(for: target, reason: .activation)
         replaceTerminalRuntime(for: activeSession)
@@ -2207,7 +2114,6 @@ final class RemuxRootModel: ObservableObject {
                 "workspaceID": workspace.id.uuidString,
             ]
         )
-        return true
     }
 
     private func resolveSSHAuth(for server: SavedServer) async throws -> ResolvedSSHAuth {
@@ -2255,7 +2161,7 @@ final class RemuxRootModel: ObservableObject {
             return "Remux could not reach the server. Check the address, port, network, or VPN."
         case .authentication:
             return "The server rejected these credentials. Check the user and authentication details."
-        case .backendUnavailable, .keyUnlock:
+        case .backendUnavailable:
             return reason.message
         case .hostKey:
             return "Remux could not verify the SSH host key."
@@ -2459,57 +2365,11 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    /// What the user's approval of a server's key, asked for something they just requested, says of that request:
-    /// it goes on, or it stops, quietly when they cancelled and saying why when the approval failed otherwise.
-    private enum DeviceKeyApproval {
-        case approved
-        case cancelled
-        case failed(any Error)
-    }
-
-    /// Asks the user to approve the server's key on this device, unless the key isn't one made here or they have.
-    private func approveDeviceKeyIfNeeded(for target: SessionTarget) async -> DeviceKeyApproval {
-        guard let check = dependencies.secureEnclaveApprovals.check(for: target), check.needsApproval else {
-            return .approved
-        }
-        return await approve(check, serverName: target.server.displayName)
-    }
-
-    private func approve(_ check: SecureEnclaveSSHApprovals.Check, serverName: String) async -> DeviceKeyApproval {
-        do {
-            try await check.approvals.approve(check.scope, serverName: serverName)
-            return .approved
-        } catch where SecureEnclaveSSHApprovals.isCancellation(error) {
-            return .cancelled
-        } catch {
-            return .failed(error)
-        }
-    }
-
-    /// For opening or reconnecting a session: whether it goes on. An approval that failed other than by cancelling
-    /// says why, over whatever is on screen, and nothing else stops.
-    private func approvesDeviceKeyForSession(_ target: SessionTarget) async -> Bool {
-        switch await approveDeviceKeyIfNeeded(for: target) {
-        case .approved:
-            return true
-        case .cancelled:
-            return false
-        case .failed(let error):
-            deviceKeyApprovalFailure = error.localizedDescription
-            return false
-        }
-    }
-
-    func dismissDeviceKeyApprovalFailure() {
-        deviceKeyApprovalFailure = nil
-    }
-
     /// Lists both backends' sessions over the server's SSH connection, each applied as it arrives, so a
     /// slow or missing backend doesn't hold back the other.
     private func performSessionRefresh(
         for server: SavedServer,
-        refreshID: UUID,
-        userInitiated: Bool
+        refreshID: UUID
     ) async {
         defer { finishSessionRefresh(for: server.id, refreshID: refreshID) }
 
@@ -2529,23 +2389,6 @@ final class RemuxRootModel: ObservableObject {
             workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
             sshAuth: sshAuth
         )
-        if userInitiated {
-            let approval = await approveDeviceKeyIfNeeded(for: discoveryTarget)
-            guard isCurrentSessionRefresh(server, refreshID: refreshID) else { return }
-            switch approval {
-            case .approved:
-                break
-            case .cancelled:
-                sessionDiscoveries[server.id] = sessionDiscovery(for: server.id).mapping { $0.lockingRefresh() }
-                return
-            case .failed(let error):
-                // The server's own notice says the check failed.
-                sessionDiscoveries[server.id] = sessionDiscovery(for: server.id).mapping {
-                    Self.applying(.failure(error), to: $0, backend: nil, configuredPath: nil)
-                }
-                return
-            }
-        }
         let dependencies = dependencies
         // Each child awaits before building its tuple: optimized Swift 6.3 and 6.4 builds return the wrong first
         // element from a tuple expression that contains the `await`.
@@ -2602,8 +2445,6 @@ final class RemuxRootModel: ObservableObject {
             return state.cancellingRefresh()
         case .failure(TrustedHostStoreError.hostKeyTrustRequired(let challenge)):
             return state.failingRefresh(hostKeyChallenge: challenge)
-        case .failure(let error) where GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(error):
-            return state.lockingRefresh()
         case .failure(let error):
             return state.failingRefresh(
                 problem: backend == nil ? nil : BackendProblem(discoveryError: error, path: configuredPath)
@@ -2628,11 +2469,8 @@ final class RemuxRootModel: ObservableObject {
         for serverID: SavedServer.ID,
         refreshID: UUID
     ) {
-        guard let refresh = sessionRefreshes[serverID], refresh.id == refreshID else { return }
+        guard sessionRefreshes[serverID]?.id == refreshID else { return }
         sessionRefreshes.removeValue(forKey: serverID)
-        if refresh.userAskedMeanwhile, sessionDiscovery(for: serverID).notices.keyLocked {
-            refreshSessions(for: serverID, userInitiated: true)
-        }
     }
 
     private func invalidateSessionRefresh(for serverID: SavedServer.ID) {

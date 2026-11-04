@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 import NIOCore
 import NIOPosix
 
@@ -24,14 +23,8 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             )
         }
 
-        if let message = keyUnlockMessage(for: error) {
-            return TerminalDisconnectReason(kind: .keyUnlock, message: message)
-        }
-
         if let error = error as? SecureEnclaveSSHError {
-            // A locked device only pauses the key: the session reconnects by itself once it's unlocked.
-            let kind: TerminalDisconnectReason.Kind = error == .unavailableWhileLocked ? .transportIO : .unknown
-            return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
+            return TerminalDisconnectReason(kind: deviceKeyFailureKind(error), message: error.localizedDescription)
         }
 
         if isServerUnreachable(error) {
@@ -80,24 +73,14 @@ enum GhosttyTerminalDisconnectReasonClassifier {
         return TerminalDisconnectReason(kind: .unknown, message: message)
     }
 
-    /// Why a key made on this device didn't log in: one the user hasn't approved for the server needs unlocking,
-    /// in Remux's words, or says why approving it failed, in iOS's; one that no longer works here needs replacing.
-    static func keyUnlockMessage(for error: any Error) -> String? {
+    /// A key made on this device that didn't log in: one that can't be used here is replaced in Edit Server, as a
+    /// rejected key is; a locked device only pauses it, so the session reconnects by itself once it's unlocked.
+    private static func deviceKeyFailureKind(_ error: SecureEnclaveSSHError) -> TerminalDisconnectReason.Kind {
         switch error {
-        case let error as SecureEnclaveSSHError where error == .keyUnusable:
-            return error.localizedDescription
-        case let error as LAError:
-            return error.localizedDescription
-        case is SSHKeyApprovalError:
-            return "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect."
-        default:
-            return nil
+        case .keyUnusable: .authentication
+        case .unavailableWhileLocked: .transportIO
+        case .unavailable, .passcodeNotSet, .keyUnreadable: .unknown
         }
-    }
-
-    /// Whether approving the key could log in, unlike for a key that no longer works here.
-    static func isKeyLocked(_ error: any Error) -> Bool {
-        error is SSHKeyApprovalError
     }
 
     private static func isServerUnreachable(_ error: any Error) -> Bool {

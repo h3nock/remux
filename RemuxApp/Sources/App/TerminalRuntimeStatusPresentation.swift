@@ -52,8 +52,6 @@ struct TerminalRuntimeStatusPresentation: Equatable, Sendable {
 
     private static func disconnectedLabel(for reason: TerminalDisconnectReason) -> String {
         switch reason.kind {
-        case .keyUnlock:
-            "Key Locked"
         case .authentication:
             "Auth Failed"
         case .verificationExpired:

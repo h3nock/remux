@@ -24,9 +24,6 @@ struct RemuxSSHRootKey: Hashable, Sendable {
 struct RemuxSSHRootConfiguration: Sendable {
     let host: String
     let port: Int
-    /// Whether a login may start now: one that throws ends there, with its error, before any connection, so a
-    /// request that comes after it never joins a login that can't succeed. A login already under way goes on.
-    let loginPrecondition: @Sendable () async throws -> Void
     let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
@@ -36,7 +33,6 @@ struct RemuxSSHRootConfiguration: Sendable {
     init(
         host: String,
         port: Int,
-        loginPrecondition: @escaping @Sendable () async throws -> Void = {},
         authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
@@ -45,7 +41,6 @@ struct RemuxSSHRootConfiguration: Sendable {
     ) {
         self.host = host
         self.port = port
-        self.loginPrecondition = loginPrecondition
         self.authenticationMethod = authenticationMethod
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
@@ -517,9 +512,6 @@ struct RemuxSSHClaimedRoot: Sendable {
 
 actor RemuxSSHRootService {
     nonisolated let tailscaleSSHCheckChallengeBroker = TailscaleSSHCheckChallengeBroker()
-    /// The user's approvals of keys made on this device, which every login to these servers checks before it
-    /// starts, as their Tailscale checks go through the broker. The pool itself doesn't use them.
-    nonisolated let secureEnclaveApprovals: SecureEnclaveSSHApprovals
 
     private struct Entry {
         let generation: UUID
@@ -572,12 +564,8 @@ actor RemuxSSHRootService {
     private var entries: [RemuxSSHRootKey: Entry] = [:]
     private var retiredEntries: [UUID: RetiredEntry] = [:]
 
-    init(
-        idleTimeout: Duration = .seconds(120),
-        secureEnclaveApprovals: SecureEnclaveSSHApprovals = SecureEnclaveSSHApprovals()
-    ) {
+    init(idleTimeout: Duration = .seconds(120)) {
         self.idleTimeout = idleTimeout
-        self.secureEnclaveApprovals = secureEnclaveApprovals
     }
 
     func snapshot() -> RemuxSSHRootServiceSnapshot {
@@ -1258,7 +1246,6 @@ enum RemuxSSHRootBootstrap {
         using configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) async throws -> RemuxSSHRoot {
-        try await configuration.loginPrecondition()
         var rootChannel: Channel?
 
         do {

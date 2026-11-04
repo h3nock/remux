@@ -128,16 +128,7 @@ final class SSHPublicKeyInstallCoordinator: ObservableObject {
         self.onTrustHostKey = onTrustHostKey
     }
 
-    /// A key the user approves on this device would ask them just to check whether it's installed, so it goes
-    /// straight to the password: installing a key that's there already changes nothing, and verifying asks
-    /// once.
     func preflight() async {
-        guard draft.secureEnclaveKey == nil else {
-            guard isActive else { return }
-            passwordError = nil
-            phase = .passwordRequired
-            return
-        }
         await start(.preflight)
     }
 

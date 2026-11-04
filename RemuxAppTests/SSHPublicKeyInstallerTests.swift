@@ -334,10 +334,7 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
             privateKey: SSHPrivateKeyCredential(privateKeyPEM: generatedKey.privateKeyPEM),
             publicKeyLine: generatedKey.publicKeyLine
         )
-        let installer = try SSHPublicKeyInstaller(
-            trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: SecureEnclaveSSHApprovals()
-        )
+        let installer = try SSHPublicKeyInstaller(trustedHostStore: trustedHostStore)
 
         let preflightOutcome = try await installer.preflight(target)
         XCTAssertEqual(preflightOutcome, .alreadyInstalled)
@@ -392,10 +389,7 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
             privateKey: SSHPrivateKeyCredential(privateKeyPEM: generatedKey.privateKeyPEM),
             publicKeyLine: generatedKey.publicKeyLine
         )
-        let installer = try SSHPublicKeyInstaller(
-            trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: SecureEnclaveSSHApprovals()
-        )
+        let installer = try SSHPublicKeyInstaller(trustedHostStore: trustedHostStore)
 
         let outcome = try await installer.preflight(target)
 
@@ -436,10 +430,7 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
             privateKey: SSHPrivateKeyCredential(privateKeyPEM: generatedKey.privateKeyPEM),
             publicKeyLine: generatedKey.publicKeyLine
         )
-        let installer = try SSHPublicKeyInstaller(
-            trustedHostStore: trustedHostStore,
-            secureEnclaveApprovals: SecureEnclaveSSHApprovals()
-        )
+        let installer = try SSHPublicKeyInstaller(trustedHostStore: trustedHostStore)
         let appendTask = Task {
             try await installer.append(target, password: "one-time-password")
         }
