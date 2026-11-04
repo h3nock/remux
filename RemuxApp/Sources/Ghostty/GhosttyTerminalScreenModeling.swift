@@ -124,6 +124,10 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
     /// tmux's prefix key (Ctrl+B) is held briefly so Ctrl+B [ can open tmux's copy mode.
     var holdsTmuxPrefixKey: Bool { get }
 
+    /// The surface the focused input operations reach now, by the same checks they make; nil while
+    /// they would refuse input. The keyboard's unfinished composition belongs to it.
+    var focusedInputSurfaceID: UUID? { get }
+
     @discardableResult
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult
 

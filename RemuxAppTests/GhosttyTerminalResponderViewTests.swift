@@ -907,4 +907,238 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         driver.repeatTick(at: .greatestFiniteMagnitude)
         XCTAssertEqual(receivedEvents.count, eventCountBeforeDisable)
     }
+
+    // MARK: - Composition
+
+    /// Input the responder sends, in order: committed and finished text, pastes and keys.
+    @MainActor
+    private final class Sent {
+        var items: [String] = []
+    }
+
+    @MainActor
+    private func composingView(_ sent: Sent) -> GhosttyTerminalResponderUIView {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: {
+                sent.items.append("text:" + $0)
+                return true
+            },
+            sendFinishedText: {
+                sent.items.append("finished:" + $0)
+                return true
+            },
+            sendPaste: {
+                sent.items.append("paste:" + $0)
+                return true
+            },
+            sendKeyEvent: {
+                sent.items.append($0.keyCode == .backspace ? "key:backspace" : "key:\($0.keyCode.rawValue)")
+                return true
+            }
+        )
+        return view
+    }
+
+    @MainActor
+    private final class RecordingInputDelegate: NSObject, UITextInputDelegate {
+        var calls: [String] = []
+        func selectionWillChange(_ textInput: UITextInput?) { calls.append("selectionWillChange") }
+        func selectionDidChange(_ textInput: UITextInput?) { calls.append("selectionDidChange") }
+        func textWillChange(_ textInput: UITextInput?) { calls.append("textWillChange") }
+        func textDidChange(_ textInput: UITextInput?) { calls.append("textDidChange") }
+        @available(iOS 18.4, *)
+        func conversationContext(_ context: UIConversationContext?, didChange textInput: UITextInput?) {}
+    }
+
+    @MainActor
+    func testMarkedTextStaysLocalUntilTheKeyboardCommitsItOnce() throws {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        view.setMarkedText("ni\u{2006}hao", selectedRange: NSRange(location: 6, length: 0))
+
+        let marked = try XCTUnwrap(view.markedTextRange)
+        XCTAssertEqual(view.text(in: marked), "ni\u{2006}hao")
+        XCTAssertTrue(sent.items.isEmpty)
+
+        view.setMarkedText("你好", selectedRange: NSRange(location: 2, length: 0))
+        view.unmarkText()
+        view.unmarkText()
+
+        XCTAssertEqual(sent.items, ["text:你好"])
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testInsertTextReplacesTheCompositionAndIdleInsertsGoStraightThrough() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        view.setMarkedText("nihao", selectedRange: NSRange(location: 5, length: 0))
+        view.insertText("nihao")
+        // Korean revises a syllable with an unmarked Backspace and insert.
+        view.insertText("가")
+        view.deleteBackward()
+        view.insertText("간")
+
+        XCTAssertEqual(sent.items, ["text:nihao", "text:가", "key:backspace", "text:간"])
+        XCTAssertNil(view.markedTextRange)
+    }
+
+    @MainActor
+    func testKeyboardDeleteEditsTheCompositionWithoutTerminalBackspace() throws {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        view.setMarkedText("nih", selectedRange: NSRange(location: 3, length: 0))
+        view.deleteBackward()
+
+        XCTAssertEqual(view.text(in: try XCTUnwrap(view.markedTextRange)), "ni")
+        view.deleteBackward()
+        view.deleteBackward()
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertTrue(sent.items.isEmpty)
+
+        view.deleteBackward()
+        XCTAssertEqual(sent.items, ["key:backspace"])
+    }
+
+    @MainActor
+    func testCompositionDocumentKeepsUTF16RangesAndTheIdlePlaceholder() throws {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        view.update(isEnabled: true, wantsFirstResponder: true, activationToken: 1,
+                    sendText: { _ in true }, sendPaste: { _ in true }, sendKeyEvent: { _ in true })
+
+        view.setMarkedText("日本😀", selectedRange: NSRange(location: 2, length: 0))
+
+        let marked = try XCTUnwrap(view.markedTextRange as? GhosttyVirtualTextRange)
+        XCTAssertEqual(marked.nsRange, NSRange(location: 1, length: 4))
+        let selection = try XCTUnwrap(view.selectedTextRange as? GhosttyVirtualTextRange)
+        XCTAssertEqual(selection.nsRange, NSRange(location: 3, length: 0))
+        XCTAssertEqual((view.endOfDocument as? GhosttyVirtualTextPosition)?.offset, 5)
+
+        // The keyboard moves the caret inside the composition, never outside it.
+        view.selectedTextRange = GhosttyVirtualTextRange(NSRange(location: 1, length: 0))
+        XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 1, length: 0))
+        view.selectedTextRange = GhosttyVirtualTextRange(NSRange(location: 0, length: 0))
+        XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 1, length: 0))
+
+        // A replacement inside the composition edits it.
+        view.replace(GhosttyVirtualTextRange(NSRange(location: 1, length: 2)), withText: "にほん")
+        XCTAssertEqual(view.text(in: try XCTUnwrap(view.markedTextRange)), "にほん😀")
+
+        view.setMarkedText(nil, selectedRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 1, length: 0))
+        XCTAssertEqual(view.text(in: GhosttyVirtualTextRange(NSRange(location: 0, length: 1))), " ")
+        XCTAssertNil(view.text(in: GhosttyVirtualTextRange(NSRange(location: 0, length: 2))))
+    }
+
+    @MainActor
+    func testAppActionsSettleTheDraftAndSynchronizeTheKeyboard() {
+        let sent = Sent()
+        let view = composingView(sent)
+        let delegate = RecordingInputDelegate()
+        view.inputDelegate = delegate
+        let notified = ["textWillChange", "selectionWillChange", "selectionDidChange", "textDidChange"]
+
+        // Keyboard edits never notify.
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertTrue(delegate.calls.isEmpty)
+
+        XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: true)), .finished)
+        XCTAssertEqual(sent.items, ["finished:ni"])
+        XCTAssertEqual(delegate.calls, notified)
+
+        // Nothing typed since: nothing to synchronize.
+        delegate.calls.removeAll()
+        XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: false)), .noDraft)
+        XCTAssertTrue(delegate.calls.isEmpty)
+
+        // Korean's assembly leaves context without a draft; an app action ends it.
+        view.insertText("간")
+        XCTAssertEqual(view.resolveComposition(for: .cancel), .noDraft)
+        XCTAssertEqual(delegate.calls, notified)
+
+        delegate.calls.removeAll()
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: false)), .finished)
+        view.setMarkedText("hao", selectedRange: NSRange(location: 3, length: 0))
+        XCTAssertEqual(view.resolveComposition(for: .cancel), .canceled)
+        XCTAssertNil(view.markedTextRange)
+
+        XCTAssertEqual(sent.items, ["finished:ni", "text:간", "text:ni"])
+        XCTAssertEqual(delegate.calls, notified + notified)
+    }
+
+    @MainActor
+    func testToolbarDeletesLeaveTheDraftAndTheKeyboardAlone() throws {
+        let sent = Sent()
+        let view = composingView(sent)
+        let delegate = RecordingInputDelegate()
+        view.inputDelegate = delegate
+
+        view.setMarkedText("ni\u{2006}hao", selectedRange: NSRange(location: 6, length: 0))
+        XCTAssertEqual(view.resolveComposition(for: .delete), .kept)
+        XCTAssertEqual(view.resolveComposition(for: .delete), .kept)
+
+        XCTAssertEqual(view.text(in: try XCTUnwrap(view.markedTextRange)), "ni\u{2006}hao")
+        XCTAssertTrue(sent.items.isEmpty)
+        XCTAssertTrue(delegate.calls.isEmpty)
+
+        // The keyboard goes on composing from its own buffer, and commits once.
+        view.setMarkedText("ni\u{2006}hao\u{2006}o", selectedRange: NSRange(location: 8, length: 0))
+        view.insertText("nihaoo")
+        XCTAssertEqual(sent.items, ["text:nihaoo"])
+
+        // With no draft, a delete key is the terminal's, after the keyboard's context is synchronized.
+        view.insertText("간")
+        XCTAssertEqual(view.resolveComposition(for: .delete), .noDraft)
+        XCTAssertEqual(delegate.calls.count, 4)
+    }
+
+    @MainActor
+    func testPasteCancelsTheDraftAndPastesOnce() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        UIPasteboard.general.string = "PASTE"
+        view.paste(nil)
+
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertEqual(sent.items, ["paste:PASTE"])
+    }
+
+    @MainActor
+    func testDisablingInputCancelsTheDraftWithoutSendingIt() {
+        let sent = Sent()
+        let view = composingView(sent)
+        view.update(isEnabled: true, wantsFirstResponder: true, activationToken: 1,
+                    sendText: { _ in true }, sendPaste: { _ in true }, sendKeyEvent: { _ in true })
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+
+        view.update(isEnabled: false, wantsFirstResponder: false, activationToken: 1,
+                    sendText: {
+                        sent.items.append("text:" + $0)
+                        return true
+                    }, sendPaste: { _ in true }, sendKeyEvent: { _ in true })
+
+        XCTAssertNil(view.markedTextRange)
+        view.unmarkText()
+        XCTAssertTrue(sent.items.isEmpty)
+    }
+
+    @MainActor
+    func testTerminalResponderOffersNoInlinePredictions() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        XCTAssertEqual(view.inlinePredictionType, .no)
+        XCTAssertEqual(view.autocorrectionType, .no)
+        XCTAssertEqual(view.keyboardType, .default)
+    }
 }
