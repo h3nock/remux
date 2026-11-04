@@ -3062,18 +3062,12 @@ struct ConnectionSetupView: View {
     }
 
     private func tailscaleAuthenticationRow() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Tailscale SSH", systemImage: "network")
-                .font(.footnote.weight(.semibold))
-
-            Text(
-                "Uses your tailnet identity without a password or key. " +
-                "If your SSH rule requires a check, Remux will offer to open " +
-                "the verification link in your browser."
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-        }
+        Text(
+            "Signs in with your Tailscale identity, so you don’t need a password or key. " +
+            "If Tailscale asks you to verify, Remux offers to open the verification page."
+        )
+        .font(.footnote)
+        .foregroundStyle(.secondary)
         .padding(.vertical, 6)
         .accessibilityIdentifier("connection.authentication.tailscale-info")
     }
