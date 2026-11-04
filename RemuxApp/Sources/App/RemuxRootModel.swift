@@ -521,6 +521,15 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
+    private struct TerminalSettingsSaveRequest {
+        let settings: TerminalSettings
+        let completion: CheckedContinuation<Void, Never>?
+    }
+
+    @Published private var pendingTerminalSettings: TerminalSettings?
+    private var terminalSettingsSaveRequests: [TerminalSettingsSaveRequest] = []
+    private var isSavingTerminalSettings = false
+
     private let dependencies: RemuxAppDependencies
     private let preparedTransportCoordinator: RemuxPreparedTransportCoordinator
     private let librarySSHPrewarmCoordinator: RemuxLibrarySSHPrewarmCoordinator
@@ -1573,6 +1582,10 @@ final class RemuxRootModel: ObservableObject {
 
         do {
             try dependencies.trustedHostStore.trustHostKey(challenge)
+            // A backend can raise the prompt before the other backend finishes.
+            // Trust changes the precondition: supersede that discovery instead
+            // of coalescing the user's retry into the still-pending old task.
+            sessionRefreshes.removeValue(forKey: challenge.serverID)?.task.cancel()
             refreshSessions(for: challenge.serverID)
         } catch {
             sessionDiscoveries[challenge.serverID] = sessionDiscovery(
@@ -1981,22 +1994,57 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
+    var terminalSettingsBinding: Binding<TerminalSettings> {
+        Binding(
+            get: { self.pendingTerminalSettings ?? self.terminalSettings },
+            set: { self.enqueueTerminalSettingsSave($0) }
+        )
+    }
+
     func updateTerminalSettings(_ mutation: (inout TerminalSettings) -> Void) async {
-        var updated = terminalSettings
+        // Compose edits against the latest requested state, including writes
+        // still in flight, rather than losing a partial edit to an older save.
+        var updated = pendingTerminalSettings ?? terminalSettings
         mutation(&updated)
-
-        do {
-            try await dependencies.settingsRepository.saveSettings(updated)
-        } catch {
-            NSLog("Remux terminal settings save failed: %@", String(describing: error))
-            terminalSettingsSaveFailed = true
-            return
+        await withCheckedContinuation { completion in
+            enqueueTerminalSettingsSave(updated, completion: completion)
         }
+    }
 
-        terminalSettingsSaveFailed = false
-        terminalSettings = updated
-        dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
-        applyTerminalSettingsToActiveSessions(updated)
+    private func enqueueTerminalSettingsSave(
+        _ settings: TerminalSettings,
+        completion: CheckedContinuation<Void, Never>? = nil
+    ) {
+        // Binding setters must expose the new draft synchronously so a second
+        // projected control edit cannot read the last committed snapshot.
+        pendingTerminalSettings = settings
+        terminalSettingsSaveRequests.append(
+            TerminalSettingsSaveRequest(settings: settings, completion: completion)
+        )
+        guard !isSavingTerminalSettings else { return }
+        isSavingTerminalSettings = true
+        Task { await savePendingTerminalSettings() }
+    }
+
+    private func savePendingTerminalSettings() async {
+        while !terminalSettingsSaveRequests.isEmpty {
+            let request = terminalSettingsSaveRequests.removeFirst()
+            do {
+                try await dependencies.settingsRepository.saveSettings(request.settings)
+                terminalSettingsSaveFailed = false
+                terminalSettings = request.settings
+                dependencies.applyHostKeyPolicy(allowInsecureRSA: request.settings.allowInsecureRSAHostKeys)
+                applyTerminalSettingsToActiveSessions(request.settings)
+            } catch {
+                NSLog("Remux terminal settings save failed: %@", String(describing: error))
+                // A newer request will retry the combined user intent. Only
+                // report a failure if it is still the last outstanding save.
+                terminalSettingsSaveFailed = terminalSettingsSaveRequests.isEmpty
+            }
+            request.completion?.resume()
+        }
+        pendingTerminalSettings = nil
+        isSavingTerminalSettings = false
     }
 
     func dismissTerminalSettingsSaveFailure() {

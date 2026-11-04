@@ -155,7 +155,7 @@ final class ShortcutPaletteUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["x"].exists)
 
         app.buttons["Ctrl"].tap()
-        let controlField = editorActionField()
+        let controlField = app.textFields["Control key"].firstMatch
         XCTAssertTrue(controlField.waitForExistence(timeout: 2))
         XCTAssertTrue(waitForValue(controlField, expected: "c"))
         XCTAssertTrue(save.isEnabled)
@@ -163,7 +163,28 @@ final class ShortcutPaletteUITests: XCTestCase {
         appendText("c", to: controlField, expecting: "cc")
         XCTAssertFalse(save.isEnabled)
 
-        app.buttons["Key"].tap()
+        let keyMode = app.buttons["Key"]
+        XCTAssertTrue(keyMode.waitForExistence(timeout: 2), "The Key action mode should be available.")
+        XCTAssertTrue(keyMode.isHittable, "The Key action mode should be hittable before switching modes.")
+        print("Shortcut Key mode before tap frame=\(keyMode.frame) selected=\(keyMode.isSelected)")
+        let keyModeBeforeTap = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        keyModeBeforeTap.name = "shortcut-key-mode-before-tap"
+        keyModeBeforeTap.lifetime = .keepAlways
+        add(keyModeBeforeTap)
+        keyMode.tap()
+        let keyModeAfterTap = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        keyModeAfterTap.name = "shortcut-key-mode-after-tap"
+        keyModeAfterTap.lifetime = .keepAlways
+        add(keyModeAfterTap)
+        let keyModeIsSelected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == true"),
+            object: keyMode
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [keyModeIsSelected], timeout: 2),
+            .completed,
+            "The Key action mode should become selected after its tap."
+        )
         XCTAssertTrue(app.buttons["Key, Esc"].waitForExistence(timeout: 2))
         app.buttons["Key, Esc"].tap()
         let tabOption = app.buttons.matching(
@@ -206,7 +227,28 @@ final class ShortcutPaletteUITests: XCTestCase {
         enterText("O", in: app.textFields["Name"].firstMatch)
         XCTAssertTrue(collectionSave.isEnabled)
         app.buttons["terminal"].tap()
-        app.buttons["Save"].tap()
+
+        let keyboard = app.keyboards.firstMatch
+        let appFrame = app.frame
+        let keyboardFrame = keyboard.frame
+        let collectionSaveFrame = collectionSave.frame
+        let keyboardScreenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        keyboardScreenshot.name = "collection-save-visible-with-keyboard"
+        keyboardScreenshot.lifetime = .keepAlways
+        add(keyboardScreenshot)
+
+        XCTAssertTrue(keyboard.exists, "The collection editor keyboard should remain visible.")
+        XCTAssertTrue(
+            keyboardFrame.intersects(appFrame),
+            "The software keyboard frame \(keyboardFrame) should intersect app frame \(appFrame)."
+        )
+        XCTAssertTrue(collectionSave.exists, "The collection Save control should exist with keyboard shown.")
+        XCTAssertTrue(collectionSave.isHittable, "The collection Save control should be hittable with keyboard shown.")
+        XCTAssertFalse(
+            collectionSaveFrame.intersects(keyboardFrame),
+            "The collection Save frame \(collectionSaveFrame) should not overlap keyboard frame \(keyboardFrame)."
+        )
+        collectionSave.tap()
         XCTAssertTrue(collectionRow(named: "O").waitForExistence(timeout: 2))
 
         collectionRow(named: "O").tap()
@@ -343,12 +385,13 @@ final class ShortcutPaletteUITests: XCTestCase {
         XCTAssertTrue(titleField.waitForExistence(timeout: 2))
         enterText(title, in: titleField)
 
-        let textField = app.textFields["Text"].firstMatch
+        let textField = editorActionField()
         XCTAssertTrue(textField.waitForExistence(timeout: 2))
         textField.tap()
         for character in text {
             app.typeText(String(character))
         }
+        XCTAssertEqual(textField.value as? String, text, "The shortcut editor should contain the exact text.")
         XCTAssertTrue(app.staticTexts["\(text)⏎"].waitForExistence(timeout: 2))
 
         app.buttons["Save"].tap()
@@ -387,7 +430,13 @@ final class ShortcutPaletteUITests: XCTestCase {
     }
 
     private func editorActionField() -> XCUIElement {
-        app.textFields.element(boundBy: 2)
+        let predicate = NSPredicate(
+            format: "label == %@ AND (elementType == %d OR elementType == %d)",
+            "Text",
+            XCUIElement.ElementType.textField.rawValue,
+            XCUIElement.ElementType.textView.rawValue
+        )
+        return app.descendants(matching: .any).matching(predicate).firstMatch
     }
 
     private func waitForValue(
@@ -444,8 +493,9 @@ final class ShortcutPaletteUITests: XCTestCase {
     }
 
     private func dragShortcutRow(named source: String, to destination: String) {
-        let sourceHandle = app.buttons["Reorder \(source)"]
-        let destinationHandle = app.buttons["Reorder \(destination)"]
+        // A named handle label identifies its row; older runtimes use generic "Reorder".
+        let sourceHandle = shortcutReorderHandle(named: source)
+        let destinationHandle = shortcutReorderHandle(named: destination)
         XCTAssertTrue(sourceHandle.waitForExistence(timeout: 2), "Missing source shortcut \(source)")
         XCTAssertTrue(destinationHandle.waitForExistence(timeout: 2), "Missing destination shortcut \(destination)")
 
@@ -454,6 +504,20 @@ final class ShortcutPaletteUITests: XCTestCase {
                 forDuration: 0.8,
                 thenDragTo: destinationHandle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1.25))
             )
+    }
+
+    private func shortcutReorderHandle(named title: String) -> XCUIElement {
+        let namedHandles = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Reorder \(title)")
+        )
+        if namedHandles.count > 0 {
+            XCTAssertEqual(namedHandles.count, 1, "Expected one named reorder handle for shortcut \(title)")
+            return namedHandles.firstMatch
+        }
+
+        return shortcutRow(named: title).buttons.matching(
+            NSPredicate(format: "label == %@", "Reorder")
+        ).firstMatch
     }
 
     private func deleteCollectionWithNativeControls(named title: String) {

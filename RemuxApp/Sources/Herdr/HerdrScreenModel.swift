@@ -1866,6 +1866,9 @@ final class HerdrScreenModel {
                 if let delivered { delivered.resume(returning: false) } else { inputFailed(attemptID) }
             }
         case .move(let destination, let fromAnotherTab, let ask):
+            // Several picks can queue behind an unanswered operation. Only the newest one is still
+            // the user's destination; don't let an older queued move reach the engine first.
+            guard attempt.move?.ask == ask else { return }
             reconcileShellGeometry(forNavigation: true)
             guard let geometry else { return moveTaken(ask, by: nil, on: attempt) }
             let request = await feed.start(

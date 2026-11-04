@@ -31,13 +31,53 @@ enum GhosttyKeyboardChromeMode: Equatable {
 }
 
 enum GhosttyKeyboardChromeSizing {
-    static let dockButtonHeight: CGFloat = 38
-    static let dockButtonWidth: CGFloat = 38
-    static let compactDockButtonWidth: CGFloat = 35
+    static let minimumControlHitTarget: CGFloat = 44
+    static let dockButtonHeight: CGFloat = minimumControlHitTarget
+    static let dockButtonWidth: CGFloat = minimumControlHitTarget
+    static let compactDockButtonWidth: CGFloat = minimumControlHitTarget
     static let controlGroupVerticalPadding: CGFloat = 4
 
+    static func singleRowWidth(toolbarKeyCount: Int, isCompact: Bool) -> CGFloat {
+        let buttonWidth = dockButtonWidth
+        let groupHorizontalPadding: CGFloat = isCompact ? 3 : 5
+        let buttonSpacing: CGFloat = isCompact ? 1 : 2
+        let groupSpacing: CGFloat = isCompact ? 6 : 10
+
+        func groupWidth(buttonCount: Int) -> CGFloat {
+            CGFloat(buttonCount) * buttonWidth
+                + CGFloat(max(0, buttonCount - 1)) * buttonSpacing
+                + (groupHorizontalPadding * 2)
+        }
+
+        return groupWidth(buttonCount: toolbarKeyCount)
+            + groupWidth(buttonCount: 3)
+            + groupWidth(buttonCount: 3)
+            + (groupSpacing * 2)
+    }
+
+    static func twoRowWidth(toolbarKeyCount: Int, isCompact: Bool) -> CGFloat {
+        let buttonWidth = dockButtonWidth
+        let groupHorizontalPadding: CGFloat = isCompact ? 3 : 5
+        let buttonSpacing: CGFloat = isCompact ? 1 : 2
+        let groupSpacing: CGFloat = isCompact ? 6 : 10
+
+        func groupWidth(buttonCount: Int) -> CGFloat {
+            CGFloat(buttonCount) * buttonWidth
+                + CGFloat(max(0, buttonCount - 1)) * buttonSpacing
+                + (groupHorizontalPadding * 2)
+        }
+
+        let terminalKeysWidth = groupWidth(buttonCount: toolbarKeyCount)
+        let navigationAndInputWidth = groupWidth(buttonCount: 3)
+            + groupWidth(buttonCount: 3)
+            + groupSpacing
+        return max(terminalKeysWidth, navigationAndInputWidth)
+    }
+
     /// Fallback reservation before the bottom chrome reports its intrinsic
-    /// height. Settled chrome subsequently owns its full measured footprint.
+    /// height. The 44-point minimum control row plus its vertical padding is
+    /// reserved initially; two-row chrome later reports and reserves its full
+    /// measured footprint.
     static let baselineHeight = dockButtonHeight + (controlGroupVerticalPadding * 2)
 
     static func keyboardReplacementHeight(
@@ -184,11 +224,34 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var standardSelectorRowContainer: some View {
         if #available(iOS 26.0, *) {
             GlassEffectContainer(spacing: isCompact ? 6 : 10) {
-                standardSelectorRow
+                adaptiveStandardSelectorRow
             }
         } else {
-            standardSelectorRow
+            adaptiveStandardSelectorRow
         }
+    }
+
+    private var adaptiveStandardSelectorRow: some View {
+        ViewThatFits(in: .horizontal) {
+            standardSelectorRow
+                .frame(width: GhosttyKeyboardChromeSizing.singleRowWidth(
+                    toolbarKeyCount: toolbarKeys.values.count,
+                    isCompact: isCompact
+                ))
+
+            VStack(spacing: 4) {
+                terminalKeyControls
+                HStack(spacing: isCompact ? 6 : 10) {
+                    navigationControls
+                    inputControls
+                }
+            }
+            .frame(width: GhosttyKeyboardChromeSizing.twoRowWidth(
+                toolbarKeyCount: toolbarKeys.values.count,
+                isCompact: isCompact
+            ))
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var standardSelectorRow: some View {

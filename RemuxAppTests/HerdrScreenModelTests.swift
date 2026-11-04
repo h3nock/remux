@@ -5351,11 +5351,12 @@ final class HerdrScreenModelTests: XCTestCase {
         let ids = adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id)
 
         XCTAssertEqual(adapter.focusPane(ids[1]), .queued)
-        XCTAssertEqual(adapter.focusPane(ids[2]), .queued)
-        XCTAssertEqual(adapter.sendInputToFocusedSurface("y"), .accepted)
-        // The first focus is in flight; the second waits for its answer, and the key goes meanwhile.
+        // Observe the first focus while it is still unanswered; the second tap then queues behind it.
         let first = try await nextWrite(session.bridge, from: &index, paneFocus)
         XCTAssertEqual(first.paneID, "w1:p2")
+        XCTAssertEqual(adapter.focusPane(ids[2]), .queued)
+        XCTAssertEqual(adapter.sendInputToFocusedSurface("y"), .accepted)
+        // The second focus waits for the first answer, and the key goes meanwhile.
         let typedY = try await nextWrite(session.bridge, from: &index, paneInput)
         XCTAssertEqual(typedY, frame("w1:p3", [typed("y")]))
 
@@ -5369,6 +5370,31 @@ final class HerdrScreenModelTests: XCTestCase {
             harness.model.focusedPaneID == "w1:p3" && harness.model.stateTraceLabel == "shown"
         }
         XCTAssertEqual(harness.model.userPaneID, "w1:p3")
+    }
+
+    /// Taps queued before the model can send either focus are coalesced to the newest pane, and keys follow it.
+    func testTwoQueuedPaneTapsSendOnlyNewestFocusAndKeepItsInput() async throws {
+        let harness = await makeHarness()
+        let session = try await shownTab(harness, panes: Self.threePanes)
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+        let ids = adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id)
+
+        XCTAssertEqual(adapter.focusPane(ids[1]), .queued)
+        XCTAssertEqual(adapter.focusPane(ids[2]), .queued)
+        XCTAssertEqual(adapter.sendInputToFocusedSurface("y"), .accepted)
+
+        let focus = try await nextWrite(session.bridge, from: &index, paneFocus)
+        XCTAssertEqual(focus.paneID, "w1:p3")
+        let typedY = try await nextWrite(session.bridge, from: &index, paneInput)
+        XCTAssertEqual(typedY, frame("w1:p3", [typed("y")]))
+
+        try await showFocus(of: "w1:p3", answering: focus.id, in: session.bridge, of: harness, revision: 2)
+        try await harness.waitUntil("Herdr didn't show the newest pane move") {
+            harness.model.focusedPaneID == "w1:p3" && harness.model.stateTraceLabel == "shown"
+        }
+        XCTAssertEqual(harness.model.userPaneID, "w1:p3")
+        try await assertNoPaneFocus(session.bridge, from: index, "a superseded tap focused an older pane")
     }
 
     /// A pane that closes while the move to it is under way takes no keys, and none go to the pane left;

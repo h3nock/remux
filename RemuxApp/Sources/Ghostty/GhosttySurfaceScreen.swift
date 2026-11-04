@@ -480,7 +480,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     onToggleControl: toggleControlModifier,
                                     onShowShortcuts: showShortcutPalette,
                                     sendKey: sendTerminalKeyEvent,
-                                    composerContent: { selectedComposerBar() },
+                                    composerContent: {
+                                        selectedComposerBar(
+                                            availableHeight: screenProxy.size.height,
+                                            isCompactHeight: chrome.isLandscape
+                                        )
+                                    },
                                     allowsTerminalKeys: !isReadingAfterFind
                                 )
                             }
@@ -780,11 +785,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     @ViewBuilder
-    private func selectedComposerBar() -> some View {
+    private func selectedComposerBar(availableHeight: CGFloat, isCompactHeight: Bool) -> some View {
         if isSelected {
             GhosttyComposeBar(
                 composer: composer,
                 canSubmit: isTerminalInputAvailable,
+                availableHeight: availableHeight,
+                isCompactHeight: isCompactHeight,
                 wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
                     && inputCoordinator.keyboardOwner == .composer,
                 isSoftwareKeyboardVisible: inputCoordinator.keyboardMode == .system
@@ -1787,18 +1794,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func updateKeyboardVisibility(with notification: Notification) {
-        let frameEnd = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?
+        let notificationFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?
             .cgRectValue
-            ?? CGRect(
-                x: 0,
-                y: UIScreen.main.bounds.maxY,
-                width: UIScreen.main.bounds.width,
-                height: 0
-            )
+        guard let geometry = keyboardResponderHandoff.keyboardGeometry(frameEnd: notificationFrame) else {
+            return
+        }
+        let frameEnd = geometry.frameEnd
 
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: frameEnd,
-            screenBounds: UIScreen.main.bounds,
+            screenBounds: geometry.bounds,
             animationDuration: (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
                 .doubleValue,
             keyboardMode: inputCoordinator.keyboardMode,

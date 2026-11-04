@@ -129,6 +129,46 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testMultilineSubmissionIgnoresRepeatedSendWhilePasteIsPending() async {
+        let composer = GhosttyComposerModel()
+        let draft = "first line\n\nthird line\n末行"
+        composer.draft = draft
+        var pastedMessages: [String] = []
+        var enterCount = 0
+        var completePaste: CheckedContinuation<Bool, Never>?
+        let destination = GhosttyComposerSubmissionDestination(
+            workspaceID: UUID(),
+            surfaceID: UUID(),
+            destinationLabel: nil,
+            makeAttachmentTransferService: { FailingComposerAttachmentTransferService() },
+            prepareTerminalInput: {},
+            sendPaste: { message in
+                pastedMessages.append(message)
+                return await withCheckedContinuation { completePaste = $0 }
+            },
+            sendEnter: {
+                enterCount += 1
+                return true
+            }
+        )
+
+        composer.submit(to: destination)
+        await waitUntil { completePaste != nil }
+        XCTAssertNotNil(completePaste)
+        XCTAssertTrue(composer.isSubmitting)
+        composer.submit(to: destination)
+        XCTAssertEqual(pastedMessages, [draft])
+        XCTAssertEqual(enterCount, 0)
+
+        completePaste?.resume(returning: true)
+        await waitUntil { !composer.isSubmitting }
+        XCTAssertFalse(composer.isSubmitting)
+        XCTAssertEqual(pastedMessages, [draft])
+        XCTAssertEqual(enterCount, 1)
+        XCTAssertEqual(composer.draft, "")
+    }
+
+    @MainActor
     func testRejectedPastePreservesComposerContentAndNeverSendsEnter() async {
         let composer = GhosttyComposerModel()
         composer.draft = "Keep this"

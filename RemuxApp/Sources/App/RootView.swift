@@ -25,6 +25,71 @@ struct RootView: View {
     }
 }
 
+#if DEBUG
+/// Effective traits from the actual app window, exposed only to deterministic UI tests.
+private struct RemuxAppearanceDiagnostic: UIViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+    let route: String
+
+    func makeUIView(context: Context) -> RemuxAppearanceDiagnosticView {
+        RemuxAppearanceDiagnosticView(frame: .zero)
+    }
+
+    func updateUIView(_ view: RemuxAppearanceDiagnosticView, context: Context) {
+        view.route = route
+        view.environmentScheme = colorScheme == .dark ? "dark" : "light"
+        view.updateSnapshot()
+    }
+}
+
+private final class RemuxAppearanceDiagnosticView: UIView {
+    var route = "unknown"
+    var environmentScheme = "unknown"
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = true
+        accessibilityIdentifier = "app.appearance.diagnostic"
+        accessibilityLabel = "Appearance diagnostic"
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+            (view: RemuxAppearanceDiagnosticView, _: UITraitCollection) in
+            view.updateSnapshot()
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateSnapshot()
+    }
+
+    func updateSnapshot() {
+        func style(_ value: UIUserInterfaceStyle?) -> String {
+            switch value {
+            case .light: "light"
+            case .dark: "dark"
+            case .unspecified: "unspecified"
+            default: "unattached"
+            }
+        }
+        accessibilityValue = [
+            "route=\(route)",
+            "env=\(environmentScheme)",
+            "viewTrait=\(style(traitCollection.userInterfaceStyle))",
+            "windowOverride=\(style(window?.overrideUserInterfaceStyle))",
+            "windowTrait=\(style(window?.traitCollection.userInterfaceStyle))",
+            "rootOverride=\(style(window?.rootViewController?.overrideUserInterfaceStyle))",
+            "rootTrait=\(style(window?.rootViewController?.traitCollection.userInterfaceStyle))",
+            "sceneTrait=\(style(window?.windowScene?.traitCollection.userInterfaceStyle))",
+            "key=\(window?.isKeyWindow == true)",
+        ].joined(separator: " ")
+    }
+}
+#endif
+
 private struct RemuxRootContentView: View {
     @StateObject private var model: RemuxRootModel
     @State private var composer: GhosttyComposerModel
@@ -109,6 +174,7 @@ private struct RemuxWorkspaceShell: View {
     @State private var retainedTerminalID: SavedWorkspace.ID?
     @State private var isSessionSwitcherPresented = false
     @State private var presentedServerID: SavedServer.ID?
+    @State private var pendingCreatedServerID: SavedServer.ID?
     @State private var connectionSetupSheetShowsServerSummary = true
     @State private var isConnectionSetupSheetPresented = false
     @State private var lastConnectionSetup = LastConnectionSetup()
@@ -126,7 +192,18 @@ private struct RemuxWorkspaceShell: View {
                 onOpen: openHerdrNotification
             )
         }
-        .preferredColorScheme(shownTerminalColorScheme)
+        .background {
+            RemuxWindowAppearance(colorScheme: shownTerminalColorScheme)
+                .frame(width: 0, height: 0)
+        }
+        .background {
+#if DEBUG
+            if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
+                RemuxAppearanceDiagnostic(route: selectedTerminalID == nil ? "library" : "terminal")
+                    .frame(width: 1, height: 1)
+            }
+#endif
+        }
         .onAppear {
             model.handleAppLifecyclePhase(
                 RemuxAppLifecycleProjection(scenePhase: scenePhase).appLifecyclePhase
@@ -165,6 +242,7 @@ private struct RemuxWorkspaceShell: View {
                 isSessionSwitcherPresented = false
             case .terminal:
                 presentedServerID = nil
+                pendingCreatedServerID = nil
             case .loading, .failed:
                 isSessionSwitcherPresented = false
                 presentedServerID = nil
@@ -243,6 +321,7 @@ private struct RemuxWorkspaceShell: View {
             onDismiss: {
                 if model.connectionSetup == nil {
                     lastConnectionSetup.setup = nil
+                    showCreatedServerAfterSetupDismissal()
                 }
             }
         ) {
@@ -255,6 +334,7 @@ private struct RemuxWorkspaceShell: View {
         }
         .onChange(of: model.connectionSetup, initial: true) { _, setup in
             if let setup {
+                pendingCreatedServerID = nil
                 lastConnectionSetup.setup = setup
             }
         }
@@ -497,9 +577,20 @@ private struct RemuxWorkspaceShell: View {
     private func saveConnectionSetupSheet() {
         Task {
             if let serverID = await model.saveAndConnect() {
-                presentedServerID = serverID
+                pendingCreatedServerID = serverID
+                showCreatedServerAfterSetupDismissal()
             }
         }
+    }
+
+    private func showCreatedServerAfterSetupDismissal() {
+        // The retained setup remains non-nil through the closing animation.
+        // A push underneath that sheet can otherwise be discarded by SwiftUI.
+        guard lastConnectionSetup.setup == nil,
+              model.connectionSetup == nil,
+              let serverID = pendingCreatedServerID else { return }
+        pendingCreatedServerID = nil
+        presentedServerID = serverID
     }
 
     private func saveSessionFromTerminal() {
@@ -683,16 +774,7 @@ private struct RemuxWorkspaceShell: View {
     }
 
     private var terminalSettingsBinding: Binding<TerminalSettings> {
-        Binding(
-            get: { model.terminalSettings },
-            set: { settings in
-                Task {
-                    await model.updateTerminalSettings { current in
-                        current = settings
-                    }
-                }
-            }
-        )
+        model.terminalSettingsBinding
     }
 
     private func traceSessionOpenTap(_ workspaceID: SavedWorkspace.ID) {
@@ -2566,7 +2648,7 @@ struct ConnectionSetupView: View {
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
+            ToolbarItem(placement: RemuxToolbarPlacement.confirmation) {
                 Button {
                     submitIfPossible()
                 } label: {
@@ -2574,11 +2656,12 @@ struct ConnectionSetupView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text(primaryActionTitle)
+                        Label(primaryActionTitle, systemImage: "checkmark")
                     }
                 }
                 .prominentConfirmationStyle()
                 .disabled(!canSubmit || isActionInProgress)
+                .accessibilityLabel(primaryActionTitle)
                 .accessibilityIdentifier("connection.save")
             }
         }

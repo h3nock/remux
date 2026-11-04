@@ -1,6 +1,26 @@
 import SwiftUI
 import UIKit
 
+/// Keep a long draft scrollable without letting it consume the terminal,
+/// including when the keyboard or larger text leaves little vertical room.
+enum GhosttyComposerEditorSizing {
+    static func height(
+        measuredHeight: CGFloat,
+        lineHeight: CGFloat,
+        verticalInsets: CGFloat,
+        availableHeight: CGFloat,
+        isCompactHeight: Bool
+    ) -> CGFloat {
+        let minimum = max(36, ceil(lineHeight + verticalInsets))
+        let lineLimit: CGFloat = isCompactHeight ? 2 : 6
+        let lineCap = ceil(lineHeight * lineLimit + verticalInsets)
+        let budget = availableHeight.isFinite && availableHeight > 0
+            ? floor(availableHeight * 0.35) : lineCap
+        let maximum = max(minimum, min(lineCap, budget))
+        return min(max(measuredHeight, minimum), maximum)
+    }
+}
+
 struct GhosttyComposerSessionState: Equatable {
     var draft = ""
     var attachments: [GhosttyPendingAttachment] = []
@@ -212,6 +232,7 @@ private struct GhosttyComposerInputLayout: Layout {
 
 struct GhosttyComposeBar: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("terminal.composer.keyboardDismissHintShown")
     private var hasShownKeyboardDismissHint = false
     @State private var isShowingKeyboardDismissHint = false
@@ -223,6 +244,8 @@ struct GhosttyComposeBar: View {
     @ObservedObject var composer: GhosttyComposerModel
     /// The terminal can take a composed message now.
     let canSubmit: Bool
+    let availableHeight: CGFloat
+    let isCompactHeight: Bool
 
     let wantsKeyboardFocus: Bool
     let isSoftwareKeyboardVisible: Bool
@@ -392,7 +415,9 @@ struct GhosttyComposeBar: View {
                     .fill(GhosttyPhoneChromePalette.chromeSecondaryForeground)
                     .frame(width: 34, height: 5)
 
-                if isShowingKeyboardDismissHint && !dictationPhase.isActive {
+                if isShowingKeyboardDismissHint,
+                   !dictationPhase.isActive,
+                   !dynamicTypeSize.isAccessibilitySize {
                     Text("Drag down to hide keyboard")
                         .font(.caption2)
                         .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
@@ -442,6 +467,8 @@ struct GhosttyComposeBar: View {
             ZStack(alignment: .topLeading) {
                 GhosttyComposerTextView(
                     text: $composer.draft,
+                    availableHeight: availableHeight,
+                    isCompactHeight: isCompactHeight,
                     caretColor: UIColor(chromeStyle.accent),
                     allowsUserEdits: submissionState.allowsComposerInput
                         && !dictationPhase.isActive,
@@ -525,7 +552,7 @@ struct GhosttyComposeBar: View {
             ProgressView()
                 .controlSize(.small)
                 .tint(GhosttyPhoneChromePalette.chromeForeground)
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
         }
     }
 
@@ -556,7 +583,7 @@ struct GhosttyComposeBar: View {
                     GhosttyPhoneChromePalette.toolbarButtonPressedFill,
                     in: Circle()
                 )
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
         .accessibilityLabel(accessibilityLabel)
@@ -581,7 +608,7 @@ struct GhosttyComposeBar: View {
                 .font(.system(size: 20, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
@@ -602,7 +629,7 @@ struct GhosttyComposeBar: View {
                 .font(.system(size: 17, weight: .medium))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!submissionState.allowsComposerInput)
@@ -621,7 +648,7 @@ struct GhosttyComposeBar: View {
                 .font(.system(size: 20, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!submissionState.allowsComposerInput)
@@ -655,7 +682,7 @@ struct GhosttyComposeBar: View {
                 }
             }
                 .frame(width: 34, height: 34)
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!allowsTap)
@@ -784,8 +811,31 @@ private extension View {
     }
 }
 
+/// Keeps a synchronous model publication from feeding its old value back into
+/// UIKit. @Published sends objectWillChange before storing the edited draft;
+/// SwiftUI can re-enter updateUIView during that notification.
+@MainActor
+final class GhosttyComposerTextSynchronization {
+    private var isPublishingUserEdit = false
+
+    func publishUserEdit(_ text: String, using publish: (String) -> Void) {
+        let wasPublishingUserEdit = isPublishingUserEdit
+        isPublishingUserEdit = true
+        defer { isPublishingUserEdit = wasPublishingUserEdit }
+        publish(text)
+    }
+
+    func applyExternalText(_ text: String, to textView: UITextView) {
+        guard !isPublishingUserEdit, textView.text != text else { return }
+        textView.text = text
+        textView.selectedRange = NSRange(location: text.utf16.count, length: 0)
+    }
+}
+
 private struct GhosttyComposerTextView: UIViewRepresentable {
     @Binding var text: String
+    let availableHeight: CGFloat
+    let isCompactHeight: Bool
     let caretColor: UIColor
     let allowsUserEdits: Bool
     let wantsFirstResponder: Bool
@@ -820,6 +870,8 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.textContainer.lineFragmentPadding = 4
         textView.isScrollEnabled = false
         textView.accessibilityIdentifier = "terminal.composer.field"
+        textView.accessibilityLabel = "Message"
+        textView.accessibilityHint = "Write a message. Return inserts a new line; Send submits it to the terminal."
         textView.onAttachedToWindow = onResponderAttached
         responderHandoff.register(textView, as: .composer)
         return textView
@@ -832,13 +884,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.onAttachedToWindow = onResponderAttached
         responderHandoff.register(textView, as: .composer)
 
-        if textView.text != text {
-            textView.text = text
-            textView.selectedRange = NSRange(
-                location: textView.text.utf16.count,
-                length: 0
-            )
-        }
+        context.coordinator.textSynchronization.applyExternalText(text, to: textView)
 
         context.coordinator.reconcileFirstResponder(
             textView,
@@ -860,14 +906,20 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         )
         let lineHeight = textView.font?.lineHeight ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
         let verticalInsets = textView.textContainerInset.top + textView.textContainerInset.bottom
-        let maximumHeight = ceil((lineHeight * 6) + verticalInsets)
-        let resolvedHeight = min(max(measuredHeight, 36), maximumHeight)
-        textView.isScrollEnabled = measuredHeight > maximumHeight
+        let resolvedHeight = GhosttyComposerEditorSizing.height(
+            measuredHeight: measuredHeight,
+            lineHeight: lineHeight,
+            verticalInsets: verticalInsets,
+            availableHeight: availableHeight,
+            isCompactHeight: isCompactHeight
+        )
+        textView.isScrollEnabled = measuredHeight > resolvedHeight
         return CGSize(width: width, height: resolvedHeight)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: GhosttyComposerTextView
+        let textSynchronization = GhosttyComposerTextSynchronization()
         private var appliedActivationToken = -1
         private var reconciliationGeneration: UInt64 = 0
 
@@ -883,7 +935,9 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
 #if DEBUG
             GhosttySurfaceScreenPerfProbe.beginComposerUpdatePassIfNeeded()
 #endif
-            parent.text = textView.text
+            textSynchronization.publishUserEdit(textView.text) { editedText in
+                parent.text = editedText
+            }
             textView.invalidateIntrinsicContentSize()
         }
 

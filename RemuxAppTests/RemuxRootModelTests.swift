@@ -235,6 +235,80 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(discoveryCount, 2)
     }
 
+    func testTrustingDiscoveryHostKeyRestartsWhileOtherBackendIsStillPending() async throws {
+        let pair = makePasswordBackedServer()
+        let challenge = makeHostKeyChallenge(
+            serverID: pair.server.id,
+            host: pair.server.host
+        )
+        let tmuxDiscoverer = RecordingTmuxSessionDiscoverer(results: [
+            .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+            .success(["main", "ops"]),
+        ])
+        let herdrDiscoverer = FirstSuspendingHerdrSessionDiscoverer(
+            staleChallenge: challenge,
+            laterSessions: []
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await tmuxDiscoverer.discover(target)
+            },
+            herdrSessionDiscoverer: { target, _, _ in
+                try await herdrDiscoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        defer {
+            // Covers early exits after the first Herdr call enters its cancellation-ignoring gate.
+            Task { await herdrDiscoverer.releaseFirstIfNeeded() }
+        }
+
+        let firstHerdrIsHeld = await eventually {
+            await herdrDiscoverer.isFirstCallHeld()
+        }
+        let challengeIsVisible = await eventually {
+            harness.model.sessionDiscovery(for: pair.server.id).tmux.hostKeyChallenge == challenge
+        }
+        XCTAssertTrue(firstHerdrIsHeld, "the first Herdr discovery should still be suspended")
+        XCTAssertTrue(challengeIsVisible, "tmux should publish its host-key challenge independently")
+        guard firstHerdrIsHeld && challengeIsVisible else {
+            await herdrDiscoverer.releaseFirstIfNeeded()
+            return
+        }
+
+        let oldRefreshWaiterEntered = expectation(description: "join the original discovery refresh")
+        let oldRefreshWaiter = Task { @MainActor in
+            oldRefreshWaiterEntered.fulfill()
+            await harness.model.refreshSessionsAndWait(for: pair.server.id)
+        }
+        await fulfillment(of: [oldRefreshWaiterEntered], timeout: 2)
+
+        harness.model.trustSessionDiscoveryHostKey(challenge)
+
+        let retryLoaded = await eventually {
+            await tmuxDiscoverer.targets().count == 2
+                && harness.model.sessionDiscovery(for: pair.server.id).tmux.sessionNames == ["main", "ops"]
+        }
+        XCTAssertTrue(retryLoaded, "trusting the key should start a retry before the old Herdr call returns")
+        let oldHerdrIsStillHeld = await herdrDiscoverer.isFirstCallHeld()
+        XCTAssertTrue(oldHerdrIsStillHeld, "the retry should not wait for the old Herdr discovery")
+
+        await herdrDiscoverer.releaseFirstIfNeeded()
+        let oldHerdrFinished = await eventually {
+            await herdrDiscoverer.didFirstCallFinish()
+        }
+        XCTAssertTrue(oldHerdrFinished, "the old cancellation-ignoring discovery should be released")
+        await oldRefreshWaiter.value
+
+        let discovery = harness.model.sessionDiscovery(for: pair.server.id)
+        XCTAssertEqual(discovery.tmux.phase, .loaded)
+        XCTAssertEqual(discovery.tmux.sessionNames, ["main", "ops"])
+        XCTAssertNil(discovery.hostKeyChallenge, "the stale old result must not restore a trust prompt")
+    }
+
     func testDiscoveryRefreshRetainsLastSuccessfulSnapshotOnFailure() {
         let loaded = SessionDiscoveryState.idle.finishingRefresh(with: tmuxListing(["main"]))
 
@@ -779,15 +853,13 @@ final class RemuxRootModelTests: XCTestCase {
         passphraseDraft.authenticationKind = .privateKey
         passphraseDraft.privateKeyPassphrase = "secret"
 
-        for draft in [passwordDraft, passphraseDraft] {
-            await assertClosingFormEmptiesSecureField(draft: draft)
-        }
+        await assertClosingFormEmptiesSecureField(draft: passwordDraft, secretName: "password")
+        await assertClosingFormEmptiesSecureField(draft: passphraseDraft, secretName: "private-key passphrase")
     }
 
     private func assertClosingFormEmptiesSecureField(
         draft: TmuxConnectionDraft,
-        file: StaticString = #filePath,
-        line: UInt = #line
+        secretName: String
     ) async {
         let hostingController = UIHostingController(
             rootView: connectionSetupForm(
@@ -796,22 +868,35 @@ final class RemuxRootModelTests: XCTestCase {
                 isClosing: false
             )
         )
-        let window = UIWindow(frame: UIScreen.main.bounds)
+        let foregroundScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        guard let foregroundScene else {
+            XCTFail("The secure-field fixture needs the active app window scene to materialize Form rows.")
+            return
+        }
+
+        let priorKeyWindow = foregroundScene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: foregroundScene)
         window.rootViewController = hostingController
         window.makeKeyAndVisible()
         hostingController.view.frame = window.bounds
         defer {
             window.isHidden = true
             window.rootViewController = nil
-        }
-        let secureField = {
-            self.descendants(of: hostingController.view, matching: UITextField.self)
-                .first { $0.isSecureTextEntry }
+            priorKeyWindow?.makeKeyAndVisible()
         }
 
         hostingController.view.layoutIfNeeded()
-        let showsSecret = await waitUntil { secureField()?.text == "secret" }
-        XCTAssertTrue(showsSecret, file: file, line: line)
+        let initialField = await materializeSecureField(in: hostingController.view, for: draft)
+        XCTAssertNotNil(initialField, "The \(secretName) secure field should be materialized in the active Form.")
+        let populated = await waitUntil { initialField?.text == "secret" }
+        XCTAssertTrue(populated, "The visible \(secretName) field should receive the draft's exact secret.")
+        XCTAssertEqual(
+            initialField?.text,
+            "secret",
+            "The visible \(secretName) field should initially contain the draft's exact secret."
+        )
 
         hostingController.rootView = connectionSetupForm(
             draft: draft,
@@ -819,9 +904,62 @@ final class RemuxRootModelTests: XCTestCase {
             isClosing: true
         )
         hostingController.view.layoutIfNeeded()
-        let emptied = await waitUntil { secureField()?.text?.isEmpty == true }
-        XCTAssertTrue(emptied, file: file, line: line)
-        XCTAssertEqual(secureField()?.placeholder ?? "", "", file: file, line: line)
+        let closingField = await materializeSecureField(in: hostingController.view, for: draft)
+        XCTAssertNotNil(closingField, "The closing \(secretName) field should remain materialized.")
+        let emptied = await waitUntil { closingField?.text?.isEmpty == true }
+        XCTAssertTrue(emptied, "Closing the form should clear the native \(secretName) text.")
+        XCTAssertEqual(closingField?.placeholder ?? "", "", "Closing the form should remove the \(secretName) placeholder.")
+    }
+
+    private func materializeSecureField(
+        in rootView: UIView,
+        for draft: TmuxConnectionDraft
+    ) async -> UITextField? {
+        let expectedIdentifier = draft.authenticationKind == .privateKey
+            ? "connection.private-key.passphrase"
+            : "connection.password"
+
+        for _ in 0..<16 {
+            rootView.setNeedsLayout()
+            rootView.layoutIfNeeded()
+            let fields = descendants(of: rootView, matching: UITextField.self)
+            if let expected = fields.first(where: {
+                $0.isSecureTextEntry && $0.accessibilityIdentifier == expectedIdentifier
+            }) {
+                return expected
+            }
+            let materializedSecureFields = fields.filter(\.isSecureTextEntry)
+            if materializedSecureFields.count == 1 {
+                return materializedSecureFields[0]
+            }
+
+            // Form virtualizes rows. Scroll its largest table/list container so SwiftUI creates the
+            // native SecureField for the selected authentication method before inspecting its value.
+            guard let scrollView = descendants(of: rootView, matching: UIScrollView.self)
+                .filter({ $0.contentSize.height > $0.bounds.height })
+                .max(by: { $0.contentSize.height < $1.contentSize.height }) else {
+                await Task.yield()
+                continue
+            }
+            let maxOffsetY = max(
+                0,
+                scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
+            )
+            let nextOffsetY = min(
+                maxOffsetY,
+                scrollView.contentOffset.y + max(scrollView.bounds.height * 0.7, 100)
+            )
+            guard nextOffsetY > scrollView.contentOffset.y else {
+                await Task.yield()
+                continue
+            }
+            scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: nextOffsetY), animated: false)
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        return descendants(of: rootView, matching: UITextField.self).first {
+            $0.isSecureTextEntry && $0.accessibilityIdentifier == expectedIdentifier
+        }
     }
 
     private func connectionSetupForm(
@@ -4359,6 +4497,224 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(savedSettings, updated)
     }
 
+    func testSettingsBindingPreservesRapidProjectedEditsBeforeSaveCompletes() async {
+        let initial = TerminalSettings.default
+        let repository = ControlledTerminalSettingsRepository(settings: initial)
+        let harness = makeHarness(settings: initial, settingsRepository: repository)
+        await harness.model.load()
+        defer {
+            Task { await repository.releaseAllPendingSaves() }
+        }
+
+        var fontSettings = initial
+        fontSettings.fontSize = 18
+        var combinedSettings = fontSettings
+        combinedSettings.theme = .remuxLight
+
+        let settings = harness.model.terminalSettingsBinding
+        settings.fontSize.wrappedValue = 18
+        settings.theme.wrappedValue = .remuxLight
+
+        let firstSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 1
+        }
+        XCTAssertTrue(firstSaveStarted, "The first projected binding edit should reach the settings repository.")
+
+        await repository.releaseSave(number: 1, outcome: .success)
+        let secondSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 2
+        }
+        XCTAssertTrue(secondSaveStarted, "The second projected binding edit should be serialized after the first save.")
+        await repository.releaseSave(number: 2, outcome: .success)
+
+        let combinedSettingsPublished = await eventually(timeout: .seconds(5)) {
+            harness.model.terminalSettings == combinedSettings
+        }
+        XCTAssertTrue(combinedSettingsPublished, "Both projected edits should publish after their saves complete.")
+
+        let recordedSettings = await repository.recordedSettings()
+        let persistedSettings = await repository.persistedSettings()
+        XCTAssertEqual(recordedSettings, [fontSettings, combinedSettings])
+        XCTAssertEqual(persistedSettings, combinedSettings)
+        XCTAssertEqual(harness.model.terminalSettings, combinedSettings)
+        await repository.releaseAllPendingSaves()
+    }
+
+    func testConcurrentTerminalSettingsUpdatesComposeAndCompleteInSaveOrder() async {
+        let initial = TerminalSettings.default
+        let repository = ControlledTerminalSettingsRepository(settings: initial)
+        let harness = makeHarness(settings: initial, settingsRepository: repository)
+        await harness.model.load()
+        defer {
+            Task { await repository.releaseAllPendingSaves() }
+        }
+
+        var firstSettings = initial
+        firstSettings.fontSize = 18
+        let firstFinished = expectation(description: "first settings update finished")
+        let firstUpdate = Task {
+            await harness.model.updateTerminalSettings { settings in
+                settings.fontSize = 18
+            }
+            firstFinished.fulfill()
+        }
+        let firstSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 1
+        }
+        XCTAssertTrue(firstSaveStarted, "The first settings save should reach the controlled repository.")
+
+        let secondMutationApplied = expectation(description: "second settings mutation applied")
+        let secondFinished = expectation(description: "second settings update finished")
+        let secondFinishedBeforeFirstRelease = expectation(description: "second update finished out of order")
+        secondFinishedBeforeFirstRelease.isInverted = true
+        var firstSaveReleased = false
+        let secondUpdate = Task {
+            await harness.model.updateTerminalSettings { settings in
+                settings.theme = .remuxLight
+                secondMutationApplied.fulfill()
+            }
+            if !firstSaveReleased { secondFinishedBeforeFirstRelease.fulfill() }
+            secondFinished.fulfill()
+        }
+        await fulfillment(of: [secondMutationApplied], timeout: 5)
+
+        // If the writer is concurrent, this lets save two finish while save one
+        // remains suspended. A serialized writer will consume this release only
+        // after save one has completed.
+        await repository.releaseSave(number: 2, outcome: .success)
+        await fulfillment(of: [secondFinishedBeforeFirstRelease], timeout: 0.2)
+        XCTAssertEqual(
+            harness.model.terminalSettings,
+            initial,
+            "A later update must not publish while the earlier settings write is suspended."
+        )
+
+        firstSaveReleased = true
+        await repository.releaseSave(number: 1, outcome: .success)
+        await fulfillment(of: [firstFinished], timeout: 5)
+        let secondSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 2
+        }
+        XCTAssertTrue(secondSaveStarted, "The queued settings save should start after save one completes.")
+        await fulfillment(of: [secondFinished], timeout: 5)
+        await firstUpdate.value
+        await secondUpdate.value
+
+        var combinedSettings = firstSettings
+        combinedSettings.theme = .remuxLight
+        let recordedSettings = await repository.recordedSettings()
+        let persistedSettings = await repository.persistedSettings()
+        XCTAssertEqual(recordedSettings, [firstSettings, combinedSettings])
+        XCTAssertEqual(persistedSettings, combinedSettings)
+        XCTAssertEqual(harness.model.terminalSettings, combinedSettings)
+        await repository.releaseAllPendingSaves()
+    }
+
+    func testOlderFailedSettingsSaveDoesNotLeaveStaleFailureAfterNewerSuccess() async {
+        let initial = TerminalSettings.default
+        let repository = ControlledTerminalSettingsRepository(settings: initial)
+        let harness = makeHarness(settings: initial, settingsRepository: repository)
+        await harness.model.load()
+        defer {
+            Task { await repository.releaseAllPendingSaves() }
+        }
+
+        var combinedSettings = initial
+        combinedSettings.fontSize = 19
+        combinedSettings.theme = .remuxLight
+        let firstFinished = expectation(description: "older settings update finished")
+        let firstUpdate = Task {
+            await harness.model.updateTerminalSettings { settings in
+                settings.fontSize = 19
+            }
+            firstFinished.fulfill()
+        }
+        let firstSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 1
+        }
+        XCTAssertTrue(firstSaveStarted, "The first settings save should reach the controlled repository.")
+
+        let secondMutationApplied = expectation(description: "newer settings mutation applied")
+        let secondFinished = expectation(description: "newer settings update finished")
+        let secondUpdate = Task {
+            await harness.model.updateTerminalSettings { settings in
+                settings.theme = .remuxLight
+                secondMutationApplied.fulfill()
+            }
+            secondFinished.fulfill()
+        }
+        await fulfillment(of: [secondMutationApplied], timeout: 5)
+
+        await repository.releaseSave(number: 1, outcome: .failure)
+        await fulfillment(of: [firstFinished], timeout: 5)
+        let secondSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 2
+        }
+        XCTAssertTrue(secondSaveStarted, "The newer settings save should run after the older failure.")
+        await repository.releaseSave(number: 2, outcome: .success)
+        await fulfillment(of: [secondFinished], timeout: 5)
+        await firstUpdate.value
+        await secondUpdate.value
+
+        let persistedSettings = await repository.persistedSettings()
+        XCTAssertFalse(harness.model.terminalSettingsSaveFailed)
+        XCTAssertEqual(harness.model.terminalSettings, combinedSettings)
+        XCTAssertEqual(persistedSettings, combinedSettings)
+        await repository.releaseAllPendingSaves()
+    }
+
+    func testLatestFailedConcurrentSettingsSaveKeepsLastSuccessfulSettings() async {
+        let initial = TerminalSettings.default
+        let repository = ControlledTerminalSettingsRepository(settings: initial)
+        let harness = makeHarness(settings: initial, settingsRepository: repository)
+        await harness.model.load()
+        defer {
+            Task { await repository.releaseAllPendingSaves() }
+        }
+
+        var lastSuccessfulSettings = initial
+        lastSuccessfulSettings.fontSize = 20
+        let firstFinished = expectation(description: "successful settings update finished")
+        let firstUpdate = Task {
+            await harness.model.updateTerminalSettings { settings in
+                settings.fontSize = 20
+            }
+            firstFinished.fulfill()
+        }
+        let firstSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 1
+        }
+        XCTAssertTrue(firstSaveStarted, "The first settings save should reach the controlled repository.")
+
+        let secondMutationApplied = expectation(description: "failing settings mutation applied")
+        let secondFinished = expectation(description: "failing settings update finished")
+        let secondUpdate = Task {
+            await harness.model.updateTerminalSettings { settings in
+                settings.theme = .remuxLight
+                secondMutationApplied.fulfill()
+            }
+            secondFinished.fulfill()
+        }
+        await fulfillment(of: [secondMutationApplied], timeout: 5)
+
+        await repository.releaseSave(number: 1, outcome: .success)
+        await fulfillment(of: [firstFinished], timeout: 5)
+        let secondSaveStarted = await eventually(timeout: .seconds(5)) {
+            await repository.saveCount() >= 2
+        }
+        XCTAssertTrue(secondSaveStarted, "The latest settings save should run after the prior success.")
+        await repository.releaseSave(number: 2, outcome: .failure)
+        await fulfillment(of: [secondFinished], timeout: 5)
+        await firstUpdate.value
+        await secondUpdate.value
+
+        let persistedSettings = await repository.persistedSettings()
+        XCTAssertEqual(harness.model.terminalSettings, lastSuccessfulSettings)
+        XCTAssertEqual(persistedSettings, lastSuccessfulSettings)
+        XCTAssertTrue(harness.model.terminalSettingsSaveFailed)
+        await repository.releaseAllPendingSaves()
+    }
+
     func testUpdateTerminalSettingsRefreshesActiveSessionModelsWithoutReplacingRuntimeAttempt() async throws {
         let server = SavedServer(
             displayName: "Build Host",
@@ -5320,6 +5676,63 @@ private actor RecordingTmuxSessionDiscoverer {
     }
 }
 
+/// Suspends the first Herdr discovery without observing task cancellation; later calls succeed immediately.
+private actor FirstSuspendingHerdrSessionDiscoverer {
+    private let staleChallenge: SSHHostKeyTrustChallenge
+    private let laterSessions: [DiscoveredSession]
+    private var calls = 0
+    private var firstCall: CheckedContinuation<[DiscoveredSession], Error>?
+    private var firstCallHeld = false
+    private var firstCallFinished = false
+    private var releaseRequested = false
+
+    init(
+        staleChallenge: SSHHostKeyTrustChallenge,
+        laterSessions: [DiscoveredSession]
+    ) {
+        self.staleChallenge = staleChallenge
+        self.laterSessions = laterSessions
+    }
+
+    func discover(_ target: SessionTarget) async throws -> [DiscoveredSession] {
+        _ = target
+        calls += 1
+        guard calls == 1 else { return laterSessions }
+
+        do {
+            let sessions = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<[DiscoveredSession], Error>) in
+                if releaseRequested {
+                    continuation.resume(throwing: TrustedHostStoreError.hostKeyTrustRequired(staleChallenge))
+                } else {
+                    firstCall = continuation
+                    firstCallHeld = true
+                }
+            }
+            firstCallFinished = true
+            return sessions
+        } catch {
+            firstCallFinished = true
+            throw error
+        }
+    }
+
+    func isFirstCallHeld() -> Bool {
+        firstCallHeld && !firstCallFinished
+    }
+
+    func didFirstCallFinish() -> Bool {
+        firstCallFinished
+    }
+
+    func releaseFirstIfNeeded() {
+        releaseRequested = true
+        guard let firstCall else { return }
+        self.firstCall = nil
+        firstCall.resume(throwing: TrustedHostStoreError.hostKeyTrustRequired(staleChallenge))
+    }
+}
+
 /// Hands the root a fake bridge for each Herdr session it opens.
 private actor RecordingHerdrBridgeOpener {
     private(set) var targets: [SessionTarget] = []
@@ -5875,6 +6288,77 @@ private actor TestTerminalSettingsRepository: TerminalSettingsRepository {
 
     func saveSettings(_ settings: TerminalSettings) async throws {
         self.settings = settings
+    }
+}
+
+private actor ControlledTerminalSettingsRepository: TerminalSettingsRepository {
+    enum SaveOutcome: Sendable {
+        case success
+        case failure
+    }
+
+    enum Failure: Error, Sendable {
+        case saveFailed
+    }
+
+    private var settings: TerminalSettings
+    private var saves: [TerminalSettings] = []
+    private var continuations: [Int: CheckedContinuation<SaveOutcome, Never>] = [:]
+    private var outcomesReleasedBeforeSave: [Int: SaveOutcome] = [:]
+
+    init(settings: TerminalSettings) {
+        self.settings = settings
+    }
+
+    func loadSettings() async throws -> TerminalSettings {
+        settings
+    }
+
+    func saveSettings(_ settings: TerminalSettings) async throws {
+        let saveNumber = saves.count + 1
+        saves.append(settings)
+        let outcome = await withCheckedContinuation { continuation in
+            if let releasedOutcome = outcomesReleasedBeforeSave.removeValue(forKey: saveNumber) {
+                continuation.resume(returning: releasedOutcome)
+            } else {
+                continuations[saveNumber] = continuation
+            }
+        }
+
+        switch outcome {
+        case .success:
+            self.settings = settings
+        case .failure:
+            throw Failure.saveFailed
+        }
+    }
+
+    func saveCount() -> Int {
+        saves.count
+    }
+
+    func recordedSettings() -> [TerminalSettings] {
+        saves
+    }
+
+    func persistedSettings() -> TerminalSettings {
+        settings
+    }
+
+    func releaseSave(number: Int, outcome: SaveOutcome) {
+        if let continuation = continuations.removeValue(forKey: number) {
+            continuation.resume(returning: outcome)
+        } else {
+            outcomesReleasedBeforeSave[number] = outcome
+        }
+    }
+
+    func releaseAllPendingSaves() {
+        let pending = Array(continuations.values)
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume(returning: .success)
+        }
     }
 }
 

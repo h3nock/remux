@@ -1208,6 +1208,55 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
     }
 
+    func testWindowCloseNotificationRemovesWindowAfterSuccessfulCommand() async throws {
+        let topologyRecorder = ControllerTopologyRecorder()
+        let harness = try await readyController(
+            listWindowsBody: Self.twoSinglePaneWindowsWithWindow1Active,
+            expectedPaneCount: 2,
+            callbacks: .init(onTopology: { topologyRecorder.append($0) })
+        )
+        topologyRecorder.clear()
+        var nextCommandNumber = harness.nextCommandNumber
+
+        harness.controller.requestCloseWindow(windowID: 1)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-window -t @1\n"])
+
+        // Live trace: a successful command reply, then active-session fallback to
+        // @0, then closure of the @1 window. Fixture session ID is $42.
+        let packet = responseBlock(commandNumber: &nextCommandNumber)
+            + "%session-window-changed $42 @0\n"
+            + "%window-close @1\n"
+        harness.controller.pump(Data(packet.utf8))
+        await drain(harness.controller)
+
+        let topology = try XCTUnwrap(topologyRecorder.latest)
+        XCTAssertEqual(topology.windows.map(\.id), [0])
+        XCTAssertEqual(topology.panes.map(\.windowID), [0])
+        XCTAssertEqual(topology.activeWindowID, 0)
+
+        // Once the real close notification settles topology, later close work is admitted.
+        harness.controller.requestCloseWindow(windowID: 0)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-window -t @0\n"])
+    }
+
+    private static let twoSinglePaneWindowsWithWindow1Active = windowRecord(
+        id: 0,
+        active: false,
+        paneID: 0,
+        layout: "b7dd,83x44,0,0,0",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    ) + windowRecord(
+        id: 1,
+        active: true,
+        paneID: 1,
+        layout: "b7de,83x44,0,0,1",
+        visibleLayout: "b7de,83x44,0,0,1",
+        name: "window-1"
+    )
+
     func testWindowCloseWaitsForAuthoritativeRemovalBeforeAnotherClose() async throws {
         let topologyRecorder = ControllerTopologyRecorder()
         let harness = try await readyController(

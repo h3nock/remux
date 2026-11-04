@@ -4,6 +4,104 @@ import XCTest
 
 final class GhosttyTerminalResponderViewTests: XCTestCase {
     @MainActor
+    func testKeyboardFrameIsConvertedIntoTheRespondersOffsetWindow() async throws {
+        let (window, previous) = try await keyboardGeometryWindow(
+            frame: CGRect(x: 100, y: 150, width: 320, height: 500)
+        )
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let responder = UIView()
+        window.addSubview(responder)
+        let handoff = GhosttyKeyboardResponderHandoff()
+        handoff.register(responder, as: .terminal)
+        let localFrame = CGRect(x: 0, y: 400, width: 320, height: 200)
+        // Keep the input fixture independent from the conversion under test.
+        let screenFrame = CGRect(x: 100, y: 550, width: 320, height: 200)
+
+        let geometry = try XCTUnwrap(handoff.keyboardGeometry(frameEnd: screenFrame))
+
+        XCTAssertEqual(geometry.frameEnd, localFrame)
+        XCTAssertEqual(geometry.bounds, CGRect(x: 0, y: 0, width: 320, height: 500))
+        XCTAssertEqual(
+            GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
+                frameEnd: geometry.frameEnd, screenBounds: geometry.bounds
+            ),
+            100
+        )
+    }
+
+    @MainActor
+    func testKeyboardOutsideTheAppWindowDoesNotReserveTerminalSpace() async throws {
+        let (window, previous) = try await keyboardGeometryWindow(
+            frame: CGRect(x: 10, y: 20, width: 160, height: 300)
+        )
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let responder = UIView()
+        window.addSubview(responder)
+        let handoff = GhosttyKeyboardResponderHandoff()
+        handoff.register(responder, as: .terminal)
+        let screenFrame = CGRect(x: 200, y: 200, width: 160, height: 200)
+
+        let geometry = try XCTUnwrap(handoff.keyboardGeometry(frameEnd: screenFrame))
+
+        XCTAssertEqual(geometry.frameEnd, CGRect(x: 190, y: 180, width: 160, height: 200))
+        XCTAssertEqual(
+            GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
+                frameEnd: geometry.frameEnd, screenBounds: geometry.bounds
+            ),
+            0
+        )
+    }
+
+    @MainActor
+    func testKeyboardGeometryFollowsTheRespondersCurrentWindow() throws {
+        let first = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 500))
+        let second = UIWindow(frame: CGRect(x: 80, y: 30, width: 600, height: 700))
+        let responder = UIView()
+        first.addSubview(responder)
+        let handoff = GhosttyKeyboardResponderHandoff()
+        handoff.register(responder, as: .terminal)
+        XCTAssertEqual(try XCTUnwrap(handoff.keyboardGeometry(frameEnd: nil)).bounds, first.bounds)
+
+        second.addSubview(responder)
+        let geometry = try XCTUnwrap(handoff.keyboardGeometry(frameEnd: nil))
+
+        XCTAssertEqual(geometry.bounds, second.bounds)
+        XCTAssertEqual(geometry.frameEnd, CGRect(x: 0, y: 700, width: 600, height: 0))
+    }
+
+    @MainActor
+    func testUnattachedResponderDoesNotInventKeyboardGeometry() {
+        let responder = UIView()
+        let handoff = GhosttyKeyboardResponderHandoff()
+        handoff.register(responder, as: .terminal)
+        XCTAssertNil(handoff.keyboardGeometry(frameEnd: .zero))
+    }
+
+    @MainActor
+    private func keyboardGeometryWindow(frame: CGRect) async throws -> (UIWindow, UIWindow?) {
+        await Task.yield()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIViewController()
+        window.makeKeyAndVisible()
+        window.frame = frame
+        window.layoutIfNeeded()
+        await Task.yield()
+        return (window, previous)
+    }
+
+    @MainActor
     func testResponderReportsTextWhenEnabled() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 

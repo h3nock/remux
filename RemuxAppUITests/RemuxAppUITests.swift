@@ -117,6 +117,18 @@ final class RemuxAppUITests: XCTestCase {
         add(attachment)
     }
 
+    private func attachComposerFailureDiagnostic(named name: String) {
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "\(name)-full-display"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        let accessibility = XCTAttachment(string: app.debugDescription)
+        accessibility.name = "\(name)-accessibility"
+        accessibility.lifetime = .keepAlways
+        add(accessibility)
+    }
+
     func testCreatesSSHServerThenStartsFirstSessionWithSimulatorTransport() {
         launchSimulatorApp()
         openConnectionSetup()
@@ -160,9 +172,18 @@ final class RemuxAppUITests: XCTestCase {
 
         app.secureTextFields["connection.password"].typeText("\n")
 
+        let serverDetail = app.descendants(matching: .any)["library.server.detail"]
+        let didOpenServerDetail = serverDetail.waitForExistence(timeout: 5)
+        if !didOpenServerDetail {
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "return-on-password-server-detail-missing-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            attachScreenshot(named: "return-on-password-server-detail-missing")
+        }
         XCTAssertTrue(
-            app.descendants(matching: .any)["library.server.detail"].waitForExistence(timeout: 5),
-            "Return on the password should save the server."
+            didOpenServerDetail,
+            "Return on the password should save the server and open its detail page."
         )
     }
 
@@ -175,10 +196,13 @@ final class RemuxAppUITests: XCTestCase {
 
         let advanced = app.buttons["Advanced"]
         for _ in 0..<4 where !advanced.isHittable {
-            app.swipeUp()
+            swipeVisibleForm(up: true)
         }
         advanced.tap()
         let executable = app.textFields["connection.tmux-executable"]
+        for _ in 0..<4 where !executable.exists || !executable.isHittable {
+            swipeVisibleForm(up: true)
+        }
         XCTAssertTrue(executable.waitForExistence(timeout: 2))
         tapFormField(executable)
         typeTextAndConfirm("~/bin/tmux", into: executable)
@@ -221,7 +245,28 @@ final class RemuxAppUITests: XCTestCase {
             "The terminal should show its default dark theme."
         )
 
+        attachScreenshot(named: "terminal-dark-theme-before-home")
         openHomeFromTerminal()
+
+        let appearanceDiagnostic = app.otherElements["app.appearance.diagnostic"]
+        XCTAssertTrue(appearanceDiagnostic.waitForExistence(timeout: 2))
+        let followsSystemAppearance = XCTNSPredicateExpectation(
+            predicate: NSPredicate { element, _ in
+                guard let element = element as? XCUIElement,
+                      let value = element.value as? String else { return false }
+                return value.contains("route=library env=light")
+            },
+            object: appearanceDiagnostic
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [followsSystemAppearance], timeout: 3), .completed)
+        if appearanceDiagnostic.exists {
+            let value = appearanceDiagnostic.value as? String ?? "<no value>"
+            print("Home appearance diagnostic: \(value)")
+            let attachment = XCTAttachment(string: value)
+            attachment.name = "home-appearance-diagnostic"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
 
         let deadline = Date().addingTimeInterval(3)
         var luminance = averageLuminance(app.screenshot()) ?? 0
@@ -230,6 +275,7 @@ final class RemuxAppUITests: XCTestCase {
             luminance = averageLuminance(app.screenshot()) ?? 0
         }
         XCTAssertGreaterThan(luminance, 0.5, "Home should be light, like the system.")
+        attachScreenshot(named: "home-system-light-after-terminal")
     }
 
     func testToolbarKeysUpdateRetainedSimulatorTerminalAndFirstSlotOpensShortcuts() {
@@ -248,9 +294,10 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["settings.toolbar-keys.slot.1"].tap()
         selectToolbarKey("Control")
         app.buttons["settings.toolbar-keys.slot.2"].tap()
+        XCTAssertTrue(app.navigationBars["Third Key"].waitForExistence(timeout: 2))
         selectToolbarKey("Home")
-        app.navigationBars["Toolbar Keys"].buttons.firstMatch.tap()
-        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        tapNavigationBack(from: "Toolbar Keys", to: "Settings")
+        tapNavigationBack(from: "Settings", to: "Home")
 
         let retainedSession = app.buttons["library.active-session.show"].firstMatch
         XCTAssertTrue(retainedSession.waitForExistence(timeout: 5))
@@ -575,7 +622,16 @@ final class RemuxAppUITests: XCTestCase {
         guard let terminalContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
-        XCTAssertEqual(terminalContinuity.willHideCount, initialContinuity.willHideCount)
+        let terminalWillHideCount = terminalContinuity.willHideCount
+        let initialWillHideCount = initialContinuity.willHideCount
+        if terminalWillHideCount != initialWillHideCount {
+            print(
+                "Composer close keyboard continuity failure: terminalWillHideCount=\(terminalWillHideCount), "
+                    + "initialWillHideCount=\(initialWillHideCount)"
+            )
+            attachComposerFailureDiagnostic(named: "composer-toggle-keyboard-continuity-failure")
+        }
+        XCTAssertEqual(terminalWillHideCount, initialWillHideCount)
         XCTAssertTrue(keyboard.exists)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
         XCTAssertEqual(terminalContinuity.effectiveViewport, initialContinuity.effectiveViewport)
@@ -709,7 +765,13 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
         XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
         XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
-        XCTAssertEqual(micButton.frame.midY, sendButton.frame.midY, accuracy: 1)
+        let micMidY = micButton.frame.midY
+        let sendMidY = sendButton.frame.midY
+        if abs(micMidY - sendMidY) > 1 {
+            print("Composer multiline alignment failure: micMidY=\(micMidY), sendMidY=\(sendMidY)")
+            attachComposerFailureDiagnostic(named: "composer-multiline-alignment-failure")
+        }
+        XCTAssertEqual(micMidY, sendMidY, accuracy: 1)
         XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, closeButton.frame.minX)
         XCTAssertLessThan(closeButton.frame.maxX, micButton.frame.minX)
         attachScreenshot(named: "composer-multiline-width-stable")
@@ -819,7 +881,14 @@ final class RemuxAppUITests: XCTestCase {
         shortcuts.tap()
 
         XCTAssertTrue(app.navigationBars["Shortcuts"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.staticTexts["Collections"].waitForExistence(timeout: 2))
+        let accessibility = XCTAttachment(string: app.debugDescription)
+        accessibility.name = "settings-shortcuts-collections-accessibility"
+        accessibility.lifetime = .keepAlways
+        add(accessibility)
+        let collectionsHeader = app.staticTexts
+            .matching(NSPredicate(format: "label ==[c] %@", "Collections"))
+            .firstMatch
+        XCTAssertTrue(collectionsHeader.waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["Edit"].exists)
         XCTAssertTrue(app.buttons["Add Collection"].exists)
         XCTAssertFalse(app.buttons["Close Shortcuts"].exists)
@@ -870,11 +939,75 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(reset.waitForExistence(timeout: 2))
         reset.tap()
 
+        let resetToDefaults = [
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Control"),
+                object: first
+            ),
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Escape"),
+                object: second
+            ),
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Tab"),
+                object: third
+            ),
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == false"),
+                object: reset
+            ),
+        ]
+        XCTAssertEqual(
+            XCTWaiter.wait(for: resetToDefaults, timeout: 5),
+            .completed,
+            "Reset should restore the default keys and remove the reset action."
+        )
+
         XCTAssertEqual(first.value as? String, "Control")
         XCTAssertEqual(second.value as? String, "Escape")
         XCTAssertEqual(third.value as? String, "Tab")
         XCTAssertFalse(reset.exists)
         attachScreenshot(named: "settings-toolbar-keys-reset")
+
+        tapNavigationBack(from: "Toolbar Keys", to: "Settings")
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 2))
+
+        let savedDefaults = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Control, Escape, Tab"),
+            object: toolbarKeys
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [savedDefaults], timeout: 5),
+            .completed,
+            "The settings summary should reflect the saved defaults after returning."
+        )
+        XCTAssertEqual(toolbarKeys.value as? String, "Control, Escape, Tab")
+
+        toolbarKeys.tap()
+        XCTAssertTrue(app.navigationBars["Toolbar Keys"].waitForExistence(timeout: 2))
+        let reopenedDefaults = [
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Control"),
+                object: first
+            ),
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Escape"),
+                object: second
+            ),
+            XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "Tab"),
+                object: third
+            ),
+        ]
+        XCTAssertEqual(
+            XCTWaiter.wait(for: reopenedDefaults, timeout: 5),
+            .completed,
+            "Reopening Toolbar Keys should show the saved defaults."
+        )
+        XCTAssertEqual(first.value as? String, "Control")
+        XCTAssertEqual(second.value as? String, "Escape")
+        XCTAssertEqual(third.value as? String, "Tab")
+        XCTAssertFalse(reset.exists)
     }
 
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
@@ -970,7 +1103,26 @@ final class RemuxAppUITests: XCTestCase {
             browser.waitForExistence(timeout: 5),
             "Verification should open in an in-app browser instead of a universal-link handler."
         )
-        XCTAssertTrue(browser.buttons["Done"].waitForExistence(timeout: 5))
+        let browserDismissalControls = browser.buttons.matching(
+            NSPredicate(
+                format: "identifier == %@ OR label == %@ OR identifier == %@ OR label == %@",
+                "CancelBarItemButton",
+                "Cancel",
+                "Done",
+                "Done"
+            )
+        )
+        let browserDismissalControl = browserDismissalControls.firstMatch
+        XCTAssertTrue(
+            browserDismissalControl.waitForExistence(timeout: 5),
+            "The in-app browser should expose its native dismissal control."
+        )
+        XCTAssertEqual(
+            browserDismissalControls.count,
+            1,
+            "The in-app browser should expose exactly one native dismissal control."
+        )
+        XCTAssertTrue(browserDismissalControl.isHittable)
         XCTAssertEqual(app.state, .runningForeground)
         attachScreenshot(named: "tailscale-check-browser")
     }
@@ -1069,10 +1221,19 @@ final class RemuxAppUITests: XCTestCase {
         titleField.tap()
         titleField.typeText("E2E")
 
-        let textField = app.textFields["Text"].firstMatch
-        XCTAssertTrue(textField.waitForExistence(timeout: 2))
-        textField.tap()
-        textField.typeText("echo REMUXS")
+        // UIAutomation exposes this vertical-axis SwiftUI TextField as a text field
+        // or text view depending on the iOS version.
+        let editorPredicate = NSPredicate(
+            format: "label == %@ AND (elementType == %d OR elementType == %d)",
+            "Text",
+            XCUIElement.ElementType.textField.rawValue,
+            XCUIElement.ElementType.textView.rawValue
+        )
+        let textEditor = app.descendants(matching: .any).matching(editorPredicate).firstMatch
+        XCTAssertTrue(textEditor.waitForExistence(timeout: 2), "The multiline Text action editor should be available.")
+        textEditor.tap()
+        textEditor.typeText("echo REMUX\"S\"")
+        XCTAssertEqual(textEditor.value as? String, "echo REMUX\"S\"", "The editor should contain the exact command before saving.")
         app.buttons["Save"].tap()
         XCTAssertFalse(app.navigationBars["New Shortcut"].waitForExistence(timeout: 2))
 
@@ -1124,8 +1285,8 @@ final class RemuxAppUITests: XCTestCase {
         thirdSetting.tap()
         selectToolbarKey("Up Arrow")
 
-        app.navigationBars["Toolbar Keys"].buttons.firstMatch.tap()
-        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        tapNavigationBack(from: "Toolbar Keys", to: "Settings")
+        tapNavigationBack(from: "Settings", to: "Home")
         let retainedSession = app.buttons["library.active-session.show"].firstMatch
         XCTAssertTrue(retainedSession.waitForExistence(timeout: 5))
         retainedSession.tap()
@@ -1215,8 +1376,8 @@ final class RemuxAppUITests: XCTestCase {
         changedToolbarKeys.tap()
         app.buttons["settings.toolbar-keys.slot.1"].tap()
         selectToolbarKey("Tab")
-        app.navigationBars["Toolbar Keys"].buttons.firstMatch.tap()
-        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        tapNavigationBack(from: "Toolbar Keys", to: "Settings")
+        tapNavigationBack(from: "Settings", to: "Home")
         app.buttons["library.active-session.show"].firstMatch.tap()
         waitForLiveTerminalReady(timeout: 10)
         waitForLiveTerminalInputReady(timeout: 10)
@@ -1539,7 +1700,24 @@ final class RemuxAppUITests: XCTestCase {
             waitForElementToDisappear(note, timeout: 2),
             "The check was of Automatic, not of the path typed, so its note goes."
         )
-        app.buttons["connection.save"].tap()
+        let save = app.buttons["connection.save"]
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.exists, "The software keyboard should remain visible before Save.")
+        XCTAssertTrue(
+            keyboard.frame.intersects(app.frame),
+            "The software keyboard should intersect the app window before Save."
+        )
+        XCTAssertTrue(save.waitForExistence(timeout: 2), "Save should exist while the keyboard is open.")
+        XCTAssertTrue(save.isHittable, "Save should remain hittable while the keyboard is open.")
+        XCTAssertFalse(
+            save.frame.intersects(keyboard.frame),
+            "The Save button should be outside the keyboard frame."
+        )
+        let saveScreenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        saveScreenshot.name = "connection-save-visible-with-keyboard"
+        saveScreenshot.lifetime = .keepAlways
+        add(saveScreenshot)
+        save.tap()
         XCTAssertTrue(
             waitForElementToDisappear(app.textFields["connection.name"], timeout: 5),
             "Saving the edited server should close the form."
@@ -3439,8 +3617,33 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         waitForLiveTerminalInputReady(timeout: 10)
+        let markerToken = String(UUID().uuidString.prefix(8)).uppercased()
+        let beforeMarker = "R\(markerToken)_B16X"
+        let afterMarker = "R\(markerToken)_A17X"
+        let finalMarker = "R\(markerToken)_F17X"
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: beforeMarker,
+            includingHistory: true
+        )
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: afterMarker,
+            includingHistory: true
+        )
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: finalMarker,
+            includingHistory: true
+        )
+        recordLiveTmuxPaneCountExpectation(sessionName: sessionName, expectedCount: 1)
+
+        app.typeText("remux_resize_count=0\r")
         app.typeText(
-            "for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r"
+            "for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do remux_resize_count=$((remux_resize_count + 1)); echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done; printf 'R%s_B%sX\\n' \(markerToken) \"$remux_resize_count\"\r"
         )
         assertLiveTerminalScreenshotContainsRenderedContent()
 
@@ -3455,6 +3658,9 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(
             waitForKeyboardPresence(true, label: "second system show")
         )
+        waitForLiveTerminalInputReady(timeout: 10)
+        app.typeText("remux_resize_count=$((remux_resize_count + 1)); printf 'R%s_A%sX\\n' \(markerToken) \"$remux_resize_count\"\r")
+        app.typeText("printf 'R%s_F%sX\\n' \(markerToken) \"$remux_resize_count\"\r")
     }
 
     func testLiveLatencyProfileRealRuntimeWhenConfigured() throws {
@@ -3849,6 +4055,9 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openWindowsSheet()
+        let windowTiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.window.tile."))
+        XCTAssertEqual(windowTiles.count, 2, "The action cycle must have exactly two windows before closing one.")
+        attachScreenshot(named: "live-window-picker-before-close")
         removePickerItem(
             tileIdentifier: "terminal.window.tile.2",
             actionIdentifier: "terminal.window.remove.2",
@@ -3856,15 +4065,21 @@ final class RemuxAppUITests: XCTestCase {
             confirmIdentifier: "terminal.window.remove.confirm.2",
             confirmLabel: "Close Window 2"
         )
+        // Verify the server's topology even if the UI disappearance assertion fails.
+        recordLiveTmuxWindowCountExpectation(sessionName: sessionName, expectedCount: 1)
         XCTAssertTrue(
             waitForElementToDisappear(app.buttons["terminal.window.tile.2"], timeout: 10),
             "Window 2 should disappear after removal."
         )
+        XCTAssertEqual(windowTiles.count, 1, "The picker must match the one remaining remote window.")
+        attachScreenshot(named: "live-window-picker-after-close")
         dismissTopSheetIfPresent()
         waitForLiveTerminalReady(timeout: 30)
 
-        let marker = "REMUX_ACTION_CYCLE_RENDER_\(UUID().uuidString.prefix(8).uppercased())"
-        sendTerminalCommand("printf '\(marker)\\n'")
+        let markerSuffix = UUID().uuidString.prefix(8).uppercased()
+        let marker = "REMUX_ACTION_CYCLE_RENDER_\(markerSuffix)"
+        sendTerminalCommand("printf 'REMUX_ACTION_CYCLE_RENDER_%s\\n' \(markerSuffix)")
+        recordLiveTmuxPaneCaptureExpectation(sessionName: sessionName, paneIndex: 1, marker: marker)
         hideKeyboardIfPresent()
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 2_500)
 
@@ -4228,6 +4443,7 @@ final class RemuxAppUITests: XCTestCase {
 
     func testLiveSSHBackgroundForegroundRetainsTerminalWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("foreground")
+        let recoveryToken = String(UUID().uuidString.prefix(8)).uppercased()
         defer {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
         }
@@ -4245,10 +4461,22 @@ final class RemuxAppUITests: XCTestCase {
         panePickerTiles()[0].tap()
         waitForLiveTerminalReady(timeout: 30)
 
-        sendTerminalCommand("echo REMUX_FOREGROUND_BEFORE")
+        // Establish one shell-local counter, then prove a subsequent command
+        // continues in this same pane after the app returns from background.
+        sendTerminalCommand("remux_recovery_count=0")
+        sendTerminalCommand(
+            "remux_recovery_count=$((remux_recovery_count + 1)); printf 'R%s_B%sX\\n' \"\(recoveryToken)\" \"$remux_recovery_count\""
+        )
         backgroundAndReactivateApp(backgroundDuration: 4)
         waitForLiveTerminalReady(timeout: 60)
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
+
+        sendTerminalCommand(
+            "remux_recovery_count=$((remux_recovery_count + 1)); printf 'R%s_A%sX\\n' \"\(recoveryToken)\" \"$remux_recovery_count\""
+        )
+        sendTerminalCommand(
+            "printf 'R%s_F%sX\\n' \"\(recoveryToken)\" \"$remux_recovery_count\""
+        )
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
@@ -4275,6 +4503,26 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(activeSessionRows.firstMatch.waitForExistence(timeout: 5))
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60)
+
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "R\(recoveryToken)_B1X",
+            includingHistory: true
+        )
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "R\(recoveryToken)_A2X",
+            includingHistory: true
+        )
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "R\(recoveryToken)_F2X",
+            includingHistory: true
+        )
+        recordLiveTmuxPaneCountExpectation(sessionName: sessionName, expectedCount: 1)
     }
 
     func testLiveTerminalSelectionCopyWhenConfigured() throws {
@@ -5225,9 +5473,45 @@ final class RemuxAppUITests: XCTestCase {
         }
     }
 
+    private func tapNavigationBack(from sourceTitle: String, to destinationTitle: String) {
+        let sourceNavigationBar = app.navigationBars[sourceTitle]
+        XCTAssertTrue(
+            sourceNavigationBar.waitForExistence(timeout: 2),
+            "The \(sourceTitle) navigation page must be visible before going back."
+        )
+
+        let navigationBarBackButton = sourceNavigationBar.buttons.firstMatch
+        let backButton: XCUIElement
+        if navigationBarBackButton.exists {
+            backButton = navigationBarBackButton
+        } else {
+            // On Duo, the system back button is exposed in a separate Toolbar.
+            backButton = app.toolbars["Toolbar"]
+                .descendants(matching: .button)["BackButton"]
+        }
+
+        XCTAssertTrue(
+            backButton.waitForExistence(timeout: 2),
+            "The Back button from \(sourceTitle) must exist."
+        )
+        XCTAssertTrue(
+            backButton.isHittable,
+            "The Back button from \(sourceTitle) must be hittable."
+        )
+        backButton.tap()
+        XCTAssertTrue(
+            app.navigationBars[destinationTitle].waitForExistence(timeout: 2),
+            "Back from \(sourceTitle) should show \(destinationTitle)."
+        )
+    }
+
     private func selectToolbarKey(_ title: String) {
         let option = app.collectionViews.buttons[title].firstMatch
+        for _ in 0..<4 where !option.exists || !option.isHittable {
+            app.swipeUp()
+        }
         XCTAssertTrue(option.waitForExistence(timeout: 2))
+        XCTAssertTrue(option.isHittable, "The \(title) toolbar-key option must be visible before selection.")
         option.tap()
     }
 
@@ -5971,17 +6255,57 @@ final class RemuxAppUITests: XCTestCase {
         typeTextThenReturn("demo", into: app.textFields["connection.username"])
     }
 
-    /// Taps a server form field once a tap can reach it. A field scrolled out of
-    /// view is scrolled back by the tap itself, which then arrives while the form
-    /// is still moving and only stops the scroll, so the form is scrolled toward
-    /// the field first and the field left to settle.
+    /// Scrolls the form using points inside its visible viewport, even when the
+    /// software keyboard covers the bottom of the app.
+    private func swipeVisibleForm(up: Bool) {
+        let appFrame = app.frame
+        let keyboard = app.keyboards.firstMatch
+        let keyboardFrame = keyboard.exists ? keyboard.frame : .zero
+        let keyboardIntersection = keyboardFrame.intersection(appFrame)
+        let keyboardIsOnscreen = !keyboardIntersection.isNull && !keyboardIntersection.isEmpty
+
+        let navigationFrame = app.navigationBars.allElementsBoundByIndex
+            .filter { $0.isHittable }
+            .map { $0.frame }
+            .max { $0.maxY < $1.maxY } ?? .zero
+        let formTop = max(appFrame.minY, navigationFrame.maxY)
+        let formBottom = keyboardIsOnscreen ? keyboardIntersection.minY : appFrame.maxY
+        let usableHeight = formBottom - formTop
+        XCTAssertGreaterThanOrEqual(
+            usableHeight,
+            44,
+            "Visible form viewport is too short for a reliable scroll. app=\(appFrame), keyboard=\(keyboardFrame), navigationBar=\(navigationFrame)"
+        )
+        guard usableHeight >= 44, appFrame.width > 0 else { return }
+
+        let topY = formTop + usableHeight * 0.25
+        let bottomY = formTop + usableHeight * 0.75
+        let startY = up ? bottomY : topY
+        let endY = up ? topY : bottomY
+        let startPoint = CGPoint(x: appFrame.midX, y: startY)
+        let endPoint = CGPoint(x: appFrame.midX, y: endY)
+        if keyboardIsOnscreen {
+            XCTAssertFalse(keyboardIntersection.contains(startPoint), "Form scroll starts inside keyboard: app=\(appFrame), keyboard=\(keyboardFrame), start=\(startPoint)")
+            XCTAssertFalse(keyboardIntersection.contains(endPoint), "Form scroll ends inside keyboard: app=\(appFrame), keyboard=\(keyboardFrame), end=\(endPoint)")
+        }
+        print("Visible form swipe up=\(up), app=\(appFrame), keyboard=\(keyboardFrame), navigationBar=\(navigationFrame), viewport=\(CGRect(x: appFrame.minX, y: formTop, width: appFrame.width, height: usableHeight)), start=\(startPoint), end=\(endPoint)")
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(
+            dx: (startPoint.x - appFrame.minX) / appFrame.width,
+            dy: (startPoint.y - appFrame.minY) / appFrame.height
+        ))
+        let end = app.coordinate(withNormalizedOffset: CGVector(
+            dx: (endPoint.x - appFrame.minX) / appFrame.width,
+            dy: (endPoint.y - appFrame.minY) / appFrame.height
+        ))
+        start.press(forDuration: 0.05, thenDragTo: end)
+    }
+
+    /// Taps a server form field once it is reachable. Scroll it into view first,
+    /// then let the exact-frame and hittability check confirm it has settled.
     private func tapFormField(_ field: XCUIElement) {
         if !field.isHittable {
-            if field.frame.maxY < app.frame.midY {
-                app.swipeDown()
-            } else {
-                app.swipeUp()
-            }
+            swipeVisibleForm(up: field.frame.maxY >= app.frame.midY)
         }
         XCTAssertTrue(waitForElementToSettle(field), "\(field) kept moving.")
         field.tap()
