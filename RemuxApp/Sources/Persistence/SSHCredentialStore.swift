@@ -13,9 +13,9 @@ struct SSHPrivateKeyCredential: Equatable, Codable, Sendable {
         passphrase: String? = nil,
         secureEnclaveKey: SecureEnclaveSSHKey? = nil
     ) {
-        self.secureEnclaveKey = secureEnclaveKey
         self.privateKeyPEM = privateKeyPEM
         self.passphrase = passphrase
+        self.secureEnclaveKey = secureEnclaveKey
     }
 }
 
@@ -149,9 +149,8 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
             kSecValueData: data,
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlocked,
         ]
-        // A Secure Enclave key works only on the device that made it, so its reference stays here too. It
-        // isn't secret, and iOS deletes passcode-bound items when the passcode is turned off, so it doesn't
-        // need one.
+        // A key made in the Secure Enclave works only on this device, so the item holding its reference stays on
+        // it too: another device finds no key, and asks for one in Edit Server.
         if case .privateKey(let key) = credential, key.secureEnclaveKey != nil {
             attributes[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         }
@@ -195,8 +194,7 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
     }
 }
 
-/// The representation is an opaque, device-bound encrypted key blob, never a
-/// plaintext private key. Public metadata is available without authentication.
+/// The representation is an opaque blob only this device's Secure Enclave can use, never a plaintext private key.
 struct SecureEnclaveSSHKey: Codable, Equatable, Sendable {
     let representation: Data
     let publicKey: Data

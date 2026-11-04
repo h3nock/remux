@@ -22,8 +22,6 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>NSFaceIDUsageDescription</key>
-	<string>Remux uses Face ID to authorize SSH connections with your Secure Enclave key.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Remux uses the microphone so you can dictate messages.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

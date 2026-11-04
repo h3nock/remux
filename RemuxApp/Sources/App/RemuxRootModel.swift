@@ -726,17 +726,6 @@ final class RemuxRootModel: ObservableObject {
         let credential: SSHCredential?
         do {
             (identity, credential) = try await loadDraftIdentityCredential(for: server)
-        } catch SSHAuthResolverError.missingCredential {
-            // The saved key isn't on this device, as a key made on another one isn't: the form opens without
-            // it, to add one.
-            guard let savedIdentity = library.identity(id: server.identityID) else {
-                guard activeSetupAction == nil, currentSetupID == setupID else { return }
-                finishSetupSession(setupID)
-                transitionToFailed(SSHAuthResolverError.missingIdentity(server.identityID))
-                return
-            }
-            identity = savedIdentity
-            credential = nil
         } catch {
             guard activeSetupAction == nil, currentSetupID == setupID else { return }
             finishSetupSession(setupID)
@@ -2278,7 +2267,9 @@ final class RemuxRootModel: ObservableObject {
         guard let credential = try await dependencies.credentialStore.loadCredential(
             identityID: identity.id
         ) else {
-            throw SSHAuthResolverError.missingCredential(identity.id)
+            // The saved key isn't on this device, as a key made on another one isn't: the form opens without
+            // it, to add one.
+            return (identity, nil)
         }
         guard identity.authenticationKind == credential.authenticationKind else {
             throw SSHAuthResolverError.credentialKindMismatch(
