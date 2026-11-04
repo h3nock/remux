@@ -71,12 +71,17 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
         }
     }
 
-    func testRejectedCredentialsNameTheServer() {
-        let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(Failure("Permission denied")))
+    /// Credentials the server turned down and a key made on this device that can't be used here are both fixed by
+    /// updating them, and neither is said to be the server's rejection.
+    func testFailedCredentialsOfferUpdatingThemWithoutBlamingTheServer() {
+        for error: any Error in [Failure("Permission denied"), SecureEnclaveSSHError.keyUnusable] {
+            let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error))
 
-        XCTAssertEqual(content.title, "Authentication Failed")
-        XCTAssertEqual(content.message, "Lab rejected the saved password or key.")
-        XCTAssertEqual(titles(content), ["Update Credentials"])
+            XCTAssertEqual(content.title, "Authentication Failed", "\(error)")
+            XCTAssertEqual(content.message, "Check the saved credentials for Lab.", "\(error)")
+            XCTAssertEqual(content.actions.map(\.kind), [.updateCredentials], "\(error)")
+            XCTAssertEqual(titles(content), ["Update Credentials"], "\(error)")
+        }
     }
 
     /// Tailscale's check ran out of time: retrying gets a new one, and the credentials aren't the problem.
