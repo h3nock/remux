@@ -51,11 +51,13 @@ final class GhosttyVirtualTextRange: UITextRange {
 /// it holds only the placeholder, with the caret after it, so UIKit sees one
 /// deletable character and drives its native Backspace repeat.
 ///
-/// Typed text has already reached the terminal, whose caret stays after it. The
-/// keyboard still edits it, as dictation does when it revises what it heard,
-/// and each edit becomes what the terminal receives: Backspaces from the end
-/// back to where the text changes, then the new text from there. An input
-/// method's marked text stays local until it is committed.
+/// Typed text has already reached the terminal, whose caret stays after it, up
+/// to any line break: one would run the line, so the text from it waits for the
+/// keyboard's insert of its result. The keyboard still edits typed text, as
+/// dictation does when it revises what it heard, and each edit becomes what the
+/// terminal receives: Backspaces from the end back to where the text changes,
+/// then the new text from there. An input method's marked text stays local
+/// until it is committed.
 struct GhosttyTerminalCompositionDocument: Equatable {
     static let placeholder = " "
     /// Typed text longer than this ends the keyboard's context, so the document stays small.
@@ -241,23 +243,30 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         keptPlaceholder = false
     }
 
-    /// Replaces `range` of the typed text, as the terminal must receive it. The edit erases from
-    /// the end of the typed text back to where the old and new text first differ, and types the
-    /// new text from there. The placeholder is never part of it.
+    /// Replaces `range` of the typed text, and returns what the terminal receives for it: the edit
+    /// erases from the end of the text the terminal holds back to where the old and new text first
+    /// differ, and types the new text from there. The placeholder is never part of it.
     private mutating func editTyped(_ range: NSRange, with replacement: String) -> TypedEdit? {
         guard marked == nil, isValid(range) else { return nil }
         let current = text as NSString
         let start = max(range.location, Self.typedStart)
         let end = max(NSMaxRange(range), start)
-        let oldTail = current.substring(from: start)
-        let newTail = replacement + current.substring(from: end)
-        let unchanged = zip(oldTail, newTail).prefix { pair in pair.0 == pair.1 }.count
-        text = current.substring(to: start) + newTail
+        let held = Self.terminalPart(of: current.substring(from: Self.typedStart))
+        text = current.substring(to: start) + replacement + current.substring(from: end)
         selection = NSRange(location: start + (replacement as NSString).length, length: 0)
+        let updated = Self.terminalPart(of: (text as NSString).substring(from: Self.typedStart))
+        let unchanged = zip(held, updated).prefix { pair in pair.0 == pair.1 }.count
         return TypedEdit(
-            backspaces: oldTail.count - unchanged,
-            text: String(newTail.dropFirst(unchanged))
+            backspaces: held.count - unchanged,
+            text: String(updated.dropFirst(unchanged))
         )
+    }
+
+    /// The part of the typed text the terminal holds. A line break would run the line while the
+    /// keyboard can still revise it, as dictation does after "new line", so the text from the first
+    /// one waits for the keyboard's insert of its result.
+    private static func terminalPart(of typed: String) -> Substring {
+        typed.prefix { !$0.isNewline }
     }
 
     /// A composition emptied by an edit ends without committing anything; typed text before it

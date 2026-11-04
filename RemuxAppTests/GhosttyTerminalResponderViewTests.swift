@@ -1192,6 +1192,41 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testADictatedLineBreakRunsTheLineOnlyWithTheResult() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        // The calls an iPhone made dictating "echo one new line echo two": guesses with a line
+        // break, ten spaces it inserted and removed, then on stopping an empty replacement and the
+        // result.
+        view.insertText("Eco")
+        view.replace(typedRange(1, 3), withText: "Eco van")
+        view.replace(typedRange(1, 7), withText: "Aron\n")
+        view.replace(typedRange(1, 5), withText: "echo 1\nEcho to")
+        view.replace(typedRange(1, 14), withText: "Eco 1\nEcho two")
+        view.insertText(String(repeating: " ", count: 10))
+        view.replace(typedRange(15, 10), withText: "")
+        view.replace(typedRange(1, 14), withText: "")
+
+        // A guess shows the text before its line break, which it can still revise, and runs nothing.
+        XCTAssertEqual(
+            sent.items,
+            ["text:Eco", "text: van"]
+                + Array(repeating: "key:backspace", count: 7) + ["text:Aron"]
+                + Array(repeating: "key:backspace", count: 4) + ["text:echo 1"]
+                + Array(repeating: "key:backspace", count: 6) + ["text:Eco 1"]
+                + Array(repeating: "key:backspace", count: 5)
+        )
+
+        // The result runs its first line once.
+        view.insertText("Eco 1\nEcho two")
+        XCTAssertEqual(sent.items.last, "text:Eco 1\nEcho two")
+        XCTAssertEqual(sent.items.filter { $0.contains(where: \.isNewline) }.count, 1)
+        XCTAssertEqual(view.text(in: typedRange(0, 1)), " ")
+        XCTAssertNil(view.text(in: typedRange(0, 2)))
+    }
+
+    @MainActor
     func testKoreanReassemblyOverThePlaceholderTypesOnlyTheSyllable() {
         let sent = Sent()
         let view = composingView(sent)
