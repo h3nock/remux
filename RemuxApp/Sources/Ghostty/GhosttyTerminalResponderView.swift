@@ -673,6 +673,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         switch composition.deleteBackward() {
         case .terminal:
             _ = sendKeyEventHandler?(.init(keyCode: .backspace))
+            // With typed text still after the caret, the terminal deleted text the document holds,
+            // so the keyboard's context ends.
+            if !composition.isIdle { endKeyboardContext() }
         case .typed(let edit):
             submitTypedEdit(edit, source: "deleteBackward")
         case .composition:

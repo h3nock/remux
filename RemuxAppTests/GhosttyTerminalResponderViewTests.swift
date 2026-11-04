@@ -1236,6 +1236,24 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testBackspaceWithTheCaretBeforeTypedTextEndsTheContext() {
+        let sent = Sent()
+        let view = composingView(sent)
+        let delegate = RecordingInputDelegate()
+        view.inputDelegate = delegate
+
+        // The terminal's caret stays after the typed text, so its Backspace deletes text the
+        // document still holds.
+        view.insertText("ab")
+        view.selectedTextRange = typedRange(1, 0)
+        view.deleteBackward()
+
+        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
+        XCTAssertNil(view.text(in: typedRange(0, 2)))
+        XCTAssertEqual(delegate.calls.count, 4)
+    }
+
+    @MainActor
     func testTypedTextEndsAtReturnAnArmedModifierAndUndeliveredInput() {
         let sent = Sent()
         var modifierArmed = false
