@@ -2416,6 +2416,14 @@ private struct SSHPublicKeyInstallRequest: Identifiable {
     let setupSessionID: UUID
 }
 
+/// What a private key action row shows once its action has run.
+private struct PrivateKeyActionOutcome {
+    let message: String
+    let systemImage: String
+    let style: AnyShapeStyle
+    let accessibilityIdentifier: String
+}
+
 struct ConnectionSetupView: View {
     let draft: TmuxConnectionDraft
     let validation: TmuxConnectionDraftValidation
@@ -3083,18 +3091,12 @@ struct ConnectionSetupView: View {
     }
 
     private func tailscaleAuthenticationRow() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Tailscale SSH", systemImage: "network")
-                .font(.footnote.weight(.semibold))
-
-            Text(
-                "Uses your tailnet identity without a password or key. " +
-                "If your SSH rule requires a check, Remux will offer to open " +
-                "the verification link in your browser."
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-        }
+        Text(
+            "Signs in with your Tailscale identity, so you don’t need a password or key. " +
+            "If Tailscale asks you to verify, Remux offers to open the verification page."
+        )
+        .font(.footnote)
+        .foregroundStyle(.secondary)
         .padding(.vertical, 6)
         .accessibilityIdentifier("connection.authentication.tailscale-info")
     }
@@ -3263,31 +3265,19 @@ struct ConnectionSetupView: View {
         Button {
             copyPublicKey(inspection.publicKeyLine)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: publicKeyCopyMessage == nil ? "doc.on.doc" : "checkmark")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 22)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Copy public key")
-                        .foregroundStyle(.primary)
-
-                    Text("Add to ~/.ssh/authorized_keys on the server")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            privateKeyOutcomeLabel(
+                title: "Copy public key",
+                subtitle: "Add to ~/.ssh/authorized_keys on the server",
+                systemImage: "doc.on.doc",
+                outcome: publicKeyCopyMessage.map { message in
+                    PrivateKeyActionOutcome(
+                        message: message,
+                        systemImage: "checkmark",
+                        style: AnyShapeStyle(.secondary),
+                        accessibilityIdentifier: "connection.private-key.copy-status"
+                    )
                 }
-
-                Spacer(minLength: 12)
-
-                if publicKeyCopyMessage != nil {
-                    Text("Copied")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .foregroundStyle(Color.accentColor)
-            .contentShape(Rectangle())
+            )
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("connection.private-key.copy-public")
@@ -3300,6 +3290,18 @@ struct ConnectionSetupView: View {
         } catch {
             target = nil
         }
+        let outcome: PrivateKeyActionOutcome? = if let confirmation = publicKeyInstallConfirmation,
+                                                   let target,
+                                                   confirmation.matches(target) {
+            PrivateKeyActionOutcome(
+                message: confirmation.success.message,
+                systemImage: "checkmark.circle.fill",
+                style: AnyShapeStyle(.green),
+                accessibilityIdentifier: "connection.private-key.install-status"
+            )
+        } else {
+            nil
+        }
 
         return Button {
             dismissKeyboard()
@@ -3310,38 +3312,52 @@ struct ConnectionSetupView: View {
                 setupSessionID: setupSessionID
             )
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "square.and.arrow.down.on.square")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 22)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Install on Host")
-                        .foregroundStyle(.primary)
-
-                    Text("Add this public key using a one-time password")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-
-                if let confirmation = publicKeyInstallConfirmation,
-                   let target,
-                   confirmation.matches(target) {
-                    Label(confirmation.success.message, systemImage: "checkmark.circle.fill")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.green)
-                        .accessibilityIdentifier("connection.private-key.install-status")
-                }
-            }
-            .foregroundStyle(Color.accentColor)
-            .contentShape(Rectangle())
+            privateKeyOutcomeLabel(
+                title: "Install on Server",
+                subtitle: "Add this public key using a one-time password",
+                systemImage: "square.and.arrow.down.on.square",
+                outcome: outcome
+            )
         }
         .buttonStyle(.plain)
         .disabled(isActionInProgress || target == nil || setupSessionID == nil)
         .accessibilityIdentifier("connection.private-key.install")
+    }
+
+    /// Once the row's action has run, its outcome takes the place of the
+    /// icon and the explanatory subtitle.
+    private func privateKeyOutcomeLabel(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        outcome: PrivateKeyActionOutcome?
+    ) -> some View {
+        let style = outcome?.style ?? AnyShapeStyle(.secondary)
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: outcome?.systemImage ?? systemImage)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(style)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .foregroundStyle(.primary)
+
+                Group {
+                    if let outcome {
+                        Text(outcome.message)
+                            .accessibilityIdentifier(outcome.accessibilityIdentifier)
+                    } else {
+                        Text(subtitle)
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(style)
+            }
+
+            Spacer(minLength: 12)
+        }
+        .contentShape(Rectangle())
     }
 
     private func acceptPublicKeyInstallCompletion(
@@ -3412,7 +3428,6 @@ struct ConnectionSetupView: View {
                     Text("Import, paste, generate, remove")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 12)
@@ -3622,7 +3637,7 @@ struct ConnectionSetupView: View {
 
     private func copyPublicKey(_ publicKeyLine: String) {
         UIPasteboard.general.string = publicKeyLine
-        publicKeyCopyMessage = "Public key copied"
+        publicKeyCopyMessage = "Copied"
         Haptic.tap()
     }
 
