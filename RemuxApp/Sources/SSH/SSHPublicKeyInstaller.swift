@@ -261,7 +261,7 @@ struct SSHPublicKeyInstaller: Sendable {
             let configuration = RemuxSSHRootConfiguration(
                 host: target.host,
                 port: target.port,
-                loginPrecondition: { try deviceKeyApproval?.requireApproval() },
+                loginPrecondition: { try await deviceKeyApproval?.admitLogin() },
                 authenticationMethod: {
                     try SSHAuthenticationMethodFactory.make(
                         username: target.username,

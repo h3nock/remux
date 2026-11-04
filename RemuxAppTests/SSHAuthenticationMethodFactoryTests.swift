@@ -71,7 +71,7 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
         let configuration = RemuxSSHRootConfiguration(
             host: "127.0.0.1",
             port: port,
-            loginPrecondition: { try check.requireApproval() },
+            loginPrecondition: { try await check.admitLogin() },
             authenticationMethod: { try SSHAuthenticationMethodFactory.make(username: "test", credential: .none) },
             hostKeyValidator: .acceptAnything(),
             connectTimeout: .seconds(2)
@@ -93,18 +93,34 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
         }
     }
 
-    /// A key that asks for the user itself on every use can't log in without a prompt in the middle of a login,
-    /// and one the Secure Enclave can't use here, as with any in the simulator, needs replacing.
-    func testADeviceKeyThatCantSignHereNeedsReplacing() {
-        for key in [
-            SecureEnclaveSSHKey(representation: Data([1]), publicKey: DeviceKeyFixture.publicKey, signsWithoutPrompt: false),
-            SecureEnclaveSSHKey(representation: Data([1]), publicKey: DeviceKeyFixture.publicKey),
-        ] {
-            XCTAssertThrowsError(try SSHAuthenticationMethodFactory.make(
-                username: "test",
-                credential: DeviceKeyFixture.target(key: key).sshAuth.credential
-            )) { XCTAssertEqual($0 as? SecureEnclaveSSHError, .keyUnusable, "\(key.signsWithoutPrompt)") }
+    /// A key that asks for the user itself on every use can't log in without a prompt in the middle of a login, so
+    /// it needs replacing, and says so before anything asks to approve it. One the Secure Enclave doesn't give back,
+    /// as none is in the simulator, says only that, not that it's lost.
+    @MainActor
+    func testAKeyThatAsksOnEveryUseNeedsReplacingAndOneNotGivenBackDoesnt() async throws {
+        let approvals = DeviceKeyFixture.approvals(evaluate: { _, _ in XCTFail("asked to approve") })
+        let asksItself = DeviceKeyFixture.target(key: SecureEnclaveSSHKey(
+            representation: Data([1]),
+            publicKey: DeviceKeyFixture.publicKey,
+            signsWithoutPrompt: false
+        ))
+        let check = try XCTUnwrap(approvals.check(for: asksItself))
+        XCTAssertFalse(check.needsApproval)
+        do {
+            try await check.admitLogin()
+            XCTFail("a key that asks on every use logged in")
+        } catch {
+            XCTAssertEqual(error as? SecureEnclaveSSHError, .keyUnusable)
         }
+        XCTAssertThrowsError(try SSHAuthenticationMethodFactory.make(
+            username: "test",
+            credential: asksItself.sshAuth.credential
+        )) { XCTAssertEqual($0 as? SecureEnclaveSSHError, .keyUnusable) }
+
+        XCTAssertThrowsError(try SSHAuthenticationMethodFactory.make(
+            username: "test",
+            credential: DeviceKeyFixture.target().sshAuth.credential
+        )) { XCTAssertEqual($0 as? SecureEnclaveSSHError, .keyUnreadable) }
     }
 }
 
@@ -129,8 +145,8 @@ final class SecureEnclaveSSHApprovalsTests: XCTestCase {
         XCTAssertEqual(prompts, ["Connect to Mac mini"])
     }
 
-    /// Requests for one server while its prompt is up share it, and one that stops waiting leaves it to the
-    /// others.
+    /// Requests for one server while its prompt is up share it. One that's cancelled stops waiting at once, and
+    /// doesn't carry on though the others' approval comes; it leaves the prompt to them.
     func testRequestsForOneServerShareItsPrompt() async throws {
         let hold = makeHold()
         var prompts = 0
@@ -145,11 +161,103 @@ final class SecureEnclaveSSHApprovalsTests: XCTestCase {
         let staying = Task { try await approvals.approve(scope, serverName: "Mac mini") }
         await fulfillment(of: [hold.started], timeout: 3)
         leaving.cancel()
+        let left = await leaving.result
+        XCTAssertThrowsError(try left.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
         hold.reply.yield(.success(()))
 
         try await staying.value
         XCTAssertTrue(approvals.isApproved(scope))
         XCTAssertEqual(prompts, 1)
+    }
+
+    /// When everyone who asked for a server's approval has gone, its prompt goes too: one still waiting its turn
+    /// never comes up, and one on screen is taken away and grants nothing.
+    func testAPromptNobodyWaitsForGoesAway() async throws {
+        let hold = makeHold()
+        var shown: [String] = []
+        let approvals = DeviceKeyFixture.approvals(evaluate: { context, reason in
+            shown.append(reason)
+            guard reason == "Connect to Mac mini" else { return }
+            hold.started.fulfill()
+            for await answer in hold.answer { return try answer.get() }
+        })
+        let first = try DeviceKeyFixture.scope(approvals)
+        let second = try DeviceKeyFixture.scope(approvals, host: "build.example.test")
+
+        let firstApproval = Task { try await approvals.approve(first, serverName: "Mac mini") }
+        await fulfillment(of: [hold.started], timeout: 3)
+        let waitingItsTurn = Task { try await approvals.approve(second, serverName: "Build Host") }
+        try await Task.sleep(for: .milliseconds(50))
+        waitingItsTurn.cancel()
+        firstApproval.cancel()
+        let results = [await waitingItsTurn.result, await firstApproval.result]
+        hold.reply.yield(.success(()))
+        try await Task.sleep(for: .milliseconds(100))
+
+        for result in results {
+            XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
+        }
+        XCTAssertEqual(shown, ["Connect to Mac mini"])
+        XCTAssertFalse(approvals.isApproved(first))
+        XCTAssertFalse(approvals.isApproved(second))
+    }
+
+    /// Locking the device keeps the user's approval: a new login waits for the device to be unlocked, as the key
+    /// can't sign meanwhile, then goes on without asking again.
+    func testLockingTheDeviceKeepsTheApprovalAndPausesNewLogins() async throws {
+        var isUnlocked = true
+        var prompts = 0
+        let approvals = SecureEnclaveSSHApprovals(
+            isActive: { true },
+            isProtectedDataAvailable: { isUnlocked },
+            evaluate: { _, _ in prompts += 1 }
+        )
+        let scope = try DeviceKeyFixture.scope(approvals)
+        try await approvals.approve(scope, serverName: "Mac mini")
+
+        isUnlocked = false
+        do {
+            try await approvals.admit(scope)
+            XCTFail("a login signed while the device was locked")
+        } catch {
+            XCTAssertEqual(error as? SecureEnclaveSSHError, .unavailableWhileLocked)
+        }
+        XCTAssertTrue(approvals.isApproved(scope), "locking the device ended the approval")
+
+        isUnlocked = true
+        try await approvals.admit(scope)
+        try await approvals.approve(scope, serverName: "Mac mini")
+        XCTAssertEqual(prompts, 1)
+    }
+
+    /// Ending a server's approvals, as disconnecting its last session or removing it does, ends only that server's:
+    /// its prompt still up grants nothing, and the next request asks again.
+    func testEndingAServersApprovalsEndsOnlyThatServers() async throws {
+        let hold = makeHold()
+        var prompts: [String] = []
+        let approvals = DeviceKeyFixture.approvals(evaluate: { _, reason in
+            prompts.append(reason)
+            guard reason == "Connect to Build Host", prompts.count == 2 else { return }
+            hold.started.fulfill()
+            for await answer in hold.answer { return try answer.get() }
+        })
+        let ended = try DeviceKeyFixture.scope(approvals, host: "build.example.test")
+        let kept = try DeviceKeyFixture.scope(approvals)
+        try await approvals.approve(kept, serverName: "Mac mini")
+
+        let approval = Task { try await approvals.approve(ended, serverName: "Build Host") }
+        await fulfillment(of: [hold.started], timeout: 3)
+        approvals.revoke(serverID: ended.serverID)
+        hold.reply.yield(.success(()))
+        let result = await approval.result
+
+        XCTAssertThrowsError(try result.get()) { XCTAssertEqual($0 as? SSHKeyApprovalError, .required) }
+        XCTAssertFalse(approvals.isApproved(ended))
+        XCTAssertTrue(approvals.isApproved(kept))
+        try await approvals.approve(ended, serverName: "Build Host")
+        approvals.revoke(serverID: ended.serverID)
+        XCTAssertFalse(approvals.isApproved(ended))
+        XCTAssertEqual(prompts, ["Connect to Mac mini", "Connect to Build Host", "Connect to Build Host"])
     }
 
     /// The device shows one prompt at a time: a second server's prompt waits for the first one's answer.
@@ -178,53 +286,10 @@ final class SecureEnclaveSSHApprovalsTests: XCTestCase {
         XCTAssertTrue(approvals.isApproved(second))
     }
 
-    /// Locking the device, reported as protected data going away or, after a lock Remux slept through, coming
-    /// back, ends every approval; the next request asks again.
-    func testLockingTheDeviceEndsEveryApproval() async throws {
-        var prompts = 0
-        let center = NotificationCenter()
-        let approvals = DeviceKeyFixture.approvals(center: center, evaluate: { _, _ in prompts += 1 })
-        let first = try DeviceKeyFixture.scope(approvals)
-        let second = try DeviceKeyFixture.scope(approvals, host: "build.example.test")
-
-        for notification in [
-            UIApplication.protectedDataWillBecomeUnavailableNotification,
-            UIApplication.protectedDataDidBecomeAvailableNotification,
-        ] {
-            try await approvals.approve(first, serverName: "Mac mini")
-            try await approvals.approve(second, serverName: "Build Host")
-            center.post(name: notification, object: nil)
-            XCTAssertFalse(approvals.isApproved(first), "\(notification.rawValue)")
-            XCTAssertFalse(approvals.isApproved(second), "\(notification.rawValue)")
-        }
-        XCTAssertEqual(prompts, 4)
-    }
-
-    /// An answer that comes after the device locked grants nothing: the lock ended the approval it would give.
-    func testAnAnswerAfterTheDeviceLockedGrantsNothing() async throws {
-        let hold = makeHold()
-        let center = NotificationCenter()
-        let approvals = DeviceKeyFixture.approvals(center: center, evaluate: { _, _ in
-            hold.started.fulfill()
-            for await answer in hold.answer { return try answer.get() }
-        })
-        let scope = try DeviceKeyFixture.scope(approvals)
-
-        let approval = Task { try await approvals.approve(scope, serverName: "Mac mini") }
-        await fulfillment(of: [hold.started], timeout: 3)
-        center.post(name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
-        hold.reply.yield(.success(()))
-
-        let result = await approval.result
-        XCTAssertThrowsError(try result.get()) { XCTAssertEqual($0 as? SSHKeyApprovalError, .required) }
-        XCTAssertFalse(approvals.isApproved(scope))
-    }
-
     /// No prompt over another app, or while the device is locked and the key can't be used.
     func testNoPromptOverAnotherAppOrWhileTheDeviceIsLocked() async throws {
         for (isActive, isProtectedDataAvailable) in [(false, true), (true, false)] {
             let approvals = SecureEnclaveSSHApprovals(
-                notificationCenter: NotificationCenter(),
                 isActive: { isActive },
                 isProtectedDataAvailable: { isProtectedDataAvailable },
                 evaluate: { _, _ in XCTFail("prompted") }
@@ -295,6 +360,19 @@ final class SecureEnclaveSSHApprovalsTests: XCTestCase {
         )))
     }
 
+    private func assertLocked(
+        _ operation: () async throws -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            try await operation()
+            XCTFail("expected the locked key", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? SSHKeyApprovalError, .required, file: file, line: line)
+        }
+    }
+
     private func makeHold() -> Hold {
         let (answer, reply) = AsyncStream<Result<Void, Error>>.makeStream()
         return Hold(started: expectation(description: "prompt shown"), answer: answer, reply: reply)
@@ -340,13 +418,12 @@ enum DeviceKeyFixture {
     }
 
     static func approvals(
-        center: NotificationCenter = NotificationCenter(),
+        isUnlocked: @escaping @MainActor () -> Bool = { true },
         evaluate: @escaping SecureEnclaveSSHApprovals.Evaluate
     ) -> SecureEnclaveSSHApprovals {
         SecureEnclaveSSHApprovals(
-            notificationCenter: center,
             isActive: { true },
-            isProtectedDataAvailable: { true },
+            isProtectedDataAvailable: isUnlocked,
             evaluate: evaluate
         )
     }

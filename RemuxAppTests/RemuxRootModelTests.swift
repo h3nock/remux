@@ -1975,7 +1975,8 @@ final class RemuxRootModelTests: XCTestCase {
         let harness = makeHarness(
             sshAccessVerifier: { target, _, _ in
                 try await verifier.verify(target)
-            }
+            },
+            sshRootService: RemuxSSHRootService(secureEnclaveApprovals: DeviceKeyFixture.approvals(evaluate: { _, _ in }))
         )
         await harness.model.load()
         harness.model.beginNewServer()
@@ -2036,25 +2037,102 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(prompts.count, 1)
     }
 
-    /// Cancelling the prompt leaves the key locked, and nothing asks again by itself.
-    func testCancellingTheApprovalLeavesTheKeyLocked() async throws {
-        let prompts = DeviceKeyPrompts(answer: .cancel)
-        let device = try await makeDeviceKeyServer(prompts: prompts)
+    /// Declining the approval stops what the user asked for: a refresh doesn't log in and the list stays locked, a
+    /// session doesn't open, and a reconnect doesn't run. Nothing asks again by itself.
+    func testDecliningTheApprovalStopsWhatTheUserAskedFor() async throws {
+        let prompts = DeviceKeyPrompts()
+        let discoveries = DeviceKeyLoginCount()
+        let sessionLogins = DeviceKeySessionLogins()
+        let device = try await makeDeviceKeyServer(
+            prompts: prompts,
+            sessionLogins: sessionLogins,
+            discoveries: discoveries
+        )
         await device.harness.model.load()
-        _ = await waitUntil { device.harness.model.discoveryNotices(for: device.server.id).keyLocked }
+        await device.harness.model.connect(to: device.workspace.id)
+        // As when the server's key changed under its open session.
+        device.sshRootService.secureEnclaveApprovals.revoke(serverID: device.server.id)
+        prompts.answer = .cancel
+        await device.harness.model.refreshSessionsAndWait(for: device.server.id)
+        let discoveriesBeforeAsking = discoveries.count
+        let sessionLoginsBeforeAsking = sessionLogins.approved.count
 
         await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
-        await device.harness.model.refreshSessionsAndWait(for: device.server.id)
+        device.harness.model.reconnectActiveSession(device.workspace.id, source: .manualButton)
+        _ = await waitUntil { prompts.count == 3 }
+        try await Task.sleep(for: .milliseconds(50))
 
-        XCTAssertEqual(prompts.count, 1)
+        XCTAssertEqual(prompts.count, 3)
+        XCTAssertEqual(discoveries.count, discoveriesBeforeAsking, "the declined refresh logged in")
+        XCTAssertEqual(sessionLogins.approved.count, sessionLoginsBeforeAsking, "the declined reconnect ran")
         XCTAssertTrue(device.harness.model.discoveryNotices(for: device.server.id).keyLocked)
+
+        let other = SavedWorkspace(serverID: device.server.id, sessionName: "other")
+        await device.harness.model.connectToDiscoveredSession(other.locator, on: device.server.id)
+        XCTAssertEqual(prompts.count, 4)
+        XCTAssertFalse(device.harness.model.activeSessions.contains { $0.target.workspace.sessionName == "other" })
     }
 
-    /// A refresh the user asks for while one that started by itself is still out replaces it, so the user's
-    /// request is the one that asks, and the earlier one's late result is dropped.
-    func testARefreshTheUserAsksForReplacesOneThatStartedByItself() async throws {
+    /// Declining the approval adding a server asks for leaves the form as it was, unsaved.
+    func testDecliningTheApprovalLeavesTheNewServerUnsaved() async throws {
+        let prompts = DeviceKeyPrompts(answer: .cancel)
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
+        let harness = makeHarness(
+            sshAccessVerifier: { target, _, _ in try await verifier.verify(target) },
+            sshRootService: RemuxSSHRootService(secureEnclaveApprovals: DeviceKeyFixture.approvals(evaluate: { _, _ in
+                try await prompts.evaluate()
+            }))
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Mac mini"
+            draft.host = "mac-mini.local"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.secureEnclaveKey = SecureEnclaveSSHKey(representation: Data([1]), publicKey: DeviceKeyFixture.publicKey)
+            draft.sessionName = "base"
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertNil(savedServerID)
+        XCTAssertEqual(prompts.count, 1)
+        let verified = await verifier.targets()
+        XCTAssertTrue(verified.isEmpty, "the declined server logged in")
+        XCTAssertNotNil(harness.model.connectionSetup)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        XCTAssertTrue(snapshot.servers.isEmpty)
+    }
+
+    /// An opening cancelled while its prompt is up opens nothing, and its prompt, which nobody else waits for, goes
+    /// without approving the key.
+    func testACancelledOpeningOpensNothing() async throws {
+        let prompts = DeviceKeyPrompts(holds: true)
+        let device = try await makeDeviceKeyServer(prompts: prompts)
+        await device.harness.model.load()
+
+        let opening = Task { await device.harness.model.connect(to: device.workspace.id) }
+        let shown = await waitUntil { prompts.count > 0 }
+        XCTAssertTrue(shown, "the opening didn't ask")
+        opening.cancel()
+        await opening.value
+        prompts.release()
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(prompts.count, 1)
+        XCTAssertTrue(device.harness.model.activeSessions.isEmpty, "the cancelled opening opened the session")
+        let check = try XCTUnwrap(device.sshRootService.secureEnclaveApprovals.check(for: DeviceKeyFixture.target(server: device.server)))
+        XCTAssertFalse(check.isApproved, "the prompt nobody waited for approved the key")
+    }
+
+    /// A refresh the user asks for while one that started by itself is still out joins it, as any refresh does,
+    /// and runs after it only because that one found the key locked: then it asks, once.
+    func testARefreshTheUserAsksForAfterOneThatFoundTheKeyLockedAsksOnce() async throws {
         let held = HeldLockedLogins()
-        let device = try await makeDeviceKeyServer(prompts: DeviceKeyPrompts(), held: held)
+        let prompts = DeviceKeyPrompts()
+        let discoveries = DeviceKeyLoginCount()
+        let device = try await makeDeviceKeyServer(prompts: prompts, held: held, discoveries: discoveries)
         await device.harness.model.load()
         for _ in 0..<100 where await held.count < 2 {
             try await Task.sleep(for: .milliseconds(10))
@@ -2062,32 +2140,76 @@ final class RemuxRootModelTests: XCTestCase {
         let heldCount = await held.count
         XCTAssertEqual(heldCount, 2, "the refresh that started by itself wasn't still out")
 
-        await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
+        let refreshing = Task {
+            await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(prompts.count, 0, "the user's request didn't wait for the refresh under way")
         await held.release()
-        try await Task.sleep(for: .milliseconds(100))
+        await refreshing.value
 
+        XCTAssertEqual(prompts.count, 1)
+        XCTAssertEqual(discoveries.count, 4)
         XCTAssertEqual(device.harness.model.sessionDiscovery(for: device.server.id).tmux.sessionNames, ["main"])
         XCTAssertFalse(device.harness.model.discoveryNotices(for: device.server.id).keyLocked)
     }
 
-    /// Locking the device ends the approval: what then runs by itself finds the key locked, and the user's next
-    /// request asks again.
-    func testLockingTheDeviceLocksTheServerUntilTheUserAsksAgain() async throws {
+    /// Locking the device keeps the server's approval: what runs while it's locked doesn't log in, and doesn't say
+    /// the key is locked or the check failed; once it's unlocked, the server's work goes on without asking again.
+    func testLockingTheDeviceKeepsTheServersApproval() async throws {
         let prompts = DeviceKeyPrompts()
-        let center = NotificationCenter()
-        let device = try await makeDeviceKeyServer(prompts: prompts, center: center)
+        let device = try await makeDeviceKeyServer(prompts: prompts)
         await device.harness.model.load()
         await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
-        XCTAssertFalse(device.harness.model.discoveryNotices(for: device.server.id).keyLocked)
+        XCTAssertEqual(device.harness.model.sessionDiscovery(for: device.server.id).tmux.sessionNames, ["main"])
 
-        center.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        device.lock.isUnlocked = false
         await device.harness.model.refreshSessionsAndWait(for: device.server.id)
-        XCTAssertTrue(device.harness.model.discoveryNotices(for: device.server.id).keyLocked)
+        let whileLocked = device.harness.model.discoveryNotices(for: device.server.id)
+        XCTAssertFalse(whileLocked.keyLocked)
+        XCTAssertFalse(whileLocked.checkFailed)
+        XCTAssertTrue(whileLocked.backendProblems.isEmpty)
+
+        device.lock.isUnlocked = true
+        await device.harness.model.refreshSessionsAndWait(for: device.server.id)
+        await device.harness.model.connect(to: device.workspace.id)
+        XCTAssertEqual(device.harness.model.sessionDiscovery(for: device.server.id).tmux.sessionNames, ["main"])
+        XCTAssertTrue(device.harness.model.activeSessions.contains { $0.target.workspace.id == device.workspace.id })
+        XCTAssertEqual(prompts.count, 1)
+    }
+
+    /// Disconnecting one of the server's sessions keeps its approval; disconnecting the last ends it, and the user's
+    /// next request asks again.
+    func testDisconnectingTheServersLastSessionEndsItsApproval() async throws {
+        let prompts = DeviceKeyPrompts()
+        let device = try await makeDeviceKeyServer(prompts: prompts)
+        await device.harness.model.load()
+        await device.harness.model.connect(to: device.workspace.id)
+        let other = SavedWorkspace(serverID: device.server.id, sessionName: "other")
+        await device.harness.model.connectToDiscoveredSession(other.locator, on: device.server.id)
+        XCTAssertEqual(device.harness.model.activeSessions.count, 2)
+
+        device.harness.model.disconnectActiveSession(device.workspace.id)
+        await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
         XCTAssertEqual(prompts.count, 1)
 
+        let last = try XCTUnwrap(device.harness.model.activeSessions.first)
+        device.harness.model.disconnectActiveSession(last.id)
         await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
-        XCTAssertFalse(device.harness.model.discoveryNotices(for: device.server.id).keyLocked)
         XCTAssertEqual(prompts.count, 2)
+    }
+
+    /// Removing the server ends its approval.
+    func testRemovingTheServerEndsItsApproval() async throws {
+        let device = try await makeDeviceKeyServer(prompts: DeviceKeyPrompts())
+        await device.harness.model.load()
+        await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
+        let check = try XCTUnwrap(device.sshRootService.secureEnclaveApprovals.check(for: DeviceKeyFixture.target(server: device.server)))
+        XCTAssertTrue(check.isApproved)
+
+        await device.harness.model.deleteServer(device.server.id)
+
+        XCTAssertFalse(check.isApproved)
     }
 
     /// Opening a session asks once, before its login. Its reconnects, by itself or at the user's request, and the
@@ -2109,27 +2231,6 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(device.harness.model.sessionDiscovery(for: device.server.id).tmux.sessionNames, ["main"])
     }
 
-    /// The user's requests for one server while its prompt is up share that prompt.
-    func testTheUsersRequestsForAServerShareOnePrompt() async throws {
-        let prompts = DeviceKeyPrompts(holds: true)
-        let device = try await makeDeviceKeyServer(prompts: prompts)
-        await device.harness.model.load()
-
-        let refreshing = Task {
-            await device.harness.model.refreshSessionsAndWait(for: device.server.id, userInitiated: true)
-        }
-        let shown = await waitUntil { prompts.count > 0 }
-        XCTAssertTrue(shown, "the refresh didn't ask")
-        let opening = Task { await device.harness.model.connect(to: device.workspace.id) }
-        try await Task.sleep(for: .milliseconds(100))
-        prompts.release()
-        await refreshing.value
-        await opening.value
-
-        XCTAssertEqual(prompts.count, 1)
-        XCTAssertTrue(device.harness.model.activeSessions.contains { $0.target.workspace.id == device.workspace.id })
-    }
-
     /// Installing a key made on the device asks once, for the server the draft adds: adding it and listing its
     /// sessions use that approval, though installing closed its connection.
     func testInstallingAKeyApprovesTheServerItAdds() async throws {
@@ -2146,11 +2247,11 @@ final class RemuxRootModelTests: XCTestCase {
         )
         let harness = makeHarness(
             tmuxSessionDiscoverer: { target, _, service in
-                try Self.logIn(to: target, through: service)
+                try await Self.logIn(to: target, through: service)
                 return ["main"]
             },
             sshAccessVerifier: { target, _, service in
-                try Self.logIn(to: target, through: service)
+                try await Self.logIn(to: target, through: service)
             },
             publicKeyInstaller: installer,
             sshRootService: RemuxSSHRootService(secureEnclaveApprovals: approvals)
@@ -2177,52 +2278,58 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.sessionDiscovery(for: serverID).tmux.sessionNames, ["main"])
     }
 
-    /// Send asks only when its upload needs a new login while the server's key is locked: over the session's open
-    /// connection it doesn't ask, after the device locked or otherwise.
-    func testSendAsksOnlyWhenItsUploadNeedsANewLogin() async throws {
+    /// Send never asks, even for an upload whose login the server's approval no longer covers.
+    func testSendNeverAsks() async throws {
         let prompts = DeviceKeyPrompts()
-        let center = NotificationCenter()
         let uploads = DeviceKeyUploads()
-        let device = try await makeDeviceKeyServer(prompts: prompts, center: center, uploads: uploads)
+        let device = try await makeDeviceKeyServer(prompts: prompts, uploads: uploads)
         await device.harness.model.load()
         await device.harness.model.connect(to: device.workspace.id)
-        center.post(name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
+        device.sshRootService.secureEnclaveApprovals.revoke(serverID: device.server.id)
         let service = try XCTUnwrap(device.harness.model.activeTerminalScreenEntries.first?.attachmentTransferServiceFactory())
         let job = GhosttyAttachmentTransferJob(workspaceID: device.workspace.id, sources: [])
 
         _ = try await service.transfer(job) { _ in }
-        XCTAssertEqual(prompts.count, 1)
-
         uploads.needNewLogin()
-        _ = try await service.transfer(job) { _ in }
-        XCTAssertEqual(prompts.count, 2)
-        XCTAssertEqual(uploads.attempts, [true, false, true])
+        _ = try? await service.transfer(job) { _ in }
+
+        XCTAssertEqual(prompts.count, 1)
+        XCTAssertEqual(uploads.attempts.count, 2, "Send tried an upload again")
     }
 
-    /// What a login with a server's key does: one made on the device that the user hasn't approved for the server
-    /// stops at the locked key.
-    nonisolated private static func logIn(to target: SessionTarget, through service: RemuxSSHRootService) throws {
-        if let check = service.secureEnclaveApprovals.check(for: target), !check.isApproved {
-            throw SSHKeyApprovalError.required
-        }
+    /// What a new login with a server's key checks before it starts, as the real one does.
+    nonisolated private static func logIn(to target: SessionTarget, through service: RemuxSSHRootService) async throws {
+        try await service.secureEnclaveApprovals.check(for: target)?.admitLogin()
     }
 
     private func makeDeviceKeyServer(
         prompts: DeviceKeyPrompts,
-        center: NotificationCenter = NotificationCenter(),
         held: HeldLockedLogins? = nil,
         sessionLogins: DeviceKeySessionLogins = DeviceKeySessionLogins(),
-        uploads: DeviceKeyUploads = DeviceKeyUploads()
-    ) async throws -> (harness: RemuxRootModelHarness, server: SavedServer, workspace: SavedWorkspace) {
+        uploads: DeviceKeyUploads = DeviceKeyUploads(),
+        discoveries: DeviceKeyLoginCount = DeviceKeyLoginCount()
+    ) async throws -> (
+        harness: RemuxRootModelHarness,
+        server: SavedServer,
+        workspace: SavedWorkspace,
+        sshRootService: RemuxSSHRootService,
+        lock: DeviceLockState
+    ) {
         let identity = SSHIdentity(name: "Mac mini", authenticationKind: .privateKey)
         let server = SavedServer(displayName: "Mac mini", host: "mac-mini.local", username: "test", identityID: identity.id)
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "main")
-        let approvals = DeviceKeyFixture.approvals(center: center, evaluate: { _, _ in try await prompts.evaluate() })
+        let lock = DeviceLockState()
+        let approvals = DeviceKeyFixture.approvals(
+            isUnlocked: { lock.isUnlocked },
+            evaluate: { _, _ in try await prompts.evaluate() }
+        )
+        let sshRootService = RemuxSSHRootService(secureEnclaveApprovals: approvals)
         let discover: @Sendable (SessionTarget, RemuxSSHRootService) async throws -> Void = { target, service in
+            discoveries.add()
             if let held, service.secureEnclaveApprovals.check(for: target)?.isApproved == false {
                 await held.hold()
             }
-            try Self.logIn(to: target, through: service)
+            try await Self.logIn(to: target, through: service)
         }
         let harness = makeHarness(
             servers: [server],
@@ -2243,7 +2350,7 @@ final class RemuxRootModelTests: XCTestCase {
                 try await discover(target, service)
                 return []
             },
-            sshRootService: RemuxSSHRootService(secureEnclaveApprovals: approvals)
+            sshRootService: sshRootService
         )
         try await harness.credentialStore.saveCredential(
             .privateKey(SSHPrivateKeyCredential(
@@ -2252,7 +2359,7 @@ final class RemuxRootModelTests: XCTestCase {
             )),
             identityID: identity.id
         )
-        return (harness, server, workspace)
+        return (harness, server, workspace, sshRootService, lock)
     }
 
     /// A session whose saved key isn't on this device, as after moving to a new one, opens Edit Server to add a
@@ -4791,7 +4898,6 @@ final class RemuxRootModelTests: XCTestCase {
         // Approvals that never bring up a real prompt.
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(
             secureEnclaveApprovals: SecureEnclaveSSHApprovals(
-                notificationCenter: NotificationCenter(),
                 evaluate: { _, _ in throw LAError(.passcodeNotSet) }
             )
         )
@@ -5601,7 +5707,7 @@ private enum RootModelSetupTestError: Error {
 private final class DeviceKeyPrompts {
     enum Answer { case approve, cancel }
 
-    private let answer: Answer
+    var answer: Answer
     private var holds: Bool
     private var waiting: [CheckedContinuation<Void, Never>] = []
     private(set) var count = 0
@@ -5637,6 +5743,26 @@ private actor HeldLockedLogins {
     func release() {
         held.forEach { $0.resume() }
         held.removeAll()
+    }
+}
+
+/// Whether the device is unlocked, as its key needs to sign.
+@MainActor
+private final class DeviceLockState {
+    var isUnlocked = true
+}
+
+/// How many logins session discovery started.
+private final class DeviceKeyLoginCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = 0
+
+    var count: Int {
+        lock.withLock { started }
+    }
+
+    func add() {
+        lock.withLock { started += 1 }
     }
 }
 

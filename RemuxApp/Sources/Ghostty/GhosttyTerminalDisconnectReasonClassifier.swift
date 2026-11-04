@@ -27,6 +27,12 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             return TerminalDisconnectReason(kind: .keyUnlock, message: message)
         }
 
+        if let error = error as? SecureEnclaveSSHError {
+            // A locked device only pauses the key: the session reconnects by itself once it's unlocked.
+            let kind: TerminalDisconnectReason.Kind = error == .unavailableWhileLocked ? .transportIO : .unknown
+            return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
+        }
+
         if isServerUnreachable(error) {
             return TerminalDisconnectReason(kind: .serverUnreachable, message: message)
         }
@@ -77,7 +83,7 @@ enum GhosttyTerminalDisconnectReasonClassifier {
     /// needs unlocking; one that no longer works here needs replacing.
     static func keyUnlockMessage(for error: any Error) -> String? {
         switch error {
-        case let error as SecureEnclaveSSHError:
+        case let error as SecureEnclaveSSHError where error == .keyUnusable:
             return error.localizedDescription
         case is SSHKeyApprovalError:
             return "Unlock it with \(SecureEnclaveSSHKey.approvalMethodName) to connect."

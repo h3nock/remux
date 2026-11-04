@@ -20,6 +20,17 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         XCTAssertEqual(unusable.message, SecureEnclaveSSHError.keyUnusable.localizedDescription)
         XCTAssertFalse(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SecureEnclaveSSHError.keyUnusable))
 
+        // A key the Secure Enclave didn't give back for no reason it says isn't one to replace or unlock.
+        let unreadable = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.keyUnreadable)
+        XCTAssertEqual(unreadable.kind, .unknown)
+        XCTAssertEqual(unreadable.message, SecureEnclaveSSHError.keyUnreadable.localizedDescription)
+
+        // A locked device only pauses the key: nothing to unlock in Remux, and the session reconnects by itself.
+        let paused = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(SecureEnclaveSSHError.unavailableWhileLocked)
+        XCTAssertEqual(paused.kind, .transportIO)
+        XCTAssertTrue(paused.allowsAutomaticReconnect)
+        XCTAssertFalse(GhosttyTerminalDisconnectReasonClassifier.isKeyLocked(SecureEnclaveSSHError.unavailableWhileLocked))
+
         let panel = GhosttyRepairPanelContent(
             reason: TerminalDisconnectReason(kind: .keyUnlock, message: "Unlock it with Face ID to connect."),
             sessionName: "main",

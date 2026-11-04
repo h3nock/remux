@@ -1789,8 +1789,8 @@ private struct DeviceKeyInfoButton: View {
 
     private static var approvalText: String {
         let method = SecureEnclaveSSHKey.biometryName.map { "\($0), or your passcode," } ?? "your passcode"
-        return "Remux asks for \(method) once for each server, and again after this \(UIDevice.current.model) "
-            + "locks or Remux closes."
+        return "Remux asks for \(method) when you connect to a server, and again only after you disconnect from it "
+            + "or Remux closes."
     }
 
     var body: some View {

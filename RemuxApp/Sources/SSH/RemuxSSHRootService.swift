@@ -26,7 +26,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     let port: Int
     /// Whether a login may start now: one that throws ends there, with its error, before any connection, so a
     /// request that comes after it never joins a login that can't succeed. A login already under way goes on.
-    let loginPrecondition: @Sendable () throws -> Void
+    let loginPrecondition: @Sendable () async throws -> Void
     let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
@@ -36,7 +36,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     init(
         host: String,
         port: Int,
-        loginPrecondition: @escaping @Sendable () throws -> Void = {},
+        loginPrecondition: @escaping @Sendable () async throws -> Void = {},
         authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
@@ -1258,7 +1258,7 @@ enum RemuxSSHRootBootstrap {
         using configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) async throws -> RemuxSSHRoot {
-        try configuration.loginPrecondition()
+        try await configuration.loginPrecondition()
         var rootChannel: Channel?
 
         do {
