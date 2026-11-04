@@ -1792,15 +1792,12 @@ private struct DeviceKeyInfoButton: View {
         .accessibilityLabel("About Secure Enclave keys")
         .accessibilityIdentifier("connection.private-key.device-key-info")
         .popover(isPresented: $isPresented) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("The private key is created inside this \(UIDevice.current.model) and can’t be copied or exported.")
-                Text("A device passcode is required. The key is available while this \(UIDevice.current.model) is unlocked.")
-            }
-            .font(.footnote)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(width: 280, alignment: .leading)
-            .padding()
-            .presentationCompactAdaptation(.popover)
+            Text("The private key is created inside this \(UIDevice.current.model) and can’t be copied or exported.")
+                .font(.footnote)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 280, alignment: .leading)
+                .padding()
+                .presentationCompactAdaptation(.popover)
         }
     }
 }

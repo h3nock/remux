@@ -299,7 +299,7 @@ enum SecureEnclaveSSHError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unavailable: "This device can't create this key."
-        case .passcodeNotSet: "Set a passcode on this device to use this key."
+        case .passcodeNotSet: "Set a device passcode in Settings to create this key."
         case .keyUnusable: "This key no longer works on this device. Add a new key in Edit Server."
         case .keyUnreadable: "Remux couldn't read this key on this device."
         case .unavailableWhileLocked: "The key can't be used while this device is locked."
