@@ -2899,6 +2899,13 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["terminal.agents.filter.done"].tap()
         XCTAssertTrue(waitForAgentRows([done]), "Done didn't show only the finished agent.")
         captureLiveHerdrStep("a6-agents-done", in: configuration)
+        app.buttons["terminal.agents.filter.all"].tap()
+        XCTAssertTrue(waitForAgentRows([working, blocked, done]))
+        XCTAssertEqual(
+            agentRows.allElementsBoundByIndex.map { $0.label },
+            [blocked, done, working],
+            "All didn't start again with the most urgent first after Done."
+        )
         app.buttons["terminal.agents.filter.working"].tap()
         XCTAssertTrue(waitForAgentRows([working]), "Working didn't show only the working agent.")
         captureLiveHerdrStep("a6b-agents-working", in: configuration)

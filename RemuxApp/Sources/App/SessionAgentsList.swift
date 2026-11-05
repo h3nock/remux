@@ -118,11 +118,19 @@ struct SessionAgentsProjection: Equatable {
         entries.filter { filter.includes($0.agent.state.status) }
     }
 
-    /// The agents `filter` shows with those in `order` first, in that order, so rows stay where they are
-    /// while the list is open; then any others, the most urgent first.
-    func entries(_ filter: SessionAgentsFilter, keeping order: [Entry.ID]) -> [Entry] {
-        let position = Dictionary(order.enumerated().map { ($1, $0) }) { first, _ in first }
+    /// The rows an open list showed, with the filter they were shown for.
+    struct HeldOrder: Equatable {
+        let filter: SessionAgentsFilter
+        let ids: [Entry.ID]
+    }
+
+    /// The agents `filter` shows. Those `held` showed for the same filter come first, in that order, so rows
+    /// stay where they are while the list is open; then any others, the most urgent first. A held order from
+    /// another filter doesn't count: a new filter starts from the most urgent.
+    func entries(_ filter: SessionAgentsFilter, held: HeldOrder?) -> [Entry] {
         let shown = entries(filter)
+        guard let held, held.filter == filter else { return shown }
+        let position = Dictionary(held.ids.enumerated().map { ($1, $0) }) { first, _ in first }
         let kept = shown
             .compactMap { entry in position[entry.id].map { (entry, $0) } }
             .sorted { $0.1 < $1.1 }
@@ -134,10 +142,10 @@ struct SessionAgentsProjection: Equatable {
 /// The Sessions sheet's Agents list: filters for every agent and for each state, in a row that scrolls
 /// sideways when it doesn't fit, then the agents, the most urgent first. A row opens the agent's pane.
 ///
-/// The order is taken when the list appears and when the filter changes. Meanwhile states change in place
-/// and rows keep their places, so a row doesn't move under a finger. The rows shown become the order kept,
-/// so an agent that appears, or comes back to the filter, is added after the rest and keeps its place from
-/// then on. Herdr's client sorts again at once.
+/// The list opens, and each filter starts, with the most urgent first. Meanwhile states change in place and
+/// rows keep their places, so a row doesn't move under a finger: the rows shown are held for the filter, so
+/// an agent that appears, or comes back to the filter, is added after the rest and keeps its place from then
+/// on. Herdr's client sorts again at once.
 struct SessionAgentsList: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
@@ -145,10 +153,10 @@ struct SessionAgentsList: View {
     @Binding var filter: SessionAgentsFilter
     let onOpen: (SessionAgentsProjection.Session, HerdrAgentPresentation.Agent) -> Void
 
-    @State private var order: [SessionAgentsProjection.Entry.ID] = []
+    @State private var held: SessionAgentsProjection.HeldOrder?
 
     var body: some View {
-        let entries = projection.entries(filter, keeping: order)
+        let entries = projection.entries(filter, held: held)
         VStack(spacing: 0) {
             filterBar
             List {
@@ -175,14 +183,8 @@ struct SessionAgentsList: View {
             }
             .accessibilityIdentifier("terminal.agents.list")
         }
-        .onAppear {
-            order = projection.entries(filter).map(\.id)
-        }
-        .onChange(of: filter) { _, filter in
-            order = projection.entries(filter).map(\.id)
-        }
-        .onChange(of: entries.map(\.id)) { _, shown in
-            order = shown
+        .onChange(of: SessionAgentsProjection.HeldOrder(filter: filter, ids: entries.map(\.id)), initial: true) { _, shown in
+            held = shown
         }
     }
 
