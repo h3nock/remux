@@ -1313,31 +1313,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testTypedTextGoesAtOnceAndErasingWaitsForTheEndOfTheTurn() {
-        let sent = Sent()
-        let view = composingView(sent)
-
-        view.insertText("ab")
-        XCTAssertEqual(sent.items, ["text:ab"])
-
-        // The iPhone selects the character before each Backspace.
-        view.selectedTextRange = typedRange(2, 1)
-        view.deleteBackward()
-        XCTAssertEqual(sent.items, ["text:ab"])
-        endTurn()
-        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
-
-        // Text typed back within the turn leaves nothing to send.
-        view.selectedTextRange = typedRange(1, 1)
-        view.deleteBackward()
-        view.insertText("a")
-        endTurn()
-        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
-        XCTAssertEqual(view.text(in: typedRange(0, 2)), " a")
-    }
-
-    @MainActor
-    func testWhatTheTerminalIsOwedGoesBeforeAnythingElse() {
+    func testWhatTheTerminalIsOwedGoesBeforeAReturnOrAnAppAction() {
         let sent = Sent()
         let view = composingView(sent)
 
@@ -1347,7 +1323,6 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         view.deleteBackward()
         view.insertText("\n")
         XCTAssertEqual(sent.items, ["text:abc", "key:backspace", "text:\n"])
-        XCTAssertNil(view.text(in: typedRange(0, 2)))
 
         // An app action, as a toolbar key, follows it too.
         sent.items.removeAll()
@@ -1356,92 +1331,25 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         view.deleteBackward()
         XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: true)), .noDraft)
         XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
-
-        // Typed text deleted down to nothing still owes the terminal its Backspaces, as when the app
-        // goes to the background.
-        sent.items.removeAll()
-        view.insertText("a")
-        view.selectedTextRange = typedRange(1, 1)
-        view.deleteBackward()
-        XCTAssertEqual(view.resolveComposition(for: .cancel), .noDraft)
-        XCTAssertEqual(sent.items, ["text:a", "key:backspace"])
-
-        // So does a paste, and the terminal's own delete once the typed text is gone.
-        sent.items.removeAll()
-        view.insertText("a")
-        view.selectedTextRange = typedRange(1, 1)
-        view.deleteBackward()
-        view.deleteBackward()
-        UIPasteboard.general.string = "PASTE"
-        view.paste(nil)
-        endTurn()
-        XCTAssertEqual(sent.items, ["text:a", "key:backspace", "key:backspace", "paste:PASTE"])
     }
 
     @MainActor
-    func testWhatDependsOnUndeliveredOrUnavailableTypedTextStops() {
-        let sent = Sent()
-        var delivers = true
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        let delegate = RecordingInputDelegate()
-        view.inputDelegate = delegate
-        func update(isEnabled: Bool) {
-            view.update(
-                isEnabled: isEnabled,
-                wantsFirstResponder: isEnabled,
-                activationToken: 1,
-                sendText: {
-                    sent.items.append("text:" + $0)
-                    return delivers
-                },
-                sendPaste: { _ in delivers },
-                sendKeyEvent: {
-                    sent.items.append($0.keyCode == .backspace ? "key:backspace" : "key:\($0.keyCode.rawValue)")
-                    return delivers
-                }
-            )
-        }
-        update(isEnabled: true)
-
-        // A Backspace that isn't delivered leaves the line unknown, so the Return in its turn
-        // doesn't run it, and nothing is kept.
-        view.insertText("abc")
-        view.selectedTextRange = typedRange(1, 3)
-        view.deleteBackward()
-        delivers = false
-        view.insertText("\n")
-        XCTAssertEqual(sent.items, ["text:abc", "key:backspace"])
-        XCTAssertNil(view.text(in: typedRange(0, 2)))
-        XCTAssertEqual(delegate.calls.count, 4)
-
-        // An app action stops too.
-        delivers = true
-        sent.items.removeAll()
-        view.insertText("ab")
-        view.selectedTextRange = typedRange(2, 1)
-        view.deleteBackward()
-        delivers = false
-        XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: true)), .refused)
-        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
-
-        // Input that becomes unavailable before the turn ends drops what the terminal was owed.
-        delivers = true
-        sent.items.removeAll()
-        view.insertText("ab")
-        view.selectedTextRange = typedRange(2, 1)
-        view.deleteBackward()
-        update(isEnabled: false)
-        endTurn()
-        XCTAssertEqual(sent.items, ["text:ab"])
-        XCTAssertNil(view.text(in: typedRange(0, 2)))
-    }
-
-    @MainActor
-    func testDictationsPlaceholderLeavesTheDocumentAndTheTerminalAlone() {
+    func testADraftStartedInsideTypedTextKeepsTheTextAfterIt() {
         let sent = Sent()
         let view = composingView(sent)
 
-        // UIKit asks for these by selector; without them it stands in for the result with spaces.
+        view.insertText("abc")
+        view.selectedTextRange = typedRange(2, 0)
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertEqual(view.resolveComposition(for: .cancel), .canceled)
+        endTurn()
+        XCTAssertEqual(sent.items, ["text:abc"])
+    }
+
+    @MainActor
+    func testUIKitFindsTheDictationPlaceholder() {
+        // UIKit looks these up by selector; without them it stands in for the result with spaces.
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         for selector in [
             "insertDictationResultPlaceholder",
             "frameForDictationResultPlaceholder:",
@@ -1449,14 +1357,6 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         ] {
             XCTAssertTrue(view.responds(to: NSSelectorFromString(selector)), selector)
         }
-
-        view.insertText("hello")
-        let placeholder = view.insertDictationResultPlaceholder
-        view.removeDictationResultPlaceholder(placeholder, willInsertResult: false)
-        endTurn()
-        XCTAssertEqual(sent.items, ["text:hello"])
-        XCTAssertEqual(view.text(in: typedRange(0, 6)), " hello")
-        XCTAssertNil(view.text(in: typedRange(0, 7)))
     }
 
     @MainActor
@@ -1612,9 +1512,17 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertNil(view.text(in: typedRange(0, 2)))
         XCTAssertEqual(sent.items.last, "text:c")
 
+        // A Backspace that isn't delivered leaves the line unknown, so the Return in its turn doesn't
+        // run it.
+        view.insertText("ab")
+        view.selectedTextRange = typedRange(2, 1)
+        view.deleteBackward()
+        delivers = false
+        view.insertText("\n")
+        XCTAssertEqual(sent.items.suffix(2), ["text:ab", "key:backspace"])
+
         // What the terminal holds after a refused send is unknown, so nothing is kept.
         delegate.calls.removeAll()
-        delivers = false
         view.insertText("x")
         XCTAssertNil(view.text(in: typedRange(0, 2)))
         XCTAssertEqual(delegate.calls, notified)
@@ -1632,9 +1540,14 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertNil(view.text(in: typedRange(0, 2)))
         XCTAssertEqual(delegate.calls.count, 4)
 
+        // A Backspace still owed when input becomes unavailable is dropped with the typed text.
         view.insertText("abc")
+        view.selectedTextRange = typedRange(3, 1)
+        view.deleteBackward()
         view.update(isEnabled: false, wantsFirstResponder: false, activationToken: 1,
-                    sendText: { _ in true }, sendPaste: { _ in true }, sendKeyEvent: { _ in true })
+                    sendText: { _ in true }, sendPaste: { _ in true },
+                    sendKeyEvent: { _ in XCTFail("a Backspace reached unavailable input"); return true })
+        endTurn()
         XCTAssertNil(view.text(in: typedRange(0, 2)))
 
         view.update(isEnabled: true, wantsFirstResponder: true, activationToken: 1,

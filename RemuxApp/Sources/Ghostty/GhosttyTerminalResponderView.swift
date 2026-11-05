@@ -195,8 +195,6 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var keyboardContextNeedsSync = false
     /// The surface the typed text went to.
     private var typedSurfaceID: UUID?
-    /// What the terminal is owed goes at the end of the keyboard's turn.
-    private var typedDeliveryScheduled = false
     private var inputSurfaceProvider: () -> GhosttyManagedSurface? = { nil }
 
     private var isInputEnabled = false
@@ -332,11 +330,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             return
         }
         composition.type(text)
-        // A line break runs the line, so the keyboard's context ends with it: the terminal gets the
-        // typed text up to the break, then the rest at once.
-        if text.contains(where: \.isNewline) {
-            let rest = composition.textFromLineBreak
-            if deliverOwedText() { submitTextInput(rest, source: "insertText") }
+        // A line break runs the line, which leaves nothing for the keyboard to revise.
+        if composition.runsLine {
             endKeyboardContext()
             return
         }
@@ -346,28 +341,26 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     /// After a keyboard edit of typed text. Text that only adds goes to the terminal at once. An
     /// edit that erases waits for the end of the keyboard's turn, since within it the keyboard may
     /// type the same text back, as dictation does when it finishes and Korean does when it
-    /// assembles a syllable: the terminal then receives only what changed.
+    /// assembles a syllable: the terminal then receives only what changed. The keyboard's context
+    /// ends once the typed text outgrows the document's capacity.
     private func typedTextChanged() {
+        guard composition.typedLength <= GhosttyTerminalCompositionDocument.typedCapacity else {
+            endKeyboardContext()
+            return
+        }
         guard let owed = composition.owedEdit else { return }
         guard owed.backspaces > 0 else {
             deliverOwedText()
             return
         }
-        guard !typedDeliveryScheduled else { return }
-        typedDeliveryScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.typedDeliveryScheduled = false
-            self.deliverOwedText()
-        }
+        DispatchQueue.main.async { [weak self] in self?.deliverOwedText() }
     }
 
     /// Sends the terminal what it is owed of the typed text; it goes before anything else reaches
     /// the terminal and before the keyboard's context ends. Typed text belongs to the surface it went
     /// to, so it goes only while input is enabled and still reaches that surface. Otherwise, or if
     /// any of it isn't delivered, what the terminal holds is unknown: the keyboard's context ends,
-    /// and false tells the caller to stop what depended on it. The context also ends once the typed
-    /// text outgrows the document's capacity.
+    /// and false tells the caller to stop what depended on it.
     @discardableResult
     private func deliverOwedText() -> Bool {
         guard composition.owedEdit != nil else { return true }
@@ -385,9 +378,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         if delivered, !edit.text.isEmpty {
             delivered = submitTextInput(edit.text, source: "typedText")
         }
-        if !delivered || composition.typedLength > GhosttyTerminalCompositionDocument.typedCapacity {
-            discardKeyboardContext()
-        }
+        if !delivered { discardKeyboardContext() }
         return delivered
     }
 

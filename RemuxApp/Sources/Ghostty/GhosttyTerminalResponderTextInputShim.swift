@@ -52,12 +52,12 @@ final class GhosttyVirtualTextRange: UITextRange {
 /// deletable character and drives its native Backspace repeat.
 ///
 /// Typed text goes to the terminal, whose caret stays after it, up to any line
-/// break: one would run the line, so the text from it waits for the keyboard's
-/// insert of its result. The keyboard still edits typed text, as dictation does
-/// when it revises what it heard, so the document also records what the
-/// terminal holds of it, and the terminal is owed the difference. An input
-/// method's marked text stays local until it is committed, and typed text stays
-/// as it is while a composition is open.
+/// break: one would run the line, so the text from it waits until the keyboard
+/// inserts a line break itself. The keyboard still edits typed text, as
+/// dictation does when it revises what it heard, so the document also records
+/// what the terminal holds of it, and the terminal is owed the difference. An
+/// input method's marked text stays local until it is committed, and the typed
+/// text around it stays as it is while it is open.
 struct GhosttyTerminalCompositionDocument: Equatable {
     static let placeholder = " "
     /// Typed text longer than this ends the keyboard's context, so the document stays small.
@@ -100,6 +100,9 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     private var keptPlaceholder = false
     /// The typed text the terminal holds: what it was last sent of it.
     private var held = ""
+    /// The keyboard inserted a line break, which runs the line: the terminal is owed all of the
+    /// typed text, and the keyboard's context ends once it has it.
+    private(set) var runsLine = false
 
     private static let typedStart = (placeholder as NSString).length
     private static let idleSelection = NSRange(location: typedStart, length: 0)
@@ -125,12 +128,6 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         let unchanged = zip(held, target).prefix { pair in pair.0 == pair.1 }.count
         let edit = TypedEdit(backspaces: held.count - unchanged, text: String(target.dropFirst(unchanged)))
         return edit.backspaces == 0 && edit.text.isEmpty ? nil : edit
-    }
-
-    /// The typed text from its first line break on, which the terminal receives only once the line
-    /// runs.
-    var textFromLineBreak: String {
-        String(typedText.drop { !$0.isNewline })
     }
 
     /// Takes what the terminal is owed, which it then holds.
@@ -187,7 +184,8 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     }
 
     /// Text the keyboard commits while nothing composes: it replaces the selection, normally the
-    /// caret at the end, and becomes typed text. False while composing.
+    /// caret at the end, and becomes typed text; a line break in it runs the line. False while
+    /// composing.
     @discardableResult
     mutating func type(_ inserted: String) -> Bool {
         guard marked == nil else { return false }
@@ -199,7 +197,9 @@ struct GhosttyTerminalCompositionDocument: Equatable {
             inserted.removeFirst(Self.placeholder.count)
         }
         keptPlaceholder = false
-        return editTyped(selection, with: inserted)
+        guard editTyped(selection, with: inserted) else { return false }
+        if inserted.contains(where: \.isNewline) { runsLine = true }
+        return true
     }
 
     mutating func deleteBackward() -> Deletion {
@@ -270,17 +270,21 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         marked = nil
         keptPlaceholder = false
         held = ""
+        runsLine = false
     }
 
+    /// The text after the placeholder without the composition, which the terminal never receives
+    /// as typed text: a draft commits as input of its own.
     private var typedText: String {
-        (text as NSString).substring(with: NSRange(location: Self.typedStart, length: typedLength))
+        let unmarked = marked.map { (text as NSString).replacingCharacters(in: $0, with: "") } ?? text
+        return (unmarked as NSString).substring(from: Self.typedStart)
     }
 
     /// The part of the typed text the terminal is to hold. A line break would run the line while
     /// the keyboard can still revise it, as dictation does after "new line", so the text from the
-    /// first one waits for the keyboard's insert of its result.
+    /// first one waits until the keyboard inserts a line break itself.
     private var terminalText: Substring {
-        typedText.prefix { !$0.isNewline }
+        runsLine ? Substring(typedText) : typedText.prefix { !$0.isNewline }
     }
 
     /// Replaces `range` of the typed text; the placeholder is never part of it. False while
