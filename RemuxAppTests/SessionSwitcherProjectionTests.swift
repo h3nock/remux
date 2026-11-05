@@ -596,16 +596,21 @@ final class SessionSwitcherProjectionTests: XCTestCase {
 
         var order = projection().entries(.all).map(\.id)
         XCTAssertEqual(order, [], "the list opened before any agent arrived")
+        // The list keeps the rows it shows, as the view does after each update.
+        func show() -> [String] {
+            let entries = projection().entries(.all, keeping: order)
+            order = entries.map(\.id)
+            return panes(entries)
+        }
 
         presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .working, 1)]), completions: nil, now: seen)
-        order = projection().holding(order, .all)
+        XCTAssertEqual(show(), ["w1:p1"])
         presentation.project(
             try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [agent("w1:p1", .working, 1), agent("w1:p2", .idle, 2)]),
             completions: nil,
             now: seen + .seconds(1)
         )
-        order = projection().holding(order, .all)
-        XCTAssertEqual(panes(projection().entries(.all, keeping: order)), ["w1:p1", "w1:p2"])
+        XCTAssertEqual(show(), ["w1:p1", "w1:p2"])
 
         presentation.project(
             try HerdrSnapshotJSON.twoWorkspaces(
@@ -615,9 +620,47 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             completions: nil,
             now: seen + .seconds(2)
         )
-        order = projection().holding(order, .all)
-        XCTAssertEqual(panes(projection().entries(.all, keeping: order)), ["w1:p1", "w1:p2", "w1:p3"])
+        XCTAssertEqual(show(), ["w1:p1", "w1:p2", "w1:p3"])
         XCTAssertEqual(panes(projection().entries(.all)), ["w1:p3", "w1:p1", "w1:p2"], "the order when the list opens again")
+    }
+
+    /// An agent that leaves the filter and comes back while the list is open is added after the rows still
+    /// shown, rather than taking back its old place above them.
+    func testAnAgentThatComesBackToTheFilterGoesAfterTheRowsShown() throws {
+        let devbox = item(.herdr, "default", on: "devbox")
+        let presentation = HerdrAgentPresentation()
+        func agent(_ pane: String, _ status: HerdrAgentStatus, _ stateChange: UInt64) -> String {
+            HerdrServerScript.snapshotAgent(pane, agent: "claude", status: status, stateChange: stateChange)
+        }
+        func projection() -> SessionAgentsProjection {
+            SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
+        }
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .blocked, 1), agent("w1:p2", .blocked, 1)]),
+            completions: nil,
+            now: seen
+        )
+        var order = projection().entries(.blocked).map(\.id)
+        func show() -> [String] {
+            let entries = projection().entries(.blocked, keeping: order)
+            order = entries.map(\.id)
+            return panes(entries)
+        }
+        XCTAssertEqual(show(), ["w1:p1", "w1:p2"])
+
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [agent("w1:p1", .working, 2), agent("w1:p2", .blocked, 1)]),
+            completions: nil,
+            now: seen + .seconds(1)
+        )
+        XCTAssertEqual(show(), ["w1:p2"])
+
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(revision: 3, agents: [agent("w1:p1", .blocked, 3), agent("w1:p2", .blocked, 1)]),
+            completions: nil,
+            now: seen + .seconds(2)
+        )
+        XCTAssertEqual(show(), ["w1:p2", "w1:p1"])
     }
 
     /// While the list is open its rows keep their places: an agent whose state changed stays where it was,

@@ -129,21 +129,15 @@ struct SessionAgentsProjection: Equatable {
             .map(\.0)
         return kept + shown.filter { position[$0.id] == nil }
     }
-
-    /// `order` followed by the agents `filter` shows that it doesn't have yet, where the list shows them, so
-    /// agents that appear while the list is open keep their places too.
-    func holding(_ order: [Entry.ID], _ filter: SessionAgentsFilter) -> [Entry.ID] {
-        let held = Set(order)
-        return order + entries(filter, keeping: order).map(\.id).filter { !held.contains($0) }
-    }
 }
 
 /// The Sessions sheet's Agents list: filters for every agent and for each state, in a row that scrolls
 /// sideways when it doesn't fit, then the agents, the most urgent first. A row opens the agent's pane.
 ///
 /// The order is taken when the list appears and when the filter changes. Meanwhile states change in place
-/// and rows keep their places, so a row doesn't move under a finger; an agent that appears is added after
-/// the rest and keeps its place from then on. Herdr's client sorts again at once.
+/// and rows keep their places, so a row doesn't move under a finger. The rows shown become the order kept,
+/// so an agent that appears, or comes back to the filter, is added after the rest and keeps its place from
+/// then on. Herdr's client sorts again at once.
 struct SessionAgentsList: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
@@ -187,8 +181,8 @@ struct SessionAgentsList: View {
         .onChange(of: filter) { _, filter in
             order = projection.entries(filter).map(\.id)
         }
-        .onChange(of: entries.map(\.id)) {
-            order = projection.holding(order, filter)
+        .onChange(of: entries.map(\.id)) { _, shown in
+            order = shown
         }
     }
 
