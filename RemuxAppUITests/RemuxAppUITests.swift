@@ -2811,8 +2811,8 @@ final class RemuxAppUITests: XCTestCase {
     /// with agent `claude` working in it, and a second tab, `build`, whose two panes each have an agent: one
     /// blocked, and one working that finishes when the test asks (`finish`). Panes adds the agent's state to
     /// its tile, Tabs shows the tab's agent, and Sessions the session's most urgent one. The Agents list has
-    /// every agent, with Blocked and Done filters; the finished agent's row opens its pane, where it counts as
-    /// seen.
+    /// every agent, the most urgent first, with Blocked and Done filters; the finished agent's row opens its
+    /// pane, where it counts as seen.
     func testLiveHerdrAgentsWhenConfigured() throws {
         let configuration = try launchLiveHerdrApp(requiringSteps: true)
         let banner = app.descendants(matching: .any)["herdr.notification.banner"].firstMatch
@@ -2887,6 +2887,11 @@ final class RemuxAppUITests: XCTestCase {
 
         showAgents()
         XCTAssertTrue(waitForAgentRows([working, blocked, done]), "Agents didn't list every agent.")
+        XCTAssertEqual(
+            agentRows.allElementsBoundByIndex.map { $0.label },
+            [blocked, done, working],
+            "Agents didn't list the most urgent first."
+        )
         captureLiveHerdrStep("a4-agents", in: configuration)
         app.buttons["terminal.agents.filter.blocked"].tap()
         XCTAssertTrue(waitForAgentRows([blocked]), "Blocked didn't show only the blocked agent.")
@@ -2894,6 +2899,13 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["terminal.agents.filter.done"].tap()
         XCTAssertTrue(waitForAgentRows([done]), "Done didn't show only the finished agent.")
         captureLiveHerdrStep("a6-agents-done", in: configuration)
+        app.buttons["terminal.agents.filter.all"].tap()
+        XCTAssertTrue(waitForAgentRows([working, blocked, done]))
+        XCTAssertEqual(
+            agentRows.allElementsBoundByIndex.map { $0.label },
+            [blocked, done, working],
+            "All didn't start again with the most urgent first after Done."
+        )
         app.buttons["terminal.agents.filter.working"].tap()
         XCTAssertTrue(waitForAgentRows([working]), "Working didn't show only the working agent.")
         captureLiveHerdrStep("a6b-agents-working", in: configuration)
@@ -2924,6 +2936,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(
             waitForAgentRows([working, blocked, "claude, remux › build, idle"]),
             "The agent that finished wasn't seen once its pane was on screen."
+        )
+        XCTAssertEqual(
+            agentRows.allElementsBoundByIndex.map { $0.label },
+            [blocked, working, "claude, remux › build, idle"],
+            "Agents didn't put the seen agent after the working one."
         )
         captureLiveHerdrStep("a9-agents-after-seen", in: configuration)
         app.buttons["terminal.agents.filter.idle"].tap()

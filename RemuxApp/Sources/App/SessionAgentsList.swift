@@ -30,17 +30,18 @@ enum SessionAgentsFilter: CaseIterable, Hashable {
     }
 }
 
-/// Every agent of the open Herdr sessions, by session in the Sessions list's order, each session's agents
-/// in Herdr's order, as Herdr's client lists its agents by machine (`client/shell/endpoint_agents.rs`).
+/// Every agent of the open Herdr sessions in one list, the most urgent first, as Herdr's client lists the
+/// agents of all its machines when its agent list is sorted by priority (`client/shell/aggregate_navigation.rs`
+/// `sort_aggregate_rows`): the agents of connected sessions before the others, then blocked, done, working
+/// and idle (`client/shell.rs` `status_priority`), then the newest state change first.
 struct SessionAgentsProjection: Equatable {
-    struct Session: Identifiable, Equatable {
+    struct Session: Equatable {
         let id: SavedWorkspace.ID
         /// The server, then the session unless it is Herdr's default one, as the banner names them.
         let title: String
         let runtimeState: TerminalRuntimeState
         /// The server boot the agents' pane ids belong to.
         let bootID: String?
-        let agents: [HerdrAgentPresentation.Agent]
 
         /// Not connected, so its agents' states may be out of date; Herdr's list dims them.
         var isStale: Bool {
@@ -48,50 +49,103 @@ struct SessionAgentsProjection: Equatable {
         }
     }
 
-    let sessions: [Session]
+    struct Entry: Identifiable, Equatable {
+        struct ID: Hashable {
+            let session: SavedWorkspace.ID
+            let pane: String
+        }
+
+        let session: Session
+        let agent: HerdrAgentPresentation.Agent
+
+        var id: ID { ID(session: session.id, pane: agent.paneID) }
+    }
+
+    let entries: [Entry]
+    /// The agents are from more than one session, so each row names its session.
+    let namesSessions: Bool
 
     /// `agents` gives an open Herdr session's agents.
     init(
         activeSessions: [ActiveSessionSwitcherItem],
         agents: (SavedWorkspace.ID) -> HerdrAgentPresentation?
     ) {
-        sessions = activeSessions.compactMap { session in
-            guard let presentation = agents(session.id), !presentation.agents.isEmpty else { return nil }
-            let isDefault = session.sessionName == HerdrNotificationBannerContent.defaultSessionName
-            return Session(
-                id: session.id,
-                title: isDefault ? session.serverName : "\(session.serverName) · \(session.sessionName)",
-                runtimeState: session.runtimeState,
-                bootID: presentation.bootID,
-                agents: presentation.agents
+        var ranked: [(entry: Entry, recency: HerdrAgentRecency?)] = []
+        for item in activeSessions {
+            guard let presentation = agents(item.id) else { continue }
+            let isDefault = item.sessionName == HerdrNotificationBannerContent.defaultSessionName
+            let session = Session(
+                id: item.id,
+                title: isDefault ? item.serverName : "\(item.serverName) · \(item.sessionName)",
+                runtimeState: item.runtimeState,
+                bootID: presentation.bootID
             )
+            for agent in presentation.agents {
+                ranked.append((Entry(session: session, agent: agent), presentation.recency[agent.paneID]))
+            }
         }
+        // Agents that tie stay in the Sessions list's order, each session's in Herdr's.
+        let order = ranked.indices.sorted { leftIndex, rightIndex in
+            let left = ranked[leftIndex]
+            let right = ranked[rightIndex]
+            if left.entry.session.isStale != right.entry.session.isStale {
+                return !left.entry.session.isStale
+            }
+            if left.entry.agent.state.status != right.entry.agent.state.status {
+                return left.entry.agent.state.status > right.entry.agent.state.status
+            }
+            switch (left.recency, right.recency) {
+            case let (left?, right?) where left != right:
+                return left > right
+            case (.some, nil):
+                return true
+            case (nil, .some):
+                return false
+            default:
+                return leftIndex < rightIndex
+            }
+        }
+        entries = order.map { ranked[$0].entry }
+        namesSessions = Set(entries.map(\.session.id)).count > 1
     }
 
     func count(_ filter: SessionAgentsFilter) -> Int {
-        sessions.reduce(0) { count, session in
-            count + session.agents.count(where: { filter.includes($0.state.status) })
-        }
+        entries.count { filter.includes($0.agent.state.status) }
     }
 
-    /// The sessions with agents `filter` shows, with only those agents.
-    func sessions(_ filter: SessionAgentsFilter) -> [Session] {
-        sessions.compactMap { session in
-            let agents = session.agents.filter { filter.includes($0.state.status) }
-            guard !agents.isEmpty else { return nil }
-            return Session(
-                id: session.id,
-                title: session.title,
-                runtimeState: session.runtimeState,
-                bootID: session.bootID,
-                agents: agents
-            )
-        }
+    /// The agents `filter` shows, the most urgent first.
+    func entries(_ filter: SessionAgentsFilter) -> [Entry] {
+        entries.filter { filter.includes($0.agent.state.status) }
+    }
+
+    /// The rows an open list showed, with the filter they were shown for.
+    struct HeldOrder: Equatable {
+        let filter: SessionAgentsFilter
+        let ids: [Entry.ID]
+    }
+
+    /// The agents `filter` shows. Those `held` showed for the same filter come first, in that order, so rows
+    /// stay where they are while the list is open; then any others, the most urgent first. A held order from
+    /// another filter doesn't count: a new filter starts from the most urgent.
+    func entries(_ filter: SessionAgentsFilter, held: HeldOrder?) -> [Entry] {
+        let shown = entries(filter)
+        guard let held, held.filter == filter else { return shown }
+        let position = Dictionary(held.ids.enumerated().map { ($1, $0) }) { first, _ in first }
+        let kept = shown
+            .compactMap { entry in position[entry.id].map { (entry, $0) } }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
+        return kept + shown.filter { position[$0.id] == nil }
     }
 }
 
 /// The Sessions sheet's Agents list: filters for every agent and for each state, in a row that scrolls
-/// sideways when it doesn't fit, then each session's agents under its name. A row opens the agent's pane.
+/// sideways when it doesn't fit, then the agents, the most urgent first. A row opens the agent's pane.
+///
+/// The list opens, and each filter starts, with the most urgent first. Meanwhile states change in place and
+/// rows keep their places, so a row doesn't move under a finger: the rows shown are held for the filter, so
+/// an agent that appears, or comes back to the filter, is added after the rest and keeps its place from then
+/// on. Herdr's client sorts again at once.
 struct SessionAgentsList: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
@@ -99,35 +153,38 @@ struct SessionAgentsList: View {
     @Binding var filter: SessionAgentsFilter
     let onOpen: (SessionAgentsProjection.Session, HerdrAgentPresentation.Agent) -> Void
 
+    @State private var held: SessionAgentsProjection.HeldOrder?
+
     var body: some View {
-        let sessions = projection.sessions(filter)
+        let entries = projection.entries(filter, held: held)
         VStack(spacing: 0) {
             filterBar
             List {
-                ForEach(sessions) { session in
-                    Section {
-                        ForEach(session.agents) { agent in
-                            Button {
-                                onOpen(session, agent)
-                            } label: {
-                                SessionAgentRow(agent: agent, session: session)
-                            }
-                            .buttonStyle(.plain)
-                            .sessionSwitcherListRow(accessibilityIdentifier: "terminal.agents.agent")
-                        }
-                    } header: {
-                        SessionSwitcherSectionHeader(title: session.title)
+                ForEach(entries) { entry in
+                    Button {
+                        onOpen(entry.session, entry.agent)
+                    } label: {
+                        SessionAgentRow(
+                            agent: entry.agent,
+                            session: entry.session,
+                            namesSession: projection.namesSessions
+                        )
                     }
+                    .buttonStyle(.plain)
+                    .sessionSwitcherListRow(accessibilityIdentifier: "terminal.agents.agent")
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .overlay {
-                if sessions.isEmpty {
+                if entries.isEmpty {
                     emptyResults
                 }
             }
             .accessibilityIdentifier("terminal.agents.list")
+        }
+        .onChange(of: SessionAgentsProjection.HeldOrder(filter: filter, ids: entries.map(\.id)), initial: true) { _, shown in
+            held = shown
         }
     }
 
@@ -187,10 +244,13 @@ struct SessionAgentsList: View {
     }
 }
 
-/// One agent: its dot, its name over its place, and its state.
+/// One agent: its dot, its name over where it is, and its state. Where it is starts with its session
+/// when the list has more than one session's agents, as Herdr's list of all its machines' agents names each
+/// agent's machine.
 private struct SessionAgentRow: View {
     let agent: HerdrAgentPresentation.Agent
     let session: SessionAgentsProjection.Session
+    let namesSession: Bool
 
     var body: some View {
         HStack(spacing: 12) {
@@ -202,8 +262,8 @@ private struct SessionAgentRow: View {
                     .foregroundStyle(TerminalSelectionSheetPalette.primary)
                     .lineLimit(1)
 
-                if !agent.place.isEmpty {
-                    Text(agent.place)
+                if !location.isEmpty {
+                    Text(location)
                         .font(.footnote)
                         .foregroundStyle(TerminalSelectionSheetPalette.secondary)
                         .lineLimit(1)
@@ -226,8 +286,13 @@ private struct SessionAgentRow: View {
         .accessibilityAddTraits(.isButton)
     }
 
+    private var location: String {
+        [namesSession ? session.title : "", agent.place].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
     private var accessibilityLabel: String {
-        var parts = [agent.name, agent.place, agent.state.word].filter { !$0.isEmpty }
+        var parts = [agent.name, namesSession ? session.title : "", agent.place, agent.state.word]
+            .filter { !$0.isEmpty }
         if session.isStale {
             parts.append(TerminalRuntimeStatusPresentation.projection(for: session.runtimeState).label)
         }

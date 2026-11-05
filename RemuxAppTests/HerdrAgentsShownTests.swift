@@ -59,8 +59,11 @@ enum HerdrSnapshotJSON {
     }
 
     /// A session's agents in `statuses` as the phone shows them, in tab `t1`: each working first, so one
-    /// whose status is `done` finished work this phone saw.
-    static func presentation(_ statuses: [(pane: String, status: HerdrAgentStatus)]) throws -> HerdrAgentPresentation {
+    /// whose status is `done` finished work this phone saw. Every agent's state change was seen at `seen`.
+    static func presentation(
+        _ statuses: [(pane: String, status: HerdrAgentStatus)],
+        seen: ContinuousClock.Instant = .now
+    ) throws -> HerdrAgentPresentation {
         func agents(finished: Bool) -> [String] {
             statuses.map { pane, status in
                 let reported: HerdrAgentStatus = status == .done ? (finished ? .idle : .working) : status
@@ -68,8 +71,8 @@ enum HerdrSnapshotJSON {
             }
         }
         let presentation = HerdrAgentPresentation()
-        presentation.project(try twoWorkspaces(revision: 1, agents: agents(finished: false)), completions: nil)
-        presentation.project(try twoWorkspaces(revision: 2, agents: agents(finished: true)), completions: nil)
+        presentation.project(try twoWorkspaces(revision: 1, agents: agents(finished: false)), completions: nil, now: seen)
+        presentation.project(try twoWorkspaces(revision: 2, agents: agents(finished: true)), completions: nil, now: seen)
         return presentation
     }
 }

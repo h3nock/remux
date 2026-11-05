@@ -14,7 +14,8 @@ import Observation
 /// The agents are in the snapshot's order, which is Herdr's agent list's by default
 /// (`agent_panel_sort = "spaces"`). A tab, a workspace or the session shows its most urgent agent, as
 /// Herdr's client rolls tabs and workspaces up from the statuses it shows (`project_aggregate_status`).
-/// Views are told only when what they show changes.
+/// Views are told only when what they show changes; when the phone saw each agent's state change isn't
+/// shown, so it changes nothing views follow.
 @Observable
 final class HerdrAgentPresentation {
     /// One agent as the sheets show it.
@@ -35,6 +36,8 @@ final class HerdrAgentPresentation {
     /// The server boot the agents' pane ids belong to.
     private(set) var bootID: String?
     private(set) var agents: [Agent] = []
+    /// When this phone saw each agent's current state change, by pane.
+    @ObservationIgnored private(set) var recency: [String: HerdrAgentRecency] = [:]
 
     /// The newest state change of each agent that was on screen.
     @ObservationIgnored private var acknowledged: [String: UInt64] = [:]
@@ -44,15 +47,26 @@ final class HerdrAgentPresentation {
     /// The snapshot's agents, each with its name and place.
     @ObservationIgnored private var reported: [(agent: HerdrSnapshot.Agent, name: String, place: String)] = []
 
-    /// Returns whether what the phone shows of the agents changed.
+    /// Returns whether what the phone shows of the agents changed. `now` is when the phone has the snapshot.
     @discardableResult
-    func project(_ snapshot: HerdrSnapshot, completions: [String: UInt64]?) -> Bool {
+    func project(
+        _ snapshot: HerdrSnapshot,
+        completions: [String: UInt64]?,
+        now: ContinuousClock.Instant = .now
+    ) -> Bool {
         if bootID != snapshot.bootID {
             bootID = snapshot.bootID
             acknowledged = Dictionary(snapshot.agents.map { ($0.paneID, $0.stateChangeSeq) }) { $1 }
             completed.removeAll()
             working.removeAll()
+            recency.removeAll()
         }
+        recency = Dictionary(snapshot.agents.map { agent -> (String, HerdrAgentRecency) in
+            if let previous = recency[agent.paneID], previous.stateChange == agent.stateChangeSeq {
+                return (agent.paneID, previous)
+            }
+            return (agent.paneID, HerdrAgentRecency(seen: now, stateChange: agent.stateChangeSeq))
+        }) { $1 }
         let paneIDs = Set(snapshot.agents.map(\.paneID))
         acknowledged = acknowledged.filter { paneIDs.contains($0.key) }
         completed = completed.filter { paneIDs.contains($0.key) }
@@ -149,6 +163,18 @@ final class HerdrAgentPresentation {
         case let status:
             return status
         }
+    }
+}
+
+/// When this phone saw an agent's current state change, so the newest change comes first across sessions,
+/// as Herdr's client counts the changes it sees itself (`client/shell/endpoints.rs` `agent_recency`):
+/// change numbers from different servers can't be compared. Changes in one snapshot are in Herdr's order.
+struct HerdrAgentRecency: Comparable, Sendable {
+    let seen: ContinuousClock.Instant
+    let stateChange: UInt64
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.seen, lhs.stateChange) < (rhs.seen, rhs.stateChange)
     }
 }
 
