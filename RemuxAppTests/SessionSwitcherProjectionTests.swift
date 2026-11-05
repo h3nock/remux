@@ -448,36 +448,103 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         )
     }
 
+    /// Every agent's state change in these sessions was seen at the same time, so only state and order decide.
+    private let seen = ContinuousClock.now
+
     private func agents(_ statuses: [(pane: String, status: HerdrAgentStatus)]) throws -> HerdrAgentPresentation {
-        try HerdrSnapshotJSON.presentation(statuses)
+        try HerdrSnapshotJSON.presentation(statuses, seen: seen)
     }
 
-    /// The Agents list has the open Herdr sessions with agents, in the Sessions list's order, each named by
-    /// its server and, unless it is Herdr's default session, its name, with its agents in Herdr's order.
-    func testTheAgentsListHasEachHerdrSessionsAgentsInTheSessionsListsOrder() throws {
+    private func working(_ pane: String, stateChange: UInt64) -> String {
+        HerdrServerScript.snapshotAgent(pane, agent: "claude", status: .working, stateChange: stateChange)
+    }
+
+    private func panes(_ entries: [SessionAgentsProjection.Entry]) -> [String] {
+        entries.map(\.agent.paneID)
+    }
+
+    /// The Agents list has every agent of the open Herdr sessions in one list, as Herdr's client lists all its
+    /// machines' agents by priority: connected sessions' agents first, then blocked, done, working, idle, and
+    /// those whose state isn't known yet. Each session is named by its server and, unless it is Herdr's
+    /// default session, its name.
+    func testTheAgentsListPutsTheMostUrgentFirstAndDisconnectedSessionsLast() throws {
         let tmux = item(.tmux, "main", on: "mac-mini")
         let devbox = item(.herdr, "default", on: "devbox")
         let quiet = item(.herdr, "notes", on: "devbox")
         let training = item(.herdr, "train", on: "gpu-box", .reconnecting(.transportLoss))
+        let laptop = item(.herdr, "web", on: "laptop")
         let unreported = item(.herdr, "fresh", on: "gpu-box")
         let agents = [
-            devbox.id: try agents([("w1:p2", .blocked), ("w1:p1", .working)]),
+            devbox.id: try agents([("w1:p1", .working), ("w1:p2", .idle), ("w1:p3", .blocked)]),
             quiet.id: try agents([]),
-            training.id: try agents([("w1:p1", .done)]),
+            training.id: try agents([("w1:p1", .blocked)]),
+            laptop.id: try agents([("w1:p1", .done), ("w1:p2", .unknown)]),
         ]
         let projection = SessionAgentsProjection(
-            activeSessions: [tmux, devbox, quiet, training, unreported],
+            activeSessions: [tmux, devbox, quiet, training, laptop, unreported],
             agents: { agents[$0] }
         )
-        XCTAssertEqual(projection.sessions.map(\.id), [devbox.id, training.id])
-        XCTAssertEqual(projection.sessions.map(\.title), ["devbox", "gpu-box · train"])
-        XCTAssertEqual(projection.sessions.first?.agents.map(\.paneID), ["w1:p2", "w1:p1"])
-        XCTAssertEqual(projection.sessions.first?.bootID, "boot")
-        XCTAssertEqual(projection.sessions.map(\.isStale), [false, true])
+        XCTAssertEqual(
+            projection.entries.map(\.session.id),
+            [devbox.id, laptop.id, devbox.id, devbox.id, laptop.id, training.id]
+        )
+        XCTAssertEqual(panes(projection.entries), ["w1:p3", "w1:p1", "w1:p1", "w1:p2", "w1:p2", "w1:p1"])
+        XCTAssertEqual(projection.entries.first?.session.title, "devbox")
+        XCTAssertEqual(projection.entries.last?.session.title, "gpu-box · train")
+        XCTAssertEqual(projection.entries.last?.session.isStale, true)
+        XCTAssertEqual(projection.entries.first?.session.bootID, "boot")
+        XCTAssertTrue(projection.namesSessions)
     }
 
-    /// Blocked and Done show only those agents, and only the sessions that have them; each filter counts its
-    /// agents.
+    /// Among agents in the same state, the one whose state changed most recently comes first, as Herdr's
+    /// client counts the changes it sees itself: two servers' change numbers can't be compared, so when the
+    /// phone saw the change decides, and Herdr's numbers only order the changes of one snapshot. A snapshot
+    /// that doesn't change an agent's state leaves it where it was.
+    func testTheNewestStateChangeComesFirstAcrossSessions() throws {
+        let devbox = item(.herdr, "default", on: "devbox")
+        let training = item(.herdr, "train", on: "gpu-box")
+        let start = ContinuousClock.now
+        let devboxAgents = HerdrAgentPresentation()
+        let trainingAgents = HerdrAgentPresentation()
+        let agents = [devbox.id: devboxAgents, training.id: trainingAgents]
+        func sessions() -> [SavedWorkspace.ID] {
+            SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] }).entries.map(\.session.id)
+        }
+
+        devboxAgents.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [working("w1:p1", stateChange: 1)]), completions: nil, now: start)
+        trainingAgents.project(
+            try HerdrSnapshotJSON.twoWorkspaces(agents: [working("w1:p1", stateChange: 5)]),
+            completions: nil,
+            now: start + .seconds(1)
+        )
+        XCTAssertEqual(sessions(), [training.id, devbox.id])
+
+        devboxAgents.project(
+            try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [working("w1:p1", stateChange: 2)]),
+            completions: nil,
+            now: start + .seconds(2)
+        )
+        XCTAssertEqual(sessions(), [devbox.id, training.id], "a newer change, though its number is lower")
+
+        trainingAgents.project(
+            try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [working("w1:p1", stateChange: 5)]),
+            completions: nil,
+            now: start + .seconds(3)
+        )
+        XCTAssertEqual(sessions(), [devbox.id, training.id], "a snapshot with the same change")
+
+        let oneSnapshot = HerdrAgentPresentation()
+        oneSnapshot.project(
+            try HerdrSnapshotJSON.twoWorkspaces(agents: [working("w1:p1", stateChange: 3), working("w1:p2", stateChange: 7)]),
+            completions: nil,
+            now: start
+        )
+        let projection = SessionAgentsProjection(activeSessions: [devbox], agents: { _ in oneSnapshot })
+        XCTAssertEqual(panes(projection.entries), ["w1:p2", "w1:p1"])
+        XCTAssertFalse(projection.namesSessions, "one session's agents")
+    }
+
+    /// Blocked and Done show only those agents, still the most urgent first; each filter counts its agents.
     func testTheAgentsFiltersShowAndCountWaitingAndDoneAgents() throws {
         let devbox = item(.herdr, "default", on: "devbox")
         let training = item(.herdr, "train", on: "gpu-box")
@@ -489,29 +556,62 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(projection.count(.all), 5)
         XCTAssertEqual(projection.count(.blocked), 2)
         XCTAssertEqual(projection.count(.done), 1)
-        XCTAssertEqual(projection.sessions(.blocked).map { $0.agents.map(\.paneID) }, [["w1:p1"], ["w1:p2"]])
-        XCTAssertEqual(projection.sessions(.done).map(\.id), [training.id])
-        XCTAssertEqual(projection.sessions(.done).first?.agents.map(\.paneID), ["w1:p1"])
-        XCTAssertEqual(projection.sessions(.all), projection.sessions)
+        XCTAssertEqual(projection.entries(.blocked).map(\.session.id), [devbox.id, training.id])
+        XCTAssertEqual(panes(projection.entries(.blocked)), ["w1:p1", "w1:p2"])
+        XCTAssertEqual(projection.entries(.done).map(\.session.id), [training.id])
+        XCTAssertEqual(projection.entries(.all), projection.entries)
     }
 
     /// The filters are Herdr's, in its order (`client/shell/overlays.rs`): All, Blocked, Working, Idle and
     /// Done. Working and Idle show and count only those agents; Idle has the agents whose state isn't known
-    /// yet too, as they read as idle.
+    /// yet too, as they read as idle, after the idle ones.
     func testWorkingAndIdleShowAndCountTheirAgentsInHerdrsFilterOrder() throws {
         XCTAssertEqual(SessionAgentsFilter.allCases.map(\.title), ["All", "Blocked", "Working", "Idle", "Done"])
         let devbox = item(.herdr, "default", on: "devbox")
         let training = item(.herdr, "train", on: "gpu-box")
         let agents = [
-            devbox.id: try agents([("w1:p1", .working), ("w1:p2", .idle), ("w1:p3", .unknown)]),
+            devbox.id: try agents([("w1:p1", .working), ("w1:p3", .unknown), ("w1:p2", .idle)]),
             training.id: try agents([("w1:p1", .working), ("w1:p2", .blocked)]),
         ]
         let projection = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
         XCTAssertEqual(projection.count(.working), 2)
         XCTAssertEqual(projection.count(.idle), 2)
-        XCTAssertEqual(projection.sessions(.working).map { $0.agents.map(\.paneID) }, [["w1:p1"], ["w1:p1"]])
-        XCTAssertEqual(projection.sessions(.idle).map(\.id), [devbox.id])
-        XCTAssertEqual(projection.sessions(.idle).first?.agents.map(\.paneID), ["w1:p2", "w1:p3"])
+        XCTAssertEqual(projection.entries(.working).map(\.session.id), [devbox.id, training.id])
+        XCTAssertEqual(projection.entries(.idle).map(\.session.id), [devbox.id, devbox.id])
+        XCTAssertEqual(panes(projection.entries(.idle)), ["w1:p2", "w1:p3"])
+    }
+
+    /// While the list is open its rows keep their places: an agent whose state changed stays where it was,
+    /// one that appeared goes after the rest, and one that left or no longer matches the filter is gone.
+    func testOpenListRowsKeepTheirPlacesAsStatesChange() throws {
+        let devbox = item(.herdr, "default", on: "devbox")
+        let presentation = HerdrAgentPresentation()
+        func agent(_ pane: String, _ status: HerdrAgentStatus, _ stateChange: UInt64) -> String {
+            HerdrServerScript.snapshotAgent(pane, agent: "claude", status: status, stateChange: stateChange)
+        }
+        func projection() -> SessionAgentsProjection {
+            SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
+        }
+
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .blocked, 1), agent("w1:p2", .working, 1), agent("w1:p3", .idle, 1)]),
+            completions: nil,
+            now: seen
+        )
+        let order = projection().entries(.all).map(\.id)
+        XCTAssertEqual(panes(projection().entries(.all, keeping: [])), ["w1:p1", "w1:p2", "w1:p3"])
+
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(
+                revision: 2,
+                agents: [agent("w1:p1", .working, 2), agent("w1:p3", .blocked, 3), agent("w1:p4", .blocked, 4)]
+            ),
+            completions: nil,
+            now: seen + .seconds(1)
+        )
+        XCTAssertEqual(panes(projection().entries(.all, keeping: order)), ["w1:p1", "w1:p3", "w1:p4"])
+        XCTAssertEqual(panes(projection().entries(.blocked, keeping: order)), ["w1:p3", "w1:p4"])
+        XCTAssertEqual(panes(projection().entries(.all)), ["w1:p4", "w1:p3", "w1:p1"], "the order when the list opens again")
     }
 
     private func loadedDiscovery(
