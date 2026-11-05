@@ -581,6 +581,45 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(panes(projection.entries(.idle)), ["w1:p2", "w1:p3"])
     }
 
+    /// An agent that appears while the list is open is held where it was first shown, so a later, more urgent
+    /// arrival goes after it instead of above it; that holds from an empty list too, as when the list opens
+    /// before the session's agents have arrived.
+    func testAgentsThatAppearWhileTheListIsOpenKeepTheirPlaces() throws {
+        let devbox = item(.herdr, "default", on: "devbox")
+        let presentation = HerdrAgentPresentation()
+        func agent(_ pane: String, _ status: HerdrAgentStatus, _ stateChange: UInt64) -> String {
+            HerdrServerScript.snapshotAgent(pane, agent: "claude", status: status, stateChange: stateChange)
+        }
+        func projection() -> SessionAgentsProjection {
+            SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
+        }
+
+        var order = projection().entries(.all).map(\.id)
+        XCTAssertEqual(order, [], "the list opened before any agent arrived")
+
+        presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .working, 1)]), completions: nil, now: seen)
+        order = projection().holding(order, .all)
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [agent("w1:p1", .working, 1), agent("w1:p2", .idle, 2)]),
+            completions: nil,
+            now: seen + .seconds(1)
+        )
+        order = projection().holding(order, .all)
+        XCTAssertEqual(panes(projection().entries(.all, keeping: order)), ["w1:p1", "w1:p2"])
+
+        presentation.project(
+            try HerdrSnapshotJSON.twoWorkspaces(
+                revision: 3,
+                agents: [agent("w1:p1", .working, 1), agent("w1:p2", .idle, 2), agent("w1:p3", .blocked, 3)]
+            ),
+            completions: nil,
+            now: seen + .seconds(2)
+        )
+        order = projection().holding(order, .all)
+        XCTAssertEqual(panes(projection().entries(.all, keeping: order)), ["w1:p1", "w1:p2", "w1:p3"])
+        XCTAssertEqual(panes(projection().entries(.all)), ["w1:p3", "w1:p1", "w1:p2"], "the order when the list opens again")
+    }
+
     /// While the list is open its rows keep their places: an agent whose state changed stays where it was,
     /// one that appeared goes after the rest, and one that left or no longer matches the filter is gone.
     func testOpenListRowsKeepTheirPlacesAsStatesChange() throws {
