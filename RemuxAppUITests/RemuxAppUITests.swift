@@ -498,6 +498,32 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
+    func testDuoRailRemainsVisibleWhenControlOpensKeyboard() throws {
+        launchSeededSimulatorTerminal()
+        let rail = app.scrollViews["terminal.rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5), "Run this regression on the closed Duo simulator.")
+        XCTAssertFalse(app.buttons["terminal.rail.expand"].exists)
+        let control = app.buttons["terminal.toolbar-key.0"]
+        XCTAssertTrue(control.isHittable)
+        control.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "Control opens keyboard"))
+        let keyboard = app.buttons["terminal.keyboard"]
+        XCTAssertTrue(keyboard.isHittable, "Opening the keyboard must scroll its toggle into view.")
+        XCTAssertTrue(app.buttons["terminal.home"].isHittable)
+        XCTAssertTrue(app.buttons["terminal.composer.toggle"].isHittable)
+        keyboard.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "Rail hides keyboard"))
+        XCTAssertTrue(keyboard.isHittable)
+        keyboard.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "Rail reopens keyboard"))
+        XCTAssertTrue(keyboard.isHittable, "Reopening the keyboard must reveal its toggle without a manual scroll.")
+        rail.swipeDown()
+        XCTAssertTrue(app.buttons["terminal.sessions"].isHittable, "The rail must still allow manual scrolling to navigation.")
+        rail.swipeUp()
+        XCTAssertTrue(keyboard.isHittable)
+        attachScreenshot(named: "duo-rail-control-keyboard")
+    }
+
     /// Uses the simulated transport: rotating must resize the existing terminal while preserving input.
     func testSimulatorTerminalPreservesComposerDraftAcrossResizing() {
         XCUIDevice.shared.orientation = .portrait

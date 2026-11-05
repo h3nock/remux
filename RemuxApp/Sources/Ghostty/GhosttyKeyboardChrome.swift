@@ -164,6 +164,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
     let composerContent: () -> ComposerContent
     var allowsTerminalKeys = true
+    var showsNavigationControls = true
 
     var body: some View {
         selectorRow
@@ -194,7 +195,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var standardSelectorRow: some View {
         HStack(spacing: isCompact ? 6 : 10) {
             terminalKeyControls
-            navigationControls
+            if showsNavigationControls { navigationControls }
             inputControls
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -277,6 +278,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var inputControls: some View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
+                if showsNavigationControls {
                 GhosttyKeyboardChromeDockButton(
                     systemName: "house",
                     badge: nil,
@@ -290,6 +292,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     isEnabled: !isInteractionLocked,
                     action: onShowLibrary
                 )
+                }
 
                 composerButton
                 keyboardToggleButton
@@ -440,7 +443,7 @@ struct GhosttyKeyboardChromeNavigation: Equatable {
     }
 }
 
-private struct GhosttyKeyboardChromeDockButton: View {
+struct GhosttyKeyboardChromeDockButton: View {
     let systemName: String
     let badge: String?
     let chromeStyle: GhosttyTerminalChromeStyle
@@ -451,10 +454,14 @@ private struct GhosttyKeyboardChromeDockButton: View {
     let accessibilityIdentifier: String
     let isActive: Bool
     let isEnabled: Bool
+    var hapticsOnActivation = false
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if hapticsOnActivation { Haptic.chromeControlPress() }
+            action()
+        } label: {
             ZStack {
                 Image(systemName: systemName)
                     .font(.system(size: 16.5, weight: .semibold))
@@ -471,7 +478,8 @@ private struct GhosttyKeyboardChromeDockButton: View {
             isEnabled: isEnabled,
             chromeStyle: chromeStyle,
             width: width,
-            height: height
+            height: height,
+            hapticsOnPress: !hapticsOnActivation
         ))
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
@@ -496,7 +504,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
     }
 }
 
-private struct GhosttyKeyboardKeyButton: View {
+struct GhosttyKeyboardKeyButton: View {
     let title: String
     let accessibilityLabel: String
     let accessibilityHint: String?
@@ -509,6 +517,9 @@ private struct GhosttyKeyboardKeyButton: View {
     var isActive = false
     let isEnabled: Bool
     var onLongPress: (() -> Void)?
+    // A scroll can start on a key. In scrollable chrome, defer feedback until
+    // the tap is recognized rather than vibrating on the initial touch.
+    var hapticsOnActivation = false
     let action: () -> Bool
 
     @State private var isPressed = false
@@ -544,6 +555,7 @@ private struct GhosttyKeyboardKeyButton: View {
             .onTapGesture {
                 guard isEnabled else { return }
                 isPressed = false
+                if hapticsOnActivation { Haptic.keyboardPress() }
                 _ = action()
             }
             .onLongPressGesture(
@@ -551,7 +563,7 @@ private struct GhosttyKeyboardKeyButton: View {
                 maximumDistance: 18,
                 pressing: { pressing in
                     guard isEnabled else { return }
-                    if pressing, !isPressed {
+                    if pressing, !isPressed, !hapticsOnActivation {
                         Haptic.keyboardPress()
                     }
                     isPressed = pressing
@@ -594,12 +606,13 @@ private struct GhosttyChromeDockButtonStyle: ButtonStyle {
     let chromeStyle: GhosttyTerminalChromeStyle
     let width: CGFloat
     let height: CGFloat
+    let hapticsOnPress: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         GhosttyChromePressBody(
             isPressed: configuration.isPressed,
             isEnabled: isEnabled,
-            onPressDown: { Haptic.chromeControlPress() }
+            onPressDown: { if hapticsOnPress { Haptic.chromeControlPress() } }
         ) {
             configuration.label
                 .foregroundStyle(isActive ? chromeStyle.accent : GhosttyPhoneChromePalette.chromeForeground)

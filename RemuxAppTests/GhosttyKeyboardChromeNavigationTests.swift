@@ -32,3 +32,35 @@ final class GhosttyKeyboardChromeNavigationTests: XCTestCase {
         XCTAssertFalse(none.isPanesEnabled)
     }
 }
+
+final class GhosttyRailViewportTests: XCTestCase {
+    func testStatusAndKeyboardBoundTheScrollableArea() {
+        let frame = GhosttyRailViewport.availableFrame(
+            in: CGRect(x: 300, y: 0, width: 76, height: 700),
+            avoiding: [CGRect(x: 300, y: 20, width: 76, height: 110),
+                       CGRect(x: 0, y: 400, width: 400, height: 300)], spacing: 12)
+        XCTAssertEqual(frame, CGRect(x: 300, y: 142, width: 76, height: 246))
+    }
+
+    func testKeyboardResizingDoesNotDiscardATallSystemRegion() {
+        let frame = GhosttyRailViewport.availableFrame(
+            in: CGRect(x: 300, y: 0, width: 76, height: 200),
+            avoiding: [CGRect(x: 300, y: 0, width: 76, height: 110)], spacing: 12)
+        XCTAssertEqual(frame, CGRect(x: 300, y: 122, width: 76, height: 66))
+    }
+
+    func testBottomOcclusionAndUnrelatedHorizontalRegion() {
+        let frame = GhosttyRailViewport.availableFrame(
+            in: CGRect(x: 300, y: 0, width: 76, height: 700),
+            avoiding: [CGRect(x: 300, y: 600, width: 76, height: 100),
+                       CGRect(x: 0, y: 0, width: 200, height: 700)], spacing: 12)
+        XCTAssertEqual(frame, CGRect(x: 300, y: 12, width: 76, height: 576))
+    }
+
+    func testFullyBlockedRailHasNoVisibleViewport() {
+        let frame = GhosttyRailViewport.availableFrame(
+            in: CGRect(x: 300, y: 0, width: 76, height: 100),
+            avoiding: [CGRect(x: 300, y: 0, width: 76, height: 150)], spacing: 12)
+        XCTAssertEqual(frame.height, 0)
+    }
+}
