@@ -51,20 +51,20 @@ final class GhosttyVirtualTextRange: UITextRange {
 /// it holds only the placeholder, with the caret after it, so UIKit sees one
 /// deletable character and drives its native Backspace repeat.
 ///
-/// Typed text has already reached the terminal, whose caret stays after it, up
-/// to any line break: one would run the line, so the text from it waits for the
-/// keyboard's insert of its result. The keyboard still edits typed text, as
-/// dictation does when it revises what it heard, and each edit becomes what the
-/// terminal receives: Backspaces from the end back to where the text changes,
-/// then the new text from there. An input method's marked text stays local
-/// until it is committed.
+/// Typed text goes to the terminal, whose caret stays after it, up to any line
+/// break: one would run the line, so the text from it waits for the keyboard's
+/// insert of its result. The keyboard still edits typed text, as dictation does
+/// when it revises what it heard, so the document also records what the
+/// terminal holds of it, and the terminal is owed the difference. An input
+/// method's marked text stays local until it is committed, and typed text stays
+/// as it is while a composition is open.
 struct GhosttyTerminalCompositionDocument: Equatable {
     static let placeholder = " "
     /// Typed text longer than this ends the keyboard's context, so the document stays small.
     static let typedCapacity = 4096
 
-    /// What the terminal receives for an edit of typed text: Backspaces from the end of the
-    /// typed text back to where it changes, then the text that follows from there.
+    /// What the terminal is owed for it to hold the typed text: Backspaces from the end of what
+    /// it holds back to where the two differ, then the typed text from there.
     struct TypedEdit: Equatable {
         let backspaces: Int
         let text: String
@@ -73,8 +73,8 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     enum Deletion: Equatable {
         /// Nothing is typed or composing: the terminal deletes.
         case terminal
-        /// Typed text was deleted; the terminal receives this edit.
-        case typed(TypedEdit)
+        /// Typed text was deleted.
+        case typed
         /// The composition changed.
         case composition
         /// The caret is at the composition's start.
@@ -84,8 +84,8 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     enum Replacement: Equatable {
         /// The edit stayed inside the composition.
         case composition
-        /// Typed text changed; the terminal receives this edit.
-        case typed(TypedEdit)
+        /// Typed text changed.
+        case typed
         /// A replacement beyond the composition commits as input, and the document is idle.
         case committed(String)
         /// The range isn't in the document.
@@ -98,19 +98,46 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     /// The keyboard deleted a selection that included the placeholder, which stayed, since it
     /// stands for nothing the terminal holds.
     private var keptPlaceholder = false
+    /// The typed text the terminal holds: what it was last sent of it.
+    private var held = ""
 
     private static let typedStart = (placeholder as NSString).length
     private static let idleSelection = NSRange(location: typedStart, length: 0)
 
     var length: Int { (text as NSString).length }
 
-    var isIdle: Bool { marked == nil && length == Self.typedStart }
+    /// Nothing is typed, composing or owed to the terminal.
+    var isIdle: Bool { marked == nil && length == Self.typedStart && held.isEmpty }
 
     /// The UTF-16 length of the typed text, which runs from the placeholder to the composition.
     var typedLength: Int { (marked?.location ?? length) - Self.typedStart }
 
     var markedText: String? {
         marked.map { (text as NSString).substring(with: $0) }
+    }
+
+    /// Whether the terminal holds any of the typed text.
+    var isHeld: Bool { !held.isEmpty }
+
+    /// What the terminal is owed for it to hold the typed text; nil when it holds it already.
+    var owedEdit: TypedEdit? {
+        let target = terminalText
+        let unchanged = zip(held, target).prefix { pair in pair.0 == pair.1 }.count
+        let edit = TypedEdit(backspaces: held.count - unchanged, text: String(target.dropFirst(unchanged)))
+        return edit.backspaces == 0 && edit.text.isEmpty ? nil : edit
+    }
+
+    /// The typed text from its first line break on, which the terminal receives only once the line
+    /// runs.
+    var textFromLineBreak: String {
+        String(typedText.drop { !$0.isNewline })
+    }
+
+    /// Takes what the terminal is owed, which it then holds.
+    mutating func takeOwedEdit() -> TypedEdit? {
+        guard let edit = owedEdit else { return nil }
+        held = String(terminalText)
+        return edit
     }
 
     func isValid(_ range: NSRange) -> Bool {
@@ -160,9 +187,10 @@ struct GhosttyTerminalCompositionDocument: Equatable {
     }
 
     /// Text the keyboard commits while nothing composes: it replaces the selection, normally the
-    /// caret at the end, and becomes typed text. Nil while composing.
-    mutating func type(_ inserted: String) -> TypedEdit? {
-        guard marked == nil else { return nil }
+    /// caret at the end, and becomes typed text. False while composing.
+    @discardableResult
+    mutating func type(_ inserted: String) -> Bool {
+        guard marked == nil else { return false }
         var inserted = inserted
         // A keyboard that deleted the placeholder with typed text types it back first, as the
         // Korean keyboard does when it reassembles a syllable. The placeholder stayed, so that copy
@@ -188,7 +216,7 @@ struct GhosttyTerminalCompositionDocument: Equatable {
                 selection = Self.idleSelection
                 return .terminal
             }
-            let deletion = editTyped(target, with: "").map(Deletion.typed) ?? .terminal
+            let deletion: Deletion = editTyped(target, with: "") ? .typed : .terminal
             keptPlaceholder = target.location < Self.typedStart
             return deletion
         }
@@ -206,7 +234,7 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         keptPlaceholder = false
         guard isValid(range) else { return .none }
         guard let marked else {
-            return editTyped(range, with: replacement).map(Replacement.typed) ?? .none
+            return editTyped(range, with: replacement) ? .typed : .none
         }
         if range.location >= marked.location, NSMaxRange(range) <= NSMaxRange(marked) {
             text = (text as NSString).replacingCharacters(in: range, with: replacement)
@@ -235,38 +263,36 @@ struct GhosttyTerminalCompositionDocument: Equatable {
         selection = range
     }
 
-    /// Ends the keyboard's context: the document holds only the placeholder.
+    /// Ends the keyboard's context: the document holds only the placeholder, and nothing is owed.
     mutating func clear() {
         text = Self.placeholder
         selection = Self.idleSelection
         marked = nil
         keptPlaceholder = false
+        held = ""
     }
 
-    /// Replaces `range` of the typed text, and returns what the terminal receives for it: the edit
-    /// erases from the end of the text the terminal holds back to where the old and new text first
-    /// differ, and types the new text from there. The placeholder is never part of it.
-    private mutating func editTyped(_ range: NSRange, with replacement: String) -> TypedEdit? {
-        guard marked == nil, isValid(range) else { return nil }
+    private var typedText: String {
+        (text as NSString).substring(with: NSRange(location: Self.typedStart, length: typedLength))
+    }
+
+    /// The part of the typed text the terminal is to hold. A line break would run the line while
+    /// the keyboard can still revise it, as dictation does after "new line", so the text from the
+    /// first one waits for the keyboard's insert of its result.
+    private var terminalText: Substring {
+        typedText.prefix { !$0.isNewline }
+    }
+
+    /// Replaces `range` of the typed text; the placeholder is never part of it. False while
+    /// composing or for a range outside the document.
+    private mutating func editTyped(_ range: NSRange, with replacement: String) -> Bool {
+        guard marked == nil, isValid(range) else { return false }
         let current = text as NSString
         let start = max(range.location, Self.typedStart)
         let end = max(NSMaxRange(range), start)
-        let held = Self.terminalPart(of: current.substring(from: Self.typedStart))
         text = current.substring(to: start) + replacement + current.substring(from: end)
         selection = NSRange(location: start + (replacement as NSString).length, length: 0)
-        let updated = Self.terminalPart(of: (text as NSString).substring(from: Self.typedStart))
-        let unchanged = zip(held, updated).prefix { pair in pair.0 == pair.1 }.count
-        return TypedEdit(
-            backspaces: held.count - unchanged,
-            text: String(updated.dropFirst(unchanged))
-        )
-    }
-
-    /// The part of the typed text the terminal holds. A line break would run the line while the
-    /// keyboard can still revise it, as dictation does after "new line", so the text from the first
-    /// one waits for the keyboard's insert of its result.
-    private static func terminalPart(of typed: String) -> Substring {
-        typed.prefix { !$0.isNewline }
+        return true
     }
 
     /// A composition emptied by an edit ends without committing anything; typed text before it
@@ -414,6 +440,22 @@ extension GhosttyTerminalResponderUIView: UITextInput {
         let caret = CGRect(x: cell.minX, y: cell.minY, width: 2, height: cell.height)
         GhosttyRuntimeTrace.diagnostics("responder.caretRect rect=\(NSCoder.string(for: caret))")
         return caret
+    }
+
+    // Dictation's placeholder for the result it is still recognizing. Without one, UIKit stands in
+    // for the result with spaces it inserts at the caret and removes later, and the terminal
+    // receives both. Nothing is inserted: the terminal's cursor marks where the result goes.
+    @objc var insertDictationResultPlaceholder: Any { NSObject() }
+
+    @objc(frameForDictationResultPlaceholder:)
+    func frame(forDictationResultPlaceholder placeholder: Any) -> CGRect {
+        _ = placeholder
+        return compositionCaretRect() ?? .zero
+    }
+
+    @objc(removeDictationResultPlaceholder:willInsertResult:)
+    func removeDictationResultPlaceholder(_ placeholder: Any, willInsertResult: Bool) {
+        _ = (placeholder, willInsertResult)
     }
 
     func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {

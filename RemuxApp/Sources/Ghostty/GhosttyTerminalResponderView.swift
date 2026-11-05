@@ -63,8 +63,8 @@ enum GhosttyTerminalCompositionOutcome: Equatable {
     case canceled
     /// The draft stays as typed, and the action does nothing while it is open.
     case kept
-    /// The draft couldn't be committed: its pane no longer takes the input, or the input was
-    /// refused. The draft is gone, and the action stops.
+    /// The draft, or typed text the terminal was owed, couldn't be sent: its pane no longer takes
+    /// the input, or the input was refused. It is gone, and the action stops.
     case refused
 }
 
@@ -193,6 +193,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     /// A keyboard edit since the last synchronization may have left context the keyboard keeps
     /// to revise what it sent, as Korean's syllable assembly does.
     private var keyboardContextNeedsSync = false
+    /// The surface the typed text went to.
+    private var typedSurfaceID: UUID?
+    /// What the terminal is owed goes at the end of the keyboard's turn.
+    private var typedDeliveryScheduled = false
     private var inputSurfaceProvider: () -> GhosttyManagedSurface? = { nil }
 
     private var isInputEnabled = false
@@ -320,36 +324,85 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             commitComposition(text, source: "insertText", through: sendTextHandler)
             return
         }
-        // A Return ends the line, and an armed modifier turns text into a key: either way there is
-        // nothing for the keyboard to revise.
-        guard !text.contains(where: \.isNewline), !modifierArmedProvider(),
-              let edit = composition.type(text)
-        else {
+        // An armed modifier turns text into a key, which leaves nothing for the keyboard to revise.
+        if modifierArmedProvider() {
+            guard deliverOwedText() else { return }
             submitTextInput(text, source: "insertText")
             endKeyboardContext()
             return
         }
-        submitTypedEdit(edit, source: "insertText")
+        composition.type(text)
+        // A line break runs the line, so the keyboard's context ends with it: the terminal gets the
+        // typed text up to the break, then the rest at once.
+        if text.contains(where: \.isNewline) {
+            let rest = composition.textFromLineBreak
+            if deliverOwedText() { submitTextInput(rest, source: "insertText") }
+            endKeyboardContext()
+            return
+        }
+        typedTextChanged()
     }
 
-    /// Sends an edit of typed text: Backspaces back to where it changes, then the new text. If any
-    /// of it isn't delivered, what the terminal holds is unknown, so the keyboard's context ends; it
-    /// also ends once the typed text outgrows the document's capacity.
-    private func submitTypedEdit(_ edit: GhosttyTerminalCompositionDocument.TypedEdit, source: String) {
+    /// After a keyboard edit of typed text. Text that only adds goes to the terminal at once. An
+    /// edit that erases waits for the end of the keyboard's turn, since within it the keyboard may
+    /// type the same text back, as dictation does when it finishes and Korean does when it
+    /// assembles a syllable: the terminal then receives only what changed.
+    private func typedTextChanged() {
+        guard let owed = composition.owedEdit else { return }
+        guard owed.backspaces > 0 else {
+            deliverOwedText()
+            return
+        }
+        guard !typedDeliveryScheduled else { return }
+        typedDeliveryScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.typedDeliveryScheduled = false
+            self.deliverOwedText()
+        }
+    }
+
+    /// Sends the terminal what it is owed of the typed text; it goes before anything else reaches
+    /// the terminal and before the keyboard's context ends. Typed text belongs to the surface it went
+    /// to, so it goes only while input is enabled and still reaches that surface. Otherwise, or if
+    /// any of it isn't delivered, what the terminal holds is unknown: the keyboard's context ends,
+    /// and false tells the caller to stop what depended on it. The context also ends once the typed
+    /// text outgrows the document's capacity.
+    @discardableResult
+    private func deliverOwedText() -> Bool {
+        guard composition.owedEdit != nil else { return true }
+        let destination = inputSurfaceProvider()?.id
+        if !composition.isHeld { typedSurfaceID = destination }
+        guard isInputEnabled, destination == typedSurfaceID, let edit = composition.takeOwedEdit() else {
+            GhosttyRuntimeTrace.diagnostics("responder.typedText dropped: input is unavailable or goes elsewhere")
+            discardKeyboardContext()
+            return false
+        }
         var delivered = true
         for _ in 0..<edit.backspaces where delivered {
             delivered = sendKeyEventHandler?(.init(keyCode: .backspace)) ?? false
         }
         if delivered, !edit.text.isEmpty {
-            delivered = submitTextInput(edit.text, source: source)
+            delivered = submitTextInput(edit.text, source: "typedText")
         }
         if !delivered || composition.typedLength > GhosttyTerminalCompositionDocument.typedCapacity {
-            endKeyboardContext()
+            discardKeyboardContext()
         }
+        return delivered
     }
 
-    /// Ends the keyboard's context, typed text included, and tells the keyboard.
-    private func endKeyboardContext() {
+    /// Ends the keyboard's context, typed text included, and tells the keyboard. What the terminal
+    /// is owed goes first; false if it didn't, and what depended on it stops.
+    @discardableResult
+    private func endKeyboardContext() -> Bool {
+        let delivered = deliverOwedText()
+        discardKeyboardContext()
+        return delivered
+    }
+
+    /// Ends the keyboard's context without sending what the terminal is owed, and tells the
+    /// keyboard.
+    private func discardKeyboardContext() {
         guard !composition.isIdle || keyboardContextNeedsSync else { return }
         synchronizeKeyboardContext { composition.clear() }
     }
@@ -389,6 +442,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         keyboardContextNeedsSync = true
         let startsComposition = composition.marked == nil
         composition.setMarkedText(markedText, selectedRange: selectedRange)
+        // A composition can take in selected typed text as it starts. The typed text then stays as
+        // it is until the composition's commit ends the keyboard's context, so the terminal gets
+        // what it is owed now.
+        if startsComposition { deliverOwedText() }
         if startsComposition, composition.marked != nil {
             let surface = inputSurfaceProvider()
             compositionSurface = surface
@@ -415,11 +472,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         switch composition.replace(range, with: text) {
         case .composition:
             presentComposition()
-        case .typed(let edit):
-            let modifierArmed = modifierArmedProvider()
-            submitTypedEdit(edit, source: "replaceText")
+        case .typed:
             // As for an insert, text an armed modifier turns into a key isn't kept.
-            if modifierArmed { endKeyboardContext() }
+            if modifierArmedProvider() { endKeyboardContext() } else { typedTextChanged() }
         case .committed(let committed):
             presentComposition()
             submitTextInput(committed, source: "replaceText")
@@ -436,8 +491,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     /// for a delete key. A commit or cancel brackets its local change with the input delegate's
     /// notifications, which also end context the keyboard keeps between its own edits. With no
     /// draft, the action changes the terminal's line in a way the keyboard didn't type, so the
-    /// keyboard's context, typed text included, ends. Keyboard edits never come through here: they
-    /// change the document as the keyboard asks.
+    /// keyboard's context, typed text included, ends, once the terminal has what it is owed of it.
+    /// Keyboard edits never come through here: they change the document as the keyboard asks.
     @discardableResult
     func resolveComposition(
         for action: GhosttyTerminalCompositionAction
@@ -451,8 +506,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         for action: GhosttyTerminalCompositionAction
     ) -> GhosttyTerminalCompositionOutcome {
         guard composition.marked != nil else {
-            endKeyboardContext()
-            return .noDraft
+            return endKeyboardContext() ? .noDraft : .refused
         }
         switch action {
         case .finish(let preservingModifiers):
@@ -678,12 +732,14 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         )
         switch composition.deleteBackward() {
         case .terminal:
+            // The terminal's delete follows what it is owed.
+            guard deliverOwedText() else { return }
             _ = sendKeyEventHandler?(.init(keyCode: .backspace))
             // With typed text still after the caret, the terminal deleted text the document holds,
             // so the keyboard's context ends.
             if !composition.isIdle { endKeyboardContext() }
-        case .typed(let edit):
-            submitTypedEdit(edit, source: "deleteBackward")
+        case .typed:
+            typedTextChanged()
         case .composition:
             presentComposition()
         case .none:
@@ -704,7 +760,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         GhosttyRuntimeTrace.diagnostics(
             "responder.paste bytes=\(text.lengthOfBytes(using: .utf8)) firstResponder=\(isFirstResponder) token=\(activationToken)"
         )
-        resolveComposition(for: .cancel)
+        guard resolveComposition(for: .cancel) != .refused else { return }
         _ = sendPasteHandler?(text)
     }
 
@@ -755,7 +811,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
                     "responder.pressesBegan action keyCode=\(key.keyCode.rawValue) modifiers=\(key.modifierFlags.rawValue)"
                 )
                 // A terminal command, unlike typed text, ends the keyboard's context.
-                resolveComposition(for: .finish(preservingModifiers: true))
+                guard resolveComposition(for: .finish(preservingModifiers: true)) != .refused else { continue }
             }
             handleHardwareCommandAction(action)
         }
@@ -774,7 +830,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             _ = sendKeyEventHandler?(event)
         case .text(let text):
             // Hardware text reaches the line without the software keyboard, so its context ends.
-            endKeyboardContext()
+            guard endKeyboardContext() else { return }
             _ = sendTextHandler?(text)
         }
     }

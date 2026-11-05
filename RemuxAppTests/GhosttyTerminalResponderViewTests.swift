@@ -916,6 +916,15 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         var items: [String] = []
     }
 
+    /// Ends the keyboard's turn: the main queue runs what the responder left for it, as it does
+    /// after each keyboard event.
+    @MainActor
+    private func endTurn() {
+        let ended = expectation(description: "the keyboard's turn ended")
+        DispatchQueue.main.async { ended.fulfill() }
+        wait(for: [ended], timeout: 1)
+    }
+
     @MainActor
     private func composingView(_ sent: Sent) -> GhosttyTerminalResponderUIView {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
@@ -981,10 +990,11 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
         view.setMarkedText("nihao", selectedRange: NSRange(location: 5, length: 0))
         view.insertText("nihao")
-        // Korean revises a syllable with an unmarked Backspace and insert.
+        // Korean revises a syllable with an unmarked Backspace and insert, in one turn.
         view.insertText("가")
         view.deleteBackward()
         view.insertText("간")
+        endTurn()
 
         XCTAssertEqual(sent.items, ["text:nihao", "text:가", "key:backspace", "text:간"])
         XCTAssertNil(view.markedTextRange)
@@ -1160,34 +1170,47 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         let sent = Sent()
         let view = composingView(sent)
 
-        // The calls an iPhone made dictating "hello world this is a test": a first guess, revisions
-        // of the whole guess up to the caret, then on stopping an empty replacement and the result.
+        // The calls an iPhone made dictating "hello world this is a test", each guess in its own
+        // turn: a first guess, revisions of the whole guess up to the caret, then on stopping an
+        // empty replacement and the result in one turn.
         view.insertText("Hell")
         XCTAssertEqual(view.text(in: typedRange(0, 5)), " Hell")
-        view.replace(typedRange(1, 4), withText: "Hello")
-        view.replace(typedRange(1, 5), withText: "hello, this is")
-        view.replace(typedRange(1, 14), withText: "hello, this is a")
-        view.replace(typedRange(1, 16), withText: "hello, this is a test")
+        for (range, guess) in [
+            (typedRange(1, 4), "Hello"),
+            (typedRange(1, 5), "hello, this is"),
+            (typedRange(1, 14), "hello, this is a"),
+            (typedRange(1, 16), "hello, this is a test"),
+        ] {
+            view.replace(range, withText: guess)
+            endTurn()
+        }
+        let guessed = sent.items
         view.replace(typedRange(1, 21), withText: "")
         view.insertText("hello, this is a test")
+        endTurn()
 
-        // Only the part that changed is erased and retyped.
+        // Only the part that changed is erased and retyped, and a result the same as the last
+        // guess sends nothing.
         XCTAssertEqual(
-            sent.items,
+            guessed,
             ["text:Hell", "text:o"]
                 + Array(repeating: "key:backspace", count: 5) + ["text:hello, this is", "text: a", "text: test"]
-                + Array(repeating: "key:backspace", count: 21) + ["text:hello, this is a test"]
         )
+        XCTAssertEqual(sent.items, guessed)
         XCTAssertEqual(terminalLine(sent.items), "hello, this is a test")
         XCTAssertEqual(view.text(in: typedRange(0, 22)), " hello, this is a test")
         XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 22, length: 0))
 
-        // A second dictation in the same line goes on from the caret.
+        // A second dictation in the same line goes on from the caret, and its result changes the
+        // last word.
         view.insertText(" wor")
         view.replace(typedRange(22, 4), withText: " world")
+        endTurn()
         view.replace(typedRange(22, 6), withText: "")
-        view.insertText(" world")
-        XCTAssertEqual(terminalLine(sent.items), "hello, this is a test world")
+        view.insertText(" word")
+        endTurn()
+        XCTAssertEqual(Array(sent.items.dropFirst(guessed.count)), ["text: wor", "text:ld", "key:backspace", "key:backspace", "text:d"])
+        XCTAssertEqual(terminalLine(sent.items), "hello, this is a test word")
         XCTAssertNil(view.markedTextRange)
     }
 
@@ -1196,17 +1219,23 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         let sent = Sent()
         let view = composingView(sent)
 
-        // The calls an iPhone made dictating "echo one new line echo two": guesses with a line
-        // break, ten spaces it inserted and removed, then on stopping an empty replacement and the
-        // result.
+        // The calls an iPhone made dictating "echo one new line echo two", each in its own turn:
+        // guesses with a line break and ten spaces it inserted and removed, as UIKit does without a
+        // dictation placeholder.
         view.insertText("Eco")
-        view.replace(typedRange(1, 3), withText: "Eco van")
-        view.replace(typedRange(1, 7), withText: "Aron\n")
-        view.replace(typedRange(1, 5), withText: "echo 1\nEcho to")
-        view.replace(typedRange(1, 14), withText: "Eco 1\nEcho two")
+        for (range, text) in [
+            (typedRange(1, 3), "Eco van"),
+            (typedRange(1, 7), "Aron\n"),
+            (typedRange(1, 5), "echo 1\nEcho to"),
+            (typedRange(1, 14), "Eco 1\nEcho two"),
+        ] {
+            view.replace(range, withText: text)
+            endTurn()
+        }
         view.insertText(String(repeating: " ", count: 10))
+        endTurn()
         view.replace(typedRange(15, 10), withText: "")
-        view.replace(typedRange(1, 14), withText: "")
+        endTurn()
 
         // A guess shows the text before its line break, which it can still revise, and runs nothing.
         XCTAssertEqual(
@@ -1215,13 +1244,15 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 + Array(repeating: "key:backspace", count: 7) + ["text:Aron"]
                 + Array(repeating: "key:backspace", count: 4) + ["text:echo 1"]
                 + Array(repeating: "key:backspace", count: 6) + ["text:Eco 1"]
-                + Array(repeating: "key:backspace", count: 5)
         )
 
-        // The result runs its first line once.
+        // On stopping, an empty replacement and the result in one turn: the first line is already
+        // there, so only the line break and what follows it go, once.
+        let guessed = sent.items
+        view.replace(typedRange(1, 14), withText: "")
         view.insertText("Eco 1\nEcho two")
-        XCTAssertEqual(sent.items.last, "text:Eco 1\nEcho two")
-        XCTAssertEqual(sent.items.filter { $0.contains(where: \.isNewline) }.count, 1)
+        endTurn()
+        XCTAssertEqual(Array(sent.items.dropFirst(guessed.count)), ["text:\nEcho two"])
         XCTAssertEqual(view.text(in: typedRange(0, 1)), " ")
         XCTAssertNil(view.text(in: typedRange(0, 2)))
     }
@@ -1232,14 +1263,15 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         let view = composingView(sent)
 
         // The iOS 27 Korean keyboard reassembles a syllable by selecting it together with the
-        // character before it, here the placeholder, deleting both and typing them back: ㄱ, then
-        // ㅏ makes 가, ㄴ makes 간, and ㅏ makes 가나.
+        // character before it, here the placeholder, deleting both and typing them back, in one
+        // turn: ㄱ, then ㅏ makes 가, ㄴ makes 간, and ㅏ makes 가나.
         view.insertText("ㄱ")
         for syllable in ["가", "간", "가나"] {
             view.selectedTextRange = typedRange(0, 2)
             view.deleteBackward()
             view.insertText(" ")
             view.insertText(syllable)
+            endTurn()
         }
 
         XCTAssertEqual(
@@ -1252,6 +1284,179 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         // A space typed after anything else is typed.
         view.insertText(" ")
         XCTAssertEqual(terminalLine(sent.items), "가나 ")
+    }
+
+    @MainActor
+    func testKoreanAfterOtherTextRetypesOnlyTheSyllable() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        // After other text, as on the simulator's iOS 27 Korean keyboard: a syllable is selected
+        // with the character before it, both are deleted and both typed back, in one turn.
+        view.insertText("a")
+        view.insertText("b")
+        view.insertText("ㄱ")
+        for syllable in ["가", "간", "가나"] {
+            view.selectedTextRange = typedRange(2, 2)
+            view.deleteBackward()
+            view.insertText("b")
+            view.insertText(syllable)
+            endTurn()
+        }
+
+        // The character before the syllable stays on the line.
+        XCTAssertEqual(
+            sent.items,
+            ["text:a", "text:b", "text:ㄱ", "key:backspace", "text:가", "key:backspace", "text:간", "key:backspace", "text:가나"]
+        )
+        XCTAssertEqual(terminalLine(sent.items), "ab가나")
+    }
+
+    @MainActor
+    func testTypedTextGoesAtOnceAndErasingWaitsForTheEndOfTheTurn() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        view.insertText("ab")
+        XCTAssertEqual(sent.items, ["text:ab"])
+
+        // The iPhone selects the character before each Backspace.
+        view.selectedTextRange = typedRange(2, 1)
+        view.deleteBackward()
+        XCTAssertEqual(sent.items, ["text:ab"])
+        endTurn()
+        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
+
+        // Text typed back within the turn leaves nothing to send.
+        view.selectedTextRange = typedRange(1, 1)
+        view.deleteBackward()
+        view.insertText("a")
+        endTurn()
+        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
+        XCTAssertEqual(view.text(in: typedRange(0, 2)), " a")
+    }
+
+    @MainActor
+    func testWhatTheTerminalIsOwedGoesBeforeAnythingElse() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        // A Return in the turn of a Backspace runs the line without the deleted character.
+        view.insertText("abc")
+        view.selectedTextRange = typedRange(3, 1)
+        view.deleteBackward()
+        view.insertText("\n")
+        XCTAssertEqual(sent.items, ["text:abc", "key:backspace", "text:\n"])
+        XCTAssertNil(view.text(in: typedRange(0, 2)))
+
+        // An app action, as a toolbar key, follows it too.
+        sent.items.removeAll()
+        view.insertText("ab")
+        view.selectedTextRange = typedRange(2, 1)
+        view.deleteBackward()
+        XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: true)), .noDraft)
+        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
+
+        // Typed text deleted down to nothing still owes the terminal its Backspaces, as when the app
+        // goes to the background.
+        sent.items.removeAll()
+        view.insertText("a")
+        view.selectedTextRange = typedRange(1, 1)
+        view.deleteBackward()
+        XCTAssertEqual(view.resolveComposition(for: .cancel), .noDraft)
+        XCTAssertEqual(sent.items, ["text:a", "key:backspace"])
+
+        // So does a paste, and the terminal's own delete once the typed text is gone.
+        sent.items.removeAll()
+        view.insertText("a")
+        view.selectedTextRange = typedRange(1, 1)
+        view.deleteBackward()
+        view.deleteBackward()
+        UIPasteboard.general.string = "PASTE"
+        view.paste(nil)
+        endTurn()
+        XCTAssertEqual(sent.items, ["text:a", "key:backspace", "key:backspace", "paste:PASTE"])
+    }
+
+    @MainActor
+    func testWhatDependsOnUndeliveredOrUnavailableTypedTextStops() {
+        let sent = Sent()
+        var delivers = true
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        let delegate = RecordingInputDelegate()
+        view.inputDelegate = delegate
+        func update(isEnabled: Bool) {
+            view.update(
+                isEnabled: isEnabled,
+                wantsFirstResponder: isEnabled,
+                activationToken: 1,
+                sendText: {
+                    sent.items.append("text:" + $0)
+                    return delivers
+                },
+                sendPaste: { _ in delivers },
+                sendKeyEvent: {
+                    sent.items.append($0.keyCode == .backspace ? "key:backspace" : "key:\($0.keyCode.rawValue)")
+                    return delivers
+                }
+            )
+        }
+        update(isEnabled: true)
+
+        // A Backspace that isn't delivered leaves the line unknown, so the Return in its turn
+        // doesn't run it, and nothing is kept.
+        view.insertText("abc")
+        view.selectedTextRange = typedRange(1, 3)
+        view.deleteBackward()
+        delivers = false
+        view.insertText("\n")
+        XCTAssertEqual(sent.items, ["text:abc", "key:backspace"])
+        XCTAssertNil(view.text(in: typedRange(0, 2)))
+        XCTAssertEqual(delegate.calls.count, 4)
+
+        // An app action stops too.
+        delivers = true
+        sent.items.removeAll()
+        view.insertText("ab")
+        view.selectedTextRange = typedRange(2, 1)
+        view.deleteBackward()
+        delivers = false
+        XCTAssertEqual(view.resolveComposition(for: .finish(preservingModifiers: true)), .refused)
+        XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
+
+        // Input that becomes unavailable before the turn ends drops what the terminal was owed.
+        delivers = true
+        sent.items.removeAll()
+        view.insertText("ab")
+        view.selectedTextRange = typedRange(2, 1)
+        view.deleteBackward()
+        update(isEnabled: false)
+        endTurn()
+        XCTAssertEqual(sent.items, ["text:ab"])
+        XCTAssertNil(view.text(in: typedRange(0, 2)))
+    }
+
+    @MainActor
+    func testDictationsPlaceholderLeavesTheDocumentAndTheTerminalAlone() {
+        let sent = Sent()
+        let view = composingView(sent)
+
+        // UIKit asks for these by selector; without them it stands in for the result with spaces.
+        for selector in [
+            "insertDictationResultPlaceholder",
+            "frameForDictationResultPlaceholder:",
+            "removeDictationResultPlaceholder:willInsertResult:",
+        ] {
+            XCTAssertTrue(view.responds(to: NSSelectorFromString(selector)), selector)
+        }
+
+        view.insertText("hello")
+        let placeholder = view.insertDictationResultPlaceholder
+        view.removeDictationResultPlaceholder(placeholder, willInsertResult: false)
+        endTurn()
+        XCTAssertEqual(sent.items, ["text:hello"])
+        XCTAssertEqual(view.text(in: typedRange(0, 6)), " hello")
+        XCTAssertNil(view.text(in: typedRange(0, 7)))
     }
 
     @MainActor
@@ -1283,6 +1488,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         view.insertText("spacinf t")
         view.selectedTextRange = typedRange(9, 1)
         view.deleteBackward()
+        endTurn()
         XCTAssertEqual(sent.items.suffix(1), ["key:backspace"])
         XCTAssertEqual(view.text(in: typedRange(0, 9)), " spacinf ")
         XCTAssertEqual((view.selectedTextRange as? GhosttyVirtualTextRange)?.nsRange, NSRange(location: 9, length: 0))
@@ -1291,6 +1497,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         view.selectedTextRange = typedRange(7, 1)
         view.deleteBackward()
         view.insertText("g")
+        endTurn()
         XCTAssertEqual(terminalLine(sent.items), "spacing ")
         XCTAssertEqual(view.text(in: typedRange(0, 9)), " spacing ")
 
@@ -1451,6 +1658,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertNil(view.markedTextRange)
         XCTAssertEqual(view.text(in: typedRange(0, 3)), " ab")
         view.deleteBackward()
+        endTurn()
         XCTAssertEqual(sent.items, ["text:ab", "key:backspace"])
 
         // A commit ends the keyboard's context.
