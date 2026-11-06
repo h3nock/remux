@@ -141,7 +141,7 @@ struct TerminalPreviewLiveWebClient: Sendable {
         self.openHandler = open
     }
 
-    init(provider: RemuxSessionLiveForwardProvider) {
+    init(provider: RemuxPooledLiveForwardProvider) {
         self.init { target in
             let handle = try await provider.openForward(
                 to: try RemuxSSHDirectTCPIPTarget(

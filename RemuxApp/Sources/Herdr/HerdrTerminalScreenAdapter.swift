@@ -98,7 +98,8 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
         return id
     }
 
-    private func paneID(for surfaceID: UUID) -> String? {
+    /// The Herdr pane a listed pane's surface shows; nil for a popup's surface.
+    func paneID(for surfaceID: UUID) -> String? {
         guard let paneID = paneIDsBySurfaceID[surfaceID],
               listedPanes.contains(where: { $0.paneID == paneID })
         else { return nil }

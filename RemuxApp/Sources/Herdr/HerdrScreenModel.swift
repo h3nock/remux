@@ -1660,6 +1660,19 @@ final class HerdrScreenModel {
         return try? request.link(fromReply: reply.json)
     }
 
+    /// The current directory of the pane `surfaceID` shows, from the newest snapshot of the server boot on
+    /// screen: Herdr sends a pane's directory whenever it changes, so it is read now, at the tap. A popup's is
+    /// unknown, since Herdr sends only its panes'.
+    func paneCurrentDirectory(from surfaceID: UUID) -> @Sendable () async throws -> String {
+        guard let paneID = terminalScreenAdapter.paneID(for: surfaceID),
+              let snapshot, snapshot.bootID == layout?.bootID,
+              let directory = snapshot.currentDirectory(ofPane: paneID)
+        else {
+            return { throw TerminalPreviewPathError.invalidCurrentDirectory }
+        }
+        return { directory }
+    }
+
     /// `method` through the engine's lane, after the operations asked before it: it waits in line behind
     /// them, and behind the steps of the view request in progress, then for Herdr's answer as long as
     /// Herdr's client waits for a command.

@@ -16,7 +16,6 @@ final class TmuxScreenModel: ObservableObject {
     /// Presents this session to `GhosttySurfaceScreen` through the
     /// `GhosttyTerminalScreenModeling` boundary.
     let terminalScreenAdapter = TmuxTerminalScreenAdapter()
-    let terminalPreviewClient: TerminalPreviewClient?
 
     @Published private(set) var session: TmuxTerminalSession?
     @Published private(set) var startupFailure: String?
@@ -77,7 +76,6 @@ final class TmuxScreenModel: ObservableObject {
         do {
             runtime = try GhosttyKitRuntime(terminalSettings: target.terminalSettings)
         } catch {
-            self.terminalPreviewClient = nil
             startupFailure = String(describing: error)
             report(.disconnected(Self.runtimeStartFailureReason))
             return
@@ -90,17 +88,6 @@ final class TmuxScreenModel: ObservableObject {
         )
 
         let transport = transportFactory(target)
-        if let provider = (transport as? any TmuxControlTransportSFTPProviding)?
-            .sessionSFTPClientProvider {
-            self.terminalPreviewClient = TerminalPreviewClient(
-                provider: provider,
-                liveForwardProvider:
-                    (transport as? any TmuxControlTransportLiveForwardProviding)?
-                        .sessionLiveForwardProvider
-            )
-        } else {
-            self.terminalPreviewClient = nil
-        }
         let session = TmuxTerminalSession(
             app: runtime.appHandle,
             transport: transport,
@@ -166,33 +153,14 @@ final class TmuxScreenModel: ObservableObject {
         }
     }
 
-    func terminalPreviewPathResolver(
-        for candidate: TerminalPreviewCandidate,
-        from surfaceID: UUID
-    ) -> TerminalPreviewSession.PathResolver {
-        switch candidate.target {
-        case .localhost:
-            // Live targets carry their destination; the session never
-            // invokes this resolver for them.
-            return { "" }
-        case .file(.absolute(let remotePath)):
-            return { remotePath }
-        case .file(.relative(let path)):
-            guard let controller = session?.controller,
-                  let paneID = terminalScreenAdapter.tmuxPaneID(for: surfaceID)
-            else {
-                return {
-                    throw TmuxSessionController.PaneCurrentDirectoryError
-                        .paneUnavailable
-                }
-            }
-            let relativePath = TerminalPreviewPath.relative(path)
-            return {
-                let currentDirectory = try await controller
-                    .paneCurrentDirectory(for: paneID)
-                return try relativePath.resolved(relativeTo: currentDirectory)
-            }
+    /// The current directory of the pane `surfaceID` shows, which tmux is asked for when a preview loads.
+    func paneCurrentDirectory(from surfaceID: UUID) -> @Sendable () async throws -> String {
+        guard let controller = session?.controller,
+              let paneID = terminalScreenAdapter.tmuxPaneID(for: surfaceID)
+        else {
+            return { throw TmuxSessionController.PaneCurrentDirectoryError.paneUnavailable }
         }
+        return { try await controller.paneCurrentDirectory(for: paneID) }
     }
 
     private func connect(viewport: TmuxControlViewport) {

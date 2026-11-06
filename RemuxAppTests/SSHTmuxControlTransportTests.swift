@@ -389,135 +389,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(cleanedValues, [42])
     }
 
-    func testSessionSFTPScopeUsesExactActivatedRootAndRejectsAfterClose() async throws {
-        let rootChannel = EmbeddedChannel()
-        let scope = RemuxSessionSFTPChildScope()
-
-        try await scope.activate(rootChannel: rootChannel)
-        let registration = try await scope.begin()
-
-        XCTAssertTrue((registration.rootChannel as AnyObject) === rootChannel)
-
-        await scope.finish(registration)
-        let childDrain = await scope.close()
-        XCTAssertEqual(childDrain, .clean)
-
-        do {
-            _ = try await scope.begin()
-            XCTFail("expected a closed session scope to reject new SFTP children")
-        } catch let error as RemuxSFTPClientError {
-            XCTAssertEqual(error, .sessionUnavailable)
-        }
-    }
-
-    func testSessionSFTPScopeCloseWaitsForPendingChildOpen() async throws {
-        let scope = RemuxSessionSFTPChildScope()
-        try await scope.activate(rootChannel: EmbeddedChannel())
-        let pending = try await scope.begin()
-        let recorder = SessionSFTPScopeRecorder()
-
-        let closeTask = Task {
-            _ = await scope.close()
-            await recorder.recordClosed()
-        }
-        try await Task.sleep(for: .milliseconds(20))
-        let didCloseWhileChildWasPending = await recorder.didClose
-        XCTAssertFalse(didCloseWhileChildWasPending)
-
-        await scope.finish(pending)
-        await closeTask.value
-
-        let didCloseAfterChildFinished = await recorder.didClose
-        XCTAssertTrue(didCloseAfterChildFinished)
-    }
-
-    func testSessionSFTPScopeClosesChildrenBeforeDraining() async throws {
-        let scope = RemuxSessionSFTPChildScope()
-        try await scope.activate(rootChannel: EmbeddedChannel())
-        let registration = try await scope.begin()
-        let recorder = SessionSFTPScopeRecorder()
-        let teardown = RemuxSFTPLeaseTeardown(
-            closeBorrowedChild: {
-                await recorder.recordChildClose()
-            }
-        )
-
-        let didRegister = await scope.register(teardown, for: registration)
-        XCTAssertTrue(didRegister)
-        let childDrain = await scope.close()
-
-        let childCloseCount = await recorder.childCloseCount
-        XCTAssertEqual(childCloseCount, 1)
-        XCTAssertEqual(childDrain, .clean)
-    }
-
-    func testSessionSFTPScopeDirtyChildRetiresRootOnce() async throws {
-        enum ChildCloseFailure: Error {
-            case failed
-        }
-
-        let scope = RemuxSessionSFTPChildScope()
-        let recorder = SessionSFTPScopeRecorder()
-        try await scope.activate(
-            rootChannel: EmbeddedChannel(),
-            invalidateRootForReuse: {
-                await recorder.recordRootInvalidation()
-            }
-        )
-        let registration = try await scope.begin()
-        let teardown = RemuxSFTPLeaseTeardown(
-            closeBorrowedChild: {
-                throw ChildCloseFailure.failed
-            }
-        )
-
-        let didRegister = await scope.register(teardown, for: registration)
-        XCTAssertTrue(didRegister)
-
-        let firstDrain = await scope.close()
-        let secondDrain = await scope.close()
-
-        XCTAssertEqual(firstDrain, .dirty)
-        XCTAssertEqual(secondDrain, .dirty)
-        let rootInvalidationCount = await recorder.rootInvalidationCount
-        XCTAssertEqual(rootInvalidationCount, 1)
-    }
-
-    func testSessionSFTPScopeCannotBeReactivated() async throws {
-        let scope = RemuxSessionSFTPChildScope()
-        try await scope.activate(rootChannel: EmbeddedChannel())
-
-        do {
-            try await scope.activate(rootChannel: EmbeddedChannel())
-            XCTFail("expected a session SFTP scope to bind only once")
-        } catch let error as RemuxSFTPClientError {
-            XCTAssertEqual(error, .sessionUnavailable)
-        }
-
-        _ = await scope.close()
-    }
-
-    func testSessionScopeActivationFailureDuringCloseIsAClosedStart() {
-        XCTAssertTrue(
-            SSHTmuxControlTransport.startWasInterruptedByClose(
-                RemuxSFTPClientError.sessionUnavailable,
-                transportWasClosed: true
-            )
-        )
-        XCTAssertFalse(
-            SSHTmuxControlTransport.startWasInterruptedByClose(
-                RemuxSFTPClientError.sessionUnavailable,
-                transportWasClosed: false
-            )
-        )
-        XCTAssertFalse(
-            SSHTmuxControlTransport.startWasInterruptedByClose(
-                RemuxSFTPClientError.operationTimedOut,
-                transportWasClosed: true
-            )
-        )
-    }
-
     func testDirectTCPIPTargetBuildsNIOSSHChannelType() throws {
         let target = try RemuxSSHDirectTCPIPTarget(
             host: "127.0.0.1",
@@ -838,43 +709,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(snapshot.retiredCount, 1)
 
         // The sibling's release drains the retired root.
-        await pool.releaseEntryForTesting(
-            for: key,
-            generation: generation,
-            disposition: .reusable
-        )
-        snapshot = await pool.snapshot()
-        XCTAssertEqual(snapshot.retiredCount, 0)
-    }
-
-    func testSSHRootServiceChildFailureRetiresRootWithoutConsumingLiveLease() async {
-        let pool = RemuxSSHRootService()
-        let key = makeSSHRootKey()
-        let generation = await pool.insertEntryForTesting(
-            for: key,
-            activeLeaseCount: 2,
-            reservationID: UUID()
-        )
-
-        await pool.invalidateForReuseForTesting(
-            for: key,
-            generation: generation
-        )
-
-        var snapshot = await pool.snapshot()
-        XCTAssertNil(snapshot.entry(for: key))
-        XCTAssertEqual(snapshot.retiredCount, 1)
-        let replacementReservation = await pool.reserveEntryForTesting(for: key)
-        XCTAssertNil(replacementReservation)
-
-        await pool.releaseEntryForTesting(
-            for: key,
-            generation: generation,
-            disposition: .reusable
-        )
-        snapshot = await pool.snapshot()
-        XCTAssertEqual(snapshot.retiredCount, 1)
-
         await pool.releaseEntryForTesting(
             for: key,
             generation: generation,
@@ -1821,24 +1655,6 @@ private actor SFTPTimeoutRecorder {
 
     func recordInvalidation() {
         didInvalidate = true
-    }
-}
-
-private actor SessionSFTPScopeRecorder {
-    private(set) var didClose = false
-    private(set) var childCloseCount = 0
-    private(set) var rootInvalidationCount = 0
-
-    func recordClosed() {
-        didClose = true
-    }
-
-    func recordChildClose() {
-        childCloseCount += 1
-    }
-
-    func recordRootInvalidation() {
-        rootInvalidationCount += 1
     }
 }
 

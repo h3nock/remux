@@ -54,6 +54,11 @@ struct RemuxAppDependencies: Sendable {
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService
+    private let terminalPreviewClientFactory: @Sendable (
+        _ target: SessionTarget,
+        _ trustedHostStore: TrustedHostStore,
+        _ sshRootService: RemuxSSHRootService
+    ) -> TerminalPreviewClient?
     private let tmuxSessionDiscoverer: @Sendable (
         _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
@@ -104,6 +109,11 @@ struct RemuxAppDependencies: Sendable {
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
+        terminalPreviewClientFactory: @escaping @Sendable (
+            _ target: SessionTarget,
+            _ trustedHostStore: TrustedHostStore,
+            _ sshRootService: RemuxSSHRootService
+        ) -> TerminalPreviewClient? = RemuxAppDependencies.liveTerminalPreviewClient,
         tmuxSessionDiscoverer: @escaping @Sendable (
             _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
@@ -141,6 +151,7 @@ struct RemuxAppDependencies: Sendable {
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
+        self.terminalPreviewClientFactory = terminalPreviewClientFactory
         self.tmuxSessionDiscoverer = tmuxSessionDiscoverer
         self.herdrSessionDiscoverer = herdrSessionDiscoverer
         self.sshAccessVerifier = sshAccessVerifier
@@ -228,6 +239,11 @@ struct RemuxAppDependencies: Sendable {
 
     func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
         attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
+    }
+
+    /// Previews of the target server's files and local web pages, whichever backend its session runs.
+    func makeTerminalPreviewClient(for target: SessionTarget) -> TerminalPreviewClient? {
+        terminalPreviewClientFactory(target, trustedHostStore, sshRootService)
     }
 
     func discoverTmuxSessions(for target: SessionTarget) async throws -> SessionListing {
@@ -329,7 +345,9 @@ struct RemuxAppDependencies: Sendable {
         )
     }
 
-    static func attachmentSSHRootConfiguration(
+    /// The SSH root for moving a server's files and page traffic, which allows a slower connect than a
+    /// terminal's.
+    static func transferSSHRootConfiguration(
         for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil
@@ -347,7 +365,7 @@ struct RemuxAppDependencies: Sendable {
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService {
-        let rootConfiguration = attachmentSSHRootConfiguration(
+        let rootConfiguration = transferSSHRootConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
             tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker
@@ -359,6 +377,34 @@ struct RemuxAppDependencies: Sendable {
             operationTimeout: RemuxConnectionTimeouts.sftpOperation
         )
         return GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
+    }
+
+    /// Each preview claims the server's pooled SSH connection, as one of its consumers, as attachments do:
+    /// a file while it downloads, a page while it is open.
+    private static func liveTerminalPreviewClient(
+        target: SessionTarget,
+        trustedHostStore: TrustedHostStore,
+        sshRootService: RemuxSSHRootService
+    ) -> TerminalPreviewClient? {
+        let rootKey = RemuxSSHRootKey(target: target)
+        let rootConfiguration = transferSSHRootConfiguration(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            tailscaleSSHCheckChallengeBroker: sshRootService.tailscaleSSHCheckChallengeBroker
+        )
+        return TerminalPreviewClient(
+            sftpProvider: RemuxCitadelSFTPClientProvider(
+                sshRootService: sshRootService,
+                rootKey: rootKey,
+                rootConfiguration: rootConfiguration,
+                operationTimeout: RemuxConnectionTimeouts.sftpOperation
+            ),
+            liveForwardProvider: RemuxPooledLiveForwardProvider(
+                sshRootService: sshRootService,
+                rootKey: rootKey,
+                rootConfiguration: rootConfiguration
+            )
+        )
     }
 
     private static func liveTmuxSessionDiscoverer(
@@ -633,6 +679,8 @@ struct RemuxAppDependencies: Sendable {
             },
             sshConnectionPrewarmer: { _, _, _ in
             },
+            // The simulated server has no files to preview.
+            terminalPreviewClientFactory: { _, _, _ in nil },
             // UI tests reach no real server: discovery and verification
             // answer like a server that signs in and whose tmux has only the
             // seeded session, if any.

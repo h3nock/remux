@@ -113,11 +113,25 @@ enum TerminalRuntime {
         }
     }
 
-    /// Previews read files and forward ports through the tmux transport's SSH connection.
-    var terminalPreviewClient: TerminalPreviewClient? {
-        switch self {
-        case .tmux(let model): model.terminalPreviewClient
-        case .herdr: nil
+    /// Where a preview's file is on the server: an absolute path as printed, a relative one in the current
+    /// directory of the pane it was printed in, which tmux reports when asked and Herdr sends as it changes.
+    func terminalPreviewPathResolver(
+        for candidate: TerminalPreviewCandidate,
+        from surfaceID: UUID
+    ) -> TerminalPreviewSession.PathResolver {
+        switch candidate.target {
+        case .localhost:
+            // Live targets carry their destination; the session never invokes this resolver for them.
+            return { "" }
+        case .file(.absolute(let remotePath)):
+            return { remotePath }
+        case .file(.relative(let path)):
+            let relativePath = TerminalPreviewPath.relative(path)
+            let currentDirectory = switch self {
+            case .tmux(let model): model.paneCurrentDirectory(from: surfaceID)
+            case .herdr(let model): model.paneCurrentDirectory(from: surfaceID)
+            }
+            return { try relativePath.resolved(relativeTo: try await currentDirectory()) }
         }
     }
 
@@ -160,11 +174,13 @@ struct ActiveTerminalScreenEntry: Identifiable {
     let presentation: GhosttySurfaceScreenPresentation
     let runtime: TerminalRuntime
     let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
+    let terminalPreviewClientFactory: @Sendable () -> TerminalPreviewClient?
 
     init(
         session: ActiveTerminalSession,
         runtime: TerminalRuntime,
-        attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService
+        attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
+        terminalPreviewClientFactory: @escaping @Sendable () -> TerminalPreviewClient?
     ) {
         self.id = session.id
         self.instanceID = session.instanceID
@@ -181,6 +197,7 @@ struct ActiveTerminalScreenEntry: Identifiable {
         )
         self.runtime = runtime
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
+        self.terminalPreviewClientFactory = terminalPreviewClientFactory
     }
 }
 
@@ -510,12 +527,15 @@ final class RemuxRootModel: ObservableObject {
     var activeTerminalScreenEntries: [ActiveTerminalScreenEntry] {
         activeSessions.map { session in
             let runtime = terminalRuntime(for: session)
-            let attachmentTarget = runtime.target
+            let serverTarget = runtime.target
             return ActiveTerminalScreenEntry(
                 session: session,
                 runtime: runtime,
-                attachmentTransferServiceFactory: { [dependencies, attachmentTarget] in
-                    dependencies.makeAttachmentTransferService(for: attachmentTarget)
+                attachmentTransferServiceFactory: { [dependencies, serverTarget] in
+                    dependencies.makeAttachmentTransferService(for: serverTarget)
+                },
+                terminalPreviewClientFactory: { [dependencies, serverTarget] in
+                    dependencies.makeTerminalPreviewClient(for: serverTarget)
                 }
             )
         }

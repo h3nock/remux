@@ -26,20 +26,20 @@ enum TerminalPreviewResource: Equatable, Sendable {
     }
 }
 
+/// Previews of a server's files and local web pages, over the server's pooled SSH connection: a file only while
+/// it downloads, a page for as long as it is open.
 struct TerminalPreviewClient: Sendable {
     private let fileClient: TerminalPreviewFileClient
     private let staticHTMLClient: TerminalPreviewStaticHTMLClient
     private let liveWebClient: TerminalPreviewLiveWebClient?
 
     init(
-        provider: RemuxSessionCitadelSFTPClientProvider,
-        liveForwardProvider: RemuxSessionLiveForwardProvider?
+        sftpProvider: RemuxCitadelSFTPClientProvider,
+        liveForwardProvider: RemuxPooledLiveForwardProvider
     ) {
-        self.fileClient = TerminalPreviewFileClient(provider: provider)
-        self.staticHTMLClient = TerminalPreviewStaticHTMLClient(provider: provider)
-        self.liveWebClient = liveForwardProvider.map {
-            TerminalPreviewLiveWebClient(provider: $0)
-        }
+        self.fileClient = TerminalPreviewFileClient(provider: sftpProvider)
+        self.staticHTMLClient = TerminalPreviewStaticHTMLClient(provider: sftpProvider)
+        self.liveWebClient = TerminalPreviewLiveWebClient(provider: liveForwardProvider)
     }
 
     init(
@@ -82,17 +82,17 @@ struct TerminalPreviewStaticHTMLClient: Sendable {
         self.openHandler = open
     }
 
-    init(provider: RemuxSessionCitadelSFTPClientProvider) {
+    init(provider: RemuxCitadelSFTPClientProvider) {
         self.init { remotePath in
             let lease = try await provider.openClientLease()
             do {
                 let metadata = try await lease.client.metadata(atPath: remotePath)
                 if let size = metadata.size,
-                   size > TerminalPreviewFileLoader<RemuxSessionCitadelSFTPClientProvider>
+                   size > TerminalPreviewFileLoader<RemuxCitadelSFTPClientProvider>
                     .defaultMaximumByteCount {
                     throw TerminalPreviewFileError.tooLarge(
                         maximumByteCount: TerminalPreviewFileLoader<
-                            RemuxSessionCitadelSFTPClientProvider
+                            RemuxCitadelSFTPClientProvider
                         >.defaultMaximumByteCount
                     )
                 }
@@ -270,7 +270,7 @@ struct TerminalPreviewStaticHTMLReadLease: Sendable {
                     client: lease.client,
                     remotePath: remotePath,
                     maximumByteCount: TerminalPreviewFileLoader<
-                        RemuxSessionCitadelSFTPClientProvider
+                        RemuxCitadelSFTPClientProvider
                     >.defaultMaximumByteCount,
                     knownMetadata: knownMetadata,
                     onMetadata: onMetadata,
