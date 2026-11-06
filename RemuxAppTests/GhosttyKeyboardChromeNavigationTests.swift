@@ -89,3 +89,54 @@ final class GhosttyTerminalSafeAreaPolicyTests: XCTestCase {
         XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: true, hasVerticalControls: true, isCompact: false, isLandscape: true), [])
     }
 }
+
+final class GhosttyWholeRowLayoutTests: XCTestCase {
+    func testResizingControlsAlwaysUsesTheFinalAvailableArea() {
+        // Hidden keyboard, visible keyboard, six growing Compose sizes, then
+        // shrinking Compose and returning to the original available height.
+        let heights: [CGFloat] = [790, 510, 488, 466, 444, 422, 400, 378, 444, 488, 510, 790]
+        for scale: CGFloat in [2, 3] {
+            for height in heights {
+                let fitted = GhosttyWholeRowLayout.viewportHeight(availableHeight: height, cellPixelHeight: 47, scale: scale)
+                let expectedRows = floor((height * scale).rounded() / 47)
+                XCTAssertEqual((fitted * scale).rounded(), expectedRows * 47, accuracy: 0.001)
+                XCTAssertLessThan(height - fitted, 47 / scale)
+                XCTAssertGreaterThanOrEqual(height - fitted, 0)
+            }
+        }
+    }
+
+    func testTrimmingRemainderPreservesWholeRowCount() {
+        for pixels in [1590, 1600, 1602, 1603] {
+            let height = CGFloat(pixels) / 3
+            let remainder = height - GhosttyWholeRowLayout.viewportHeight(availableHeight: height, cellPixelHeight: 48, scale: 3)
+            XCTAssertEqual(floor((height * 3).rounded() / 48), floor(((height - remainder) * 3).rounded() / 48))
+            XCTAssertEqual(((height - remainder) * 3).rounded().truncatingRemainder(dividingBy: 48), 0)
+        }
+    }
+}
+
+final class GhosttyTerminalControlsGeometryTests: XCTestCase {
+    func testComposerGrowthAndSelectionKeepTopGapStable() {
+        for windowHeight: CGFloat in [820, 510, 496] {
+            for controlsHeight: CGFloat in [78, 99, 120, 141, 162, 183, 183, 120, 78] {
+                let bounds = CGRect(x: 13, y: 21, width: 700, height: windowHeight)
+                let frames = GhosttyTerminalControlsGeometry.frames(bounds: bounds, controlsHeight: controlsHeight,
+                    cellPixelHeight: 47, scale: 3, centersControls: false)
+                XCTAssertEqual(frames.controls.minY, frames.terminal.maxY, accuracy: 0.001)
+                XCTAssertEqual(frames.controls.height, controlsHeight)
+                XCTAssertLessThanOrEqual(frames.controls.maxY, bounds.maxY + 0.001)
+                XCTAssertLessThan(bounds.maxY - frames.controls.maxY, 47 / 3)
+                XCTAssertEqual((frames.terminal.height * 3).rounded().truncatingRemainder(dividingBy: 47), 0)
+            }
+        }
+    }
+
+    func testPillsAreCenteredInSpaceBelowTerminal() {
+        let bounds = CGRect(x: 0, y: 0, width: 700, height: 820)
+        let frames = GhosttyTerminalControlsGeometry.frames(bounds: bounds, controlsHeight: 54,
+            cellPixelHeight: 47, scale: 3, centersControls: true)
+        XCTAssertEqual(frames.controls.minY - frames.terminal.maxY,
+                       bounds.maxY - frames.controls.maxY, accuracy: 0.001)
+    }
+}

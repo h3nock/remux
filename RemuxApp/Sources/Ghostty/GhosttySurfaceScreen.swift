@@ -212,6 +212,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         GeometryReader { screenProxy in
             let containerSize = keyboardWindowContext.window?.bounds.size ?? screenProxy.size
             let usesDuoRail = UIDevice.current.userInterfaceIdiom == .phone && verticalNavigationEdge != nil
+            let isInnerPortrait = UIDevice.current.userInterfaceIdiom == .phone
+                && horizontalSizeClass == .regular && containerSize.height >= containerSize.width
             let terminalTopSpacing = GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(
                 preservesSafeAreas: preservesVerticalSafeAreas,
                 hasVerticalControls: usesDuoRail,
@@ -250,7 +252,49 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 topLevelID: selectionSheet?.paneTopLevelIDForTopologyValidation
             )
 
-            ZStack {
+            let bottomControls = Group {
+                if isFindPresented {
+                    TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
+                        presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
+                        onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
+                        .frame(height: 46)
+                } else {
+                    GhosttyKeyboardChrome(
+                        keyboardMode: renderedKeyboardMode,
+                        isEnabled: interactionProjection.isInputAvailable,
+                        isInteractionLocked: composer.isSubmitting,
+                        isCompact: chrome.isCompact,
+                        isControlArmed: terminalInputController.isControlArmed,
+                        toolbarKeys: presentation.toolbarKeys,
+                        topLevelNoun: model.topLevelNoun,
+                        selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                        windowCount: interactionProjection.windowCount,
+                        paneCount: interactionProjection.paneCount,
+                        isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
+                        isComposerPresented: isActiveComposerPresented,
+                        onShowSessions: onShowSessions,
+                        onShowLibrary: onShowLibrary,
+                        onShowWindows: {
+                            showWindows(availableSize: screenProxy.size)
+                        },
+                        onShowPanes: showPanes,
+                        onOpenComposer: openComposer,
+                        onToggleKeyboard: toggleKeyboardChrome,
+                        onToggleControl: toggleControlModifier,
+                        onShowShortcuts: showShortcutPalette,
+                        sendKey: performToolbarKey,
+                        composerContent: { selectedComposerBar() },
+                        allowsTerminalKeys: !isReadingAfterFind,
+                        showsNavigationControls: verticalNavigationEdge == nil
+                    )
+                }
+            }
+            .padding(.horizontal, chrome.surfaceHorizontalPadding)
+            .padding(.top, 4)
+            .padding(.bottom, chrome.bottomPadding)
+            .frame(maxWidth: .infinity, alignment: .bottom)
+
+            let terminalContent = ZStack {
                 presentation.terminalTheme.terminalSurfaceBackground
                     .ignoresSafeArea(.all, edges: .all)
 
@@ -318,6 +362,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 alignment: .topLeading
                             )
                             .background(presentation.terminalTheme.terminalSurfaceBackground)
+
 
                         GhosttyTerminalResponderRepresentable(
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
@@ -472,70 +517,40 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .padding(.top, terminalTopSpacing)
                 .ignoresSafeArea(.container, edges: terminalSafeAreaEdges)
             }
-            .overlay(alignment: .bottom) {
-                shortcutPaletteLayer()
-            }
-            .overlay(alignment: .bottom) {
-                attachmentNoticeLayer()
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if verticalNavigationEdge == nil || isActiveComposerPresented || isFindPresented {
-                    Color.clear
-                        .frame(height: bottomChromeHeight)
-                        .overlay(alignment: .bottom) {
-                            Group {
-                                if isFindPresented {
-                                    TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
-                                        presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
-                                        onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
-                                        .frame(height: 46)
-                                } else {
-                                    GhosttyKeyboardChrome(
-                                        keyboardMode: renderedKeyboardMode,
-                                        isEnabled: interactionProjection.isInputAvailable,
-                                        isInteractionLocked: composer.isSubmitting,
-                                        isCompact: chrome.isCompact,
-                                        isControlArmed: terminalInputController.isControlArmed,
-                                        toolbarKeys: presentation.toolbarKeys,
-                                        topLevelNoun: model.topLevelNoun,
-                                        selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                                        windowCount: interactionProjection.windowCount,
-                                        paneCount: interactionProjection.paneCount,
-                                        isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
-                                        isComposerPresented: isActiveComposerPresented,
-                                        onShowSessions: onShowSessions,
-                                        onShowLibrary: onShowLibrary,
-                                        onShowWindows: {
-                                            showWindows(availableSize: screenProxy.size)
-                                        },
-                                        onShowPanes: showPanes,
-                                        onOpenComposer: openComposer,
-                                        onToggleKeyboard: toggleKeyboardChrome,
-                                        onToggleControl: toggleControlModifier,
-                                        onShowShortcuts: showShortcutPalette,
-                                        sendKey: performToolbarKey,
-                                        composerContent: { selectedComposerBar() },
-                                        allowsTerminalKeys: !isReadingAfterFind,
-                                        showsNavigationControls: verticalNavigationEdge == nil
-                                    )
-                                }
-                            }
-                            .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                            .padding(.top, 4)
-                            .padding(.bottom, chrome.bottomPadding)
-                            .frame(maxWidth: .infinity, alignment: .bottom)
-                            .background {
-                                GeometryReader { chromeProxy in
-                                    Color.clear.preference(
-                                        key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
-                                        value: chromeProxy.size.height
-                                    )
-                                }
+            .overlay(alignment: .bottom) { shortcutPaletteLayer() }
+            .overlay(alignment: .bottom) { attachmentNoticeLayer() }
+
+            Group {
+                if isInnerPortrait {
+                    GhosttyTerminalControlsLayout(
+                        cellPixelHeight: screenProjection.viewport.cellMetrics.map { CGFloat($0.pixelHeight) } ?? 0,
+                        scale: screenProjection.viewport.cellMetrics.map { CGFloat($0.contentScale) } ?? displayScale,
+                        centersControls: !isActiveComposerPresented && !isFindPresented
+                    ) {
+                        terminalContent
+                        bottomControls
+                    }
+                } else {
+                    terminalContent
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            if verticalNavigationEdge == nil || isActiveComposerPresented || isFindPresented {
+                                Color.clear.frame(height: bottomChromeHeight)
+                                    .overlay(alignment: .bottom) {
+                                        bottomControls.background {
+                                            GeometryReader { chromeProxy in
+                                                Color.clear.preference(
+                                                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
+                                                    value: chromeProxy.size.height)
+                                            }
+                                        }
+                                    }
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .bottom)
                 }
             }
+            // Move the portrait bottom chrome into the container inset while
+            // continuing to respect the keyboard's separate safe area.
+            .ignoresSafeArea(.container, edges: isInnerPortrait ? .bottom : [])
             .background {
                 if #available(iOS 27.1, *) {
                     GhosttyVerticalBarEdgeReader(insets: screenProxy.safeAreaInsets) { verticalNavigationEdge = $0 }
@@ -3064,5 +3079,59 @@ enum GhosttyTerminalSafeAreaPolicy {
         // a user-selectable safe-area band.
         if isCompact { return .bottom }
         return !preservesSafeAreas && isLandscape ? [.top, .bottom] : []
+    }
+}
+
+// Transfer only the fraction that cannot hold a complete character row to the
+// controls area. This depends on local layout, never delayed remote topology.
+enum GhosttyWholeRowLayout {
+    static func viewportHeight(availableHeight: CGFloat, cellPixelHeight: CGFloat, scale: CGFloat) -> CGFloat {
+        guard availableHeight.isFinite, availableHeight > 0,
+              cellPixelHeight.isFinite, cellPixelHeight > 0, scale.isFinite, scale > 0 else { return availableHeight }
+        let pixels = (availableHeight * scale).rounded()
+        let rows = floor(pixels / cellPixelHeight)
+        guard rows >= 1 else { return availableHeight }
+        return rows * cellPixelHeight / scale
+    }
+
+
+}
+
+/// Measures the controls and terminal together, with no asynchronous height
+/// preference or keyboard estimate. The keyboard changes the proposal itself.
+private struct GhosttyTerminalControlsLayout: Layout {
+    let cellPixelHeight: CGFloat
+    let scale: CGFloat
+    let centersControls: Bool
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        let controls = subviews[1].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        let frames = GhosttyTerminalControlsGeometry.frames(
+            bounds: bounds, controlsHeight: controls.height,
+            cellPixelHeight: cellPixelHeight, scale: scale, centersControls: centersControls)
+        subviews[0].place(at: frames.terminal.origin, anchor: .topLeading,
+                          proposal: ProposedViewSize(frames.terminal.size))
+        subviews[1].place(at: frames.controls.origin, anchor: .topLeading,
+                          proposal: ProposedViewSize(frames.controls.size))
+    }
+}
+
+enum GhosttyTerminalControlsGeometry {
+    static func frames(bounds: CGRect, controlsHeight: CGFloat, cellPixelHeight: CGFloat,
+                       scale: CGFloat, centersControls: Bool) -> (terminal: CGRect, controls: CGRect) {
+        let height = min(max(0, controlsHeight), bounds.height)
+        let available = max(0, bounds.height - height)
+        let terminalHeight = GhosttyWholeRowLayout.viewportHeight(
+            availableHeight: available, cellPixelHeight: cellPixelHeight, scale: scale)
+        let remainder = max(0, available - terminalHeight)
+        let terminal = CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: terminalHeight)
+        let controls = CGRect(x: bounds.minX, y: terminal.maxY + (centersControls ? remainder / 2 : 0),
+                              width: bounds.width, height: height)
+        return (terminal, controls)
     }
 }
