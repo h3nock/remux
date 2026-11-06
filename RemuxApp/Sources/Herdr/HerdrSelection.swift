@@ -6,9 +6,10 @@ import Foundation
 /// wrapped rows come back as one line.
 ///
 /// As Herdr's client copies an explicit selection (`request_selection_copy` with `live`), no content
-/// revision goes with it: rows counted from the top of the history stay with their lines as output
+/// revision goes with a copy: rows counted from the top of the history stay with their lines as output
 /// arrives, so Herdr reads the live terminal instead of refusing a copy over output that came after the
-/// frame on screen.
+/// frame on screen. A read about the frame on screen names its content revision, which Herdr refuses once
+/// the pane shows something else.
 struct HerdrSelectionRead: Encodable, Sendable {
     struct Point: Encodable, Sendable {
         let row: UInt32
@@ -18,9 +19,10 @@ struct HerdrSelectionRead: Encodable, Sendable {
     let paneID: String
     let anchor: Point
     let cursor: Point
+    let contentRevision: UInt64?
 
     /// `selection`'s cells in reading order, as Herdr's client sends them.
-    init(paneID: String, selection: GhosttyHistorySelection) {
+    init(paneID: String, selection: GhosttyHistorySelection, contentRevision: UInt64? = nil) {
         func point(_ cell: GhosttyTerminalCell) -> Point {
             Point(row: UInt32(clamping: cell.row), col: cell.column)
         }
@@ -28,6 +30,7 @@ struct HerdrSelectionRead: Encodable, Sendable {
         self.paneID = paneID
         anchor = point(first)
         cursor = point(last)
+        self.contentRevision = contentRevision
     }
 
     /// Reads the text from the reply `{"id", "result": {"type": "pane_selection", "pane_id", "text"}}`.
@@ -45,7 +48,60 @@ struct HerdrSelectionRead: Encodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case paneID = "pane_id"
         case anchor, cursor
+        case contentRevision = "content_revision"
     }
+}
+
+/// Whether a selection made in a pane's frame goes on past a row edge it reaches. Herdr's frames don't say
+/// where lines wrap, but Herdr reads a line's soft-wrapped rows back as one line, with trailing blanks
+/// trimmed (`read_text_screen`), so its text for the two cells across the edge has a line break or a blank
+/// there exactly when the selection's word stops at the edge.
+struct HerdrRowEdgeRead: Equatable, Sendable {
+    enum Side: Equatable, Sendable {
+        /// The previous row's last cell and the selection's first.
+        case start
+        /// The selection's last cell and the next row's first.
+        case end
+    }
+
+    let side: Side
+    let cells: GhosttyHistorySelection
+
+    /// The reads for the row edges `selection` reaches in `content`'s frame, as `reachesRowEdge` finds them;
+    /// none for an edge with nothing beyond it: the top of the history, or the last row the pane has.
+    static func reads(for selection: GhosttyHistorySelection, in content: HerdrPaneContent) -> [HerdrRowEdgeRead] {
+        guard content.columns > 0 else { return [] }
+        let (first, last) = selection.ordered
+        var reads: [HerdrRowEdgeRead] = []
+        if first.column == 0, first.row > 0 {
+            let before = GhosttyTerminalCell(row: first.row - 1, column: content.columns - 1)
+            reads.append(HerdrRowEdgeRead(side: .start, cells: GhosttyHistorySelection(start: before, end: first)))
+        }
+        let isLastRow = content.offsetFromBottom == 0 && last.row + 1 >= content.top + UInt64(content.rows)
+        if Int(last.column) + 2 >= Int(content.columns), !isLastRow {
+            let after = GhosttyTerminalCell(row: last.row + 1, column: 0)
+            reads.append(HerdrRowEdgeRead(side: .end, cells: GhosttyHistorySelection(start: last, end: after)))
+        }
+        return reads
+    }
+
+    /// Whether the line goes on across the edge, from Herdr's text for `cells`: no line break, and a character
+    /// that isn't blank on the far side.
+    func lineGoesOn(_ text: String) -> Bool {
+        guard !text.contains("\n") else { return false }
+        switch side {
+        case .start: return text.first.map { !$0.isWhitespace } ?? false
+        case .end: return text.count > 1 && text.last.map { !$0.isWhitespace } == true
+        }
+    }
+}
+
+/// What Herdr says of a selection that may go on past a row edge.
+enum HerdrSelectionCompletion: Sendable {
+    /// The plain-text web link at the cell pressed, which Herdr finds across wrapped rows.
+    case link(HerdrResolvedLink)
+    /// No web link there: other text, whole when its line stops at each row edge the selection reaches.
+    case text(isWhole: Bool)
 }
 
 /// Herdr's visible link regions remain useful for selection even when the destination continues off screen.
