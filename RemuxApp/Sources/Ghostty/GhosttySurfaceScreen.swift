@@ -515,7 +515,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     }
                 }
                 .padding(.top, terminalTopSpacing)
-                .ignoresSafeArea(.container, edges: terminalSafeAreaEdges)
+                .ignoresSafeArea(.container, edges: GhosttyTerminalSafeAreaPolicy.contentEdges(
+                    terminalSafeAreaEdges, hasBottomControls: isActiveComposerPresented || isFindPresented))
             }
             .overlay(alignment: .bottom) { shortcutPaletteLayer() }
             .overlay(alignment: .bottom) { attachmentNoticeLayer() }
@@ -547,6 +548,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 if isInnerPortrait {
                     bottomControls
                 }
+            }
+            .background {
+                presentation.terminalTheme.terminalSurfaceBackground
+                    .ignoresSafeArea()
             }
             // Move the portrait bottom chrome into the container inset while
             // continuing to respect the keyboard's separate safe area.
@@ -661,59 +666,73 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .sheet(item: selectionSheetBinding, onDismiss: {
                 if isFindPresented { findWantsKeyboard = true }
             }) { sheet in
-                let windowLayout = PanePreviewLayout.windowMetrics(
-                    availableSize: screenProxy.size
-                )
-                let navigationBarHeight = TerminalSelectionSheetLayout.nativeNavigationBarHeight(
-                    width: screenProxy.size.width
-                )
-                let windowProjection: GhosttyWindowSelectionSheetRenderProjection? = if case .windows = sheet {
-                    model.windowSelectionSheetRenderProjection(group: shownWindowGroupID)
-                } else {
-                    nil
+                GeometryReader { sheetProxy in
+                    let windowLayout = PanePreviewLayout.windowMetrics(
+                        availableSize: CGSize(width: sheetProxy.size.width, height: screenProxy.size.height)
+                    )
+                    let navigationBarHeight = TerminalSelectionSheetLayout.nativeNavigationBarHeight(
+                        width: sheetProxy.size.width
+                    )
+                    let windowProjection: GhosttyWindowSelectionSheetRenderProjection? = if case .windows = sheet {
+                        model.windowSelectionSheetRenderProjection(group: shownWindowGroupID)
+                    } else {
+                        nil
+                    }
+                    let headerHeight = windowProjection?.grouping == nil
+                        ? TerminalSelectionSheetLayout.contextHeight
+                        : TerminalSelectionSheetLayout.groupPickerHeight
+                    let desiredMaximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
+                        availableHeight: screenProxy.size.height,
+                        navigationBarHeight: navigationBarHeight,
+                        headerHeight: headerHeight
+                    )
+                    let maximumContentHeight = min(desiredMaximumContentHeight,
+                        TerminalSelectionSheetLayout.maximumContentHeight(
+                            availableHeight: sheetProxy.size.height,
+                            navigationBarHeight: navigationBarHeight, headerHeight: headerHeight))
+                    let paneTopologySize = PaneTopologyLayout.size(
+                        availableWidth: TerminalSelectionSheetLayout.contentWidth(
+                            availableWidth: sheetProxy.size.width
+                        ),
+                        maximumHeight: maximumContentHeight
+                    )
+                    let contentHeight = selectionSheetContentHeight(
+                        for: sheet,
+                        windowProjection: windowProjection,
+                        windowLayout: windowLayout,
+                        paneTopologySize: paneTopologySize,
+                        maximumContentHeight: maximumContentHeight
+                    )
+                    // The requested detent is independent of the current sheet
+                    // height, so measuring the sheet cannot create a shrink loop.
+                    let desiredPaneSize = PaneTopologyLayout.size(
+                        availableWidth: TerminalSelectionSheetLayout.contentWidth(availableWidth: sheetProxy.size.width),
+                        maximumHeight: desiredMaximumContentHeight)
+                    let desiredContentHeight = selectionSheetContentHeight(
+                        for: sheet, windowProjection: windowProjection, windowLayout: windowLayout,
+                        paneTopologySize: desiredPaneSize, maximumContentHeight: desiredMaximumContentHeight)
+                    selectionSheetContent(
+                        sheet,
+                        windowProjection: windowProjection,
+                        windowLayout: windowLayout,
+                        paneTopologySize: paneTopologySize,
+                        contentHeight: contentHeight
+                    )
+                        .presentationDetents(
+                            [.height(TerminalSelectionSheetLayout.sheetHeight(
+                                contentHeight: desiredContentHeight,
+                                navigationBarHeight: navigationBarHeight,
+                                headerHeight: headerHeight
+                            ))]
+                        )
+                        .presentationContentInteraction(.scrolls)
+                        .presentationDragIndicator(.hidden)
+                        .remuxSheetPresentationBackground()
+                        .ghosttyTerminalChromePresentation(
+                            presentation.terminalTheme.terminalChromeColorScheme,
+                            chromeStyle: presentation.terminalTheme.terminalChromeStyle
+                        )
                 }
-                let headerHeight = windowProjection?.grouping == nil
-                    ? TerminalSelectionSheetLayout.contextHeight
-                    : TerminalSelectionSheetLayout.groupPickerHeight
-                let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
-                    availableHeight: screenProxy.size.height,
-                    navigationBarHeight: navigationBarHeight,
-                    headerHeight: headerHeight
-                )
-                let paneTopologySize = PaneTopologyLayout.size(
-                    availableWidth: TerminalSelectionSheetLayout.contentWidth(
-                        availableWidth: screenProxy.size.width
-                    ),
-                    maximumHeight: maximumContentHeight
-                )
-                let contentHeight = selectionSheetContentHeight(
-                    for: sheet,
-                    windowProjection: windowProjection,
-                    windowLayout: windowLayout,
-                    paneTopologySize: paneTopologySize,
-                    maximumContentHeight: maximumContentHeight
-                )
-                selectionSheetContent(
-                    sheet,
-                    windowProjection: windowProjection,
-                    windowLayout: windowLayout,
-                    paneTopologySize: paneTopologySize,
-                    contentHeight: contentHeight
-                )
-                    .presentationDetents(
-                        [.height(TerminalSelectionSheetLayout.sheetHeight(
-                            contentHeight: contentHeight,
-                            navigationBarHeight: navigationBarHeight,
-                            headerHeight: headerHeight
-                        ))]
-                    )
-                    .presentationContentInteraction(.scrolls)
-                    .presentationDragIndicator(.hidden)
-                    .remuxSheetPresentationBackground()
-                    .ghosttyTerminalChromePresentation(
-                        presentation.terminalTheme.terminalChromeColorScheme,
-                        chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                    )
             }
             .ghosttyCloseConfirmationDialog(selectionSheet == nil ? askedCloseQuestion : nil)
             .sheet(isPresented: $isShortcutsSettingsPresented) {
@@ -3063,6 +3082,12 @@ enum GhosttyRailViewport {
 // Compact layouts use the outer display's bottom inset. Regular landscape
 // layouts can extend at both vertical edges; portrait keeps its existing layout.
 enum GhosttyTerminalSafeAreaPolicy {
+    // A bottom safe-area inset also carries the app's Compose/Find reservation.
+    // Extending through it would put terminal rows underneath those controls.
+    static func contentEdges(_ edges: Edge.Set, hasBottomControls: Bool) -> Edge.Set {
+        hasBottomControls ? edges.subtracting(.bottom) : edges
+    }
+
     static func additionalTopSpacing(preservesSafeAreas: Bool, hasVerticalControls: Bool,
                                      isCompact: Bool, isLandscape: Bool,
                                      topInset: CGFloat, bottomInset: CGFloat) -> CGFloat {

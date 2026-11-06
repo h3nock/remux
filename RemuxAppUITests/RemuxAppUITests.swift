@@ -498,6 +498,28 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
+    func testDuoComposerReservesTerminalSpace() {
+        launchSeededSimulatorTerminal()
+        let rail = app.scrollViews["terminal.rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5))
+        let terminal = app.otherElements["terminal.screen"]
+        let originalHeight = terminal.frame.height
+        app.buttons["terminal.composer.toggle"].tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "Compose reserves terminal space"))
+        for text in ["First line", "\nSecond line\nThird line"] {
+            field.typeText(text)
+            let separated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                terminal.frame.maxY <= field.frame.minY + 1
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [separated], timeout: 5), .completed,
+                           "Terminal must end above Compose, including when it grows.")
+        }
+        XCTAssertLessThan(terminal.frame.height, originalHeight)
+    }
+
     func testDuoRailRemainsVisibleWhenControlOpensKeyboard() throws {
         launchSeededSimulatorTerminal()
         let rail = app.scrollViews["terminal.rail"]
@@ -6364,6 +6386,8 @@ final class RemuxAppUITests: XCTestCase {
 
         if !windowPickerIsOpen {
             let windows = app.buttons["terminal.windows"]
+            let rail = app.scrollViews["terminal.rail"]
+            if rail.exists && !windows.isHittable { rail.swipeDown() }
             XCTAssertTrue(windows.waitForExistence(timeout: 10))
             windows.tap()
         }

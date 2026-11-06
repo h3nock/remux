@@ -67,6 +67,12 @@ final class GhosttyRailViewportTests: XCTestCase {
 }
 
 final class GhosttyTerminalSafeAreaPolicyTests: XCTestCase {
+    func testBottomControlsRestoreReservationWithoutLosingTopPolicy() {
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.contentEdges(.bottom, hasBottomControls: true), [])
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.contentEdges([.top, .bottom], hasBottomControls: true), .top)
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.contentEdges([.top, .bottom], hasBottomControls: false), [.top, .bottom])
+    }
+
     func testInnerLandscapeAddsMissingTopBandWithoutDoublingInsets() {
         XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(preservesSafeAreas: true, hasVerticalControls: true, isCompact: false, isLandscape: true, topInset: 0, bottomInset: 34), 34)
         XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(preservesSafeAreas: true, hasVerticalControls: true, isCompact: false, isLandscape: true, topInset: 34, bottomInset: 34), 0)
