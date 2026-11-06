@@ -156,6 +156,12 @@ final class TerminalPaneRenderer {
                 guard !Task.isCancelled, let self else { return }
                 self.firstFrameDeadline = nil
                 guard self.isAwaitingFrame else { return }
+                let dimensions = GhosttyIOSurfaceFrame.rendererLayer(in: self.view.layer)
+                    .flatMap { GhosttyIOSurfaceFrame.dimensions(in: $0) }
+                NSLog("Remux first frame timeout: expected=%ux%u actual=%dx%d scale=%g attached=%d preparing=%d",
+                      self.canonicalViewportMetrics.pixelWidth, self.canonicalViewportMetrics.pixelHeight,
+                      dimensions?.width ?? 0, dimensions?.height ?? 0,
+                      Double(self.view.contentScaleFactor), self.view.window != nil ? 1 : 0, self.isPreparing ? 1 : 0)
                 self.failPresentation(message: "Terminal did not publish its first frame. Reconnect to try again.")
             }
         }
@@ -164,6 +170,8 @@ final class TerminalPaneRenderer {
 
     func failPresentation(message: String) {
         guard !isClosing, presentationFailure == nil else { return }
+        // This message is an app-defined rendering failure, never remote terminal content.
+        NSLog("Remux renderer presentation failed: %@", message)
         presentationFailure = TerminalDisconnectReason(kind: .runtime, message: message)
         rendererIsAvailable = false
         rendererFailureReported = true

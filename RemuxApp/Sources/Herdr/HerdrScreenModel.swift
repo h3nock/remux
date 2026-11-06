@@ -1416,6 +1416,9 @@ final class HerdrScreenModel {
         }
         guard let zoom else { return }
         if reportsFailure { notices.succeeded(Self.paneZoomMethod, bootID: bootID) }
+        // The missing-map request is fulfilled. Another tab can replace tabMap;
+        // returning must be allowed to ask for these same pane positions again.
+        askedTabMapGap = nil
         tabMap = HerdrTabMap(
             bootID: bootID,
             tabID: zoom.layout.tabID,

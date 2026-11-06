@@ -65,8 +65,14 @@ enum PanePreviewLayout {
     private static let windowGridSpacing: CGFloat = 10
 
     @MainActor
+    @available(*, deprecated, message: "Pass the presenting view's trait collection")
     static func currentScale() -> CGFloat {
-        let scale = UIScreen.main.scale
+        currentScale(traitCollection: .current)
+    }
+
+    @MainActor
+    static func currentScale(traitCollection: UITraitCollection) -> CGFloat {
+        let scale = traitCollection.displayScale
         return scale.isFinite && scale > 0 ? scale : 1
     }
 

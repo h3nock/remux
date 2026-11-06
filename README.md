@@ -56,7 +56,7 @@ You can also build from source.
 
 Requirements:
 
-- Xcode with iOS 18 SDK support
+- Xcode 27.1 or later (iOS 18 remains the minimum deployment target)
 - XcodeGen
 
 Fetch the prebuilt GhosttyKit framework:

@@ -641,11 +641,12 @@ struct GhosttySelectionSheetFailureBanner: View {
 }
 
 private struct GhosttyRenderedPreviewSurface: View {
+    @Environment(\.displayScale) private var displayScale
     let image: CGImage
     let size: CGSize
 
     var body: some View {
-        Image(decorative: image, scale: PanePreviewLayout.currentScale())
+        Image(decorative: image, scale: displayScale)
             .resizable()
             .aspectRatio(contentMode: .fill)
             .frame(width: size.width, height: size.height)

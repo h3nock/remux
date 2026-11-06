@@ -498,6 +498,119 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
+    func testDuoComposerReservesTerminalSpace() throws {
+        try requireDuoSimulator()
+        launchSeededSimulatorTerminal()
+        let rail = app.scrollViews["terminal.rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5))
+        let terminal = app.otherElements["terminal.screen"]
+        let originalHeight = terminal.frame.height
+        app.buttons["terminal.composer.toggle"].tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "Compose reserves terminal space"))
+        for text in ["First line", "\nSecond line\nThird line"] {
+            field.typeText(text)
+            let separated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                terminal.frame.maxY <= field.frame.minY + 1
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [separated], timeout: 5), .completed,
+                           "Terminal must end above Compose, including when it grows.")
+        }
+        XCTAssertLessThan(terminal.frame.height, originalHeight)
+    }
+
+    func testDuoRailRemainsVisibleWhenControlOpensKeyboard() throws {
+        try requireDuoSimulator()
+        launchSeededSimulatorTerminal()
+        let rail = app.scrollViews["terminal.rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5), "Run this regression on the closed Duo simulator.")
+        XCTAssertFalse(app.buttons["terminal.rail.expand"].exists)
+        XCTAssertFalse(app.buttons["terminal.safe-area.toggle"].exists, "Outer layouts always use the bottom space and have no spacing toggle.")
+        let control = app.buttons["terminal.toolbar-key.0"]
+        XCTAssertTrue(control.isHittable)
+        control.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "Control opens keyboard"))
+        let keyboard = app.buttons["terminal.keyboard"]
+        XCTAssertTrue(keyboard.isHittable, "Opening the keyboard must scroll its toggle into view.")
+        XCTAssertTrue(app.buttons["terminal.home"].isHittable)
+        XCTAssertTrue(app.buttons["terminal.composer.toggle"].isHittable)
+        keyboard.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "Rail hides keyboard"))
+        XCTAssertTrue(keyboard.isHittable)
+        keyboard.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "Rail reopens keyboard"))
+        XCTAssertTrue(keyboard.isHittable, "Reopening the keyboard must reveal its toggle without a manual scroll.")
+        rail.swipeDown()
+        XCTAssertTrue(app.buttons["terminal.sessions"].isHittable, "The rail must still allow manual scrolling to navigation.")
+        rail.swipeUp()
+        XCTAssertTrue(keyboard.isHittable)
+        attachScreenshot(named: "duo-rail-control-keyboard")
+    }
+
+    /// Uses the simulated transport: rotating must resize the existing terminal while preserving input.
+    func testSimulatorTerminalPreservesComposerDraftAcrossResizing() throws {
+        guard !isDuoSimulator else {
+            throw XCTSkip("This rotation test requires a simulator that resizes on rotation; use the Duo pose checks separately.")
+        }
+        XCUIDevice.shared.orientation = .portrait
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        launchSeededSimulatorTerminal()
+
+        let terminal = app.otherElements["terminal.screen"]
+        let toggle = app.buttons["terminal.composer.toggle"]
+        toggle.tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        typeTextAndConfirm("Keep this draft", into: field)
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "draft before resizing"))
+        guard let initial = waitForKeyboardContinuity(owner: "composer") else { return }
+        let initialWidth = terminal.frame.width
+
+        for orientation: UIDeviceOrientation in [.landscapeLeft, .portrait] {
+            let previousWidth = terminal.frame.width
+            XCUIDevice.shared.orientation = orientation
+            let resized = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    abs(terminal.frame.width - previousWidth) > 1
+                },
+                object: nil
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed)
+            XCTAssertTrue(waitForElementToSettle(field))
+            XCTAssertEqual(field.value as? String, "Keep this draft")
+            guard let continuity = waitForKeyboardContinuity(owner: "composer") else { return }
+            if orientation == .landscapeLeft {
+                XCTAssertNotEqual(continuity.effectiveViewport, initial.effectiveViewport)
+            } else {
+                XCTAssertEqual(terminal.frame.width, initialWidth, accuracy: 1)
+            }
+            let screenBounds = app.frame.insetBy(dx: -1, dy: -1)
+            XCTAssertGreaterThan(terminal.frame.width, 100)
+            XCTAssertGreaterThan(terminal.frame.height, 40)
+            XCTAssertTrue(screenBounds.contains(terminal.frame), "Terminal extends outside the app after resize.")
+            XCTAssertTrue(screenBounds.contains(field.frame), "Composer extends outside the app after resize.")
+            waitForLiveTerminalInputReady(timeout: 5)
+            attachScreenshot(named: "terminal-draft-\(orientation == .portrait ? "portrait" : "landscape")")
+        }
+
+        field.typeText(" retained")
+        XCTAssertEqual(field.value as? String, "Keep this draft retained")
+        toggle.tap()
+        openSessionSwitcherFromTerminal()
+        let active = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", "ui-test"))
+        XCTAssertTrue(active.firstMatch.waitForExistence(timeout: 5), "Resizing lost the active session.")
+        app.buttons["terminal.sessions.close"].tap()
+        waitForLiveTerminalInputReady(timeout: 5)
+        toggle.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, "Keep this draft retained")
+    }
+
     func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
         launchSeededSimulatorTerminal()
 
@@ -5208,6 +5321,16 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    private var isDuoSimulator: Bool {
+        ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4"
+    }
+
+    private func requireDuoSimulator() throws {
+        guard isDuoSimulator else {
+            throw XCTSkip("Requires an iPhone Duo simulator on its outer display.")
+        }
+    }
+
     private func launchSimulatorApp() {
         app.launchEnvironment["REMUX_UI_TESTING"] = "1"
         app.launch()
@@ -6295,6 +6418,8 @@ final class RemuxAppUITests: XCTestCase {
 
         if !windowPickerIsOpen {
             let windows = app.buttons["terminal.windows"]
+            let rail = app.scrollViews["terminal.rail"]
+            if rail.exists && !windows.isHittable { rail.swipeDown() }
             XCTAssertTrue(windows.waitForExistence(timeout: 10))
             windows.tap()
         }
