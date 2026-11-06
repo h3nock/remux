@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Remux
 
 /// The toolbar's Tabs and Panes buttons, which a popup over the tab holds as Herdr's client holds its tab bar.
@@ -62,5 +63,29 @@ final class GhosttyRailViewportTests: XCTestCase {
             in: CGRect(x: 300, y: 0, width: 76, height: 100),
             avoiding: [CGRect(x: 300, y: 0, width: 76, height: 150)], spacing: 12)
         XCTAssertEqual(frame.height, 0)
+    }
+}
+
+final class GhosttyTerminalSafeAreaPolicyTests: XCTestCase {
+    func testInnerLandscapeAddsMissingTopBandWithoutDoublingInsets() {
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(preservesSafeAreas: true, hasVerticalControls: true, isCompact: false, isLandscape: true, topInset: 0, bottomInset: 34), 34)
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(preservesSafeAreas: true, hasVerticalControls: true, isCompact: false, isLandscape: true, topInset: 34, bottomInset: 34), 0)
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(preservesSafeAreas: false, hasVerticalControls: true, isCompact: false, isLandscape: true, topInset: 0, bottomInset: 34), 0)
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(preservesSafeAreas: true, hasVerticalControls: true, isCompact: true, isLandscape: false, topInset: 0, bottomInset: 34), 0)
+    }
+
+    func testOuterDisplayExtendsOnlyAtBottom() {
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: true, hasVerticalControls: true, isCompact: true, isLandscape: false), .bottom)
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: false, hasVerticalControls: true, isCompact: true, isLandscape: false), .bottom)
+    }
+    func testInnerLandscapeExtendsAtBothEdges() {
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: false, hasVerticalControls: true, isCompact: false, isLandscape: true), [.top, .bottom])
+    }
+    func testInnerPortraitAndHorizontalControlsKeepSafeAreas() {
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: false, hasVerticalControls: true, isCompact: false, isLandscape: false), [])
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: false, hasVerticalControls: false, isCompact: true, isLandscape: false), [])
+    }
+    func testEnabledSpacingPreservesAllEdges() {
+        XCTAssertEqual(GhosttyTerminalSafeAreaPolicy.ignoredEdges(preservesSafeAreas: true, hasVerticalControls: true, isCompact: false, isLandscape: true), [])
     }
 }

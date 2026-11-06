@@ -503,6 +503,7 @@ final class RemuxAppUITests: XCTestCase {
         let rail = app.scrollViews["terminal.rail"]
         XCTAssertTrue(rail.waitForExistence(timeout: 5), "Run this regression on the closed Duo simulator.")
         XCTAssertFalse(app.buttons["terminal.rail.expand"].exists)
+        XCTAssertFalse(app.buttons["terminal.safe-area.toggle"].exists, "Outer layouts always use the bottom space and have no spacing toggle.")
         let control = app.buttons["terminal.toolbar-key.0"]
         XCTAssertTrue(control.isHittable)
         control.tap()

@@ -62,6 +62,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("terminal.preservesVerticalSafeAreas") private var preservesVerticalSafeAreas = true
     @ObservedObject private var model: Model
     private let composer: GhosttyComposerModel
     private let presentation: GhosttySurfaceScreenPresentation
@@ -208,6 +210,22 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
 #endif
         GeometryReader { screenProxy in
+            let containerSize = keyboardWindowContext.window?.bounds.size ?? screenProxy.size
+            let usesDuoRail = UIDevice.current.userInterfaceIdiom == .phone && verticalNavigationEdge != nil
+            let terminalTopSpacing = GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(
+                preservesSafeAreas: preservesVerticalSafeAreas,
+                hasVerticalControls: usesDuoRail,
+                isCompact: horizontalSizeClass == .compact,
+                isLandscape: containerSize.width > containerSize.height,
+                topInset: screenProxy.safeAreaInsets.top,
+                bottomInset: keyboardWindowContext.window?.safeAreaInsets.bottom ?? 0
+            )
+            let terminalSafeAreaEdges = GhosttyTerminalSafeAreaPolicy.ignoredEdges(
+                preservesSafeAreas: preservesVerticalSafeAreas,
+                hasVerticalControls: usesDuoRail,
+                isCompact: horizontalSizeClass == .compact,
+                isLandscape: containerSize.width > containerSize.height
+            )
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
                 screenSize: screenProxy.size
@@ -451,6 +469,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         )
                     }
                 }
+                .padding(.top, terminalTopSpacing)
+                .ignoresSafeArea(.container, edges: terminalSafeAreaEdges)
             }
             .overlay(alignment: .bottom) {
                 shortcutPaletteLayer()
@@ -539,6 +559,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 railButton("Panes", icon: "square.split.2x1", identifier: "terminal.panes",
                                            enabled: interactionProjection.isInputAvailable && interactionProjection.paneCount > 0 && !composer.isSubmitting && screenProjection.viewport.popup == nil,
                                            action: showPanes)
+                                if usesDuoRail && horizontalSizeClass == .regular && containerSize.width > containerSize.height {
+                                    railButton("Safe area spacing", icon: "rectangle.inset.filled", identifier: "terminal.safe-area.toggle",
+                                               isActive: preservesVerticalSafeAreas) {
+                                        preservesVerticalSafeAreas.toggle()
+                                    }
+                                    .accessibilityValue(preservesVerticalSafeAreas ? "On" : "Off")
+                                    .accessibilityHint("Reserve space at the screen edges, or extend the terminal into it.")
+                                }
                             }
                             railGroup {
                                 ForEach(Array(presentation.toolbarKeys.values.enumerated()), id: \.offset) { index, key in
@@ -3014,5 +3042,27 @@ enum GhosttyRailViewport {
         let top = max(gap.lowerBound, bounds.minY + spacing)
         let bottom = min(gap.upperBound, bounds.maxY - spacing)
         return CGRect(x: bounds.minX, y: top, width: bounds.width, height: max(0, bottom - top))
+    }
+}
+
+// Compact layouts use the outer display's bottom inset. Regular landscape
+// layouts can extend at both vertical edges; portrait keeps its existing layout.
+enum GhosttyTerminalSafeAreaPolicy {
+    static func additionalTopSpacing(preservesSafeAreas: Bool, hasVerticalControls: Bool,
+                                     isCompact: Bool, isLandscape: Bool,
+                                     topInset: CGFloat, bottomInset: CGFloat) -> CGFloat {
+        guard preservesSafeAreas, hasVerticalControls, !isCompact, isLandscape else { return 0 }
+        // With status controls on the side, the system may report no top inset.
+        // Match the bottom container band without doubling an existing top inset.
+        return max(0, bottomInset - topInset)
+    }
+
+    static func ignoredEdges(preservesSafeAreas: Bool, hasVerticalControls: Bool,
+                             isCompact: Bool, isLandscape: Bool) -> Edge.Set {
+        guard hasVerticalControls else { return [] }
+        // Outer layouts always use the bottom area; only inner landscape has
+        // a user-selectable safe-area band.
+        if isCompact { return .bottom }
+        return !preservesSafeAreas && isLandscape ? [.top, .bottom] : []
     }
 }
