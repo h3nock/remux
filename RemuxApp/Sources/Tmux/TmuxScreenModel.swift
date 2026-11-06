@@ -133,10 +133,14 @@ final class TmuxScreenModel: ObservableObject {
             initialViewport = TmuxControlViewport(clientSize: size)
         }
 
+        var isInitialState = true
         stateObservation = session.$state
             .removeDuplicates()
             .sink { [weak self] state in
-                self?.handleSessionState(state)
+                // Published immediately delivers the session's initial state.
+                let isInitialDetachedState = isInitialState && state == .detached(nil)
+                isInitialState = false
+                self?.handleSessionState(state, logDisconnect: !isInitialDetachedState)
             }
 
         // Use the screen's selected pane (including pending pane selection).
@@ -370,7 +374,10 @@ final class TmuxScreenModel: ObservableObject {
 
     // MARK: Domain state reporting
 
-    private func handleSessionState(_ state: TmuxSessionController.SessionState) {
+    private func handleSessionState(
+        _ state: TmuxSessionController.SessionState,
+        logDisconnect: Bool = true
+    ) {
         if case .ready = state {
             pendingForegroundInactiveReason = nil
         }
@@ -380,7 +387,10 @@ final class TmuxScreenModel: ObservableObject {
             report(.disconnected(reason), source: .foreground)
             return
         }
-        report(currentRuntimeState(for: state, connecting: false))
+        report(
+            currentRuntimeState(for: state, connecting: false),
+            logDisconnect: logDisconnect
+        )
     }
 
     private func currentRuntimeState(
@@ -417,12 +427,13 @@ final class TmuxScreenModel: ObservableObject {
 
     private func report(
         _ state: TerminalRuntimeState,
-        source: TerminalRuntimeStateUpdateSource = .runtime
+        source: TerminalRuntimeStateUpdateSource = .runtime,
+        logDisconnect: Bool = true
     ) {
         guard reportTracker.shouldReport(state: state, source: source) else {
             return
         }
-        if case .disconnected(let reason) = state {
+        if logDisconnect, case .disconnected(let reason) = state {
             // Categories only: never log terminal output, host details, or credentials.
             NSLog("Remux terminal disconnected: category=%@ source=%@", reason.kind.traceLabel, String(describing: source))
         }

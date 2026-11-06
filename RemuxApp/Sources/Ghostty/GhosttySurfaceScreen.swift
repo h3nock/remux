@@ -607,7 +607,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             railGroup {
                                 railButton("Home", icon: "house", identifier: "terminal.home", action: onShowLibrary)
                                 railButton("Open composer", icon: "square.and.pencil", identifier: "terminal.composer.toggle", action: openComposer)
-                                railButton("Toggle keyboard", icon: "keyboard", identifier: "terminal.keyboard",
+                                railButton(inputCoordinator.keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
+                                           icon: "keyboard", identifier: "terminal.keyboard",
+                                           enabled: interactionProjection.isInputAvailable,
                                            isActive: inputCoordinator.keyboardMode != .hidden, action: toggleKeyboardChrome)
                             }
                         }
