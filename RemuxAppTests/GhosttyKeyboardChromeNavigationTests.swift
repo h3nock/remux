@@ -1,6 +1,128 @@
 import XCTest
 import SwiftUI
+import UIKit
 @testable import Remux
+
+/// Resizing the production screen must preserve the live session and its compose draft.
+@MainActor
+final class GhosttySurfaceScreenResizeTests: XCTestCase {
+    func testRegularWidthResizingPreservesSessionAndComposerDraft() async throws {
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("The regular-width phone layout switches between portrait controls and landscape chrome.")
+        }
+        let server = SavedServer(displayName: "Test Host", host: "host.example.test", username: "tester")
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "main")
+        let target = SessionTarget(server: server, workspace: workspace,
+            sshAuth: .password(username: server.username, password: "test",
+                identityID: server.identityID, displayLabel: server.displayName))
+        let transport = DeterministicTmuxControlTransport(chunks: [Self.attachedSession])
+        var updates: [TerminalRuntimeStateUpdate] = []
+        let model = TmuxScreenModel(target: target, sessionInstanceID: UUID(),
+            transportFactory: { _ in transport }, onRuntimeStateChange: { updates.append($0) })
+        let composer = GhosttyComposerModel()
+        composer.isPresented = true
+        composer.draft = "Keep this draft\nwhen the screen resizes"
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let screen = GhosttySurfaceScreen(
+            model: model.terminalScreenAdapter,
+            presentation: GhosttySurfaceScreenPresentation(workspaceID: workspace.id,
+                sessionName: workspace.sessionName, serverName: server.displayName,
+                terminalTheme: .remuxDark, toolbarKeys: .default, loadingTitle: "Opening Session"),
+            isSelected: true, composer: composer,
+            shortcutStore: ShortcutStore(repository: FileBackedShortcutRepository(rootURL: root)),
+            attachmentTransferServiceFactory: { FailingComposerAttachmentTransferService() },
+            onReconnect: {}, onCloseSession: {}, onRestartSession: {}, onShowSessions: {},
+            onShowLibrary: {}, onUpdateCredentials: {}, onEditServer: {}, onTrustHostKey: {}
+        )
+        .environment(\.horizontalSizeClass, .regular)
+        .environment(\.scenePhase, .active)
+        let host = UIHostingController(rootView: screen)
+        host.safeAreaRegions = []
+        let portrait = CGSize(width: 720, height: 1000)
+        let landscape = CGSize(width: 1000, height: 720)
+        let window = UIWindow(frame: CGRect(origin: .zero, size: portrait))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.frame = window.bounds
+        model.setSelected(true)
+        model.handleAppLifecyclePhase(.active)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            try? FileManager.default.removeItem(at: root)
+            Task { await model.stop() }
+        }
+
+        try await waitUntil("the terminal did not become ready", in: host) {
+            model.session?.state == .ready && self.runtimeState(model) == .connected
+        }
+        try await waitUntil("the compose draft was not displayed", in: host) {
+            self.textViews(in: host.view).contains { $0.text == composer.draft }
+        }
+        let draft = composer.draft
+        let initialSize = try XCTUnwrap(model.carriedClientSize)
+        updates.removeAll()
+
+        for size in [landscape, portrait] {
+            window.frame = CGRect(origin: .zero, size: size)
+            host.view.frame = window.bounds
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            try await waitUntil("the terminal did not resize to \(size)", in: host) {
+                guard let clientSize = model.carriedClientSize else { return false }
+                return size == landscape
+                    ? clientSize.cols > initialSize.cols
+                    : clientSize.cols == initialSize.cols
+            }
+            try await waitUntil("the terminal or compose draft did not recover after resizing", in: host) {
+                self.runtimeState(model) == .connected
+                    && self.textViews(in: host.view).contains { $0.text == draft }
+            }
+            XCTAssertEqual(model.session?.state, .ready)
+            XCTAssertFalse(model.isDisconnected)
+            XCTAssertTrue(composer.isPresented)
+            XCTAssertEqual(composer.draft, draft)
+            XCTAssertFalse(updates.contains { $0.state.disconnectedReason != nil },
+                "resizing must not disconnect the session, even temporarily")
+        }
+        await model.stop()
+    }
+
+    private func runtimeState(_ model: TmuxScreenModel) -> TerminalRuntimeState {
+        TerminalReadinessProjector.runtimeState(model.terminalScreenAdapter.terminalScreenPresentationProjection.readiness)
+    }
+
+    private func textViews(in view: UIView) -> [UITextView] {
+        (view as? UITextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
+    }
+
+    private func waitUntil(_ message: String, in host: UIViewController, condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
+            host.view.layoutIfNeeded()
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail(message)
+        throw TestTimeout()
+    }
+
+    private struct TestTimeout: Error {}
+
+    /// A single hydrated pane; the deterministic transport keeps its channel open during resizing.
+    private static var attachedSession: Data {
+        let pane = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/home/test\n"
+        let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
+        let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
+            + "%begin 2 2 1\n3.1\n%end 2 2 1\n"
+            + "%begin 3 3 1\n%end 3 3 1\n"
+            + "%begin 4 4 1\n\(window)%end 4 4 1\n"
+            + "%begin 5 5 1\n\(pane)%end 5 5 1\n"
+            + (6...9).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
+        return Data(transcript.utf8)
+    }
+}
 
 /// The toolbar's Tabs and Panes buttons, which a popup over the tab holds as Herdr's client holds its tab bar.
 final class GhosttyKeyboardChromeNavigationTests: XCTestCase {
