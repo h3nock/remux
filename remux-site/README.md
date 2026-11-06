@@ -2,31 +2,23 @@
 
 The production website for Remux, served at `getremux.app`.
 
-## Product story
+## Content
 
-The site follows five sections: home, workspace, preview, controls, and get. It introduces Remux as
-an iPhone interface for tmux, then shows how people navigate sessions, preview terminal links, use
-terminal controls that a phone keyboard omits, and join the public beta.
+One page for people who already use tmux or herdr. It says what Remux is, then only what Remux adds or does
+differently on a phone: sessions on several servers, windows, tabs and panes, typing, files, previews, herdr
+agents, how it connects, and how to install. Features shared by both backends are written once; the herdr
+section covers what only herdr sessions have. Every claim should match the app on `main`.
 
-## Design constraints
+Writing: plain sentences about what you get, no marketing voice, no repeats of what a heading or screenshot
+already shows, and lists where a section holds several separate things.
 
-- use tmux and terminal UI as a quiet layout grammar, not decoration;
-- use the production app icon and its green-black, soft-teal, and live-amber palette;
-- use proportional type for product messaging and monospace for labels, controls, and status;
-- cap the desktop content frame at 1320 pixels, with a media-led 42/58 feature split;
-- size headings from their copy container so reversed layouts retain the same hierarchy;
-- cap desktop feature content at 720 pixels high and leave clear space around the full device;
-- use 24-pixel gutters between desktop sections and 16-pixel gutters between mobile sections;
-- use the same copy inset for hero and feature panes while preserving their type hierarchy;
-- keep feature detail to three compact, concrete rows with no numbering or card treatment;
-- let sections scroll naturally on mobile instead of shrinking an entire section into one viewport;
-- show one dominant visual or interaction per section and avoid nested decorative chrome;
-- keep view switching in the section bar instead of nesting a second tab bar inside the media pane;
-- preserve device geometry and size phones from the media pane height, not from viewport width;
-- use the official iPhone Air frame for the document Preview composition;
-- let the current product walkthrough fill the home media pane, with a still for reduced motion;
-- keep the desktop tmux status line as secondary navigation and make it non-fixed on mobile;
-- point TestFlight actions to the public invite at <https://testflight.apple.com/join/fHqG1ruE>.
+## Design
+
+- Everything is set in JetBrains Mono, the font Remux's terminals render in.
+- Each section is a pane with its heading set into the top border; the pane in view takes the accent.
+- Neutral light and dark palettes follow the system, with one accent from the app icon and its amber cursor.
+- Keys 1–3 jump between sections; the page works without `script.js`.
+- Screens are real app captures in `assets/screens/`, shown without device frames.
 
 ## Preview
 
