@@ -189,9 +189,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime_id="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable == true and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last.identifier')"
-          test -n "${runtime_id}"
-          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${runtime_id}")"
+          device_type=com.apple.CoreSimulator.SimDeviceType.iPhone-17e
+          sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          # Some runtimes are device-specific (for example, Duo). Other
+          # installed runtimes may require a newer Xcode than the selected one.
+          runtime_id="$(xcrun simctl list runtimes --json | jq -er \
+            --arg device_type "${device_type}" --arg sdk_version "${sdk_version}" '
+            [.runtimes[]
+              | select(.isAvailable == true and .platform == "iOS")
+              | select(any(.supportedDeviceTypes[]?; .identifier == $device_type))
+              | select((.version | split(".") | map(tonumber) | .[0:2])
+                  <= ($sdk_version | split(".") | map(tonumber) | .[0:2]))]
+            | sort_by(.version | split(".") | map(tonumber))
+            | last.identifier // error("No compatible iOS runtime for the CI device and selected SDK")')"
+          printf 'Using SDK %s, runtime %s, device %s\n' "${sdk_version}" "${runtime_id}" "${device_type}"
+          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" "${device_type}" "${runtime_id}")"
           printf 'udid=%s\n' "${udid}" >> "${GITHUB_OUTPUT}"
           xcrun simctl boot "${udid}"
 
