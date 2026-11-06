@@ -520,32 +520,32 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .overlay(alignment: .bottom) { shortcutPaletteLayer() }
             .overlay(alignment: .bottom) { attachmentNoticeLayer() }
 
-            Group {
-                if isInnerPortrait {
-                    GhosttyTerminalControlsLayout(
-                        cellPixelHeight: screenProjection.viewport.cellMetrics.map { CGFloat($0.pixelHeight) } ?? 0,
-                        scale: screenProjection.viewport.cellMetrics.map { CGFloat($0.contentScale) } ?? displayScale,
-                        centersControls: !isActiveComposerPresented && !isFindPresented
-                    ) {
-                        terminalContent
-                        bottomControls
-                    }
-                } else {
-                    terminalContent
-                        .safeAreaInset(edge: .bottom, spacing: 0) {
-                            if verticalNavigationEdge == nil || isActiveComposerPresented || isFindPresented {
-                                Color.clear.frame(height: bottomChromeHeight)
-                                    .overlay(alignment: .bottom) {
-                                        bottomControls.background {
-                                            GeometryReader { chromeProxy in
-                                                Color.clear.preference(
-                                                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
-                                                    value: chromeProxy.size.height)
-                                            }
+            // AnyLayout preserves the terminal representable's structural
+            // identity when rotating between the two layout arrangements.
+            let terminalLayout: AnyLayout = isInnerPortrait
+                ? AnyLayout(GhosttyTerminalControlsLayout(
+                    cellPixelHeight: screenProjection.viewport.cellMetrics.map { CGFloat($0.pixelHeight) } ?? 0,
+                    scale: screenProjection.viewport.cellMetrics.map { CGFloat($0.contentScale) } ?? displayScale,
+                    centersControls: !isActiveComposerPresented && !isFindPresented))
+                : AnyLayout(ZStackLayout())
+            terminalLayout {
+                terminalContent
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if !isInnerPortrait && (verticalNavigationEdge == nil || isActiveComposerPresented || isFindPresented) {
+                            Color.clear.frame(height: bottomChromeHeight)
+                                .overlay(alignment: .bottom) {
+                                    bottomControls.background {
+                                        GeometryReader { chromeProxy in
+                                            Color.clear.preference(
+                                                key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
+                                                value: chromeProxy.size.height)
                                         }
                                     }
-                            }
+                                }
                         }
+                    }
+                if isInnerPortrait {
+                    bottomControls
                 }
             }
             // Move the portrait bottom chrome into the container inset while
