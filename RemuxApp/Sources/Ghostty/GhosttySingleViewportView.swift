@@ -1003,23 +1003,28 @@ private final class GhosttyCompositeViewportContainerView: UIView,
               selectionMenuAnchorHandle != nil
         else { return nil }
 
-        // Link actions use a known embedded destination immediately. Plain URLs require completed
-        // backend text; ordinary Copy always keeps the backend's selected-text semantics.
+        // Link and Preview actions use a known embedded destination immediately. Plain-text targets
+        // require completed backend text; ordinary Copy always keeps the backend's selected-text semantics.
         let linkSelection = preparedSelection.flatMap { isCurrent($0.context) ? $0 : nil }
             ?? selectionMenuContext().flatMap { context -> (context: SelectionMenuContext, text: String)? in
                 guard context.explicitTarget != nil else { return nil }
                 return (context, context.visibleText)
             }
         var actions: [UIMenuElement] = []
-        // Preview is currently a local-terminal feature. Preserve its existing synchronous path.
-        if onPreviewSelection != nil, let selectedText = exactLocalSelectionSurface()?.1.readSelection(),
-           previewSelectionContext.candidate(for: selectedText) != nil {
+        if onPreviewSelection != nil, let prepared = linkSelection,
+           let candidate = prepared.context.preview.candidate(for: prepared.text) {
+            let context = prepared.context
+            // Preview what this action names: the selection must still read the same when tapped.
             actions.append(UIAction(title: "Preview", image: UIImage(systemName: "eye")) { [weak self] _ in
-                guard let self, let (surface, control) = self.exactLocalSelectionSurface(),
-                      let text = control.readSelection(),
-                      let candidate = self.previewSelectionContext.candidate(for: text)
-                else { return }
-                self.onPreviewSelection?(surface.id, candidate)
+                Task { @MainActor [weak self] in
+                    guard let self, self.isCurrent(context) else { return }
+                    let currentText = context.explicitTarget != nil
+                        ? context.visibleText : await self.menuSelectionText(for: context)
+                    guard let text = currentText, self.isCurrent(context),
+                          context.preview.candidate(for: text) == candidate
+                    else { return }
+                    self.onPreviewSelection?(context.surface.id, candidate)
+                }
             })
         } else if let prepared = linkSelection,
                   let url = TerminalExternalLink.url(selection: prepared.text, explicitTarget: prepared.context.explicitTarget) {

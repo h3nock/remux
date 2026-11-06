@@ -274,7 +274,6 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
     private let generation: UUID
     private let lock = NIOLock()
     private var isReleased = false
-    private var didInvalidateForReuse = false
 
     init(
         connection: RemuxSSHRoot,
@@ -304,19 +303,6 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
         )
     }
 
-    func invalidateForReuse() async {
-        let shouldInvalidate = lock.withLock {
-            guard !isReleased, !didInvalidateForReuse else { return false }
-            didInvalidateForReuse = true
-            return true
-        }
-        guard shouldInvalidate else { return }
-
-        await pool.invalidateForReuse(
-            for: key,
-            generation: generation
-        )
-    }
 }
 
 /// One authentication of an SSH root. The attempt records its own outcome as it finishes, so whoever holds it
@@ -504,10 +490,6 @@ struct RemuxSSHClaimedRoot: Sendable {
             await sshRoot.close()
         }
     }
-
-    func invalidateForReuse() async {
-        await lease?.invalidateForReuse()
-    }
 }
 
 actor RemuxSSHRootService {
@@ -670,6 +652,25 @@ actor RemuxSSHRootService {
         )
     }
 
+    /// Claims the root for `key`, authenticating it first when the pool has none ready; a full pool gives a
+    /// dedicated root. A claim that fails gives back what it reserved.
+    nonisolated func claimRoot(
+        for key: RemuxSSHRootKey,
+        configuration: RemuxSSHRootConfiguration,
+        trace: RemuxTransportStartupTrace
+    ) async throws -> RemuxSSHClaimedRoot {
+        let preparedRoot = await preparedRoot(for: key, configuration: configuration, trace: trace)
+        do {
+            let sshRoot = try await trace.stage("sshRoot.ready") {
+                try await preparedRoot.sshRoot()
+            }
+            return try await preparedRoot.claim(sshRoot, trace: trace)
+        } catch {
+            await preparedRoot.cancelAndCleanup()
+            throw error
+        }
+    }
+
     fileprivate func leaseConnection(
         _ connection: RemuxSSHRoot,
         for key: RemuxSSHRootKey,
@@ -708,24 +709,6 @@ actor RemuxSSHRootService {
         case .close:
             await connection.close()
         }
-    }
-
-    fileprivate func invalidateForReuse(
-        for key: RemuxSSHRootKey,
-        generation: UUID
-    ) {
-        guard let entry = entries[key], entry.generation == generation else { return }
-        entry.idleCloseTask?.cancel()
-        entries.removeValue(forKey: key)
-
-        guard entry.activeLeaseCount > 0 else {
-            closeEntryTask(entry.attempt.task, reason: "child_channel_close_failed")
-            return
-        }
-        retiredEntries[generation] = RetiredEntry(
-            task: entry.attempt.task,
-            activeLeaseCount: entry.activeLeaseCount
-        )
     }
 
     @discardableResult
@@ -1128,13 +1111,6 @@ actor RemuxSSHRootService {
             generation: generation,
             disposition: disposition
         )
-    }
-
-    func invalidateForReuseForTesting(
-        for key: RemuxSSHRootKey,
-        generation: UUID
-    ) {
-        invalidateForReuse(for: key, generation: generation)
     }
 
     func markAuthenticationSucceededForTesting(

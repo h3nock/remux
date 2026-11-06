@@ -103,65 +103,45 @@ final class RemuxSessionLiveForwardTests: XCTestCase {
         } catch {}
     }
 
-    func testProviderRequiresActivationAndScopeDrainClosesForward() async throws {
+    func testPooledForwardHoldsItsClaimWhileOpenAndGivesItBackForReuse() async throws {
         let server = try await LiveForwardTestServer.start(mode: .echo, group: group)
         defer { server.stop() }
-        let scope = RemuxSessionSFTPChildScope()
-        let provider = RemuxSessionLiveForwardProvider(scope: scope)
+        let recorder = LiveForwardClaimRecorder()
+        let provider = RemuxPooledLiveForwardProvider { [group] target in
+            await recorder.claimed(target)
+            return RemuxPooledLiveForwardProvider.Claim(
+                opener: server.opener(group: group),
+                release: { disposition in await recorder.released(disposition) }
+            )
+        }
         let target = try RemuxSSHDirectTCPIPTarget(host: "localhost", port: 3000)
 
-        do {
-            _ = try await provider.openForward(to: target)
-            XCTFail("unactivated provider should refuse forwards")
-        } catch let error as RemuxSFTPClientError {
-            XCTAssertEqual(error, .sessionUnavailable)
-        }
-
-        try await scope.activate(rootChannel: server.serverChannel)
-        await provider.activate(openerFactory: { [group] _ in
-            server.opener(group: group)
-        })
         let handle = try await provider.openForward(to: target)
-        let client = try await LiveForwardTestClient.connect(
-            port: handle.localPort,
-            group: group
-        )
+        let client = try await LiveForwardTestClient.connect(port: handle.localPort, group: group)
         try await client.send(Data("live".utf8))
-        try await waitFor("echo through provider forward") {
+        try await waitFor("echo through the pooled forward") {
             client.receivedData == Data("live".utf8)
         }
+        let claimedTargets = await recorder.targets
+        XCTAssertEqual(claimedTargets, [target])
+        let releasesWhileOpen = await recorder.dispositions
+        XCTAssertEqual(releasesWhileOpen, [], "An open forward keeps its claim on the connection.")
 
-        let drain = await scope.close()
-        XCTAssertEqual(drain, .clean)
-        try await waitFor("scope drain closed the bridged connection") {
-            client.isClosed
-        }
-        do {
-            _ = try await provider.openForward(to: target)
-            XCTFail("closed scope should refuse new forwards")
-        } catch let error as RemuxSFTPClientError {
-            XCTAssertEqual(error, .sessionUnavailable)
-        }
         try await handle.close()
+
+        try await waitFor("close ends the bridged connection") { client.isClosed }
+        let releasesAfterClose = await recorder.dispositions
+        XCTAssertEqual(releasesAfterClose, [.reusable])
     }
 
-    func testHandleCloseFinishesScopeRegistrationCleanly() async throws {
-        let server = try await LiveForwardTestServer.start(mode: .echo, group: group)
-        defer { server.stop() }
-        let scope = RemuxSessionSFTPChildScope()
-        try await scope.activate(rootChannel: server.serverChannel)
-        let provider = RemuxSessionLiveForwardProvider(scope: scope)
-        await provider.activate(openerFactory: { [group] _ in
-            server.opener(group: group)
-        })
+    func testPooledForwardWhoseClaimFailsOpensNothing() async throws {
+        enum ClaimFailure: Error { case unreachable }
+        let provider = RemuxPooledLiveForwardProvider { _ in throw ClaimFailure.unreachable }
 
-        let handle = try await provider.openForward(
-            to: try RemuxSSHDirectTCPIPTarget(host: "localhost", port: 3000)
-        )
-        try await handle.close()
-
-        let drain = await scope.close()
-        XCTAssertEqual(drain, .clean)
+        do {
+            _ = try await provider.openForward(to: try RemuxSSHDirectTCPIPTarget(host: "localhost", port: 3000))
+            XCTFail("a forward without the connection should fail")
+        } catch ClaimFailure.unreachable {}
     }
 
     private func waitFor(
@@ -319,5 +299,18 @@ private final class LiveForwardTestClientRecorder: ChannelInboundHandler, @unche
     func channelInactive(context: ChannelHandlerContext) {
         lock.withLock { closed = true }
         context.fireChannelInactive()
+    }
+}
+
+private actor LiveForwardClaimRecorder {
+    private(set) var targets: [RemuxSSHDirectTCPIPTarget] = []
+    private(set) var dispositions: [RemuxSSHRootLeaseDisposition] = []
+
+    func claimed(_ target: RemuxSSHDirectTCPIPTarget) {
+        targets.append(target)
+    }
+
+    func released(_ disposition: RemuxSSHRootLeaseDisposition) {
+        dispositions.append(disposition)
     }
 }

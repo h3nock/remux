@@ -17,14 +17,6 @@ protocol TmuxControlTransportLivenessChecking: Sendable {
     func isControlChannelActive() async -> Bool
 }
 
-protocol TmuxControlTransportSFTPProviding: Sendable {
-    var sessionSFTPClientProvider: RemuxSessionCitadelSFTPClientProvider { get }
-}
-
-protocol TmuxControlTransportLiveForwardProviding: Sendable {
-    var sessionLiveForwardProvider: RemuxSessionLiveForwardProvider { get }
-}
-
 /// The control-mode command Remux sends to end its own tmux client. tmux then
 /// flushes the client's pending output and closes the channel; transports that
 /// emulate tmux finish their inbound stream when they see it.
