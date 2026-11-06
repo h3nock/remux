@@ -85,13 +85,18 @@ struct HerdrRowEdgeRead: Equatable, Sendable {
         return reads
     }
 
-    /// Whether the line goes on across the edge, from Herdr's text for `cells`: no line break, and a character
-    /// that isn't blank on the far side.
+    /// Whether the line goes on across the edge, from Herdr's text for `cells`: no line break, and no blank
+    /// between the selection and the next row. The start's read is the previous row's last character and the
+    /// selection's first; the end's is the selection's last character, the row's last column when the
+    /// selection stops one short of it, and the next row's first.
     func lineGoesOn(_ text: String) -> Bool {
         guard !text.contains("\n") else { return false }
         switch side {
-        case .start: return text.first.map { !$0.isWhitespace } ?? false
-        case .end: return text.count > 1 && text.last.map { !$0.isWhitespace } == true
+        case .start:
+            return text.first.map { !$0.isWhitespace } ?? false
+        case .end:
+            let beyond = text.dropFirst()
+            return !beyond.isEmpty && beyond.allSatisfy { !$0.isWhitespace }
         }
     }
 }

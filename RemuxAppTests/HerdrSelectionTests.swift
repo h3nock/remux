@@ -708,6 +708,10 @@ final class HerdrSelectionTests: XCTestCase {
         XCTAssertFalse(end.lineGoesOn("t"))
         XCTAssertFalse(end.lineGoesOn("t "))
         XCTAssertTrue(end.lineGoesOn("tn"))
+        // A selection one column short of the edge reads the row's last column too.
+        XCTAssertFalse(end.lineGoesOn("t n"))
+        XCTAssertTrue(end.lineGoesOn("txn"))
+        XCTAssertTrue(end.lineGoesOn("t界"))
     }
 
     // MARK: - Support
