@@ -319,7 +319,12 @@ final class TmuxScreenModel: ObservableObject {
         // auto-reconnect policy can act on it (the report tracker
         // re-reports foreground disconnects even when unchanged).
         if let state = foregroundDisconnectedState() {
-            report(state, source: .foreground)
+            // Before the first viewport, foreground activation can observe
+            // the same initial detached state as the Published subscription.
+            let isAwaitingConnection = initialViewport == nil
+                && session?.state == .detached(nil)
+                && session?.transportFailure == nil
+            report(state, source: .foreground, logDisconnect: !isAwaitingConnection)
         }
     }
 

@@ -607,7 +607,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             railGroup {
                                 railButton("Home", icon: "house", identifier: "terminal.home", action: onShowLibrary)
                                 railButton("Open composer", icon: "square.and.pencil", identifier: "terminal.composer.toggle", action: openComposer)
-                                railButton(inputCoordinator.keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
+                                railButton(railKeyboardAccessibilityLabel,
                                            icon: "keyboard", identifier: "terminal.keyboard",
                                            enabled: interactionProjection.isInputAvailable,
                                            isActive: inputCoordinator.keyboardMode != .hidden, action: toggleKeyboardChrome)
@@ -1975,6 +1975,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 return result.isAccepted
             }
         )
+    }
+
+    private var railKeyboardAccessibilityLabel: String {
+        if inputCoordinator.keyboardMode == .hidden {
+            return "Show keyboard controls"
+        }
+        if inputCoordinator.keyboardOwner == .composer {
+            return "Switch keyboard to terminal"
+        }
+        return "Hide keyboard controls"
     }
 
     @available(iOS 27.1, *)
