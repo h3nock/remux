@@ -241,6 +241,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
             let interactionProjection = screenProjection.interaction
+            let chromeStatus = GhosttyKeyboardChromeStatus(
+                topLevelNoun: model.topLevelNoun, selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                windowCount: interactionProjection.windowCount, paneCount: interactionProjection.paneCount)
+            let chromeNavigation = GhosttyKeyboardChromeNavigation(
+                isEnabled: interactionProjection.isInputAvailable && !composer.isSubmitting,
+                isHeldByPopup: screenProjection.viewport.popup != nil,
+                windowCount: interactionProjection.windowCount, paneCount: interactionProjection.paneCount)
+
             let terminalResponderFocusPolicy = GhosttyTerminalResponderFocusPolicy(
                 isSelected: isSelected,
                 keyboardMode: inputCoordinator.keyboardMode,
@@ -572,12 +580,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         VStack(spacing: 8) {
                             railGroup {
                                 railButton("Sessions", icon: "rectangle.stack", identifier: "terminal.sessions", action: onShowSessions)
-                                railButton(model.topLevelNoun.plural, icon: "rectangle.on.rectangle", identifier: "terminal.windows",
-                                           enabled: interactionProjection.isInputAvailable && interactionProjection.windowCount > 0 && !composer.isSubmitting && screenProjection.viewport.popup == nil) {
+                                railButton(chromeStatus.windowAccessibilityLabel, icon: "rectangle.on.rectangle", identifier: "terminal.windows",
+                                           badge: chromeStatus.windowBadge, hint: chromeNavigation.tabsHint,
+                                           enabled: chromeNavigation.isTabsEnabled) {
                                     showWindows(availableSize: screenProxy.size)
                                 }
-                                railButton("Panes", icon: "square.split.2x1", identifier: "terminal.panes",
-                                           enabled: interactionProjection.isInputAvailable && interactionProjection.paneCount > 0 && !composer.isSubmitting && screenProjection.viewport.popup == nil,
+                                railButton(chromeStatus.paneAccessibilityLabel, icon: "square.split.2x1", identifier: "terminal.panes",
+                                           badge: chromeStatus.paneBadge, hint: chromeNavigation.panesHint,
+                                           enabled: chromeNavigation.isPanesEnabled,
                                            action: showPanes)
                                 if usesDuoRail && horizontalSizeClass == .regular && containerSize.width > containerSize.height {
                                     railButton("Safe area spacing", icon: "rectangle.inset.filled", identifier: "terminal.safe-area.toggle",
@@ -2036,16 +2046,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func railButton(_ title: String, icon: String, identifier: String,
+                            badge: String? = nil, hint: String? = nil,
                             enabled: Bool = true, isActive: Bool = false,
                             action: @escaping () -> Void) -> some View {
         GhosttyKeyboardChromeDockButton(
             systemName: icon,
-            badge: nil,
+            badge: badge,
             chromeStyle: presentation.terminalTheme.terminalChromeStyle,
             width: 34,
             height: 40,
             accessibilityLabel: title,
-            accessibilityHint: nil,
+            accessibilityHint: hint,
             accessibilityIdentifier: identifier,
             isActive: isActive,
             isEnabled: enabled && !composer.isSubmitting,

@@ -498,7 +498,8 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
-    func testDuoComposerReservesTerminalSpace() {
+    func testDuoComposerReservesTerminalSpace() throws {
+        try requireDuoSimulator()
         launchSeededSimulatorTerminal()
         let rail = app.scrollViews["terminal.rail"]
         XCTAssertTrue(rail.waitForExistence(timeout: 5))
@@ -521,6 +522,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testDuoRailRemainsVisibleWhenControlOpensKeyboard() throws {
+        try requireDuoSimulator()
         launchSeededSimulatorTerminal()
         let rail = app.scrollViews["terminal.rail"]
         XCTAssertTrue(rail.waitForExistence(timeout: 5), "Run this regression on the closed Duo simulator.")
@@ -548,7 +550,10 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     /// Uses the simulated transport: rotating must resize the existing terminal while preserving input.
-    func testSimulatorTerminalPreservesComposerDraftAcrossResizing() {
+    func testSimulatorTerminalPreservesComposerDraftAcrossResizing() throws {
+        guard !isDuoSimulator else {
+            throw XCTSkip("This rotation test requires a simulator that resizes on rotation; use the Duo pose checks separately.")
+        }
         XCUIDevice.shared.orientation = .portrait
         addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
         launchSeededSimulatorTerminal()
@@ -5297,6 +5302,16 @@ final class RemuxAppUITests: XCTestCase {
             transitionActive,
             awaitingSystemKeyboard
         )
+    }
+
+    private var isDuoSimulator: Bool {
+        ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4"
+    }
+
+    private func requireDuoSimulator() throws {
+        guard isDuoSimulator else {
+            throw XCTSkip("Requires an iPhone Duo simulator on its outer display.")
+        }
     }
 
     private func launchSimulatorApp() {

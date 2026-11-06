@@ -4,6 +4,32 @@ import SwiftUI
 
 /// The toolbar's Tabs and Panes buttons, which a popup over the tab holds as Herdr's client holds its tab bar.
 final class GhosttyKeyboardChromeNavigationTests: XCTestCase {
+    func testNavigationStatusIncludesSelectedWindowAndPaneCount() {
+        let status = GhosttyKeyboardChromeStatus(topLevelNoun: .window,
+            selectedWindowIndex: 1, windowCount: 3, paneCount: 2)
+        XCTAssertEqual(status.windowBadge, "2")
+        XCTAssertEqual(status.windowAccessibilityLabel, "Window 2 of 3")
+        XCTAssertEqual(status.paneBadge, "2")
+        XCTAssertEqual(status.paneAccessibilityLabel, "Panes, 2 panes")
+    }
+
+    func testNavigationStatusOmitsBadgesForSingleItemsAndCapsLargeCounts() {
+        let single = GhosttyKeyboardChromeStatus(topLevelNoun: .window,
+            selectedWindowIndex: nil, windowCount: 1, paneCount: 1)
+        XCTAssertNil(single.windowBadge)
+        XCTAssertNil(single.paneBadge)
+        XCTAssertEqual(single.windowAccessibilityLabel, "Window 1 of 1")
+        XCTAssertEqual(single.paneAccessibilityLabel, "Panes, 1 pane")
+        let large = GhosttyKeyboardChromeStatus(topLevelNoun: .window,
+            selectedWindowIndex: 99, windowCount: 3, paneCount: 100)
+        XCTAssertEqual(large.windowBadge, "3")
+        XCTAssertEqual(large.paneBadge, "99+")
+        let empty = GhosttyKeyboardChromeStatus(topLevelNoun: .window,
+            selectedWindowIndex: nil, windowCount: 0, paneCount: 0)
+        XCTAssertEqual(empty.windowAccessibilityLabel, "Windows")
+        XCTAssertEqual(empty.paneAccessibilityLabel, "Panes")
+    }
+
     /// While a popup holds the tab, Tabs and Panes stay on the toolbar, dimmed, and say why; once it
     /// closes they work and say what they do again.
     func testAPopupHoldsTheToolbarsTabsAndPanes() {

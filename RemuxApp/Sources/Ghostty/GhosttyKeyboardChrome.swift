@@ -279,19 +279,19 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
                 if showsNavigationControls {
-                GhosttyKeyboardChromeDockButton(
-                    systemName: "house",
-                    badge: nil,
-                    chromeStyle: chromeStyle,
-                    width: dockButtonWidth,
-                    height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    accessibilityLabel: "Home",
-                    accessibilityHint: "Open the Remux library.",
-                    accessibilityIdentifier: "terminal.home",
-                    isActive: false,
-                    isEnabled: !isInteractionLocked,
-                    action: onShowLibrary
-                )
+                    GhosttyKeyboardChromeDockButton(
+                        systemName: "house",
+                        badge: nil,
+                        chromeStyle: chromeStyle,
+                        width: dockButtonWidth,
+                        height: GhosttyKeyboardChromeSizing.dockButtonHeight,
+                        accessibilityLabel: "Home",
+                        accessibilityHint: "Open the Remux library.",
+                        accessibilityIdentifier: "terminal.home",
+                        isActive: false,
+                        isEnabled: !isInteractionLocked,
+                        action: onShowLibrary
+                    )
                 }
 
                 composerButton
@@ -398,29 +398,40 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         )
     }
 
-    private var windowAccessibilityLabel: String {
+    private var status: GhosttyKeyboardChromeStatus {
+        GhosttyKeyboardChromeStatus(topLevelNoun: topLevelNoun,
+            selectedWindowIndex: selectedWindowIndex, windowCount: windowCount, paneCount: paneCount)
+    }
+
+    private var windowAccessibilityLabel: String { status.windowAccessibilityLabel }
+    private var windowBadge: String? { status.windowBadge }
+    private var paneBadge: String? { status.paneBadge }
+    private var paneAccessibilityLabel: String { status.paneAccessibilityLabel }
+
+}
+
+/// Shared status for horizontal toolbar and vertical rail controls.
+struct GhosttyKeyboardChromeStatus {
+    let topLevelNoun: GhosttyTopLevelNoun
+    let selectedWindowIndex: Int?
+    let windowCount: Int
+    let paneCount: Int
+
+    private var windowNumber: Int {
+        min(max((selectedWindowIndex ?? 0) + 1, 1), max(windowCount, 1))
+    }
+
+    var windowAccessibilityLabel: String {
         guard windowCount > 0 else { return topLevelNoun.plural }
-        return "\(topLevelNoun.singular) \(displayIndex(selectedWindowIndex, count: windowCount)) of \(windowCount)"
+        return "\(topLevelNoun.singular) \(windowNumber) of \(windowCount)"
     }
 
-    private var windowBadge: String? {
-        guard windowCount > 1 else { return nil }
-        return "\(displayIndex(selectedWindowIndex, count: windowCount))"
-    }
+    var windowBadge: String? { windowCount > 1 ? "\(windowNumber)" : nil }
+    var paneBadge: String? { paneCount > 1 ? (paneCount < 100 ? "\(paneCount)" : "99+") : nil }
 
-
-    private var paneBadge: String? {
-        guard paneCount > 1 else { return nil }
-        return paneCount < 100 ? "\(paneCount)" : "99+"
-    }
-
-    private var paneAccessibilityLabel: String {
+    var paneAccessibilityLabel: String {
         guard paneCount > 0 else { return "Panes" }
         return "Panes, \(paneCount) \(paneCount == 1 ? "pane" : "panes")"
-    }
-
-    private func displayIndex(_ index: Int?, count: Int) -> Int {
-        min(max((index ?? 0) + 1, 1), max(count, 1))
     }
 }
 
