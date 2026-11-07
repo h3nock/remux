@@ -111,6 +111,7 @@ private struct RemuxWorkspaceShell: View {
     @State private var presentedServerID: SavedServer.ID?
     @State private var connectionSetupSheetShowsServerSummary = true
     @State private var isConnectionSetupSheetPresented = false
+    @State private var isConfirmingSetupDiscard = false
     @State private var lastConnectionSetup = LastConnectionSetup()
 
     var body: some View {
@@ -241,13 +242,17 @@ private struct RemuxWorkspaceShell: View {
         .sheet(
             isPresented: $isConnectionSetupSheetPresented,
             onDismiss: {
+                // Pulled down while the app still means to show it: cancel the setup, as the X does. When the session
+                // switcher takes the setup over, the sheet isn't meant to show and the setup carries on there.
+                if model.connectionSetup != nil, showsConnectionSetupSheet {
+                    model.cancelSetup()
+                }
                 if model.connectionSetup == nil {
                     lastConnectionSetup.setup = nil
                 }
             }
         ) {
             connectionSetupSheet
-                .interactiveDismissDisabled()
                 .tailscaleSSHCheckAlert(
                     request: $tailscaleSSHCheckRequest,
                     isActive: true
@@ -309,8 +314,7 @@ private struct RemuxWorkspaceShell: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button {
-                            dismissKeyboard()
-                            model.cancelSetup()
+                            closeConnectionSetup(setup)
                         } label: {
                             Image(systemName: "xmark")
                         }
@@ -322,6 +326,23 @@ private struct RemuxWorkspaceShell: View {
             }
             .presentationDetents(presentationDetents(for: setup.mode))
             .presentationDragIndicator(.visible)
+            // A pull closes the sheet as the X does, except while it's connecting, and asks first when something
+            // has been entered.
+            .interactiveDismissDisabled(model.isSetupActionInProgress || setup.hasChanges)
+            .onSheetDismissAttempt {
+                if !model.isSetupActionInProgress {
+                    isConfirmingSetupDiscard = true
+                }
+            }
+            .confirmationDialog("Discard changes?", isPresented: $isConfirmingSetupDiscard, titleVisibility: .hidden) {
+                Button("Discard Changes", role: .destructive) {
+                    dismissKeyboard()
+                    model.cancelSetup()
+                }
+                .accessibilityIdentifier("connection.discard")
+                Button("Keep Editing", role: .cancel) {}
+                    .accessibilityIdentifier("connection.keep-editing")
+            }
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
@@ -339,6 +360,16 @@ private struct RemuxWorkspaceShell: View {
                 Text(setupSubmissionIssueMessage(issue))
             }
         }
+    }
+
+    /// The X: closes the setup, asking first when something has been entered.
+    private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
+        guard !setup.hasChanges else {
+            isConfirmingSetupDiscard = true
+            return
+        }
+        dismissKeyboard()
+        model.cancelSetup()
     }
 
     private func setupSubmissionIssueIsPresented(
@@ -3705,6 +3736,85 @@ private func dismissKeyboard() {
         from: nil,
         for: nil
     )
+}
+
+private extension View {
+    /// Runs `action` when someone pulls down this sheet while `interactiveDismissDisabled` holds it, so the sheet can
+    /// ask what to do, as iOS's own forms do. SwiftUI only reports dismissals that happen.
+    func onSheetDismissAttempt(_ action: @escaping () -> Void) -> some View {
+        background(SheetDismissAttemptObserver(action: action))
+    }
+}
+
+/// UIKit tells a sheet's presentation controller delegate about a refused pull. SwiftUI owns that delegate, so the
+/// observer puts a proxy in front of it that reports the attempt and passes every other call on, which keeps SwiftUI's
+/// own handling, such as running the sheet's `onDismiss`.
+private struct SheetDismissAttemptObserver: UIViewControllerRepresentable {
+    let action: () -> Void
+
+    func makeUIViewController(context: Context) -> Observer {
+        Observer(action: action)
+    }
+
+    func updateUIViewController(_ observer: Observer, context: Context) {
+        observer.action = action
+    }
+
+    final class Observer: UIViewController {
+        var action: () -> Void
+        /// The presentation controller holds its delegate weakly.
+        private var proxy: DismissAttemptProxy?
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            // The sheet's presentation controller belongs to the outermost controller of its content.
+            var root: UIViewController = self
+            while let parent = root.parent {
+                root = parent
+            }
+            guard let presentation = root.presentationController,
+                  !(presentation.delegate is DismissAttemptProxy)
+            else { return }
+            let proxy = DismissAttemptProxy(forwardingTo: presentation.delegate) { [weak self] in
+                self?.action()
+            }
+            presentation.delegate = proxy
+            self.proxy = proxy
+        }
+    }
+
+    final class DismissAttemptProxy: NSObject, UIAdaptivePresentationControllerDelegate {
+        private weak var forwardee: (any UIAdaptivePresentationControllerDelegate)?
+        private let onAttempt: () -> Void
+
+        init(forwardingTo forwardee: (any UIAdaptivePresentationControllerDelegate)?, onAttempt: @escaping () -> Void) {
+            self.forwardee = forwardee
+            self.onAttempt = onAttempt
+        }
+
+        func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
+            onAttempt()
+            forwardee?.presentationControllerDidAttemptToDismiss?(presentationController)
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || forwardee?.responds(to: selector) == true
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            forwardee?.responds(to: selector) == true ? forwardee : super.forwardingTarget(for: selector)
+        }
+    }
 }
 
 private struct FailureView: View {

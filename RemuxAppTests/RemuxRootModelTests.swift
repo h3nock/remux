@@ -989,6 +989,18 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.state, stateBefore)
     }
 
+    func testSetupHasChangesOnlyWhileTheDraftDiffersFromItsStart() {
+        let harness = makeHarness()
+        harness.model.beginNewServer()
+        XCTAssertEqual(harness.model.connectionSetup?.hasChanges, false)
+
+        harness.model.updateDraft { $0.displayName = "studio" }
+        XCTAssertEqual(harness.model.connectionSetup?.hasChanges, true)
+
+        harness.model.updateDraft { $0.displayName = "" }
+        XCTAssertEqual(harness.model.connectionSetup?.hasChanges, false)
+    }
+
     func testTrustSetupHostKeyStoresChallengeForDraftServerID() throws {
         let harness = makeHarness()
         harness.model.beginNewServer()

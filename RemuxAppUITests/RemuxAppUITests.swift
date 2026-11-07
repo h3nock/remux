@@ -126,6 +126,42 @@ final class RemuxAppUITests: XCTestCase {
         _ = waitForTerminalHomeButton()
     }
 
+    /// The server form closes when pulled down, as an iOS sheet does, and the setup ends with it, so Add Server
+    /// opens it again. Once something has been typed, the pull asks first, and keeping on editing keeps the typing.
+    func testServerFormClosesOnPullAndAsksBeforeDiscardingTyping() {
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+        func pullFormDown() {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(
+                forDuration: 0.05,
+                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)),
+                withVelocity: XCUIGestureVelocity(900),
+                thenHoldForDuration: 0
+            )
+        }
+
+        openConnectionSetup()
+        pullFormDown()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Pulling down the empty form didn't close it.")
+
+        openConnectionSetup()
+        name.tap()
+        name.typeText("Draft server")
+        pullFormDown()
+        // iOS shows the question as a menu at the X; tapping elsewhere keeps editing.
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Pulling down the typed-in form didn't ask first.")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        XCTAssertTrue(discard.waitForNonExistence(timeout: 5), "Tapping elsewhere didn't keep editing.")
+        XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
+
+        pullFormDown()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The second pull didn't ask either.")
+        discard.tap()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Discard Changes didn't close the form.")
+        XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
+    }
+
     /// iOS offers to save a typed password when the form holding it closes.
     /// Remux keeps server passwords in its own Keychain, so the server form
     /// closes without that offer.
@@ -134,6 +170,9 @@ final class RemuxAppUITests: XCTestCase {
         openConnectionSetup()
         fillConnectionForm()
         app.buttons["connection.cancel"].tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Closing a filled form didn't ask before discarding it.")
+        discard.tap()
         XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
         assertNoPasswordSaveOffer(after: "Cancel")
 
@@ -2804,6 +2843,9 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(serverName.value as? String, "Draft server", "The typing in the server form was lost.")
         captureLiveHerdrStep("n8-form-kept", in: configuration)
         app.buttons["connection.cancel"].tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Closing the typed-in form didn't ask before discarding it.")
+        discard.tap()
         XCTAssertTrue(serverName.waitForNonExistence(timeout: 5))
     }
 
