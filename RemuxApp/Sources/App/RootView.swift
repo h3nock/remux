@@ -327,12 +327,14 @@ private struct RemuxWorkspaceShell: View {
             .presentationDetents(presentationDetents(for: setup.mode))
             .presentationDragIndicator(.visible)
             // A pull closes the sheet as the X does, except while it's connecting, and asks first when something
-            // has been entered.
-            .interactiveDismissDisabled(model.isSetupActionInProgress || setup.hasChanges)
+            // has been entered. A sheet holding a password closes through the X's path even untouched: that empties
+            // the password fields before the sheet goes, and closing with them filled makes iOS offer to save them.
+            .interactiveDismissDisabled(
+                model.isSetupActionInProgress || setup.hasChanges || holdsSecretText(setup.draft)
+            )
             .onSheetDismissAttempt {
-                if !model.isSetupActionInProgress {
-                    isConfirmingSetupDiscard = true
-                }
+                guard !model.isSetupActionInProgress else { return }
+                closeConnectionSetup(setup)
             }
             .confirmationDialog("Discard changes?", isPresented: $isConfirmingSetupDiscard, titleVisibility: .hidden) {
                 Button("Discard Changes", role: .destructive) {
@@ -362,7 +364,11 @@ private struct RemuxWorkspaceShell: View {
         }
     }
 
-    /// The X: closes the setup, asking first when something has been entered.
+    private func holdsSecretText(_ draft: TmuxConnectionDraft) -> Bool {
+        !draft.password.isEmpty || !draft.privateKeyPassphrase.isEmpty
+    }
+
+    /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered.
     private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
         guard !setup.hasChanges else {
             isConfirmingSetupDiscard = true

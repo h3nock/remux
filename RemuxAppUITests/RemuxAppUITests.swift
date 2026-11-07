@@ -131,14 +131,6 @@ final class RemuxAppUITests: XCTestCase {
     func testServerFormClosesOnPullAndAsksBeforeDiscardingTyping() {
         launchSimulatorApp()
         let name = app.textFields["connection.name"]
-        func pullFormDown() {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(
-                forDuration: 0.05,
-                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)),
-                withVelocity: XCUIGestureVelocity(900),
-                thenHoldForDuration: 0
-            )
-        }
 
         openConnectionSetup()
         pullFormDown()
@@ -160,6 +152,46 @@ final class RemuxAppUITests: XCTestCase {
         discard.tap()
         XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Discard Changes didn't close the form.")
         XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
+    }
+
+    /// An untouched Edit Server form holds the saved password; a pull closes it without asking, and without iOS
+    /// offering to save that password.
+    func testUntouchedEditServerFormClosesOnPullWithoutPasswordSaveOffer() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        openFirstServerDetail()
+        let edit = app.buttons["library.server.edit"]
+        let name = app.textFields["connection.name"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+
+        pullFormDown()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Pulling down the untouched form didn't close it.")
+        XCTAssertFalse(app.buttons["connection.discard"].firstMatch.exists, "The untouched form asked to discard.")
+        assertNoPasswordSaveOffer(after: "pulling Edit Server down")
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5), "Edit Server didn't open again after the pull.")
+    }
+
+    /// Pulls the open sheet down from its top, quickly, as a thumb flicks it away.
+    private func pullFormDown() {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(
+            forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)),
+            withVelocity: XCUIGestureVelocity(900),
+            thenHoldForDuration: 0
+        )
     }
 
     /// iOS offers to save a typed password when the form holding it closes.
