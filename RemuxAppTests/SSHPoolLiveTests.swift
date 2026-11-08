@@ -363,13 +363,13 @@ final class SSHPoolLiveEcho: @unchecked Sendable {
         }
         defer { watchdog.cancel() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let (connection, failure) = lock.withLock { () -> (RemuxSSHExecConnection?, Error?) in
-                if let failure { return (nil, failure) }
+            let (connection, earlierFailure) = lock.withLock { () -> (RemuxSSHExecConnection?, Error?) in
+                if let failure = self.failure { return (nil, failure) }
                 waiter = (byte, continuation)
                 return (self.connection, nil)
             }
-            if let failure {
-                continuation.resume(throwing: failure)
+            if let earlierFailure {
+                continuation.resume(throwing: earlierFailure)
                 return
             }
             connection?.write(Data([byte])) { [weak self] error in
