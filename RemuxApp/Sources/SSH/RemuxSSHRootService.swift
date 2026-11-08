@@ -5,18 +5,30 @@ import NIO
 import NIOConcurrencyHelpers
 @preconcurrency import NIOSSH
 
+/// What a server connection carries. Terminal work and bulk transfers use separate connections: SSH sends every
+/// channel down one TCP stream in order, so an upload's queued megabytes would sit ahead of each keystroke, and a
+/// preview's download ahead of each screen update.
+enum RemuxSSHConnectionPurpose: String, Hashable, Sendable {
+    /// tmux control, Herdr bridges and popups, discovery, access checks.
+    case interactive
+    /// Attachment uploads, file and page previews, live-web forwards.
+    case transfer
+}
+
 struct RemuxSSHRootKey: Hashable, Sendable {
     let serverID: SavedServer.ID
     let host: String
     let port: Int
     let username: String
+    let purpose: RemuxSSHConnectionPurpose
     private let authFingerprint: String
 
-    init(target: SessionTarget) {
+    init(target: SessionTarget, purpose: RemuxSSHConnectionPurpose) {
         self.serverID = target.server.id
         self.host = target.server.host
         self.port = target.server.port
         self.username = target.sshAuth.username
+        self.purpose = purpose
         self.authFingerprint = target.sshAuth.authFingerprint
     }
 }
@@ -100,24 +112,36 @@ struct RemuxSSHRootServiceSnapshot: Equatable, Sendable {
         let activeLeaseCount: Int
         let reservationCount: Int
         let isIdleCloseScheduled: Bool
+        let isRefusingSessions: Bool
     }
 
     /// Roots evicted from the pool that still have live leases
     /// draining (multi-lease invalidation).
     let retiredCount: Int
 
-    fileprivate let entries: [RemuxSSHRootKey: Entry]
+    fileprivate let entries: [RemuxSSHRootKey: [Entry]]
 
     var entryCount: Int {
-        entries.count
+        entries.values.reduce(0) { $0 + $1.count }
     }
 
+    /// The key's first connection, the one new consumers try first.
     func entry(for key: RemuxSSHRootKey) -> Entry? {
-        entries[key]
+        entries[key]?.first
+    }
+
+    /// The key's connections, in the order new consumers try them.
+    func entries(for key: RemuxSSHRootKey) -> [Entry] {
+        entries[key] ?? []
     }
 }
 
 final class RemuxSSHRoot: @unchecked Sendable {
+    /// How long a channel open may go unanswered before the connection counts as dead. An open is one round trip
+    /// and the server confirms it at once, so only a dead path (or a server that stopped answering) misses this.
+    /// The same window Herdr's client gives an unanswered ping.
+    static let channelOpenDeadline: TimeAmount = .seconds(10)
+
     let rootChannel: Channel
     private let childChannelOpener: RemuxSSHChildChannelOpener
 
@@ -140,7 +164,16 @@ final class RemuxSSHRoot: @unchecked Sendable {
         trace: RemuxTransportStartupTrace,
         readsOnDemand: Bool = false
     ) async throws -> Channel {
-        try await childChannelOpener.openSessionChannel(on: rootChannel, trace: trace, readsOnDemand: readsOnDemand)
+        try await withOpenDeadline(
+            { [childChannelOpener, rootChannel] in
+                try await childChannelOpener.openSessionChannel(
+                    on: rootChannel,
+                    trace: trace,
+                    readsOnDemand: readsOnDemand
+                )
+            },
+            cleanupLateSuccess: { channel in channel.close(promise: nil) }
+        )
     }
 
     func openDirectTCPIPChannel(
@@ -149,13 +182,53 @@ final class RemuxSSHRoot: @unchecked Sendable {
         trace: RemuxTransportStartupTrace,
         channelInitializer: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
     ) async throws -> Channel {
-        try await childChannelOpener.openDirectTCPIPChannel(
-            on: rootChannel,
-            target: target,
-            originatorAddress: originatorAddress,
-            trace: trace,
-            channelInitializer: channelInitializer
+        try await withOpenDeadline(
+            { [childChannelOpener, rootChannel] in
+                try await childChannelOpener.openDirectTCPIPChannel(
+                    on: rootChannel,
+                    target: target,
+                    originatorAddress: originatorAddress,
+                    trace: trace,
+                    channelInitializer: channelInitializer
+                )
+            },
+            cleanupLateSuccess: { channel in channel.close(promise: nil) }
         )
+    }
+
+    /// Runs `open` (a channel open, or a protocol started on a new channel, such as SFTP) under
+    /// `channelOpenDeadline`. A connection that misses it is closed, so every session on it fails now and reconnects
+    /// instead of waiting minutes for TCP to give up; what `open` produces after that goes to `cleanupLateSuccess`.
+    func withOpenDeadline<Value: Sendable>(
+        _ open: @escaping @Sendable () async throws -> Value,
+        cleanupLateSuccess: @escaping @Sendable (Value) async -> Void
+    ) async throws -> Value {
+        do {
+            return try await RemuxOperationTimeout.run(
+                timeout: Self.channelOpenDeadline,
+                timeoutError: RemuxSSHRootServiceError.channelOpenTimedOut,
+                operation: open,
+                cleanupLateSuccess: cleanupLateSuccess
+            )
+        } catch let error as RemuxSSHRootServiceError where error == .channelOpenTimedOut {
+            GhosttyRuntimeTrace.latency("sshRoot.open.unanswered closing")
+            await close()
+            throw error
+        }
+    }
+
+    /// Whether the connection still answers: opens and closes a session channel. Any answer proves it alive,
+    /// including a refusal (the server is at its session limit); an unanswered open closes the connection.
+    func checkAlive(reason: String) async {
+        guard rootChannel.isActive else { return }
+        do {
+            let channel = try await openSessionChannel(trace: RemuxTransportStartupTrace(flowID: nil))
+            channel.close(promise: nil)
+        } catch let error as RemuxSSHRootServiceError where error == .channelOpenTimedOut {
+            GhosttyRuntimeTrace.latency("sshRoot.check dead reason=\(reason)")
+        } catch {
+            // A refusal is an answer, and any other failure means the connection is already going away.
+        }
     }
 }
 
@@ -242,6 +315,7 @@ enum RemuxSSHRootServiceError: LocalizedError, Equatable, CustomStringConvertibl
     case unsupportedInboundChannel
     case closed
     case stalePreparedRoot
+    case channelOpenTimedOut
 
     var description: String {
         switch self {
@@ -251,6 +325,8 @@ enum RemuxSSHRootServiceError: LocalizedError, Equatable, CustomStringConvertibl
             return "closed"
         case .stalePreparedRoot:
             return "stalePreparedRoot"
+        case .channelOpenTimedOut:
+            return "channelOpenTimedOut"
         }
     }
 
@@ -262,6 +338,35 @@ enum RemuxSSHRootServiceError: LocalizedError, Equatable, CustomStringConvertibl
             return "The SSH root has already been closed."
         case .stalePreparedRoot:
             return "The prepared SSH root reservation is no longer valid."
+        case .channelOpenTimedOut:
+            return "The server didn't answer in time."
+        }
+    }
+}
+
+/// Why a session couldn't open on a connection, when another of the pool's connections to the same server may still
+/// take it. Nothing has run on the server in either case, so opening again elsewhere is safe.
+private enum RemuxSSHSessionOpenFailure {
+    /// The server refused the session on this connection; OpenSSH does this at MaxSessions (10 by default) sessions
+    /// per connection. The connection itself is fine.
+    case refused
+    /// The open got no answer; the connection was closed as dead.
+    case unanswered
+
+    init?(_ error: Error) {
+        if let error = error as? NIOSSHError, error.type == .channelSetupRejected {
+            self = .refused
+        } else if let error = error as? RemuxSSHRootServiceError, error == .channelOpenTimedOut {
+            self = .unanswered
+        } else {
+            return nil
+        }
+    }
+
+    var traceValue: String {
+        switch self {
+        case .refused: "refused"
+        case .unanswered: "unanswered"
         }
     }
 }
@@ -272,6 +377,7 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
     private let pool: RemuxSSHRootService
     private let key: RemuxSSHRootKey
     private let generation: UUID
+    private let configuration: RemuxSSHRootConfiguration
     private let lock = NIOLock()
     private var isReleased = false
 
@@ -279,21 +385,18 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
         connection: RemuxSSHRoot,
         pool: RemuxSSHRootService,
         key: RemuxSSHRootKey,
-        generation: UUID
+        generation: UUID,
+        configuration: RemuxSSHRootConfiguration
     ) {
         self.connection = connection
         self.pool = pool
         self.key = key
         self.generation = generation
+        self.configuration = configuration
     }
 
     func release(_ disposition: RemuxSSHRootLeaseDisposition) async {
-        let shouldRelease = lock.withLock {
-            guard !isReleased else { return false }
-            isReleased = true
-            return true
-        }
-        guard shouldRelease else { return }
+        guard markReleased() else { return }
 
         await pool.releaseConnection(
             connection,
@@ -303,6 +406,30 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
         )
     }
 
+    /// Gives the lease back after the server refused a session on this connection: the connection stays in the
+    /// pool, but new consumers go elsewhere until one of its other leases is given back.
+    func releaseAfterRefusal() async {
+        guard markReleased() else { return }
+
+        await pool.releaseConnectionAfterRefusal(
+            connection,
+            for: key,
+            generation: generation
+        )
+    }
+
+    /// A place on another of the pool's connections to the same server, signing one in when none can take it.
+    func claimAnother(trace: RemuxTransportStartupTrace) async throws -> RemuxSSHClaimedRoot {
+        try await pool.claimRoot(for: key, configuration: configuration, trace: trace)
+    }
+
+    private func markReleased() -> Bool {
+        lock.withLock {
+            guard !isReleased else { return false }
+            isReleased = true
+            return true
+        }
+    }
 }
 
 /// One authentication of an SSH root. The attempt records its own outcome as it finishes, so whoever holds it
@@ -366,6 +493,7 @@ struct RemuxSSHPreparedRoot {
         key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID,
+        configuration: RemuxSSHRootConfiguration,
         attempt: RemuxSSHRootAttempt
     ) -> RemuxSSHPreparedRoot {
         RemuxSSHPreparedRoot(
@@ -374,7 +502,8 @@ struct RemuxSSHPreparedRoot {
                 pool: pool,
                 key: key,
                 generation: generation,
-                reservationID: reservationID
+                reservationID: reservationID,
+                configuration: configuration
             ),
             cancelAuthenticationOnClose: false,
             attempt: attempt
@@ -413,13 +542,14 @@ struct RemuxSSHPreparedRoot {
                 lease: nil
             )
 
-        case .pooled(let pool, let key, let generation, let reservationID):
+        case .pooled(let pool, let key, let generation, let reservationID, let configuration):
             let lease = try await trace.stage("sshRoot.pool.lease") {
                 try await pool.leaseConnection(
                     sshRoot,
                     for: key,
                     generation: generation,
-                    reservationID: reservationID
+                    reservationID: reservationID,
+                    configuration: configuration
                 )
             }
             return RemuxSSHClaimedRoot(
@@ -431,7 +561,7 @@ struct RemuxSSHPreparedRoot {
 
     func cancelAndCleanup() async {
         switch ownership {
-        case .pooled(let pool, let key, let generation, let reservationID):
+        case .pooled(let pool, let key, let generation, let reservationID, _):
             await pool.releaseReservation(
                 for: key,
                 generation: generation,
@@ -463,20 +593,29 @@ private enum RemuxSSHPreparedRootOwnership {
         pool: RemuxSSHRootService,
         key: RemuxSSHRootKey,
         generation: UUID,
-        reservationID: UUID
+        reservationID: UUID,
+        configuration: RemuxSSHRootConfiguration
     )
 }
 
-struct RemuxSSHClaimedRoot: Sendable {
-    let sshRoot: RemuxSSHRoot
-    private let lease: RemuxSSHRootLease?
+/// A consumer's place on a server connection. Opening a session can move it, once, to another of the pool's
+/// connections to the same server (see `openSession`), so `sshRoot` is whichever connection it holds now.
+final class RemuxSSHClaimedRoot: @unchecked Sendable {
+    private let lock = NIOLock()
+    private var root: RemuxSSHRoot
+    private var lease: RemuxSSHRootLease?
+    private var isReleased = false
 
     fileprivate init(
         sshRoot: RemuxSSHRoot,
         lease: RemuxSSHRootLease?
     ) {
-        self.sshRoot = sshRoot
+        self.root = sshRoot
         self.lease = lease
+    }
+
+    var sshRoot: RemuxSSHRoot {
+        lock.withLock { root }
     }
 
     func releaseAfterFailedStart() async {
@@ -484,24 +623,97 @@ struct RemuxSSHClaimedRoot: Sendable {
     }
 
     func release(_ disposition: RemuxSSHRootLeaseDisposition) async {
+        let (root, lease) = lock.withLock { () -> (RemuxSSHRoot, RemuxSSHRootLease?) in
+            isReleased = true
+            return (self.root, self.lease)
+        }
         if let lease {
             await lease.release(disposition)
         } else {
-            await sshRoot.close()
+            await root.close()
         }
+    }
+
+    /// With `readsOnDemand`, the channel delivers data only after `read()` (see `RemuxSSHRoot.openSessionChannel`).
+    func openSessionChannel(
+        trace: RemuxTransportStartupTrace,
+        readsOnDemand: Bool = false
+    ) async throws -> Channel {
+        try await openSession(trace: trace) { root in
+            try await root.openSessionChannel(trace: trace, readsOnDemand: readsOnDemand)
+        }
+    }
+
+    /// Runs `open`, which starts something that takes one of the server's sessions on this connection (an exec
+    /// channel, a subsystem such as SFTP). When the server refuses it, or the connection doesn't answer (and is
+    /// closed as dead), the place moves to another pooled connection to the same server and `open` runs once more
+    /// there. A dedicated connection has nowhere to move, so its failure stands.
+    func openSession<Value: Sendable>(
+        trace: RemuxTransportStartupTrace,
+        _ open: @escaping @Sendable (RemuxSSHRoot) async throws -> Value
+    ) async throws -> Value {
+        do {
+            return try await open(sshRoot)
+        } catch {
+            guard let failure = RemuxSSHSessionOpenFailure(error),
+                  let next = try await moveToAnotherRoot(after: failure, trace: trace)
+            else {
+                throw error
+            }
+            return try await open(next)
+        }
+    }
+
+    private func moveToAnotherRoot(
+        after failure: RemuxSSHSessionOpenFailure,
+        trace: RemuxTransportStartupTrace
+    ) async throws -> RemuxSSHRoot? {
+        guard let lease = lock.withLock({ isReleased ? nil : self.lease }) else { return nil }
+        switch failure {
+        case .refused:
+            await lease.releaseAfterRefusal()
+        case .unanswered:
+            await lease.release(.invalidated)
+        }
+        trace.event("sshRoot.pool.move", fields: ["reason": failure.traceValue])
+        let next = try await lease.claimAnother(trace: trace)
+        let (nextRoot, nextLease) = next.handOver()
+        let stillWanted = lock.withLock { () -> Bool in
+            guard !isReleased else { return false }
+            root = nextRoot
+            self.lease = nextLease
+            return true
+        }
+        guard stillWanted else {
+            // Released while moving: the new place is given straight back.
+            await next.release(.reusable)
+            throw CancellationError()
+        }
+        return nextRoot
+    }
+
+    /// The connection and lease, for another claimed root to take over; this one is not used afterwards.
+    private func handOver() -> (RemuxSSHRoot, RemuxSSHRootLease?) {
+        lock.withLock { (root, lease) }
     }
 }
 
 actor RemuxSSHRootService {
     nonisolated let tailscaleSSHCheckChallengeBroker = TailscaleSSHCheckChallengeBroker()
 
+    /// One pooled connection. A server usually has one per purpose; another is signed in only when the server
+    /// refuses a session on every connection it has (see `isRefusingSessions`).
     private struct Entry {
+        let key: RemuxSSHRootKey
         let generation: UUID
         let attempt: RemuxSSHRootAttempt
         var activeLeaseCount: Int
         var reservationIDs: Set<UUID>
         var idleCloseTask: Task<Void, Never>?
         var readiness: RemuxSSHRootReadiness
+        /// The server refused a session on this connection while it held its current leases (OpenSSH limits the
+        /// sessions per connection). New consumers go to another connection until one of these leases is given back.
+        var isRefusingSessions = false
     }
 
     /// A root removed from the pool while sessions still lease it: no
@@ -537,13 +749,12 @@ actor RemuxSSHRootService {
         case close
     }
 
-    /// SSH multiplexes child channels over one authenticated connection.
-    /// Bounding concurrent consumers keeps the blast radius of a dying
-    /// root modest.
-    static let maxConcurrentLeases = 4
-
     private let idleTimeout: Duration
-    private var entries: [RemuxSSHRootKey: Entry] = [:]
+    /// Pooled connections by generation, and each key's generations in the order consumers try them: SSH
+    /// multiplexes every consumer's channels over one connection, so a key gets another only when the server
+    /// refuses sessions on the ones it has.
+    private var entries: [UUID: Entry] = [:]
+    private var generationsByKey: [RemuxSSHRootKey: [UUID]] = [:]
     private var retiredEntries: [UUID: RetiredEntry] = [:]
 
     init(idleTimeout: Duration = .seconds(120)) {
@@ -553,16 +764,34 @@ actor RemuxSSHRootService {
     func snapshot() -> RemuxSSHRootServiceSnapshot {
         RemuxSSHRootServiceSnapshot(
             retiredCount: retiredEntries.count,
-            entries: entries.mapValues { entry in
-                RemuxSSHRootServiceSnapshot.Entry(
-                    generation: entry.generation,
-                    readiness: entry.readiness,
-                    activeLeaseCount: entry.activeLeaseCount,
-                    reservationCount: entry.reservationIDs.count,
-                    isIdleCloseScheduled: entry.idleCloseTask != nil
-                )
+            entries: generationsByKey.mapValues { generations in
+                generations.compactMap { entries[$0] }.map { entry in
+                    RemuxSSHRootServiceSnapshot.Entry(
+                        generation: entry.generation,
+                        readiness: entry.readiness,
+                        activeLeaseCount: entry.activeLeaseCount,
+                        reservationCount: entry.reservationIDs.count,
+                        isIdleCloseScheduled: entry.idleCloseTask != nil,
+                        isRefusingSessions: entry.isRefusingSessions
+                    )
+                }
             }
         )
+    }
+
+    /// Checks that each connection still answers (`RemuxSSHRoot.checkAlive`), all at once; run when the app comes
+    /// back to the foreground and when the network path changes, the moments a connection most often dies without
+    /// a word. A dead one is closed, so its sessions fail and reconnect now.
+    func checkConnections(reason: String) {
+        let ready = entries.values.filter { $0.readiness == .ready }.map(\.attempt.task)
+        let tasks = ready + retiredEntries.values.map(\.task)
+        GhosttyRuntimeTrace.latency("sshRoot.pool.check reason=\(reason) roots=\(tasks.count)")
+        for task in tasks {
+            Task.detached(priority: .userInitiated) {
+                guard let root = try? await task.value else { return }
+                await root.checkAlive(reason: reason)
+            }
+        }
     }
 
     func prewarmConnection(
@@ -617,30 +846,15 @@ actor RemuxSSHRootService {
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) -> RemuxSSHPreparedRoot {
-        guard let snapshot = reserveEntry(
+        let (snapshot, reservationID) = reserveEntry(
             for: key,
             configuration: configuration,
             trace: trace
-        ) else {
-            trace.event(
-                "sshRoot.pool.busy",
-                fields: poolTraceFields(key: key, readiness: entries[key]?.readiness ?? .connecting)
-            )
-            return dedicatedPreparedRoot(
-                configuration: configuration,
-                trace: trace
-            )
-        }
+        )
         trace.event(
             snapshot.didReuse ? "sshRoot.pool.hit" : "sshRoot.pool.miss",
             fields: poolTraceFields(key: key, readiness: snapshot.readiness)
         )
-        guard let reservationID = snapshot.reservationID else {
-            return dedicatedPreparedRoot(
-                configuration: configuration,
-                trace: trace
-            )
-        }
 
         return RemuxSSHPreparedRoot.pooled(
             trace: trace,
@@ -648,12 +862,13 @@ actor RemuxSSHRootService {
             key: key,
             generation: snapshot.generation,
             reservationID: reservationID,
+            configuration: configuration,
             attempt: snapshot.attempt
         )
     }
 
-    /// Claims the root for `key`, authenticating it first when the pool has none ready; a full pool gives a
-    /// dedicated root. A claim that fails gives back what it reserved.
+    /// Claims a place on a pooled connection for `key`, authenticating one first when the pool has none that can
+    /// take it. A claim that fails gives back what it reserved.
     nonisolated func claimRoot(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
@@ -675,7 +890,8 @@ actor RemuxSSHRootService {
         _ connection: RemuxSSHRoot,
         for key: RemuxSSHRootKey,
         generation: UUID,
-        reservationID: UUID
+        reservationID: UUID,
+        configuration: RemuxSSHRootConfiguration
     ) async throws -> RemuxSSHRootLease {
         switch leaseEntry(for: key, generation: generation, reservationID: reservationID) {
         case .leased:
@@ -693,7 +909,8 @@ actor RemuxSSHRootService {
             connection: connection,
             pool: self,
             key: key,
-            generation: generation
+            generation: generation,
+            configuration: configuration
         )
     }
 
@@ -711,13 +928,26 @@ actor RemuxSSHRootService {
         }
     }
 
+    fileprivate func releaseConnectionAfterRefusal(
+        _ connection: RemuxSSHRoot,
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) async {
+        switch releaseEntryAfterRefusal(for: key, generation: generation) {
+        case .retained:
+            break
+        case .close:
+            await connection.close()
+        }
+    }
+
     @discardableResult
     private func leaseEntry(
         for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) -> LeaseEntryResult {
-        guard var entry = entries[key], entry.generation == generation else {
+        guard var entry = entries[generation] else {
             return .stale(closeConnection: retiredEntries[generation] == nil)
         }
         guard entry.reservationIDs.contains(reservationID) else {
@@ -728,7 +958,7 @@ actor RemuxSSHRootService {
         entry.idleCloseTask = nil
         entry.reservationIDs.remove(reservationID)
         entry.activeLeaseCount += 1
-        entries[key] = entry
+        entries[generation] = entry
         return .leased
     }
 
@@ -738,31 +968,22 @@ actor RemuxSSHRootService {
         generation: UUID,
         disposition: RemuxSSHRootLeaseDisposition
     ) -> ReleaseEntryResult {
-        guard var entry = entries[key], entry.generation == generation else {
-            if var retired = retiredEntries[generation] {
-                retired.activeLeaseCount = max(0, retired.activeLeaseCount - 1)
-                if retired.activeLeaseCount == 0 {
-                    retiredEntries.removeValue(forKey: generation)
-                    return .close
-                }
-                retiredEntries[generation] = retired
-                return .retained
-            }
-            // Unknown to the pool (dedicated or already evicted):
-            // the caller owns the close.
-            return .close
+        guard var entry = entries[generation] else {
+            return releaseUnpooledLease(generation: generation)
         }
 
         switch disposition {
         case .reusable:
             entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
-            entries[key] = entry
+            // A session given back frees a place the server refused before.
+            entry.isRefusingSessions = false
+            entries[generation] = entry
             scheduleIdleCloseIfNeeded(for: key, generation: generation)
             return .retained
 
         case .invalidated:
             entry.idleCloseTask?.cancel()
-            entries.removeValue(forKey: key)
+            removeEntry(generation)
             let remaining = max(0, entry.activeLeaseCount - 1)
             guard remaining > 0 else {
                 return .close
@@ -775,44 +996,76 @@ actor RemuxSSHRootService {
         }
     }
 
+    /// The refused consumer's lease goes back, and the connection takes no new consumers while the leases that
+    /// filled it remain.
+    @discardableResult
+    private func releaseEntryAfterRefusal(
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) -> ReleaseEntryResult {
+        guard var entry = entries[generation] else {
+            return releaseUnpooledLease(generation: generation)
+        }
+
+        entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
+        entry.isRefusingSessions = entry.activeLeaseCount > 0
+        entries[generation] = entry
+        scheduleIdleCloseIfNeeded(for: key, generation: generation)
+        return .retained
+    }
+
+    /// A lease on a connection that has left the pool: a retired one closes with its last lease; one the pool
+    /// no longer knows is the caller's to close.
+    private func releaseUnpooledLease(generation: UUID) -> ReleaseEntryResult {
+        guard var retired = retiredEntries[generation] else {
+            return .close
+        }
+        retired.activeLeaseCount = max(0, retired.activeLeaseCount - 1)
+        if retired.activeLeaseCount == 0 {
+            retiredEntries.removeValue(forKey: generation)
+            return .close
+        }
+        retiredEntries[generation] = retired
+        return .retained
+    }
+
     func releaseReservation(
         for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) {
-        guard var entry = entries[key],
-              entry.generation == generation,
+        guard var entry = entries[generation],
               entry.reservationIDs.contains(reservationID) else {
             return
         }
 
         entry.reservationIDs.remove(reservationID)
-        entries[key] = entry
+        entries[generation] = entry
         scheduleIdleCloseIfNeeded(for: key, generation: generation)
     }
 
     func closeIdleConnections(forServerID serverID: SavedServer.ID) {
-        let closing = entries
-            .filter { key, entry in
-                key.serverID == serverID
-                    && entry.activeLeaseCount == 0
-                    && entry.reservationIDs.isEmpty
-            }
+        let closing = entries.values.filter { entry in
+            entry.key.serverID == serverID
+                && entry.activeLeaseCount == 0
+                && entry.reservationIDs.isEmpty
+        }
 
-        for (key, entry) in closing {
+        for entry in closing {
             entry.idleCloseTask?.cancel()
-            entries.removeValue(forKey: key)
+            removeEntry(entry.generation)
             closeEntryTask(entry.attempt.task, reason: "server_profile_changed")
         }
     }
 
+    /// The key's connection for a prewarm: the first there is, or a new one signing in.
     private func entrySnapshot(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) -> EntrySnapshot {
-        removeEntryIfSpent(for: key)
-        if let existing = entries[key] {
+        removeSpentEntries(for: key)
+        if let existing = orderedEntries(for: key).first {
             return EntrySnapshot(
                 generation: existing.generation,
                 attempt: existing.attempt,
@@ -822,61 +1075,38 @@ actor RemuxSSHRootService {
             )
         }
 
-        let generation = UUID()
-        let attempt = makeAuthenticationAttempt(configuration: configuration, trace: trace)
-        entries[key] = Entry(
-            generation: generation,
-            attempt: attempt,
-            activeLeaseCount: 0,
-            reservationIDs: [],
-            idleCloseTask: nil,
-            readiness: .connecting
-        )
-
-        observeAuthenticationResult(attempt.task, for: key, generation: generation)
-
+        let entry = addEntry(for: key, configuration: configuration, trace: trace, reservationID: nil)
         return EntrySnapshot(
-            generation: generation,
-            attempt: attempt,
+            generation: entry.generation,
+            attempt: entry.attempt,
             didReuse: false,
             readiness: .connecting,
             reservationID: nil
         )
     }
 
+    /// A place on the key's first connection that takes new consumers, or on a new one signing in when none does.
     private func reserveEntry(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
-    ) -> EntrySnapshot? {
+    ) -> (EntrySnapshot, UUID) {
         let reservationID = UUID()
-        removeEntryIfSpent(for: key)
-        if entries[key] != nil {
-            return reserveExistingEntry(
-                for: key,
-                reservationID: reservationID
-            )
+        removeSpentEntries(for: key)
+        if let snapshot = reserveExistingEntry(for: key, reservationID: reservationID) {
+            return (snapshot, reservationID)
         }
 
-        let generation = UUID()
-        let attempt = makeAuthenticationAttempt(configuration: configuration, trace: trace)
-        entries[key] = Entry(
-            generation: generation,
-            attempt: attempt,
-            activeLeaseCount: 0,
-            reservationIDs: [reservationID],
-            idleCloseTask: nil,
-            readiness: .connecting
-        )
-
-        observeAuthenticationResult(attempt.task, for: key, generation: generation)
-
-        return EntrySnapshot(
-            generation: generation,
-            attempt: attempt,
-            didReuse: false,
-            readiness: .connecting,
-            reservationID: reservationID
+        let entry = addEntry(for: key, configuration: configuration, trace: trace, reservationID: reservationID)
+        return (
+            EntrySnapshot(
+                generation: entry.generation,
+                attempt: entry.attempt,
+                didReuse: false,
+                readiness: .connecting,
+                reservationID: reservationID
+            ),
+            reservationID
         )
     }
 
@@ -884,17 +1114,14 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         reservationID: UUID
     ) -> EntrySnapshot? {
-        guard var existing = entries[key],
-              existing.activeLeaseCount + existing.reservationIDs.count
-                  < Self.maxConcurrentLeases
-        else {
+        guard var existing = orderedEntries(for: key).first(where: { !$0.isRefusingSessions }) else {
             return nil
         }
 
         existing.idleCloseTask?.cancel()
         existing.idleCloseTask = nil
         existing.reservationIDs.insert(reservationID)
-        entries[key] = existing
+        entries[existing.generation] = existing
         return EntrySnapshot(
             generation: existing.generation,
             attempt: existing.attempt,
@@ -904,11 +1131,41 @@ actor RemuxSSHRootService {
         )
     }
 
-    private func dedicatedPreparedRoot(
+    private func addEntry(
+        for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
-        trace: RemuxTransportStartupTrace
-    ) -> RemuxSSHPreparedRoot {
-        RemuxSSHPreparedRoot.dedicated(configuration: configuration, trace: trace)
+        trace: RemuxTransportStartupTrace,
+        reservationID: UUID?
+    ) -> Entry {
+        let entry = Entry(
+            key: key,
+            generation: UUID(),
+            attempt: makeAuthenticationAttempt(configuration: configuration, trace: trace),
+            activeLeaseCount: 0,
+            reservationIDs: reservationID.map { [$0] } ?? [],
+            idleCloseTask: nil,
+            readiness: .connecting
+        )
+        insertEntry(entry)
+        observeAuthenticationResult(entry.attempt.task, for: key, generation: entry.generation)
+        return entry
+    }
+
+    private func insertEntry(_ entry: Entry) {
+        entries[entry.generation] = entry
+        generationsByKey[entry.key, default: []].append(entry.generation)
+    }
+
+    private func removeEntry(_ generation: UUID) {
+        guard let entry = entries.removeValue(forKey: generation) else { return }
+        generationsByKey[entry.key]?.removeAll { $0 == generation }
+        if generationsByKey[entry.key]?.isEmpty == true {
+            generationsByKey.removeValue(forKey: entry.key)
+        }
+    }
+
+    private func orderedEntries(for key: RemuxSSHRootKey) -> [Entry] {
+        (generationsByKey[key] ?? []).compactMap { entries[$0] }
     }
 
     private nonisolated func makeAuthenticationAttempt(
@@ -920,9 +1177,10 @@ actor RemuxSSHRootService {
 
     /// An entry whose attempt failed or whose root has closed is never handed to anyone: it goes before a
     /// lookup, even when the observer that removes it has not run yet. Its leases drain as a retired root.
-    private func removeEntryIfSpent(for key: RemuxSSHRootKey) {
-        guard let entry = entries[key], entry.attempt.isSpent else { return }
-        rootChannelClosed(for: key, generation: entry.generation)
+    private func removeSpentEntries(for key: RemuxSSHRootKey) {
+        for entry in orderedEntries(for: key) where entry.attempt.isSpent {
+            rootChannelClosed(for: key, generation: entry.generation)
+        }
     }
 
     private func observeAuthenticationResult(
@@ -949,9 +1207,9 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard var entry = entries[key], entry.generation == generation else { return }
+        guard var entry = entries[generation] else { return }
         entry.readiness = .ready
-        entries[key] = entry
+        entries[generation] = entry
         scheduleIdleCloseIfNeeded(for: key, generation: generation)
     }
 
@@ -959,18 +1217,18 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard let entry = entries[key], entry.generation == generation else { return }
+        guard let entry = entries[generation] else { return }
         entry.idleCloseTask?.cancel()
-        entries.removeValue(forKey: key)
+        removeEntry(generation)
     }
 
     private func rootChannelClosed(
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard let entry = entries[key], entry.generation == generation else { return }
+        guard let entry = entries[generation] else { return }
         entry.idleCloseTask?.cancel()
-        entries.removeValue(forKey: key)
+        removeEntry(generation)
 
         guard entry.activeLeaseCount > 0 else { return }
         retiredEntries[generation] = RetiredEntry(
@@ -983,7 +1241,7 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard var entry = entries[key], entry.generation == generation else { return }
+        guard var entry = entries[generation] else { return }
         guard entry.activeLeaseCount == 0, entry.reservationIDs.isEmpty else { return }
 
         entry.idleCloseTask?.cancel()
@@ -997,18 +1255,18 @@ actor RemuxSSHRootService {
                 NSLog("Remux SSH root idle close timer failed: %@", String(describing: error))
             }
         }
-        entries[key] = entry
+        entries[generation] = entry
     }
 
     private func closeIdleEntry(
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard let entry = entries[key], entry.generation == generation else { return }
+        guard let entry = entries[generation] else { return }
         guard entry.activeLeaseCount == 0, entry.reservationIDs.isEmpty else { return }
 
         entry.idleCloseTask?.cancel()
-        entries.removeValue(forKey: key)
+        removeEntry(generation)
         closeEntryTask(entry.attempt.task, reason: "idle_timeout")
     }
 
@@ -1016,6 +1274,7 @@ actor RemuxSSHRootService {
     func closeAllConnectionsForTesting() {
         let closing = Array(entries.values)
         entries.removeAll()
+        generationsByKey.removeAll()
 
         for entry in closing {
             entry.idleCloseTask?.cancel()
@@ -1037,10 +1296,18 @@ actor RemuxSSHRootService {
         activeLeaseCount: Int = 0,
         reservationID: UUID? = nil,
         idleCloseScheduled: Bool = false,
+        isRefusingSessions: Bool = false,
+        alongsideExisting: Bool = false,
         attempt: RemuxSSHRootAttempt? = nil
     ) -> UUID {
-        entries[key]?.idleCloseTask?.cancel()
-        entries[key] = Entry(
+        if !alongsideExisting {
+            for existing in orderedEntries(for: key) {
+                existing.idleCloseTask?.cancel()
+                removeEntry(existing.generation)
+            }
+        }
+        var entry = Entry(
+            key: key,
             generation: generation,
             // By default the entry's attempt stays in progress until the pool cancels it.
             attempt: attempt ?? RemuxSSHRootAttempt {
@@ -1052,7 +1319,38 @@ actor RemuxSSHRootService {
             idleCloseTask: idleCloseScheduled ? Self.testingIdleCloseTask() : nil,
             readiness: readiness
         )
+        entry.isRefusingSessions = isRefusingSessions
+        insertEntry(entry)
         return generation
+    }
+
+    /// The connection a new consumer would get a place on, and the place, or nil when every connection is refusing.
+    func reserveExistingForTesting(
+        for key: RemuxSSHRootKey
+    ) -> (generation: UUID, reservationID: UUID)? {
+        let reservationID = UUID()
+        return reserveExistingEntry(for: key, reservationID: reservationID).map { ($0.generation, reservationID) }
+    }
+
+    func releaseEntryAfterRefusalForTesting(
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) {
+        releaseEntryAfterRefusal(for: key, generation: generation)
+    }
+
+    /// The connection `preparedRoot` picks (an existing one taking consumers, or a new one signing in), and the
+    /// key's connections at that moment, before a new one's sign-in can finish either way.
+    func preparedGenerationForTesting(
+        for key: RemuxSSHRootKey,
+        configuration: RemuxSSHRootConfiguration
+    ) -> (prepared: UUID, generations: [UUID]) {
+        let (snapshot, _) = reserveEntry(
+            for: key,
+            configuration: configuration,
+            trace: RemuxTransportStartupTrace(flowID: nil)
+        )
+        return (snapshot.generation, orderedEntries(for: key).map(\.generation))
     }
 
     func leaseEntryForTesting(

@@ -1,6 +1,7 @@
 import CryptoKit
 import GhosttyKit
 import Combine
+import NIOConcurrencyHelpers
 import SwiftUI
 import UIKit
 import XCTest
@@ -674,6 +675,28 @@ final class RemuxRootModelTests: XCTestCase {
         }
         XCTAssertTrue(resumed)
         await tmuxDiscoverer.resumeFirst(with: [])
+    }
+
+    /// A connection can die without a word while the app is suspended; returning to the app checks every connection
+    /// once, and an activation without a trip to the background (a notification pulled down) doesn't.
+    func testReturningFromTheBackgroundChecksConnectionsOnce() async throws {
+        let reasons = NIOLockedValueBox<[String]>([])
+        let harness = makeHarness(sshConnectionChecker: { reason, _ in
+            reasons.withLockedValue { $0.append(reason) }
+        })
+        await harness.model.load()
+
+        harness.model.handleAppLifecyclePhase(.inactive)
+        harness.model.handleAppLifecyclePhase(.active)
+        harness.model.handleAppLifecyclePhase(.background)
+        harness.model.handleAppLifecyclePhase(.inactive)
+        harness.model.handleAppLifecyclePhase(.active)
+        harness.model.handleAppLifecyclePhase(.active)
+
+        let checked = await waitUntil { reasons.withLockedValue { $0 } == ["foreground"] }
+        XCTAssertTrue(checked, "checks: \(reasons.withLockedValue { $0 })")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(reasons.withLockedValue { $0 }, ["foreground"])
     }
 
     func testCancelledCurrentTmuxRefreshReturnsToIdleAndCanRetry() async throws {
@@ -4545,6 +4568,7 @@ final class RemuxRootModelTests: XCTestCase {
             TrustedHostStore,
             RemuxSSHRootService
         ) async -> Void)? = nil,
+        sshConnectionChecker: (@Sendable (String, RemuxSSHRootService) async -> Void)? = nil,
         attachmentTransferServiceFactory: (@Sendable (
             SessionTarget,
             TrustedHostStore,
@@ -4610,6 +4634,7 @@ final class RemuxRootModelTests: XCTestCase {
             publicKeyInstaller: resolvedPublicKeyInstaller,
             transportFactory: resolvedTransportFactory,
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
+            sshConnectionChecker: sshConnectionChecker ?? { _, _ in },
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
             tmuxSessionDiscoverer: { target, trustedHostStore, sshRootService in
                 SessionListing(

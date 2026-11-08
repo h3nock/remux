@@ -547,6 +547,9 @@ final class RemuxRootModel: ObservableObject {
     private let terminalScreenModelFactory: TerminalScreenModelFactory
     private var terminalRuntimes: [TerminalRuntimeAttemptKey: TerminalRuntime] = [:]
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
+    /// Set on going to the background, cleared by the connection check on return.
+    private var hasBeenInBackground = false
+    private let networkPathObserver: RemuxNetworkPathObserver
     private var currentSetupID: UUID?
     private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
@@ -561,6 +564,9 @@ final class RemuxRootModel: ObservableObject {
         terminalScreenModelFactory: TerminalScreenModelFactory? = nil
     ) {
         self.dependencies = dependencies
+        self.networkPathObserver = RemuxNetworkPathObserver {
+            Task { await dependencies.checkSSHConnections(reason: "network") }
+        }
         self.preparedTransportCoordinator = RemuxPreparedTransportCoordinator { target in
             dependencies.makeTransport(for: target)
         }
@@ -1899,7 +1905,16 @@ final class RemuxRootModel: ObservableObject {
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
         currentAppLifecyclePhase = phase
         if phase == .background {
+            hasBeenInBackground = true
             cancelAllSessionRefreshes()
+        }
+        // A connection can die silently while the app is suspended (the network changed, a router dropped it), and
+        // a tmux session would otherwise find out only when TCP gives up, minutes later. Offline, the check waits
+        // for the network to come back (the path observer runs it then).
+        if phase == .active, hasBeenInBackground, networkPathObserver.isUsable {
+            hasBeenInBackground = false
+            let dependencies = dependencies
+            Task { await dependencies.checkSSHConnections(reason: "foreground") }
         }
         // Going to the background cancels discovery, leaving a server's first check undone; it resumes on return.
         if phase == .active {

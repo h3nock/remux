@@ -482,20 +482,20 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            RemuxSSHRootKey(target: baseTarget),
-            RemuxSSHRootKey(target: logsTarget)
+            RemuxSSHRootKey(target: baseTarget, purpose: .interactive),
+            RemuxSSHRootKey(target: logsTarget, purpose: .interactive)
         )
         XCTAssertNotEqual(
-            RemuxSSHRootKey(target: baseTarget),
-            RemuxSSHRootKey(target: changedPasswordTarget)
+            RemuxSSHRootKey(target: baseTarget, purpose: .interactive),
+            RemuxSSHRootKey(target: changedPasswordTarget, purpose: .interactive)
         )
         XCTAssertEqual(
-            RemuxSSHRootKey(target: baseTarget),
-            RemuxSSHRootKey(target: changedSavedUserPreservedAuthTarget)
+            RemuxSSHRootKey(target: baseTarget, purpose: .interactive),
+            RemuxSSHRootKey(target: changedSavedUserPreservedAuthTarget, purpose: .interactive)
         )
         XCTAssertNotEqual(
-            RemuxSSHRootKey(target: baseTarget),
-            RemuxSSHRootKey(target: changedAuthUserTarget)
+            RemuxSSHRootKey(target: baseTarget, purpose: .interactive),
+            RemuxSSHRootKey(target: changedAuthUserTarget, purpose: .interactive)
         )
     }
 
@@ -585,20 +585,93 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
-    func testSSHRootServiceCapacityBoundsSharedRoot() async throws {
+    func testSSHRootServiceSeparatesInteractiveAndTransferConnections() async throws {
+        let pool = RemuxSSHRootService()
+        let serverID = UUID()
+        let interactive = makeSSHRootKey(serverID: serverID, purpose: .interactive)
+        let transfer = makeSSHRootKey(serverID: serverID, purpose: .transfer)
+        XCTAssertNotEqual(interactive, transfer)
+
+        let interactiveGeneration = await pool.insertEntryForTesting(for: interactive)
+        let transferGeneration = await pool.insertEntryForTesting(for: transfer)
+
+        let snapshot = await pool.snapshot()
+        XCTAssertEqual(snapshot.entryCount, 2)
+        XCTAssertEqual(snapshot.entry(for: interactive)?.generation, interactiveGeneration)
+        XCTAssertEqual(snapshot.entry(for: transfer)?.generation, transferGeneration)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSSHRootServiceSharesOneRootWithoutAConsumerLimit() async throws {
         let pool = RemuxSSHRootService()
         let key = makeSSHRootKey()
-        _ = await pool.insertEntryForTesting(
-            for: key,
-            activeLeaseCount: RemuxSSHRootService.maxConcurrentLeases - 1
-        )
+        let generation = await pool.insertEntryForTesting(for: key, activeLeaseCount: 20)
 
-        // One slot left: a reservation takes it, the next must fall
-        // back to a dedicated connection (nil = pool refuses).
-        let last = await pool.reserveEntryForTesting(for: key)
-        XCTAssertNotNil(last)
-        let overflow = await pool.reserveEntryForTesting(for: key)
-        XCTAssertNil(overflow)
+        // The server decides how many sessions a connection takes; the pool sends every consumer to the one
+        // connection until the server refuses one.
+        let reserved = await pool.reserveExistingForTesting(for: key)
+        XCTAssertEqual(reserved?.generation, generation)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSSHRootServiceRefusalKeepsRootAndSendsNewConsumersToAnotherRoot() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let first = await pool.insertEntryForTesting(for: key, activeLeaseCount: 3)
+
+        // The refused consumer gives its lease back; the connection keeps the two sessions that filled it.
+        await pool.releaseEntryAfterRefusalForTesting(for: key, generation: first)
+        var entry = await pool.snapshot().entry(for: key)
+        XCTAssertEqual(entry?.generation, first)
+        XCTAssertEqual(entry?.activeLeaseCount, 2)
+        XCTAssertEqual(entry?.isRefusingSessions, true)
+
+        // Nobody else gets a place on it: the next consumer signs in a second pooled connection.
+        let none = await pool.reserveExistingForTesting(for: key)
+        XCTAssertNil(none)
+        let (second, generations) = await pool.preparedGenerationForTesting(
+            for: key,
+            configuration: makeRefusedRootConfiguration()
+        )
+        XCTAssertNotEqual(second, first)
+        XCTAssertEqual(generations, [first, second])
+
+        // A session given back on the first frees a place there, so new consumers go back to it.
+        await pool.releaseEntryForTesting(for: key, generation: first, disposition: .reusable)
+        entry = await pool.snapshot().entry(for: key)
+        XCTAssertEqual(entry?.isRefusingSessions, false)
+        let reserved = await pool.reserveExistingForTesting(for: key)
+        XCTAssertEqual(reserved?.generation, first)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSSHRootServiceRefusalOnALoneLeaseLeavesRootTakingConsumers() async throws {
+        let pool = RemuxSSHRootService(idleTimeout: .seconds(60))
+        let key = makeSSHRootKey()
+        let generation = await pool.insertEntryForTesting(for: key, activeLeaseCount: 1)
+
+        await pool.releaseEntryAfterRefusalForTesting(for: key, generation: generation)
+
+        // With nothing else on it, the refusal can't be about this connection's sessions.
+        let entry = await pool.snapshot().entry(for: key)
+        XCTAssertEqual(entry?.activeLeaseCount, 0)
+        XCTAssertEqual(entry?.isRefusingSessions, false)
+        XCTAssertEqual(entry?.isIdleCloseScheduled, true)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSSHRootServiceInvalidatingOneRootKeepsTheKeysOtherRoot() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let first = await pool.insertEntryForTesting(for: key, activeLeaseCount: 1, isRefusingSessions: true)
+        let second = await pool.insertEntryForTesting(for: key, activeLeaseCount: 1, alongsideExisting: true)
+
+        await pool.releaseEntryForTesting(for: key, generation: first, disposition: .invalidated)
+
+        let snapshot = await pool.snapshot()
+        XCTAssertEqual(snapshot.entries(for: key).map(\.generation), [second])
+        let reserved = await pool.reserveExistingForTesting(for: key)
+        XCTAssertEqual(reserved?.generation, second)
         await pool.closeAllConnectionsForTesting()
     }
 
@@ -1534,7 +1607,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         return LoopbackSession(
             server: server,
             trustedHostStore: TrustedHostStore(rootURL: trustedHostRoot),
-            key: RemuxSSHRootKey(target: target)
+            key: RemuxSSHRootKey(target: target, purpose: .interactive)
         )
     }
 
@@ -1601,7 +1674,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         host: String = "server.example.com",
         port: Int = 22,
         username: String = "tester",
-        password: String = "pw"
+        password: String = "pw",
+        purpose: RemuxSSHConnectionPurpose = .interactive
     ) -> RemuxSSHRootKey {
         let server = SavedServer(
             id: serverID,
@@ -1620,7 +1694,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                     username: username,
                     password: password
                 )
-            )
+            ),
+            purpose: purpose
         )
     }
 

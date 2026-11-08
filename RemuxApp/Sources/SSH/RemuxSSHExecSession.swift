@@ -319,8 +319,8 @@ enum RemuxSSHExecSession {
         do {
             // With reads on demand, NIOSSH still delivers channel requests, their replies and the exit
             // status at once; data, stderr and EOF are queued in arrival order and delivered only for a
-            // read.
-            let sessionChannel = try await claimedRoot.sshRoot.openSessionChannel(
+            // read. A refused or unanswered open moves the claim to another of the server's connections.
+            let sessionChannel = try await claimedRoot.openSessionChannel(
                 trace: trace,
                 readsOnDemand: readsOnDemand
             )
