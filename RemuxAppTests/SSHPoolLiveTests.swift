@@ -192,7 +192,7 @@ final class SSHPoolLiveTests: XCTestCase {
         let start = ContinuousClock.now
         let reopening = Task { try await endpoint.openEcho(on: pool) }
         // Carry bytes again once the open's deadline has passed, so the fresh connection can sign in.
-        try await Task.sleep(for: .seconds(Int64(RemuxSSHRoot.channelOpenDeadline.nanoseconds / 1_000_000_000) + 1))
+        try await Task.sleep(for: RemuxSSHRoot.channelOpenDeadline.duration + .seconds(1))
         relay.resume()
         let reopened = try await reopening.value
         let elapsed = ContinuousClock.now - start
