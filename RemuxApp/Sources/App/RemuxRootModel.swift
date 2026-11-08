@@ -549,7 +549,7 @@ final class RemuxRootModel: ObservableObject {
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
     /// Set on going to the background, cleared by the connection check on return.
     private var hasBeenInBackground = false
-    private let networkPathObserver: RemuxNetworkPathObserver
+    private let networkPathObserver: any RemuxNetworkPathObserving
     private var currentSetupID: UUID?
     private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
@@ -559,12 +559,16 @@ final class RemuxRootModel: ObservableObject {
     private var pendingServerOrder: [SavedServer.ID]?
     private var isSavingServerOrder = false
 
+    /// `makeNetworkPathObserver` gets what to run when the path changes and is usable; by default the device's.
     init(
         dependencies: RemuxAppDependencies,
-        terminalScreenModelFactory: TerminalScreenModelFactory? = nil
+        terminalScreenModelFactory: TerminalScreenModelFactory? = nil,
+        makeNetworkPathObserver: (
+            @escaping @Sendable () -> Void
+        ) -> any RemuxNetworkPathObserving = { RemuxNetworkPathObserver(onUsablePathChange: $0) }
     ) {
         self.dependencies = dependencies
-        self.networkPathObserver = RemuxNetworkPathObserver {
+        self.networkPathObserver = makeNetworkPathObserver {
             Task { await dependencies.checkSSHConnections(reason: "network") }
         }
         self.preparedTransportCoordinator = RemuxPreparedTransportCoordinator { target in

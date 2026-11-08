@@ -640,6 +640,7 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
     static func start(
         username: String,
         suspendAuthentication: Bool = false,
+        directTCPIPConfirmationDelay: TimeAmount? = nil,
         execOutput: Data? = nil,
         execSteps: [SSHPublicKeyLiveExecStep] = [],
         hostKey: NIOSSHPrivateKey = NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey())
@@ -667,6 +668,10 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
                     role: .server(sshConfiguration),
                     allocator: channel.allocator,
                     inboundChildChannelInitializer: { childChannel, channelType in
+                        // A forward confirmed only after a delay, as OpenSSH's is once it reaches a slow target.
+                        if case .directTCPIP = channelType, let delay = directTCPIPConfirmationDelay {
+                            return childChannel.eventLoop.scheduleTask(in: delay) {}.futureResult
+                        }
                         guard channelType == .session else {
                             return childChannel.eventLoop.makeFailedFuture(
                                 SSHPublicKeyLiveTestServerError.invalidChannelType

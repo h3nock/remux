@@ -1,6 +1,13 @@
 import Foundation
 import Network
 
+/// The network path as the root model needs it: whether it is usable now. The observer calls back on usable changes.
+protocol RemuxNetworkPathObserving: AnyObject, Sendable {
+    var isUsable: Bool { get }
+}
+
+extension RemuxNetworkPathObserver: RemuxNetworkPathObserving {}
+
 /// Watches the device's network path. `onUsablePathChange` runs when the path changes and is usable (Wi-Fi to
 /// cellular, another Wi-Fi network, the network coming back): the moments an open SSH connection most often dies
 /// without a word, since its address or route went away. A path that is not usable is left alone, so a short

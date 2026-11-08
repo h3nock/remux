@@ -3,11 +3,14 @@ import NIOCore
 
 /// Runs an operation against a deadline. At the deadline the caller's `onTimeout` runs, then the call fails with
 /// `timeoutError`; an operation that still succeeds afterwards is handed to `cleanupLateSuccess`, so a late
-/// channel or handle is never leaked.
+/// channel or handle is never leaked. With `extendWhile`, the deadline is about silence rather than duration: each
+/// time `timeout` passes, the wait goes on for another `timeout` if `extendWhile` reports progress since the window
+/// began (it gets the window's start).
 enum RemuxOperationTimeout {
     static func run<Value: Sendable>(
         timeout: TimeAmount,
         timeoutError: Error,
+        extendWhile isMakingProgress: (@Sendable (_ windowStart: NIODeadline) -> Bool)? = nil,
         operation: @escaping @Sendable () async throws -> Value,
         onTimeout: @escaping @Sendable () async -> Void = {},
         cleanupLateSuccess: @escaping @Sendable (Value) async -> Void = { _ in }
@@ -30,7 +33,12 @@ enum RemuxOperationTimeout {
                 }
                 let timeoutTask = Task {
                     do {
+                        var windowStart = NIODeadline.now()
                         try await Task.sleep(nanoseconds: timeoutNanos)
+                        while let isMakingProgress, isMakingProgress(windowStart) {
+                            windowStart = .now()
+                            try await Task.sleep(nanoseconds: timeoutNanos)
+                        }
                         if gate.beginTimeout() {
                             await onTimeout()
                             gate.finishTimeout()

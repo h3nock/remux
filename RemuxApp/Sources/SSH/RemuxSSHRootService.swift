@@ -137,17 +137,23 @@ struct RemuxSSHRootServiceSnapshot: Equatable, Sendable {
 }
 
 final class RemuxSSHRoot: @unchecked Sendable {
-    /// How long a channel open may go unanswered before the connection counts as dead. An open is one round trip
-    /// and the server confirms it at once, so only a dead path (or a server that stopped answering) misses this.
-    /// The same window Herdr's client gives an unanswered ping.
+    /// How long a session open may wait while nothing at all arrives from the server before the connection counts
+    /// as dead; the same window Herdr's client gives an unanswered ping. An open can wait longer on a connection
+    /// that is busy (behind a slow link's queued upload, say), but bytes keep arriving there, so it isn't cut off.
     static let channelOpenDeadline: TimeAmount = .seconds(10)
 
     let rootChannel: Channel
     private let childChannelOpener: RemuxSSHChildChannelOpener
+    private let inboundActivity: RemuxSSHInboundActivity
 
-    fileprivate init(rootChannel: Channel, childChannelOpener: RemuxSSHChildChannelOpener) {
+    fileprivate init(
+        rootChannel: Channel,
+        childChannelOpener: RemuxSSHChildChannelOpener,
+        inboundActivity: RemuxSSHInboundActivity
+    ) {
         self.rootChannel = rootChannel
         self.childChannelOpener = childChannelOpener
+        self.inboundActivity = inboundActivity
     }
 
     func close() async {
@@ -176,29 +182,27 @@ final class RemuxSSHRoot: @unchecked Sendable {
         )
     }
 
+    /// No deadline here: the server confirms a forward only once it has reached the forward's target, so a slow
+    /// target is no sign of a dead connection.
     func openDirectTCPIPChannel(
         to target: RemuxSSHDirectTCPIPTarget,
         originatorAddress: SocketAddress,
         trace: RemuxTransportStartupTrace,
         channelInitializer: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
     ) async throws -> Channel {
-        try await withOpenDeadline(
-            { [childChannelOpener, rootChannel] in
-                try await childChannelOpener.openDirectTCPIPChannel(
-                    on: rootChannel,
-                    target: target,
-                    originatorAddress: originatorAddress,
-                    trace: trace,
-                    channelInitializer: channelInitializer
-                )
-            },
-            cleanupLateSuccess: { channel in channel.close(promise: nil) }
+        try await childChannelOpener.openDirectTCPIPChannel(
+            on: rootChannel,
+            target: target,
+            originatorAddress: originatorAddress,
+            trace: trace,
+            channelInitializer: channelInitializer
         )
     }
 
-    /// Runs `open` (a channel open, or a protocol started on a new channel, such as SFTP) under
-    /// `channelOpenDeadline`. A connection that misses it is closed, so every session on it fails now and reconnects
-    /// instead of waiting minutes for TCP to give up; what `open` produces after that goes to `cleanupLateSuccess`.
+    /// Runs `open` (a session channel open, or a protocol started on one, such as SFTP) under
+    /// `channelOpenDeadline`. A connection that gets nothing from the server for that long is closed, so every
+    /// session on it fails now and reconnects instead of waiting minutes for TCP to give up; what `open` produces
+    /// after that goes to `cleanupLateSuccess`.
     func withOpenDeadline<Value: Sendable>(
         _ open: @escaping @Sendable () async throws -> Value,
         cleanupLateSuccess: @escaping @Sendable (Value) async -> Void
@@ -207,6 +211,7 @@ final class RemuxSSHRoot: @unchecked Sendable {
             return try await RemuxOperationTimeout.run(
                 timeout: Self.channelOpenDeadline,
                 timeoutError: RemuxSSHRootServiceError.channelOpenTimedOut,
+                extendWhile: { [inboundActivity] windowStart in inboundActivity.hasReceived(since: windowStart) },
                 operation: open,
                 cleanupLateSuccess: cleanupLateSuccess
             )
@@ -229,6 +234,38 @@ final class RemuxSSHRoot: @unchecked Sendable {
         } catch {
             // A refusal is an answer, and any other failure means the connection is already going away.
         }
+    }
+}
+
+/// When bytes last arrived from the server on a connection, whatever channel they were for.
+private final class RemuxSSHInboundActivity: @unchecked Sendable {
+    private let lock = NIOLock()
+    private var lastReceived = NIODeadline.now()
+
+    func record() {
+        let now = NIODeadline.now()
+        lock.withLock { lastReceived = now }
+    }
+
+    func hasReceived(since start: NIODeadline) -> Bool {
+        lock.withLock { lastReceived > start }
+    }
+}
+
+/// First in a connection's pipeline, so it sees every read from the socket.
+private final class RemuxSSHInboundActivityHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    typealias InboundOut = ByteBuffer
+
+    private let activity: RemuxSSHInboundActivity
+
+    init(activity: RemuxSSHInboundActivity) {
+        self.activity = activity
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        activity.record()
+        context.fireChannelRead(data)
     }
 }
 
@@ -350,23 +387,17 @@ private enum RemuxSSHSessionOpenFailure {
     /// The server refused the session on this connection; OpenSSH does this at MaxSessions (10 by default) sessions
     /// per connection. The connection itself is fine.
     case refused
-    /// The open got no answer; the connection was closed as dead.
-    case unanswered
+    /// The connection went away during the open: it didn't answer and was closed as dead, or it closed for another
+    /// reason (a connection check found it dead) while the open waited.
+    case connectionLost
 
-    init?(_ error: Error) {
+    init?(_ error: Error, on root: RemuxSSHRoot) {
         if let error = error as? NIOSSHError, error.type == .channelSetupRejected {
             self = .refused
-        } else if let error = error as? RemuxSSHRootServiceError, error == .channelOpenTimedOut {
-            self = .unanswered
+        } else if !root.rootChannel.isActive {
+            self = .connectionLost
         } else {
             return nil
-        }
-    }
-
-    var traceValue: String {
-        switch self {
-        case .refused: "refused"
-        case .unanswered: "unanswered"
         }
     }
 }
@@ -407,11 +438,13 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
     }
 
     /// Gives the lease back after the server refused a session on this connection: the connection stays in the
-    /// pool, but new consumers go elsewhere until one of its other leases is given back.
-    func releaseAfterRefusal() async {
-        guard markReleased() else { return }
+    /// pool, but new consumers go elsewhere until one of its other leases is given back. Returns whether other
+    /// leases remain on it, that is, whether the refusal was about the sessions it already carries.
+    @discardableResult
+    func releaseAfterRefusal() async -> Bool {
+        guard markReleased() else { return false }
 
-        await pool.releaseConnectionAfterRefusal(
+        return await pool.releaseConnectionAfterRefusal(
             connection,
             for: key,
             generation: generation
@@ -644,38 +677,67 @@ final class RemuxSSHClaimedRoot: @unchecked Sendable {
         }
     }
 
+    /// Moves after refusals within one open: enough for a burst of consumers to spread over the connections they
+    /// need, while a server that keeps refusing can't make the app sign in again and again.
+    private static let maximumMovesAfterRefusal = 4
+
     /// Runs `open`, which starts something that takes one of the server's sessions on this connection (an exec
-    /// channel, a subsystem such as SFTP). When the server refuses it, or the connection doesn't answer (and is
-    /// closed as dead), the place moves to another pooled connection to the same server and `open` runs once more
-    /// there. A dedicated connection has nowhere to move, so its failure stands.
+    /// channel, a subsystem such as SFTP). When a connection that holds other sessions refuses it, the place moves to
+    /// another pooled connection to the same server and `open` runs there; when the connection goes away during the
+    /// open, the place moves once to a fresh one. A refused place always goes back as refused, so the full connection
+    /// stays in the pool with its sessions, whatever the consumer does with the error. A refusal on a connection with
+    /// nothing else on it means the server refuses sessions outright, and a dedicated connection has nowhere to move:
+    /// their failures stand.
     func openSession<Value: Sendable>(
         trace: RemuxTransportStartupTrace,
         _ open: @escaping @Sendable (RemuxSSHRoot) async throws -> Value
     ) async throws -> Value {
-        do {
-            return try await open(sshRoot)
-        } catch {
-            guard let failure = RemuxSSHSessionOpenFailure(error),
-                  let next = try await moveToAnotherRoot(after: failure, trace: trace)
-            else {
-                throw error
+        var movesAfterRefusal = 0
+        var movedAfterLoss = false
+        while true {
+            let root = sshRoot
+            do {
+                return try await open(root)
+            } catch {
+                switch RemuxSSHSessionOpenFailure(error, on: root) {
+                case .refused?:
+                    let mayMove = movesAfterRefusal < Self.maximumMovesAfterRefusal
+                    guard try await moveAfterRefusal(mayMove: mayMove, trace: trace) else { throw error }
+                    movesAfterRefusal += 1
+                case .connectionLost?:
+                    guard !movedAfterLoss, try await moveAfterLoss(trace: trace) else { throw error }
+                    movedAfterLoss = true
+                case nil:
+                    throw error
+                }
             }
-            return try await open(next)
         }
     }
 
-    private func moveToAnotherRoot(
-        after failure: RemuxSSHSessionOpenFailure,
+    private func moveAfterRefusal(mayMove: Bool, trace: RemuxTransportStartupTrace) async throws -> Bool {
+        guard let lease = currentLease() else { return false }
+        let othersOnConnection = await lease.releaseAfterRefusal()
+        guard mayMove, othersOnConnection else { return false }
+        return try await move(from: lease, reason: "refused", trace: trace)
+    }
+
+    private func moveAfterLoss(trace: RemuxTransportStartupTrace) async throws -> Bool {
+        guard let lease = currentLease() else { return false }
+        await lease.release(.invalidated)
+        return try await move(from: lease, reason: "connectionLost", trace: trace)
+    }
+
+    /// The lease to move from, unless this place has none (a dedicated connection) or was given back.
+    private func currentLease() -> RemuxSSHRootLease? {
+        lock.withLock { isReleased ? nil : lease }
+    }
+
+    private func move(
+        from lease: RemuxSSHRootLease,
+        reason: String,
         trace: RemuxTransportStartupTrace
-    ) async throws -> RemuxSSHRoot? {
-        guard let lease = lock.withLock({ isReleased ? nil : self.lease }) else { return nil }
-        switch failure {
-        case .refused:
-            await lease.releaseAfterRefusal()
-        case .unanswered:
-            await lease.release(.invalidated)
-        }
-        trace.event("sshRoot.pool.move", fields: ["reason": failure.traceValue])
+    ) async throws -> Bool {
+        trace.event("sshRoot.pool.move", fields: ["reason": reason])
         let next = try await lease.claimAnother(trace: trace)
         let (nextRoot, nextLease) = next.handOver()
         let stillWanted = lock.withLock { () -> Bool in
@@ -689,7 +751,7 @@ final class RemuxSSHClaimedRoot: @unchecked Sendable {
             await next.release(.reusable)
             throw CancellationError()
         }
-        return nextRoot
+        return true
     }
 
     /// The connection and lease, for another claimed root to take over; this one is not used afterwards.
@@ -932,13 +994,12 @@ actor RemuxSSHRootService {
         _ connection: RemuxSSHRoot,
         for key: RemuxSSHRootKey,
         generation: UUID
-    ) async {
-        switch releaseEntryAfterRefusal(for: key, generation: generation) {
-        case .retained:
-            break
-        case .close:
+    ) async -> Bool {
+        let (result, othersRemain) = releaseEntryAfterRefusal(for: key, generation: generation)
+        if result == .close {
             await connection.close()
         }
+        return othersRemain
     }
 
     @discardableResult
@@ -997,21 +1058,22 @@ actor RemuxSSHRootService {
     }
 
     /// The refused consumer's lease goes back, and the connection takes no new consumers while the leases that
-    /// filled it remain.
+    /// filled it remain. Also says whether any remain.
     @discardableResult
     private func releaseEntryAfterRefusal(
         for key: RemuxSSHRootKey,
         generation: UUID
-    ) -> ReleaseEntryResult {
+    ) -> (ReleaseEntryResult, othersRemain: Bool) {
         guard var entry = entries[generation] else {
-            return releaseUnpooledLease(generation: generation)
+            let othersRemain = (retiredEntries[generation]?.activeLeaseCount ?? 0) > 1
+            return (releaseUnpooledLease(generation: generation), othersRemain)
         }
 
         entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
         entry.isRefusingSessions = entry.activeLeaseCount > 0
         entries[generation] = entry
         scheduleIdleCloseIfNeeded(for: key, generation: generation)
-        return .retained
+        return (.retained, entry.activeLeaseCount > 0)
     }
 
     /// A lease on a connection that has left the pool: a retired one closes with its last lease; one the pool
@@ -1332,11 +1394,13 @@ actor RemuxSSHRootService {
         return reserveExistingEntry(for: key, reservationID: reservationID).map { ($0.generation, reservationID) }
     }
 
+    /// Whether other leases remain on the connection after the refused one goes back.
+    @discardableResult
     func releaseEntryAfterRefusalForTesting(
         for key: RemuxSSHRootKey,
         generation: UUID
-    ) {
-        releaseEntryAfterRefusal(for: key, generation: generation)
+    ) -> Bool {
+        releaseEntryAfterRefusal(for: key, generation: generation).othersRemain
     }
 
     /// The connection `preparedRoot` picks (an existing one taking consumers, or a new one signing in), and the
@@ -1530,6 +1594,7 @@ enum RemuxSSHRootBootstrap {
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
             trace.event("bootstrap.configure.end")
 
+            let inboundActivity = RemuxSSHInboundActivity()
             let connection = try await trace.stage(
                 "tcpConnect",
                 fields: [
@@ -1541,7 +1606,12 @@ enum RemuxSSHRootBootstrap {
                     host: configuration.host,
                     port: configuration.port,
                     channelInitializer: { channel in
-                        configureChannel(channel, using: configuration)
+                        channel.pipeline.addHandler(
+                            RemuxSSHInboundActivityHandler(activity: inboundActivity),
+                            position: .first
+                        ).flatMap {
+                            configureChannel(channel, using: configuration)
+                        }
                     }
                 )
             }
@@ -1558,7 +1628,8 @@ enum RemuxSSHRootBootstrap {
 
             return RemuxSSHRoot(
                 rootChannel: channel,
-                childChannelOpener: RemuxSSHChildChannelOpener(sshHandler: sshHandler)
+                childChannelOpener: RemuxSSHChildChannelOpener(sshHandler: sshHandler),
+                inboundActivity: inboundActivity
             )
         } catch {
             if let rootChannel {

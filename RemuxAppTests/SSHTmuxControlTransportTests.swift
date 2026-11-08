@@ -1,5 +1,6 @@
 @preconcurrency import Citadel
 import NIO
+import NIOConcurrencyHelpers
 import NIOEmbedded
 @preconcurrency import NIOSSH
 import XCTest
@@ -193,6 +194,46 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let elapsedMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
         XCTAssertLessThan(elapsedMilliseconds, 1_000)
+    }
+
+    func testOperationTimeoutWaitsOnWhileProgressContinues() async throws {
+        let value = try await RemuxOperationTimeout.run(
+            timeout: .milliseconds(30),
+            timeoutError: RemuxSSHRootServiceError.channelOpenTimedOut,
+            extendWhile: { _ in true },
+            operation: {
+                try await Task.sleep(for: .milliseconds(200))
+                return 42
+            }
+        )
+
+        XCTAssertEqual(value, 42)
+    }
+
+    func testOperationTimeoutEndsAfterAWindowWithoutProgress() async {
+        let windows = NIOLockedValueBox(0)
+        do {
+            _ = try await RemuxOperationTimeout.run(
+                timeout: .milliseconds(30),
+                timeoutError: RemuxSSHRootServiceError.channelOpenTimedOut,
+                extendWhile: { _ in
+                    windows.withLockedValue { count in
+                        count += 1
+                        return count < 3
+                    }
+                },
+                operation: {
+                    try await Task.sleep(for: .seconds(5))
+                    return 42
+                }
+            )
+            XCTFail("expected the wait to end once progress stopped")
+        } catch let error as RemuxSSHRootServiceError {
+            XCTAssertEqual(error, .channelOpenTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(windows.withLockedValue { $0 }, 3)
     }
 
     func testSFTPLeaseOpenTimeoutCleansLateSuccess() async throws {
@@ -620,7 +661,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let first = await pool.insertEntryForTesting(for: key, activeLeaseCount: 3)
 
         // The refused consumer gives its lease back; the connection keeps the two sessions that filled it.
-        await pool.releaseEntryAfterRefusalForTesting(for: key, generation: first)
+        let othersRemain = await pool.releaseEntryAfterRefusalForTesting(for: key, generation: first)
+        XCTAssertTrue(othersRemain, "the refusal was about the sessions already on the connection")
         var entry = await pool.snapshot().entry(for: key)
         XCTAssertEqual(entry?.generation, first)
         XCTAssertEqual(entry?.activeLeaseCount, 2)
@@ -650,7 +692,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let key = makeSSHRootKey()
         let generation = await pool.insertEntryForTesting(for: key, activeLeaseCount: 1)
 
-        await pool.releaseEntryAfterRefusalForTesting(for: key, generation: generation)
+        let othersRemain = await pool.releaseEntryAfterRefusalForTesting(for: key, generation: generation)
+        XCTAssertFalse(othersRemain, "a refusal with nothing else on the connection: the server refuses outright")
 
         // With nothing else on it, the refusal can't be about this connection's sessions.
         let entry = await pool.snapshot().entry(for: key)
@@ -1441,6 +1484,41 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
     /// A lookup never hands out an attempt that already failed, even before the pool's own observer of that attempt
     /// has removed it.
+    /// The server confirms a forward only once it reaches the forward's target; a slow target leaves the
+    /// connection, and the sessions and transfers on it, alone.
+    func testSlowForwardLeavesTheConnectionOpen() async throws {
+        let server = try await SSHPublicKeyLiveTestServer.start(
+            username: "remux",
+            directTCPIPConfirmationDelay: .seconds(12)
+        )
+        defer { server.stop() }
+        let loopback = makeLoopbackSession(port: server.port)
+        try loopback.trustedHostStore.trustHostKey(loopback.challenge(for: server))
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        let trace = RemuxTransportStartupTrace(flowID: nil)
+        let claim = try await pool.claimRoot(
+            for: loopback.key,
+            configuration: makeLoopbackConfiguration(loopback).sshRootConfiguration,
+            trace: trace
+        )
+        let root = claim.sshRoot
+
+        let forward = try await root.openDirectTCPIPChannel(
+            to: RemuxSSHDirectTCPIPTarget(host: "127.0.0.1", port: 8080),
+            originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0),
+            trace: trace,
+            channelInitializer: { $0.eventLoop.makeSucceededFuture(()) }
+        )
+
+        XCTAssertTrue(root.rootChannel.isActive, "a slow forward closed the connection")
+        let session = try await root.openSessionChannel(trace: trace)
+        XCTAssertTrue(session.isActive)
+        session.close(promise: nil)
+        forward.close(promise: nil)
+        await claim.release(.reusable)
+    }
+
     func testSSHRootServiceLookupReplacesAFailedAttemptAtOnce() async throws {
         let server = try await SSHPublicKeyLiveTestServer.start(username: "remux", suspendAuthentication: true)
         defer { server.stop() }

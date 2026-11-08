@@ -61,6 +61,124 @@ final class SSHPoolLiveTests: XCTestCase {
         for echo in [second, third, fourth, fifth] { await echo.close() }
     }
 
+    /// Five places taken before the server answers any open, against two sessions per connection: the refusals
+    /// spread them over three connections, and no refusal retires a connection that is merely full.
+    func testOutstandingClaimsSpreadOverConnectionsAsTheyFillUp() async throws {
+        let configuration = try SSHPoolLiveConfiguration.load()
+        let endpoint = try SSHPoolLiveEndpoint(configuration, port: configuration.limitedPort)
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        let trace = RemuxTransportStartupTrace(flowID: nil)
+
+        var claims: [RemuxSSHClaimedRoot] = []
+        for _ in 0..<5 {
+            claims.append(try await pool.claimRoot(
+                for: endpoint.key,
+                configuration: endpoint.rootConfiguration,
+                trace: trace
+            ))
+        }
+        var channels: [Channel] = []
+        for (index, claim) in claims.enumerated() {
+            do {
+                channels.append(try await claim.openSessionChannel(trace: trace))
+            } catch {
+                XCTFail("claim \(index + 1) found no session: \(error)")
+            }
+        }
+
+        XCTAssertEqual(channels.count, 5)
+        let snapshot = await pool.snapshot()
+        XCTAssertEqual(snapshot.entries(for: endpoint.key).count, 3)
+        XCTAssertEqual(snapshot.retiredCount, 0)
+        for channel in channels { try? await channel.close() }
+        for claim in claims { await claim.release(.reusable) }
+    }
+
+    func testSimultaneousOpensOnFullConnectionsAllGetASession() async throws {
+        let configuration = try SSHPoolLiveConfiguration.load()
+        let endpoint = try SSHPoolLiveEndpoint(configuration, port: configuration.limitedPort)
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        let first = try await endpoint.openEcho(on: pool)
+        let second = try await endpoint.openEcho(on: pool)
+
+        let opened = await withTaskGroup(of: SSHPoolLiveEcho?.self) { group in
+            for _ in 0..<4 {
+                group.addTask {
+                    do {
+                        return try await endpoint.openEcho(on: pool)
+                    } catch {
+                        XCTFail("an open found no session: \(error)")
+                        return nil
+                    }
+                }
+            }
+            var opened: [SSHPoolLiveEcho] = []
+            for await echo in group {
+                if let echo { opened.append(echo) }
+            }
+            return opened
+        }
+
+        XCTAssertEqual(opened.count, 4)
+        let retired = await pool.snapshot().retiredCount
+        XCTAssertEqual(retired, 0)
+        for echo in opened + [first, second] { await echo.close() }
+    }
+
+    /// On a slow link a check's open waits behind data already queued, but the server keeps sending, so the
+    /// connection is not taken for dead.
+    func testConnectionCheckKeepsASlowConnectionThatKeepsReceiving() async throws {
+        let configuration = try SSHPoolLiveConfiguration.load()
+        let relay = try await SSHPoolLiveRelay.start(host: configuration.host, port: configuration.port)
+        addTeardownBlock { relay.close() }
+        let endpoint = try SSHPoolLiveEndpoint(configuration, port: relay.port)
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        let echo = try await endpoint.openEcho(on: pool)
+        let before = echo.receivedByteCount
+
+        // 3 MiB at 32 KiB/s takes over a minute either way: far longer than the open deadline.
+        relay.throttle(bytesPerSecond: 32 * 1024)
+        echo.send(Data(repeating: 0x41, count: 3 * 1024 * 1024))
+        try await Task.sleep(for: .milliseconds(200))
+        await pool.checkConnections(reason: "test")
+        try await Task.sleep(for: RemuxSSHRoot.channelOpenDeadline.duration + .seconds(3))
+
+        XCTAssertGreaterThan(echo.receivedByteCount - before, 32 * 1024, "the server kept answering")
+        XCTAssertTrue(echo.rootChannel.isActive, "a connection still receiving was closed as dead")
+        relay.close()
+        await echo.close()
+    }
+
+    /// The connection check closes a frozen connection while another open waits on it: that open moves to a fresh
+    /// connection instead of failing.
+    func testOpenWaitingOnAConnectionTheCheckClosesOpensOnAFreshOne() async throws {
+        let configuration = try SSHPoolLiveConfiguration.load()
+        let relay = try await SSHPoolLiveRelay.start(host: configuration.host, port: configuration.port)
+        addTeardownBlock { relay.close() }
+        let endpoint = try SSHPoolLiveEndpoint(configuration, port: relay.port)
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        let first = try await endpoint.openEcho(on: pool)
+
+        relay.stall()
+        await pool.checkConnections(reason: "test")
+        let resume = Task {
+            try await Task.sleep(for: RemuxSSHRoot.channelOpenDeadline.duration + .seconds(1))
+            relay.resume()
+        }
+        defer { resume.cancel() }
+        try await Task.sleep(for: .seconds(1))
+        let second = try await endpoint.openEcho(on: pool)
+
+        XCTAssertFalse(second.rootChannel === first.rootChannel)
+        XCTAssertFalse(first.rootChannel.isActive)
+        await second.close()
+        await first.close()
+    }
+
     func testUnansweredOpenClosesTheConnectionAndOpensOnAFreshOne() async throws {
         let configuration = try SSHPoolLiveConfiguration.load()
         let relay = try await SSHPoolLiveRelay.start(host: configuration.host, port: configuration.port)
@@ -213,6 +331,17 @@ final class SSHPoolLiveEcho: @unchecked Sendable {
     private var root: RemuxSSHClaimedRoot?
     private var waiter: (byte: UInt8, continuation: CheckedContinuation<Void, Error>)?
     private var failure: Error?
+    private var received = 0
+
+    /// Bytes `cat` has sent back so far.
+    var receivedByteCount: Int {
+        lock.withLock { received }
+    }
+
+    /// Queues `data` to the session without waiting, as a paste or a burst of output would.
+    func send(_ data: Data) {
+        lock.withLock { connection }?.write(data) { _ in }
+    }
 
     /// The connection the session ended up on.
     var rootChannel: Channel {
@@ -257,6 +386,7 @@ final class SSHPoolLiveEcho: @unchecked Sendable {
 
     fileprivate func receive(_ data: Data) {
         let continuation = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+            received += data.count
             guard let waiter, data.contains(waiter.byte) else { return nil }
             self.waiter = nil
             return waiter.continuation
@@ -284,6 +414,12 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
     private let host: String
     private let targetPort: Int
     private let state = NIOLockedValueBox((stalled: false, channels: [ObjectIdentifier: Channel]()))
+    private let bytesPerSecond = NIOLockedValueBox<Int?>(nil)
+
+    /// Carries at most this many bytes a second each way per connection, as a slow link does.
+    func throttle(bytesPerSecond rate: Int) {
+        bytesPerSecond.withLockedValue { $0 = rate }
+    }
 
     private init(port: Int, listener: Channel, host: String, targetPort: Int) {
         self.port = port
@@ -320,8 +456,12 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
             .channelOption(ChannelOptions.autoRead, value: false)
             .connect(host: host, port: targetPort)
             .flatMap { outbound in
-                inbound.pipeline.addHandler(SSHPoolLiveRelayHandler(peer: outbound)).flatMap {
-                    outbound.pipeline.addHandler(SSHPoolLiveRelayHandler(peer: inbound))
+                inbound.pipeline.addHandler(
+                    SSHPoolLiveRelayHandler(peer: outbound, bytesPerSecond: self.bytesPerSecond)
+                ).flatMap {
+                    outbound.pipeline.addHandler(
+                        SSHPoolLiveRelayHandler(peer: inbound, bytesPerSecond: self.bytesPerSecond)
+                    )
                 }.map { outbound }
             }
             .whenComplete { [weak self] result in
@@ -390,13 +530,26 @@ private final class SSHPoolLiveRelayHandler: ChannelInboundHandler, @unchecked S
     typealias InboundIn = ByteBuffer
 
     private let peer: Channel
+    private let bytesPerSecond: NIOLockedValueBox<Int?>
+    private var nextSend = NIODeadline.now()
 
-    init(peer: Channel) {
+    init(peer: Channel, bytesPerSecond: NIOLockedValueBox<Int?>) {
         self.peer = peer
+        self.bytesPerSecond = bytesPerSecond
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        peer.write(Self.unwrapInboundIn(data), promise: nil)
+        let bytes = Self.unwrapInboundIn(data)
+        guard let rate = bytesPerSecond.withLockedValue({ $0 }) else {
+            peer.write(bytes, promise: nil)
+            return
+        }
+        // Each read leaves when the link would have finished sending what came before it.
+        nextSend = max(nextSend, .now()) + .nanoseconds(Int64(bytes.readableBytes) * 1_000_000_000 / Int64(rate))
+        let peer = self.peer
+        context.eventLoop.scheduleTask(deadline: nextSend) {
+            peer.writeAndFlush(bytes, promise: nil)
+        }
     }
 
     func channelReadComplete(context: ChannelHandlerContext) {
@@ -411,4 +564,8 @@ private final class SSHPoolLiveRelayHandler: ChannelInboundHandler, @unchecked S
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         context.close(promise: nil)
     }
+}
+
+private extension TimeAmount {
+    var duration: Duration { .nanoseconds(nanoseconds) }
 }

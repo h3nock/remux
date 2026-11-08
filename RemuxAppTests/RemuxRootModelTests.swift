@@ -699,6 +699,27 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(reasons.withLockedValue { $0 }, ["foreground"])
     }
 
+    /// Offline, a check would end connections that might survive the outage, so returning to the app waits for the
+    /// network; the network coming back (a usable path change) runs the check.
+    func testReturningOfflineChecksConnectionsWhenTheNetworkComesBack() async throws {
+        let reasons = NIOLockedValueBox<[String]>([])
+        let networkPath = TestNetworkPath(isUsable: false)
+        let harness = makeHarness(
+            sshConnectionChecker: { reason, _ in reasons.withLockedValue { $0.append(reason) } },
+            networkPath: networkPath
+        )
+        await harness.model.load()
+
+        harness.model.handleAppLifecyclePhase(.background)
+        harness.model.handleAppLifecyclePhase(.active)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(reasons.withLockedValue { $0 }, [])
+
+        networkPath.becomeUsable()
+        let checked = await waitUntil { reasons.withLockedValue { $0 } == ["network"] }
+        XCTAssertTrue(checked, "checks: \(reasons.withLockedValue { $0 })")
+    }
+
     func testCancelledCurrentTmuxRefreshReturnsToIdleAndCanRetry() async throws {
         let pair = makePasswordBackedServer()
         let discoverer = RecordingTmuxSessionDiscoverer(
@@ -4569,6 +4590,7 @@ final class RemuxRootModelTests: XCTestCase {
             RemuxSSHRootService
         ) async -> Void)? = nil,
         sshConnectionChecker: (@Sendable (String, RemuxSSHRootService) async -> Void)? = nil,
+        networkPath: TestNetworkPath = TestNetworkPath(),
         attachmentTransferServiceFactory: (@Sendable (
             SessionTarget,
             TrustedHostStore,
@@ -4659,7 +4681,11 @@ final class RemuxRootModelTests: XCTestCase {
         return RemuxRootModelHarness(
             model: RemuxRootModel(
                 dependencies: dependencies,
-                terminalScreenModelFactory: resolvedTerminalScreenModelFactory
+                terminalScreenModelFactory: resolvedTerminalScreenModelFactory,
+                makeNetworkPathObserver: { onUsablePathChange in
+                    networkPath.attach(onUsablePathChange)
+                    return networkPath
+                }
             ),
             profileRepository: profileRepository,
             settingsRepository: settingsRepository,
@@ -6113,5 +6139,32 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
     func resumeSuspendedLoad() {
         suspendedLoadContinuation?.resume()
         suspendedLoadContinuation = nil
+    }
+}
+
+/// A network path the test controls: usable or not, and a usable change on demand.
+final class TestNetworkPath: RemuxNetworkPathObserving, @unchecked Sendable {
+    private let lock = NSLock()
+    private var usable: Bool
+    private var onUsablePathChange: (@Sendable () -> Void)?
+
+    init(isUsable: Bool = true) {
+        usable = isUsable
+    }
+
+    var isUsable: Bool {
+        lock.withLock { usable }
+    }
+
+    func attach(_ onUsablePathChange: @escaping @Sendable () -> Void) {
+        lock.withLock { self.onUsablePathChange = onUsablePathChange }
+    }
+
+    func becomeUsable() {
+        let onUsablePathChange = lock.withLock { () -> (@Sendable () -> Void)? in
+            usable = true
+            return self.onUsablePathChange
+        }
+        onUsablePathChange?()
     }
 }
