@@ -152,7 +152,7 @@ final class RemuxAppUITests: XCTestCase {
         pullFormDown()
         XCTAssertTrue(discard.waitForExistence(timeout: 5), "The second pull didn't ask either.")
         discard.tap()
-        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Discard Changes didn't close the form.")
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Discard didn't close the form.")
         XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
     }
 

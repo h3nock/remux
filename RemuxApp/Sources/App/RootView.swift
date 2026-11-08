@@ -328,7 +328,7 @@ private struct RemuxWorkspaceShell: View {
                             isPresented: $isConfirmingSetupDiscard,
                             titleVisibility: .visible
                         ) {
-                            Button("Discard Changes", role: .destructive) {
+                            Button("Discard", role: .destructive) {
                                 dismissKeyboard()
                                 model.cancelSetup()
                             }
