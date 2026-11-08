@@ -144,12 +144,13 @@ final class RemuxSSHRoot: @unchecked Sendable {
 
     let rootChannel: Channel
     private let childChannelOpener: RemuxSSHChildChannelOpener
-    private let inboundActivity: RemuxSSHInboundActivity
+    /// When bytes last arrived from the server on this connection, whatever channel they were for.
+    private let inboundActivity: RemuxLastActivity
 
     fileprivate init(
         rootChannel: Channel,
         childChannelOpener: RemuxSSHChildChannelOpener,
-        inboundActivity: RemuxSSHInboundActivity
+        inboundActivity: RemuxLastActivity
     ) {
         self.rootChannel = rootChannel
         self.childChannelOpener = childChannelOpener
@@ -211,7 +212,7 @@ final class RemuxSSHRoot: @unchecked Sendable {
             return try await RemuxOperationTimeout.run(
                 timeout: Self.channelOpenDeadline,
                 timeoutError: RemuxSSHRootServiceError.channelOpenTimedOut,
-                extendWhile: { [inboundActivity] windowStart in inboundActivity.hasReceived(since: windowStart) },
+                extendWhile: { [inboundActivity] windowStart in inboundActivity.hasRecorded(since: windowStart) },
                 operation: open,
                 cleanupLateSuccess: cleanupLateSuccess
             )
@@ -237,29 +238,14 @@ final class RemuxSSHRoot: @unchecked Sendable {
     }
 }
 
-/// When bytes last arrived from the server on a connection, whatever channel they were for.
-private final class RemuxSSHInboundActivity: @unchecked Sendable {
-    private let lock = NIOLock()
-    private var lastReceived = NIODeadline.now()
-
-    func record() {
-        let now = NIODeadline.now()
-        lock.withLock { lastReceived = now }
-    }
-
-    func hasReceived(since start: NIODeadline) -> Bool {
-        lock.withLock { lastReceived > start }
-    }
-}
-
 /// First in a connection's pipeline, so it sees every read from the socket.
 private final class RemuxSSHInboundActivityHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = ByteBuffer
 
-    private let activity: RemuxSSHInboundActivity
+    private let activity: RemuxLastActivity
 
-    init(activity: RemuxSSHInboundActivity) {
+    init(activity: RemuxLastActivity) {
         self.activity = activity
     }
 
@@ -443,7 +429,6 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
     /// Gives the lease back after the server refused a session on this connection: the connection stays in the
     /// pool, but new consumers go elsewhere until one of its other leases is given back. Returns whether other
     /// leases remain on it, that is, whether the refusal was about the sessions it already carries.
-    @discardableResult
     func releaseAfterRefusal() async -> Bool {
         guard markReleased() else { return false }
 
@@ -797,7 +782,6 @@ actor RemuxSSHRootService {
         let attempt: RemuxSSHRootAttempt
         let didReuse: Bool
         let readiness: RemuxSSHRootReadiness
-        let reservationID: UUID?
     }
 
     private enum LeaseEntryResult: Equatable {
@@ -1062,7 +1046,6 @@ actor RemuxSSHRootService {
 
     /// The refused consumer's lease goes back, and the connection takes no new consumers while the leases that
     /// filled it remain. Also says whether any remain.
-    @discardableResult
     private func releaseEntryAfterRefusal(
         for key: RemuxSSHRootKey,
         generation: UUID
@@ -1135,8 +1118,7 @@ actor RemuxSSHRootService {
                 generation: existing.generation,
                 attempt: existing.attempt,
                 didReuse: true,
-                readiness: existing.readiness,
-                reservationID: nil
+                readiness: existing.readiness
             )
         }
 
@@ -1145,8 +1127,7 @@ actor RemuxSSHRootService {
             generation: entry.generation,
             attempt: entry.attempt,
             didReuse: false,
-            readiness: .connecting,
-            reservationID: nil
+            readiness: .connecting
         )
     }
 
@@ -1168,8 +1149,7 @@ actor RemuxSSHRootService {
                 generation: entry.generation,
                 attempt: entry.attempt,
                 didReuse: false,
-                readiness: .connecting,
-                reservationID: reservationID
+                readiness: .connecting
             ),
             reservationID
         )
@@ -1191,8 +1171,7 @@ actor RemuxSSHRootService {
             generation: existing.generation,
             attempt: existing.attempt,
             didReuse: true,
-            readiness: existing.readiness,
-            reservationID: reservationID
+            readiness: existing.readiness
         )
     }
 
@@ -1389,16 +1368,7 @@ actor RemuxSSHRootService {
         return generation
     }
 
-    /// The connection a new consumer would get a place on, and the place, or nil when every connection is refusing.
-    func reserveExistingForTesting(
-        for key: RemuxSSHRootKey
-    ) -> (generation: UUID, reservationID: UUID)? {
-        let reservationID = UUID()
-        return reserveExistingEntry(for: key, reservationID: reservationID).map { ($0.generation, reservationID) }
-    }
-
     /// Whether other leases remain on the connection after the refused one goes back.
-    @discardableResult
     func releaseEntryAfterRefusalForTesting(
         for key: RemuxSSHRootKey,
         generation: UUID
@@ -1445,13 +1415,12 @@ actor RemuxSSHRootService {
         return closeConnection
     }
 
+    /// The connection a new consumer would get a place on, and the place, or nil when every connection is refusing.
     func reserveEntryForTesting(
         for key: RemuxSSHRootKey
-    ) -> UUID? {
-        reserveExistingEntry(
-            for: key,
-            reservationID: UUID()
-        )?.reservationID
+    ) -> (generation: UUID, reservationID: UUID)? {
+        let reservationID = UUID()
+        return reserveExistingEntry(for: key, reservationID: reservationID).map { ($0.generation, reservationID) }
     }
 
     func releaseReservationForTesting(
@@ -1597,7 +1566,7 @@ enum RemuxSSHRootBootstrap {
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
             trace.event("bootstrap.configure.end")
 
-            let inboundActivity = RemuxSSHInboundActivity()
+            let inboundActivity = RemuxLastActivity()
             let connection = try await trace.stage(
                 "tcpConnect",
                 fields: [
