@@ -187,7 +187,6 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 5), "Edit Server didn't open again after the pull.")
     }
 
-    /// Pulls the open sheet down from its top, quickly, as a thumb flicks it away.
     /// Tapping the X again right after keeping on editing asks again, once iOS has closed the first question, rather
     /// than being lost while that question is still closing. A person taps sooner than XCUITest's own waits allow, so
     /// the two taps run without them.
@@ -219,6 +218,30 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
     }
 
+    /// The keyboard goes away as the question shows, as iOS's own apps do, so a tap where it was keeps editing rather
+    /// than typing behind the question.
+    func testDiscardQuestionPutsTheKeyboardAway() {
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+        openConnectionSetup()
+        name.tap()
+        name.typeText("Draft server")
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "Typing didn't bring up the keyboard.")
+        app.buttons["connection.cancel"].tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The X didn't ask.")
+        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5), "The keyboard stayed up behind the question.")
+
+        // Before iOS 26 the question is an action sheet across the bottom, where the keyboard was.
+        guard ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+        ) else { return }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).tap()
+        XCTAssertTrue(discard.waitForNonExistence(timeout: 5), "A tap where the keyboard was didn't keep editing.")
+        XCTAssertEqual(name.value as? String, "Draft server", "A tap where the keyboard was typed into the form.")
+    }
+
     /// Runs `taps` with XCUITest's wait for the app to settle before each event switched off, so they land as soon
     /// after each other as a person's would, then switches it back on. The wait is an XCTest internal; without it the
     /// test can't tap quickly enough, so it skips.
@@ -237,6 +260,7 @@ final class RemuxAppUITests: XCTestCase {
         taps()
     }
 
+    /// Pulls the open sheet down from its top, quickly, as a thumb flicks it away.
     private func pullFormDown() {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(
             forDuration: 0.05,
