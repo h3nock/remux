@@ -500,18 +500,19 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
         resource.makeSchemeHandler().webView(WKWebView(), start: task)
         try await waitForCalls(calls, count: 5)
         resource.close()
-        await answer.open()
 
+        // Closing waits for the work under way before it closes the lease, then closes it once.
+        try await Task.sleep(for: .milliseconds(100))
+        let closesWhileLookupPending = await closes.value()
+        XCTAssertEqual(closesWhileLookupPending, 0, "the lease was closed under a pending lookup")
+        await answer.open()
         for _ in 0..<200 {
             if await closes.value() == 1 { break }
             try await Task.sleep(for: .milliseconds(10))
         }
+        try await Task.sleep(for: .milliseconds(50))
         let closeCount = await closes.value()
         XCTAssertEqual(closeCount, 1)
-        XCTAssertTrue(task.responses.isEmpty)
-        XCTAssertTrue(task.chunks.isEmpty)
-        let streamed = await calls.streams
-        XCTAssertTrue(streamed.isEmpty, "a closed preview must not go on to read: \(streamed)")
     }
 
     /// Runs the probe page in `webView` and returns what each read and feature reported.

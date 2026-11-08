@@ -589,6 +589,7 @@ private actor TerminalPreviewStaticHTMLTransport {
                 }
                 // Stopped or closed while the server answered: don't start reading.
                 try Task.checkCancellation()
+                guard !sink.isStopped else { return }
                 try await readLease.stream(
                     file,
                     onMetadata: { _ in
