@@ -520,6 +520,10 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
         try await provider.withClient(operation)
     }
 
+    func openClientLease() async throws -> RemuxSFTPClientLease<RemuxCitadelSFTPClient> {
+        try await provider.openClientLease()
+    }
+
     private static func openLease(
         sshRootService: RemuxSSHRootService,
         rootKey: RemuxSSHRootKey,
