@@ -18,7 +18,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
         let upload = Task {
             try await window.upload(
                 file,
-                activity: RemuxSFTPActivity(),
+                activity: RemuxLastActivity(),
                 onTimeout: {},
                 progress: { _ in },
                 write: { data, offset in try await writes.write(data, at: offset) }
@@ -55,7 +55,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
             progressInterval: .zero
         ).upload(
             try makeLocalFile(contents),
-            activity: RemuxSFTPActivity(),
+            activity: RemuxLastActivity(),
             onTimeout: {},
             progress: { everyAcknowledgement.append($0) },
             write: { _, _ in }
@@ -70,7 +70,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
             progressInterval: .seconds(3600)
         ).upload(
             try makeLocalFile(contents),
-            activity: RemuxSFTPActivity(),
+            activity: RemuxLastActivity(),
             onTimeout: {},
             progress: { throttled.append($0) },
             write: { _, _ in }
@@ -86,7 +86,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
             try await RemuxSFTPUploadWindow(maxInFlight: 2, writeLength: 4, noProgressTimeout: .milliseconds(200))
                 .upload(
                     try makeLocalFile(Data(repeating: 1, count: 16)),
-                    activity: RemuxSFTPActivity(),
+                    activity: RemuxLastActivity(),
                     onTimeout: { timeouts.increment() },
                     progress: { _ in },
                     write: { _, _ in try await Task.sleep(for: .seconds(30)) }
@@ -110,7 +110,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
         try await RemuxSFTPUploadWindow(maxInFlight: 1, writeLength: 4, noProgressTimeout: .milliseconds(150))
             .upload(
                 try makeLocalFile(Data(repeating: 2, count: 32)),
-                activity: RemuxSFTPActivity(),
+                activity: RemuxLastActivity(),
                 onTimeout: { XCTFail("The upload made progress") },
                 progress: { progress.append($0) },
                 write: { _, _ in try await Task.sleep(for: .milliseconds(60)) }
@@ -127,7 +127,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
             try await RemuxSFTPUploadWindow(maxInFlight: 2, writeLength: 4, noProgressTimeout: .seconds(30))
                 .upload(
                     localFile,
-                    activity: RemuxSFTPActivity(),
+                    activity: RemuxLastActivity(),
                     onTimeout: { timeouts.increment() },
                     progress: { _ in },
                     write: { data, offset in try await writes.write(data, at: offset) }
@@ -158,7 +158,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
             try await RemuxSFTPUploadWindow(maxInFlight: 4, writeLength: 4, noProgressTimeout: .seconds(30))
                 .upload(
                     try makeLocalFile(Data(repeating: 3, count: 32)),
-                    activity: RemuxSFTPActivity(),
+                    activity: RemuxLastActivity(),
                     onTimeout: {},
                     progress: { _ in },
                     write: { _, offset in
@@ -175,7 +175,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
 
         try await RemuxSFTPUploadWindow(noProgressTimeout: .seconds(30)).upload(
             try makeLocalFile(Data()),
-            activity: RemuxSFTPActivity(),
+            activity: RemuxLastActivity(),
             onTimeout: {},
             progress: { _ in },
             write: { _, _ in writes.increment() }

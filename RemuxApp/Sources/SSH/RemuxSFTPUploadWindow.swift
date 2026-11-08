@@ -4,8 +4,8 @@ import NIOCore
 /// An upload's writes: up to `maxInFlight` writes outstanding at once over the whole file, each next one read from the
 /// local file as an earlier one is acknowledged, so the link stays busy until the last byte. Progress is the bytes
 /// acknowledged. The upload fails with `RemuxSFTPClientError.operationTimedOut`, after `onTimeout`, once its session
-/// has gone without an answer for `noProgressTimeout` (see `RemuxSFTPActivity`): a slow link still makes progress,
-/// a dead one doesn't.
+/// has gone without an answer for `noProgressTimeout` (`activity` records each one): a slow link still makes
+/// progress, a dead one doesn't.
 struct RemuxSFTPUploadWindow: Sendable {
     /// 64 writes keep about 2 MB on the way, enough to fill a far link.
     static let defaultMaxInFlight = 64
@@ -22,14 +22,14 @@ struct RemuxSFTPUploadWindow: Sendable {
     /// once; writes already sent finish on their own.
     func upload(
         _ localFile: FileHandle,
-        activity: RemuxSFTPActivity,
+        activity: RemuxLastActivity,
         onTimeout: @escaping @Sendable () async -> Void,
         progress: @escaping RemuxSFTPFileUploadProgressHandler,
         write: @escaping @Sendable (Data, UInt64) async throws -> Void
     ) async throws {
         try await RemuxSFTPTimeout.run(
             timeout: noProgressTimeout,
-            extendWhile: { windowStart in activity.hasAnswered(since: windowStart) },
+            extendWhile: { windowStart in activity.hasRecorded(since: windowStart) },
             operation: { [self] in
                 defer { try? localFile.close() }
                 try await writeAll(localFile, activity: activity, progress: progress, write: write)
@@ -40,7 +40,7 @@ struct RemuxSFTPUploadWindow: Sendable {
 
     private func writeAll(
         _ localFile: FileHandle,
-        activity: RemuxSFTPActivity,
+        activity: RemuxLastActivity,
         progress: RemuxSFTPFileUploadProgressHandler,
         write: @escaping @Sendable (Data, UInt64) async throws -> Void
     ) async throws {
@@ -64,7 +64,7 @@ struct RemuxSFTPUploadWindow: Sendable {
                     inFlight += 1
                     group.addTask {
                         try await write(data, offset)
-                        activity.recordAnswer()
+                        activity.record()
                         return data.count
                     }
                 }

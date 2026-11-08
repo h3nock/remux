@@ -245,7 +245,7 @@ private extension GhosttyAttachmentTransferSource.Payload {
 
 /// One job's transfer on an open client: the job's directory made, each file uploaded to a temporary name and
 /// renamed into place, and each file's terminal path built from the directory's real path.
-struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: GhosttyAttachmentTransferService {
+struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Sendable {
     let client: Client
     let pathBuilder: GhosttyRemoteAttachmentPathBuilder
 
@@ -256,9 +256,6 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
         self.client = client
         self.pathBuilder = pathBuilder
     }
-
-    /// The client is already open.
-    func prepare() async {}
 
     func transfer(
         _ job: GhosttyAttachmentTransferJob,

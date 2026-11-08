@@ -23,16 +23,14 @@ actor RemuxSFTPSessionKeeper<Key: Hashable & Sendable, Client: Sendable> {
         var idleClose: Task<Void, Never>?
     }
 
-    private struct UploadTurn {
-        var waiting: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
-    }
+    private typealias UploadWaiter = (id: UUID, continuation: CheckedContinuation<Void, Error>)
 
     private let idleTimeout: Duration
     private let now: @Sendable () -> ContinuousClock.Instant
     private let sleep: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var entries: [Key: Entry] = [:]
-    /// Keys with an upload running, and the uploads waiting behind it.
-    private var uploadTurns: [Key: UploadTurn] = [:]
+    /// Keys with an upload running, and the uploads waiting behind it in order.
+    private var uploadTurns: [Key: [UploadWaiter]] = [:]
 
     init<C: Clock>(
         idleTimeout: Duration = .seconds(60),
@@ -144,7 +142,7 @@ actor RemuxSFTPSessionKeeper<Key: Hashable & Sendable, Client: Sendable> {
 
     private func takeUploadTurn(_ key: Key) async throws {
         guard uploadTurns[key] != nil else {
-            uploadTurns[key] = UploadTurn()
+            uploadTurns[key] = []
             return
         }
         let waiterID = UUID()
@@ -153,7 +151,7 @@ actor RemuxSFTPSessionKeeper<Key: Hashable & Sendable, Client: Sendable> {
             // between this check and getting in line, so a later cancellation finds the waiter.
             try Task.checkCancellation()
             try await withCheckedThrowingContinuation { continuation in
-                uploadTurns[key, default: UploadTurn()].waiting.append((waiterID, continuation))
+                uploadTurns[key, default: []].append((waiterID, continuation))
             }
         } onCancel: {
             Task { await self.stopWaitingForUploadTurn(key, waiterID: waiterID) }
@@ -161,18 +159,18 @@ actor RemuxSFTPSessionKeeper<Key: Hashable & Sendable, Client: Sendable> {
     }
 
     private func passUploadTurn(_ key: Key) {
-        guard var turn = uploadTurns[key], !turn.waiting.isEmpty else {
+        guard var waiting = uploadTurns[key], !waiting.isEmpty else {
             uploadTurns.removeValue(forKey: key)
             return
         }
-        let next = turn.waiting.removeFirst()
-        uploadTurns[key] = turn
+        let next = waiting.removeFirst()
+        uploadTurns[key] = waiting
         next.continuation.resume()
     }
 
     private func stopWaitingForUploadTurn(_ key: Key, waiterID: UUID) {
-        guard let index = uploadTurns[key]?.waiting.firstIndex(where: { $0.id == waiterID }) else { return }
-        let waiter = uploadTurns[key]?.waiting.remove(at: index)
+        guard let index = uploadTurns[key]?.firstIndex(where: { $0.id == waiterID }) else { return }
+        let waiter = uploadTurns[key]?.remove(at: index)
         waiter?.continuation.resume(throwing: CancellationError())
     }
 }

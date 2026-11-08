@@ -1,6 +1,5 @@
 import Foundation
 import NIO
-import Synchronization
 
 enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
     case operationTimedOut
@@ -301,21 +300,5 @@ enum RemuxSFTPTimeout {
             onTimeout: onTimeout,
             cleanupLateSuccess: cleanupLateSuccess
         )
-    }
-}
-
-/// When an SFTP session last got an answer. The server answers a session's requests in the order they came, so an
-/// operation can wait behind others (a preview's read behind an upload's writes on a slow link, or the last of a
-/// window of reads): its timeout goes on while the session keeps getting answers, and only a silent session times
-/// out.
-final class RemuxSFTPActivity: Sendable {
-    private let lastAnswer = Mutex(NIODeadline.now())
-
-    func recordAnswer() {
-        lastAnswer.withLock { $0 = .now() }
-    }
-
-    func hasAnswered(since start: NIODeadline) -> Bool {
-        lastAnswer.withLock { $0 > start }
     }
 }

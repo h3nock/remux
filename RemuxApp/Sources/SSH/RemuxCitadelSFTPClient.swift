@@ -7,7 +7,11 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
     /// Each operation fails once the session has gone this long without an answer.
     private let operationTimeout: TimeAmount
     private let leaseState: RemuxSFTPLeaseTeardown
-    private let activity = RemuxSFTPActivity()
+    /// When the session last got an answer. The server answers a session's requests in the order they came, so an
+    /// operation can wait behind others (a preview's read behind an upload's writes on a slow link, or the last of a
+    /// window of reads): its timeout goes on while the session keeps getting answers, and only a silent session
+    /// times out.
+    private let activity = RemuxLastActivity()
 
     fileprivate init(
         sftp: SFTPClient,
@@ -216,9 +220,9 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         do {
             let value = try await RemuxSFTPTimeout.run(
                 timeout: operationTimeout,
-                extendWhile: { [activity] windowStart in activity.hasAnswered(since: windowStart) },
+                extendWhile: { [activity] windowStart in activity.hasRecorded(since: windowStart) },
                 operation: { [activity] in
-                    defer { activity.recordAnswer() }
+                    defer { activity.record() }
                     return try await operation()
                 },
                 onTimeout: {
