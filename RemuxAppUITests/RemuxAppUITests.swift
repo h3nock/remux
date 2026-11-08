@@ -192,6 +192,13 @@ final class RemuxAppUITests: XCTestCase {
     /// than being lost while that question is still closing. A person taps sooner than XCUITest's own waits allow, so
     /// the two taps run without them.
     func testXRightAfterKeepingEditingAsksAgain() throws {
+        // From iOS 26 the question grows from the X, which stays tappable while it closes. Before, it's an action
+        // sheet whose dimmed backdrop covers the X until it has closed, so a tap that soon never reaches the app.
+        guard ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+        ) else {
+            throw XCTSkip("Before iOS 26 the closing action sheet covers the X, so the quick tap never reaches the app.")
+        }
         launchSimulatorApp()
         let name = app.textFields["connection.name"]
         openConnectionSetup()
