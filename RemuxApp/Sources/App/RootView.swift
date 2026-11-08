@@ -100,6 +100,13 @@ private final class LastConnectionSetup {
     var setup: RemuxRootModel.ConnectionSetupState?
 }
 
+/// The setup sheet's discard question as SwiftUI last reported it, and whether an X waits for it to close. A
+/// reference, so keeping it current doesn't redraw the shell.
+private final class SetupDiscardQuestion {
+    var wasShowing = false
+    var asksAgainOnceClosed = false
+}
+
 private struct RemuxWorkspaceShell: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: RemuxRootModel
@@ -112,8 +119,7 @@ private struct RemuxWorkspaceShell: View {
     @State private var connectionSetupSheetShowsServerSummary = true
     @State private var isConnectionSetupSheetPresented = false
     @State private var isConfirmingSetupDiscard = false
-    /// An X tapped while the question was still closing, to be answered once it has.
-    @State private var asksAgainOnceClosed = false
+    @State private var setupDiscardQuestion = SetupDiscardQuestion()
     @State private var lastConnectionSetup = LastConnectionSetup()
 
     var body: some View {
@@ -252,6 +258,8 @@ private struct RemuxWorkspaceShell: View {
                 if model.connectionSetup == nil {
                     lastConnectionSetup.setup = nil
                 }
+                // A question belongs to the sheet it was asked in.
+                setupDiscardQuestion = SetupDiscardQuestion()
             }
         ) {
             connectionSetupSheet
@@ -360,9 +368,16 @@ private struct RemuxWorkspaceShell: View {
                 closeConnectionSetup(setup)
             }
             .onChange(of: isConfirmingSetupDiscard) { _, isAsking in
-                guard !isAsking, asksAgainOnceClosed else { return }
-                asksAgainOnceClosed = false
-                askToDiscard()
+                setupDiscardQuestion.wasShowing = isAsking
+                guard !isAsking, setupDiscardQuestion.asksAgainOnceClosed else { return }
+                setupDiscardQuestion.asksAgainOnceClosed = false
+                // SwiftUI finishes closing the last question later in this same update, and drops one asked before
+                // then.
+                DispatchQueue.main.async {
+                    if model.connectionSetup?.hasChanges == true {
+                        isConfirmingSetupDiscard = true
+                    }
+                }
             }
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
@@ -411,18 +426,14 @@ private struct RemuxWorkspaceShell: View {
         model.cancelSetup()
     }
 
-    /// Shows the discard question. iOS reports a question closed only once its close animation ends, so one asked
-    /// while the last is still closing is shown once that has closed, as iOS's own apps do. It's shown on the next
-    /// turn: SwiftUI drops a question asked in the update where it closes the last one.
+    /// Shows the discard question at once, as iOS's own apps do. iOS reports a question closed only once its close
+    /// animation has ended, and SwiftUI finishes closing it in the update after that; one asked before then is shown
+    /// once it has.
     private func askToDiscard() {
-        if isConfirmingSetupDiscard {
-            asksAgainOnceClosed = true
-            return
-        }
-        DispatchQueue.main.async {
-            if model.connectionSetup?.hasChanges == true {
-                isConfirmingSetupDiscard = true
-            }
+        if isConfirmingSetupDiscard || setupDiscardQuestion.wasShowing {
+            setupDiscardQuestion.asksAgainOnceClosed = true
+        } else {
+            isConfirmingSetupDiscard = true
         }
     }
 
