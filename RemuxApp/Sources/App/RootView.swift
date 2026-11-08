@@ -270,9 +270,14 @@ private struct RemuxWorkspaceShell: View {
                 isConnectionSetupSheetPresented = true
                 return
             }
-            // The closing sheet first redraws its secure fields empty. SwiftUI
-            // drops content changes made in the update that dismisses a
-            // sheet, so dismiss it on the next turn.
+            // A closing sheet holding a password first redraws its secure fields
+            // empty. SwiftUI drops content changes made in the update that
+            // dismisses a sheet, so that one is dismissed on the next turn; a
+            // sheet without one has nothing to redraw and goes at once.
+            guard lastConnectionSetup.setup.map({ holdsSecretText($0.draft) }) ?? false else {
+                isConnectionSetupSheetPresented = false
+                return
+            }
             DispatchQueue.main.async {
                 isConnectionSetupSheetPresented = showsConnectionSetupSheet
             }
@@ -331,7 +336,6 @@ private struct RemuxWorkspaceShell: View {
                             titleVisibility: .visible
                         ) {
                             Button("Discard", role: .destructive) {
-                                dismissKeyboard()
                                 model.cancelSetup()
                             }
                             .accessibilityIdentifier("connection.discard")
@@ -397,13 +401,13 @@ private struct RemuxWorkspaceShell: View {
         !draft.password.isEmpty || !draft.privateKeyPassphrase.isEmpty
     }
 
-    /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered.
+    /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered. The keyboard
+    /// goes with the sheet.
     private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
         guard !setup.hasChanges else {
             askToDiscard()
             return
         }
-        dismissKeyboard()
         model.cancelSetup()
     }
 
