@@ -112,6 +112,8 @@ private struct RemuxWorkspaceShell: View {
     @State private var connectionSetupSheetShowsServerSummary = true
     @State private var isConnectionSetupSheetPresented = false
     @State private var isConfirmingSetupDiscard = false
+    /// An X tapped while the question was still closing, to be answered once it has.
+    @State private var asksAgainOnceClosed = false
     @State private var lastConnectionSetup = LastConnectionSetup()
 
     var body: some View {
@@ -353,6 +355,11 @@ private struct RemuxWorkspaceShell: View {
                 guard !model.isSetupActionInProgress else { return }
                 closeConnectionSetup(setup)
             }
+            .onChange(of: isConfirmingSetupDiscard) { _, isAsking in
+                guard !isAsking, asksAgainOnceClosed else { return }
+                asksAgainOnceClosed = false
+                askToDiscard()
+            }
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
@@ -393,11 +400,26 @@ private struct RemuxWorkspaceShell: View {
     /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered.
     private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
         guard !setup.hasChanges else {
-            isConfirmingSetupDiscard = true
+            askToDiscard()
             return
         }
         dismissKeyboard()
         model.cancelSetup()
+    }
+
+    /// Shows the discard question. iOS reports a question closed only once its close animation ends, so one asked
+    /// while the last is still closing is shown once that has closed, as iOS's own apps do. It's shown on the next
+    /// turn: SwiftUI drops a question asked in the update where it closes the last one.
+    private func askToDiscard() {
+        if isConfirmingSetupDiscard {
+            asksAgainOnceClosed = true
+            return
+        }
+        DispatchQueue.main.async {
+            if model.connectionSetup?.hasChanges == true {
+                isConfirmingSetupDiscard = true
+            }
+        }
     }
 
     private func setupSubmissionIssueIsPresented(

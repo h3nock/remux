@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ObjectiveC
 import UIKit
 import XCTest
 
@@ -187,6 +188,48 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     /// Pulls the open sheet down from its top, quickly, as a thumb flicks it away.
+    /// Tapping the X again right after keeping on editing asks again, once iOS has closed the first question, rather
+    /// than being lost while that question is still closing. A person taps sooner than XCUITest's own waits allow, so
+    /// the two taps run without them.
+    func testXRightAfterKeepingEditingAsksAgain() throws {
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+        openConnectionSetup()
+        name.tap()
+        name.typeText("Draft server")
+        let x = app.buttons["connection.cancel"]
+        x.tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The X didn't ask.")
+
+        let outside = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        let xAgain = x.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        try withoutWaitingForTheAppToSettle {
+            outside.tap()
+            xAgain.tap()
+        }
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The X tapped right after keeping on editing was lost.")
+        XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
+    }
+
+    /// Runs `taps` with XCUITest's wait for the app to settle before each event switched off, so they land as soon
+    /// after each other as a person's would, then switches it back on. The wait is an XCTest internal; without it the
+    /// test can't tap quickly enough, so it skips.
+    private func withoutWaitingForTheAppToSettle(_ taps: () -> Void) throws {
+        guard let process = NSClassFromString("XCUIApplicationProcess"),
+              let wait = class_getInstanceMethod(
+                  process,
+                  NSSelectorFromString("waitForQuiescenceIncludingAnimationsIdle:isPreEvent:")
+              )
+        else {
+            throw XCTSkip("This Xcode's XCUITest has no settle wait to switch off.")
+        }
+        let returnAtOnce: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+        let original = method_setImplementation(wait, imp_implementationWithBlock(returnAtOnce))
+        defer { method_setImplementation(wait, original) }
+        taps()
+    }
+
     private func pullFormDown() {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(
             forDuration: 0.05,
