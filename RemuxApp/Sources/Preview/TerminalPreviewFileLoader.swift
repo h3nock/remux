@@ -22,8 +22,9 @@ enum TerminalPreviewFileError: LocalizedError, Equatable, Sendable {
 ///
 /// When the server gives the file's size, reads go out `readWindow` at a time at explicit offsets, and their data is
 /// handed on in order. The window's last read asks at the known size: it finds the end, or, when the file grew, data
-/// to read on from without another round trip. Otherwise, and after a short read, the file is read one read at a
-/// time to its end.
+/// to read on from without another round trip. An end that came back before the reads ahead of it may be out of date
+/// (the file can grow in between), so it is confirmed with one more read. Otherwise, and after a short read, the file
+/// is read one read at a time to its end.
 enum TerminalPreviewRemoteFileReader {
     typealias MetadataHandler = @Sendable (RemuxSFTPFileMetadata) async throws -> Void
     typealias ChunkHandler = @Sendable (Data) async throws -> Void
@@ -88,9 +89,12 @@ enum TerminalPreviewRemoteFileReader {
             length: sequentialReadLength(at: size, maximumByteCount: maximumByteCount)
         ))
 
+        let endIndex = reads.count - 1
         return try await withThrowingTaskGroup(of: (index: Int, data: Data).self) { group in
             var issued = 0
             var arrived: [Int: Data] = [:]
+            var dataReadsBack = 0
+            var endCameBackEarly = false
             for (index, read) in reads.enumerated() {
                 while issued < reads.count, issued - index < readWindow {
                     let issuedIndex = issued
@@ -102,6 +106,11 @@ enum TerminalPreviewRemoteFileReader {
                     issued += 1
                 }
                 while arrived[index] == nil, let result = try await group.next() {
+                    if result.index == endIndex {
+                        endCameBackEarly = dataReadsBack < endIndex
+                    } else {
+                        dataReadsBack += 1
+                    }
                     arrived[result.index] = result.data
                 }
                 guard let data = arrived.removeValue(forKey: index) else {
@@ -109,7 +118,8 @@ enum TerminalPreviewRemoteFileReader {
                 }
 
                 if read.offset == size {
-                    guard !data.isEmpty else { return nil }
+                    // An end found while reads ahead of it were out may predate growth: one more read confirms it.
+                    guard !data.isEmpty else { return endCameBackEarly ? size : nil }
                     // The file grew since its size was read.
                     guard UInt64(data.count) <= maximumByteCount - size else {
                         throw TerminalPreviewFileError.tooLarge(

@@ -119,6 +119,40 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
         XCTAssertEqual(progress.values.last, 32)
     }
 
+    func testCancellationReturnsAtOnceAndSendsNoMoreWrites() async throws {
+        let writes = GatedWrites()
+        let timeouts = Counter()
+        let localFile = try makeLocalFile(Data(repeating: 4, count: 16))
+        let uploading = Task {
+            try await RemuxSFTPUploadWindow(maxInFlight: 2, writeLength: 4, noProgressTimeout: .seconds(30))
+                .upload(
+                    localFile,
+                    activity: RemuxSFTPActivity(),
+                    onTimeout: { timeouts.increment() },
+                    progress: { _ in },
+                    write: { data, offset in try await writes.write(data, at: offset) }
+                )
+        }
+        try await waitUntil { writes.pendingOffsets.count == 2 }
+
+        let start = ContinuousClock.now
+        uploading.cancel()
+        do {
+            try await uploading.value
+            XCTFail("Expected the upload to stop")
+        } catch is CancellationError {
+        }
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(2), "it returns without waiting for the sent writes")
+
+        // The writes already sent finish on their own; nothing more goes out.
+        for offset in writes.pendingOffsets {
+            writes.acknowledge(offset)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(writes.issuedCount, 2)
+        XCTAssertEqual(timeouts.value, 0)
+    }
+
     func testWriteFailureFailsTheUpload() async throws {
         do {
             try await RemuxSFTPUploadWindow(maxInFlight: 4, writeLength: 4, noProgressTimeout: .seconds(30))

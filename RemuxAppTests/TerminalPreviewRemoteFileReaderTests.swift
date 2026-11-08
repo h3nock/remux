@@ -22,11 +22,30 @@ final class TerminalPreviewRemoteFileReaderTests: XCTestCase {
         let size = UInt64(contents.count)
         let chunkOffsets = stride(from: UInt64(0), to: size, by: length).map { $0 }
         XCTAssertEqual(Set(requests.map(\.offset)), Set(chunkOffsets + [size]))
-        XCTAssertEqual(requests.count, chunkOffsets.count + 1)
+        // The end came back before the reads ahead of it (they answer last here), so one more read confirmed it.
+        XCTAssertEqual(requests.filter { $0.offset == size }.count, 2)
+        XCTAssertEqual(requests.count, chunkOffsets.count + 2)
         for request in requests where request.offset < size {
             XCTAssertEqual(UInt64(request.length), min(UInt64(length), size - request.offset))
         }
         XCTAssertEqual(client.maximumInFlight, TerminalPreviewRemoteFileReader.readWindow)
+    }
+
+    /// Answers in the order the reads went out, as OpenSSH's server gives them: the end comes back last and is not
+    /// read again.
+    func testEndThatComesBackLastIsNotReadAgain() async throws {
+        let contents = Self.patternedData(count: 3 * length + 1_000)
+        // Later offsets answer later; the end, past the last chunk's start, answers after every chunk.
+        let client = WindowReadClient(contents: contents, delay: { offset in
+            .milliseconds(1 + Int((offset + UInt64(Self.length) - 1) / UInt64(Self.length)) * 10)
+        })
+        let received = ReceivedData()
+
+        _ = try await streamFile(client, maximumByteCount: 64 * 1024 * 1024, into: received)
+
+        XCTAssertEqual(received.data, contents)
+        XCTAssertEqual(client.requests.filter { $0.offset == UInt64(contents.count) }.count, 1)
+        XCTAssertEqual(client.requests.count, 5)
     }
 
     func testShortReadReadsTheRestOneAtATime() async throws {
@@ -68,6 +87,40 @@ final class TerminalPreviewRemoteFileReaderTests: XCTestCase {
         _ = try await streamFile(client, maximumByteCount: 64 * 1024 * 1024, into: received)
 
         XCTAssertEqual(received.data, contents)
+    }
+
+    /// The read at the known size finds the end first, then the file grows before the window's first read is back:
+    /// that end is out of date, and the bytes written meanwhile are still read.
+    func testFileThatGrowsAfterItsEndCameBackEarlyIsReadToItsNewEnd() async throws {
+        let original = Self.patternedData(count: 1_000)
+        let appended = Data("written while the preview read".utf8)
+        let endAnswered = AsyncFlag()
+        let client = WindowReadClientBox()
+        client.value = WindowReadClient(
+            contents: original,
+            beforeReply: { offset in
+                if offset == 0 {
+                    await endAnswered.wait()
+                    client.value?.append(appended)
+                }
+            }
+        )
+        let reading = Task { [client] in
+            let received = ReceivedData()
+            _ = try await streamFile(client.value!, maximumByteCount: 64 * 1024 * 1024, into: received)
+            return received.data
+        }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while client.value!.requests.contains(where: { $0.offset == UInt64(original.count) }) == false,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        // Give the end's empty answer time to come back before the first read's.
+        try await Task.sleep(for: .milliseconds(50))
+        await endAnswered.set()
+
+        let received = try await reading.value
+        XCTAssertEqual(received, original + appended)
     }
 
     func testFileThatGrewPastTheMaximumIsTooLarge() async throws {
@@ -162,18 +215,18 @@ private final class WindowReadClient: RemuxSFTPReadOnlyClient {
     }
 
     private struct State {
+        var contents: Data
         var requests: [Request] = []
         var inFlight = 0
         var maximumInFlight = 0
         var cancelledReads = 0
     }
 
-    private let contents: Data
     private let declaredSize: UInt64?
     private let maximumReplyLength: Int?
     private let delay: @Sendable (UInt64) -> Duration?
     private let beforeReply: @Sendable (UInt64) async -> Void
-    private let state = Mutex(State())
+    private let state: Mutex<State>
 
     init(
         contents: Data,
@@ -182,7 +235,7 @@ private final class WindowReadClient: RemuxSFTPReadOnlyClient {
         beforeReply: @escaping @Sendable (UInt64) async -> Void = { _ in },
         delay: @escaping @Sendable (UInt64) -> Duration? = { _ in nil }
     ) {
-        self.contents = contents
+        self.state = Mutex(State(contents: contents))
         switch declaredSize {
         case .actual: self.declaredSize = UInt64(contents.count)
         case .unknown: self.declaredSize = nil
@@ -195,6 +248,11 @@ private final class WindowReadClient: RemuxSFTPReadOnlyClient {
 
     var requests: [Request] {
         state.withLock { $0.requests }
+    }
+
+    /// The file grows, as a log being written does.
+    func append(_ data: Data) {
+        state.withLock { $0.contents.append(data) }
     }
 
     var maximumInFlight: Int {
@@ -236,6 +294,7 @@ private final class WindowReadClient: RemuxSFTPReadOnlyClient {
                 throw error
             }
         }
+        let contents = state.withLock { $0.contents }
         let start = min(Int(offset), contents.count)
         let end = min(start + min(length, maximumReplyLength ?? length), contents.count)
         return contents.subdata(in: start..<end)
@@ -268,4 +327,9 @@ private actor AsyncFlag {
         guard !isSet else { return }
         await withCheckedContinuation { waiters.append($0) }
     }
+}
+
+/// Lets a client's reply hook reach the client it belongs to.
+private final class WindowReadClientBox: @unchecked Sendable {
+    var value: WindowReadClient?
 }
