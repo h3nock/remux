@@ -149,6 +149,9 @@ actor RemuxSFTPSessionKeeper<Key: Hashable & Sendable, Client: Sendable> {
         }
         let waiterID = UUID()
         try await withTaskCancellationHandler {
+            // Cancelled before getting in line, the cancellation handler finds nothing to take out; nothing suspends
+            // between this check and getting in line, so a later cancellation finds the waiter.
+            try Task.checkCancellation()
             try await withCheckedThrowingContinuation { continuation in
                 uploadTurns[key, default: UploadTurn()].waiting.append((waiterID, continuation))
             }
