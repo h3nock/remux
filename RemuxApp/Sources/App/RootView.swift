@@ -321,6 +321,23 @@ private struct RemuxWorkspaceShell: View {
                         .accessibilityLabel("Cancel")
                         .accessibilityIdentifier("connection.cancel")
                         .disabled(model.isSetupActionInProgress)
+                        // On the X, so iOS presents the question from the button that closes the sheet, for a
+                        // refused pull too.
+                        .confirmationDialog(
+                            "Discard Changes?",
+                            isPresented: $isConfirmingSetupDiscard,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Discard Changes", role: .destructive) {
+                                dismissKeyboard()
+                                model.cancelSetup()
+                            }
+                            .accessibilityIdentifier("connection.discard")
+                            Button("Keep Editing", role: .cancel) {}
+                                .accessibilityIdentifier("connection.keep-editing")
+                        } message: {
+                            Text(discardMessage(for: setup.mode))
+                        }
                     }
                 }
             }
@@ -335,15 +352,6 @@ private struct RemuxWorkspaceShell: View {
             .onSheetDismissAttempt {
                 guard !model.isSetupActionInProgress else { return }
                 closeConnectionSetup(setup)
-            }
-            .confirmationDialog("Discard changes?", isPresented: $isConfirmingSetupDiscard, titleVisibility: .hidden) {
-                Button("Discard Changes", role: .destructive) {
-                    dismissKeyboard()
-                    model.cancelSetup()
-                }
-                .accessibilityIdentifier("connection.discard")
-                Button("Keep Editing", role: .cancel) {}
-                    .accessibilityIdentifier("connection.keep-editing")
             }
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
@@ -361,6 +369,20 @@ private struct RemuxWorkspaceShell: View {
             } message: { issue in
                 Text(setupSubmissionIssueMessage(issue))
             }
+        }
+    }
+
+    /// What discarding loses, under the dialog's title.
+    private func discardMessage(for mode: RemuxRootModel.SetupMode) -> String {
+        switch mode {
+        case .newServer:
+            "The new server won't be saved."
+        case .newWorkspace:
+            "The new session won't be saved."
+        case .editServer:
+            "Your changes to this server won't be saved."
+        case .editWorkspace:
+            "Your changes to this session won't be saved."
         }
     }
 

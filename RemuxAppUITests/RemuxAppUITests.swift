@@ -143,6 +143,8 @@ final class RemuxAppUITests: XCTestCase {
         // iOS shows the question as a menu at the X; tapping elsewhere keeps editing.
         let discard = app.buttons["connection.discard"].firstMatch
         XCTAssertTrue(discard.waitForExistence(timeout: 5), "Pulling down the typed-in form didn't ask first.")
+        XCTAssertTrue(app.staticTexts["Discard Changes?"].exists, "The dialog's title is missing.")
+        XCTAssertTrue(app.staticTexts["The new server won't be saved."].exists, "The dialog's message is missing.")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
         XCTAssertTrue(discard.waitForNonExistence(timeout: 5), "Tapping elsewhere didn't keep editing.")
         XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
