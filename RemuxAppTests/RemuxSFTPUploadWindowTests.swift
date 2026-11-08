@@ -170,6 +170,28 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
         }
     }
 
+    func testAFailedWriteStillCountsAsTheSessionAnswering() async throws {
+        // The session is shared: a preview waiting on it must not time out while the server is answering, even
+        // when the answers are this upload's write failures.
+        let activity = RemuxLastActivity()
+        let start = NIODeadline.now()
+
+        do {
+            try await RemuxSFTPUploadWindow(maxInFlight: 1, writeLength: 4, noProgressTimeout: .seconds(30))
+                .upload(
+                    try makeLocalFile(Data(repeating: 5, count: 4)),
+                    activity: activity,
+                    onTimeout: {},
+                    progress: { _ in },
+                    write: { _, _ in throw WriteFailure() }
+                )
+            XCTFail("Expected the upload to fail")
+        } catch is WriteFailure {
+        }
+
+        XCTAssertTrue(activity.hasRecorded(since: start))
+    }
+
     func testEmptyFileWritesNothing() async throws {
         let writes = Counter()
 

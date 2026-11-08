@@ -63,8 +63,9 @@ struct RemuxSFTPUploadWindow: Sendable {
                     nextOffset += UInt64(data.count)
                     inFlight += 1
                     group.addTask {
+                        // A failed write is an answer too, and the session is shared.
+                        defer { activity.record() }
                         try await write(data, offset)
-                        activity.record()
                         return data.count
                     }
                 }
