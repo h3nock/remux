@@ -155,14 +155,17 @@ enum GhosttyAttachmentTransferError: Error, Equatable, Sendable {
 }
 
 protocol GhosttyAttachmentTransferService: Sendable {
+    /// Opens what a transfer will need, ahead of it, when the user adds an attachment. Best effort.
+    func prepare() async
+
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
         progress: @escaping GhosttyAttachmentTransferProgressHandler
     ) async throws -> GhosttyAttachmentTransferResult
 }
 
-struct GhosttyAttachmentSFTPClientProviderTransferService<Provider: RemuxSFTPClientProvider>: GhosttyAttachmentTransferService
-where Provider.Client: RemuxSFTPUploadClient {
+/// Transfers on the provider's server, one job at a time per server (see `RemuxSFTPUploadClientProvider`).
+struct GhosttyAttachmentSFTPClientProviderTransferService<Provider: RemuxSFTPUploadClientProvider>: GhosttyAttachmentTransferService {
     let provider: Provider
     let pathBuilder: GhosttyRemoteAttachmentPathBuilder
 
@@ -172,6 +175,10 @@ where Provider.Client: RemuxSFTPUploadClient {
     ) {
         self.provider = provider
         self.pathBuilder = pathBuilder
+    }
+
+    func prepare() async {
+        await provider.prepare()
     }
 
     func transfer(
@@ -189,12 +196,16 @@ where Provider.Client: RemuxSFTPUploadClient {
             )
         }
 
-        return try await provider.withClient { client in
-            let service = GhosttyAttachmentSFTPTransferService(
-                client: client,
-                pathBuilder: pathBuilder
-            )
-            return try await service.transfer(job, progress: progress)
+        do {
+            return try await provider.withUploadTurn { client in
+                let service = GhosttyAttachmentSFTPTransferService(
+                    client: client,
+                    pathBuilder: pathBuilder
+                )
+                return try await service.transfer(job, progress: progress)
+            }
+        } catch is CancellationError {
+            throw GhosttyAttachmentTransferError.cancelled
         }
     }
 }
@@ -232,6 +243,8 @@ private extension GhosttyAttachmentTransferSource.Payload {
     }
 }
 
+/// One job's transfer on an open client: the job's directory made, each file uploaded to a temporary name and
+/// renamed into place, and each file's terminal path built from the directory's real path.
 struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: GhosttyAttachmentTransferService {
     let client: Client
     let pathBuilder: GhosttyRemoteAttachmentPathBuilder
@@ -243,6 +256,9 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
         self.client = client
         self.pathBuilder = pathBuilder
     }
+
+    /// The client is already open.
+    func prepare() async {}
 
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
@@ -259,8 +275,18 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
             uniqueKeysWithValues: pathBuilder.paths(for: job).map { ($0.sourceID, $0) }
         )
         try await validateLocalSources(job.sources, uploadPaths: uploadPaths)
+        guard totalUploadCount > 0 else {
+            return GhosttyAttachmentTransferResult(
+                transferID: job.transferID,
+                items: job.sources.compactMap(\.passthroughTransferItem)
+            )
+        }
 
-        var ensuredDirectories = Set<String>()
+        let directory = pathBuilder.remoteDirectory(for: job)
+        try await createDirectory(GhosttyRemoteAttachmentPathBuilder.directoryPrefixes(for: directory)[...])
+        // Resolved while the first file uploads.
+        async let resolvedDirectory = realPath(ofDirectory: directory)
+
         var items: [GhosttyAttachmentTransferResult.Item] = []
         var completedUploadCount = 0
 
@@ -270,8 +296,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
             switch source.payload {
             case .file(let localURL, _):
                 let remotePath = try remotePath(for: source, in: uploadPaths)
-                try await ensureDirectories(for: remotePath, ensuredDirectories: &ensuredDirectories)
-                let uploadedPath = try await upload(
+                try await upload(
                     localURL,
                     to: remotePath,
                     completedUploadCount: completedUploadCount,
@@ -279,11 +304,10 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
                     progress: progress
                 )
                 completedUploadCount += 1
-                items.append(.remoteFile(sourceID: source.id, path: uploadedPath))
+                items.append(.remoteFile(sourceID: source.id, path: remotePath))
             case .securityScopedFile(let file):
                 let remotePath = try remotePath(for: source, in: uploadPaths)
-                try await ensureDirectories(for: remotePath, ensuredDirectories: &ensuredDirectories)
-                let uploadedPath = try await withAccessibleURL(file) { localURL in
+                try await withAccessibleURL(file) { localURL in
                     try await upload(
                         localURL,
                         to: remotePath,
@@ -293,7 +317,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
                     )
                 }
                 completedUploadCount += 1
-                items.append(.remoteFile(sourceID: source.id, path: uploadedPath))
+                items.append(.remoteFile(sourceID: source.id, path: remotePath))
             case .text(let text):
                 items.append(.text(sourceID: source.id, text: text))
             case .link(let url):
@@ -301,9 +325,19 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
             }
         }
 
+        // Without the real path, files keep the builder's terminal paths.
+        guard let terminalDirectory = try await resolvedDirectory else {
+            return GhosttyAttachmentTransferResult(transferID: job.transferID, items: items)
+        }
         return GhosttyAttachmentTransferResult(
             transferID: job.transferID,
-            items: items
+            items: items.map { item in
+                guard case .remoteFile(let sourceID, let path) = item else { return item }
+                return .remoteFile(
+                    sourceID: sourceID,
+                    path: path.withTerminalPath("\(terminalDirectory)/\(path.filename)")
+                )
+            }
         )
     }
 
@@ -383,29 +417,72 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
         }
     }
 
-    private func ensureDirectories(
-        for remotePath: GhosttyRemoteAttachmentPath,
-        ensuredDirectories: inout Set<String>
-    ) async throws {
-        for directory in GhosttyRemoteAttachmentPathBuilder.directoryPrefixes(
-            for: remotePath.remoteDirectory
-        ) where ensuredDirectories.insert(directory).inserted {
-            do {
-                let mkdirStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-                GhosttyRuntimeTrace.latency("upload.mkdir begin path=\(directory)")
-                try await client.ensureDirectoryExists(atPath: directory)
-                if let mkdirStartedAt {
-                    GhosttyRuntimeTrace.latency(
-                        "upload.mkdir end path=\(directory) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: mkdirStartedAt))"
-                    )
-                }
-            } catch is CancellationError {
-                throw GhosttyAttachmentTransferError.cancelled
-            } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
-                throw GhosttyAttachmentTransferError.remoteOperationTimedOut
-            } catch {
+    /// Creates `prefixes.last` with one mkdir, which is all a send needs once its workspace's directory exists. Only
+    /// when the server says a parent is missing are the parents created first, the same way.
+    private func createDirectory(_ prefixes: ArraySlice<String>) async throws {
+        guard let directory = prefixes.last else { return }
+        var result = try await makeDirectory(directory)
+        if result == .parentMissing, prefixes.count > 1 {
+            try await createDirectory(prefixes.dropLast())
+            result = try await makeDirectory(directory)
+        }
+        switch result {
+        case .created:
+            return
+        case .parentMissing:
+            throw GhosttyAttachmentTransferError.remoteDirectoryCreationFailed(directory)
+        case .refused:
+            guard try await directoryOperation(directory, { try await client.itemExists(atPath: directory) }) else {
                 throw GhosttyAttachmentTransferError.remoteDirectoryCreationFailed(directory)
             }
+        }
+    }
+
+    private func makeDirectory(_ directory: String) async throws -> RemuxSFTPMakeDirectoryResult {
+        let mkdirStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+        GhosttyRuntimeTrace.latency("upload.mkdir begin path=\(directory)")
+        let result = try await directoryOperation(directory) {
+            try await client.makeDirectory(atPath: directory)
+        }
+        if let mkdirStartedAt {
+            GhosttyRuntimeTrace.latency(
+                "upload.mkdir end path=\(directory) result=\(result) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: mkdirStartedAt))"
+            )
+        }
+        return result
+    }
+
+    private func directoryOperation<Value>(
+        _ directory: String,
+        _ operation: () async throws -> Value
+    ) async throws -> Value {
+        do {
+            return try await operation()
+        } catch is CancellationError {
+            throw GhosttyAttachmentTransferError.cancelled
+        } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
+            throw GhosttyAttachmentTransferError.remoteOperationTimedOut
+        } catch {
+            throw GhosttyAttachmentTransferError.remoteDirectoryCreationFailed(directory)
+        }
+    }
+
+    /// The directory's real path, or nil when the server couldn't resolve it.
+    private func realPath(ofDirectory directory: String) async throws -> String? {
+        do {
+            let realPathStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+            GhosttyRuntimeTrace.latency("upload.realpath begin path=\(directory)")
+            let resolved = try await client.realPath(atPath: directory)
+            if let realPathStartedAt {
+                GhosttyRuntimeTrace.latency(
+                    "upload.realpath end path=\(directory) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: realPathStartedAt))"
+                )
+            }
+            return resolved
+        } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
+            throw GhosttyAttachmentTransferError.remoteOperationTimedOut
+        } catch {
+            return nil
         }
     }
 
@@ -415,7 +492,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
         completedUploadCount: Int,
         totalUploadCount: Int,
         progress: @escaping GhosttyAttachmentTransferProgressHandler
-    ) async throws -> GhosttyRemoteAttachmentPath {
+    ) async throws {
         let totalBytes = try localFileSize(localURL)
         let currentUploadIndex = completedUploadCount + 1
 
@@ -488,22 +565,6 @@ struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: Ghos
                 to: remotePath.remoteFinalPath
             )
         }
-
-        do {
-            let realPathStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-            GhosttyRuntimeTrace.latency("upload.realpath begin path=\(remotePath.remoteFinalPath)")
-            let terminalPath = try await client.realPath(atPath: remotePath.remoteFinalPath)
-            if let realPathStartedAt {
-                GhosttyRuntimeTrace.latency(
-                    "upload.realpath end path=\(remotePath.remoteFinalPath) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: realPathStartedAt))"
-                )
-            }
-            return remotePath.withTerminalPath(terminalPath)
-        } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
-            throw GhosttyAttachmentTransferError.remoteOperationTimedOut
-        } catch {
-            return remotePath
-        }
     }
 
     private func cleanupTemporaryFileIfPossible(at remotePath: String) async {
@@ -560,12 +621,17 @@ struct GhosttyRemoteAttachmentPathBuilder: Equatable, Sendable {
         )
     }
 
-    func paths(for job: GhosttyAttachmentTransferJob) -> [GhosttyRemoteAttachmentPath] {
-        let uploadDirectory = [
+    /// The directory every file of the job goes to.
+    func remoteDirectory(for job: GhosttyAttachmentTransferJob) -> String {
+        [
             remoteRoot,
             job.workspaceID.uuidString.lowercased(),
             job.transferID.uuidString.lowercased(),
         ].joined(separator: "/")
+    }
+
+    func paths(for job: GhosttyAttachmentTransferJob) -> [GhosttyRemoteAttachmentPath] {
+        let uploadDirectory = remoteDirectory(for: job)
         let terminalDirectory = [
             terminalRoot,
             job.workspaceID.uuidString.lowercased(),

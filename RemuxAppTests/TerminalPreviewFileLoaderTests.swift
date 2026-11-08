@@ -4,7 +4,7 @@ import XCTest
 @testable import Remux
 
 final class TerminalPreviewFileLoaderTests: XCTestCase {
-    func testStreamsToUniqueFileUsingMonotonicOffsetsAndCleansOnRelease() async throws {
+    func testStreamsToUniqueFileUsingExplicitOffsetsAndCleansOnRelease() async throws {
         let tempRoot = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let recorder = PreviewReadRecorder()
@@ -25,8 +25,9 @@ final class TerminalPreviewFileLoaderTests: XCTestCase {
         let fileURL = try XCTUnwrap(resource?.url)
         XCTAssertEqual(fileURL.lastPathComponent, "report.final.txt")
         XCTAssertEqual(try Data(contentsOf: fileURL), Data("abcdefghij".utf8))
+        // The file's bytes and the read that finds its end go out together.
         let offsets = await recorder.offsets()
-        XCTAssertEqual(offsets, [0, 10])
+        XCTAssertEqual(offsets.sorted(), [0, 10])
         let scopedDirectory = fileURL.deletingLastPathComponent()
         XCTAssertTrue(FileManager.default.fileExists(atPath: scopedDirectory.path))
 
@@ -220,10 +221,17 @@ private struct PreviewSFTPClient: RemuxSFTPReadOnlyClient {
 
     func withFile<ReturnValue: Sendable>(
         atPath path: String,
-        _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
+        knownMetadata: RemuxSFTPFileMetadata?,
+        _ operation: @Sendable (RemuxSFTPReadableFile, RemuxSFTPFileMetadata) async throws -> ReturnValue
     ) async throws -> ReturnValue {
         let data = data
         let recorder = recorder
+        let fileMetadata: RemuxSFTPFileMetadata
+        if let knownMetadata {
+            fileMetadata = knownMetadata
+        } else {
+            fileMetadata = try await metadata(atPath: path)
+        }
         return try await operation(RemuxSFTPReadableFile { offset, length in
             await recorder.record(offset: offset, length: Int(length))
             if let delayFromOffset, offset >= delayFromOffset {
@@ -236,7 +244,7 @@ private struct PreviewSFTPClient: RemuxSFTPReadOnlyClient {
             )
             let end = min(start + returnedLength, data.count)
             return data.subdata(in: start..<end)
-        })
+        }, fileMetadata)
     }
 }
 

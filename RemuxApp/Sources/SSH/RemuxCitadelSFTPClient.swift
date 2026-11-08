@@ -3,21 +3,18 @@ import Foundation
 import NIO
 
 struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
-    private static let pipelinedWriteMaxInFlight = 64
-
     private let sftp: SFTPClient
-    private let chunkSize: Int
+    /// Each operation fails once the session has gone this long without an answer.
     private let operationTimeout: TimeAmount
     private let leaseState: RemuxSFTPLeaseTeardown
+    private let activity = RemuxSFTPActivity()
 
     fileprivate init(
         sftp: SFTPClient,
-        chunkSize: Int = 4 * 1024 * 1024,
         operationTimeout: TimeAmount = .seconds(15),
         leaseState: RemuxSFTPLeaseTeardown
     ) {
         self.sftp = sftp
-        self.chunkSize = chunkSize
         self.operationTimeout = operationTimeout
         self.leaseState = leaseState
     }
@@ -39,8 +36,10 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
 
     func withFile<ReturnValue: Sendable>(
         atPath path: String,
-        _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
+        knownMetadata: RemuxSFTPFileMetadata?,
+        _ operation: @Sendable (RemuxSFTPReadableFile, RemuxSFTPFileMetadata) async throws -> ReturnValue
     ) async throws -> ReturnValue {
+        async let fileMetadata = metadata(atPath: path, unlessKnown: knownMetadata)
         let remoteFile = try await openRemoteFile(
             at: path,
             flags: .read
@@ -54,7 +53,8 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
 
         let operationResult: Result<ReturnValue, Error>
         do {
-            operationResult = .success(try await operation(readableFile))
+            let metadata = try await fileMetadata
+            operationResult = .success(try await operation(readableFile, metadata))
         } catch {
             operationResult = .failure(error)
         }
@@ -77,21 +77,25 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         }
     }
 
-    func ensureDirectoryExists(atPath path: String) async throws {
+    func makeDirectory(atPath path: String) async throws -> RemuxSFTPMakeDirectoryResult {
+        do {
+            try await withOperationTimeout {
+                try await sftp.createDirectory(atPath: path)
+            }
+            return .created
+        } catch where isNoSuchFile(error) {
+            return .parentMissing
+        } catch is SFTPMessage.Status {
+            return .refused
+        }
+    }
+
+    func itemExists(atPath path: String) async throws -> Bool {
         do {
             _ = try await getAttributes(at: path)
-            return
+            return true
         } catch where isNoSuchFile(error) {
-            do {
-                try await withOperationTimeout {
-                    try await sftp.createDirectory(atPath: path)
-                }
-            } catch {
-                if try await exists(atPath: path) {
-                    return
-                }
-                throw error
-            }
+            return false
         }
     }
 
@@ -101,43 +105,40 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         progress: @escaping RemuxSFTPFileUploadProgressHandler
     ) async throws {
         let localFile = try FileHandle(forReadingFrom: localURL)
-        defer {
+        let remoteFile: RemuxCitadelSFTPFileBox
+        do {
+            remoteFile = try await openRemoteFile(
+                at: remotePath,
+                flags: [.write, .create, .truncate]
+            )
+        } catch {
             try? localFile.close()
+            throw error
         }
 
-        let remoteFile = try await openRemoteFile(
-            at: remotePath,
-            flags: [.write, .create, .truncate]
-        )
-
         do {
-            var offset: UInt64 = 0
-            while true {
-                try Task.checkCancellation()
-
-                let data = try localFile.read(upToCount: chunkSize) ?? Data()
-                guard !data.isEmpty else { break }
-
-                var buffer = ByteBufferAllocator().buffer(capacity: data.count)
-                buffer.writeBytes(data)
-                let writeBuffer = buffer
-                let writeOffset = offset
-                try await withOperationTimeout {
-                    try await remoteFile.file.writePipelined(
-                        writeBuffer,
-                        at: writeOffset,
-                        maxInFlight: Self.pipelinedWriteMaxInFlight
-                    )
+            try await leaseState.checkActive()
+            try await RemuxSFTPUploadWindow(noProgressTimeout: operationTimeout).upload(
+                localFile,
+                activity: activity,
+                onTimeout: { [leaseState] in
+                    await leaseState.invalidate()
+                },
+                progress: progress,
+                write: { data, offset in
+                    var buffer = ByteBufferAllocator().buffer(capacity: data.count)
+                    buffer.writeBytes(data)
+                    // At most `RemuxSFTPUploadWindow.defaultWriteLength` bytes, which Citadel sends as one request.
+                    try await remoteFile.file.write(buffer, at: offset)
                 }
-                offset += UInt64(data.count)
-                await progress(Int64(min(offset, UInt64(Int64.max))))
-            }
-
+            )
             try await closeRemoteFile(remoteFile)
         } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
-            throw RemuxSFTPClientError.operationTimedOut
+            // The session was given up on, so a close would only wait on it too.
+            throw error
         } catch {
             try? await closeRemoteFile(remoteFile)
+            try await leaseState.checkActive()
             throw error
         }
     }
@@ -190,13 +191,14 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         }
     }
 
-    private func exists(atPath path: String) async throws -> Bool {
-        do {
-            _ = try await getAttributes(at: path)
-            return true
-        } catch where isNoSuchFile(error) {
-            return false
+    private func metadata(
+        atPath path: String,
+        unlessKnown knownMetadata: RemuxSFTPFileMetadata?
+    ) async throws -> RemuxSFTPFileMetadata {
+        if let knownMetadata {
+            return knownMetadata
         }
+        return try await metadata(atPath: path)
     }
 
     private func getAttributes(at path: String) async throws -> SFTPFileAttributes {
@@ -214,7 +216,11 @@ struct RemuxCitadelSFTPClient: RemuxSFTPUploadClient, RemuxSFTPReadOnlyClient {
         do {
             let value = try await RemuxSFTPTimeout.run(
                 timeout: operationTimeout,
-                operation: operation,
+                extendWhile: { [activity] windowStart in activity.hasAnswered(since: windowStart) },
+                operation: { [activity] in
+                    defer { activity.recordAnswer() }
+                    return try await operation()
+                },
                 onTimeout: {
                     await leaseState.invalidate()
                 },
@@ -244,53 +250,69 @@ private final class RemuxCitadelSFTPFileBox: @unchecked Sendable {
     }
 }
 
-/// SFTP on the server's pooled SSH connection: each client lease claims the connection, as one of its
-/// consumers, and gives it back when it closes.
-struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
-    private let provider: RemuxShortLivedSFTPClientProvider<RemuxCitadelSFTPClient>
+
+/// The app's kept SFTP sessions, one per server transfer connection.
+typealias RemuxTransferSFTPSessions = RemuxSFTPSessionKeeper<RemuxSSHRootKey, RemuxCitadelSFTPClient>
+
+/// SFTP on the server's pooled SSH connection, through the session `sessions` keeps for it: the session claims the
+/// connection, as one of its consumers, while it is open.
+struct RemuxCitadelSFTPClientProvider: RemuxSFTPUploadClientProvider {
+    private let sessions: RemuxTransferSFTPSessions
+    private let rootKey: RemuxSSHRootKey
+    private let openSession: @Sendable () async throws -> RemuxTransferSFTPSessions.Session
 
     init(
         sshRootService: RemuxSSHRootService,
+        sessions: RemuxTransferSFTPSessions,
         rootKey: RemuxSSHRootKey,
         rootConfiguration: RemuxSSHRootConfiguration,
-        operationTimeout: TimeAmount,
-        chunkSize: Int = 4 * 1024 * 1024,
-        closeFailureHandler: @escaping @Sendable (Error) -> Void = { error in
-            NSLog("Remux Citadel SFTP lease close failed: %@", String(describing: error))
-        }
+        operationTimeout: TimeAmount
     ) {
-        self.provider = RemuxShortLivedSFTPClientProvider(
-            openLease: {
-                try await Self.openLease(
-                    sshRootService: sshRootService,
-                    rootKey: rootKey,
-                    rootConfiguration: rootConfiguration,
-                    operationTimeout: operationTimeout,
-                    chunkSize: chunkSize
-                )
-            },
-            closeFailureHandler: closeFailureHandler
-        )
+        self.sessions = sessions
+        self.rootKey = rootKey
+        self.openSession = {
+            try await Self.openSession(
+                sshRootService: sshRootService,
+                rootKey: rootKey,
+                rootConfiguration: rootConfiguration,
+                operationTimeout: operationTimeout
+            )
+        }
     }
 
     func withClient<ReturnValue: Sendable>(
         _ operation: @Sendable (RemuxCitadelSFTPClient) async throws -> ReturnValue
     ) async throws -> ReturnValue {
-        try await provider.withClient(operation)
+        try await RemuxShortLivedSFTPClientProvider(openLease: { try await openClientLease() }).withClient(operation)
     }
 
-    /// A client the caller holds, with the connection claimed, until it closes the lease.
+    /// A client the caller holds, keeping the session open, until it closes the lease.
     func openClientLease() async throws -> RemuxSFTPClientLease<RemuxCitadelSFTPClient> {
-        try await provider.openClientLease()
+        try await sessions.lease(for: rootKey, open: openSession)
     }
 
-    private static func openLease(
+    func withUploadTurn<ReturnValue: Sendable>(
+        _ upload: @Sendable (RemuxCitadelSFTPClient) async throws -> ReturnValue
+    ) async throws -> ReturnValue {
+        try await sessions.withUploadTurn(for: rootKey) {
+            try await withClient(upload)
+        }
+    }
+
+    func prepare() async {
+        do {
+            try await openClientLease().close()
+        } catch {
+            NSLog("Remux SFTP prepare failed: %@", String(describing: error))
+        }
+    }
+
+    private static func openSession(
         sshRootService: RemuxSSHRootService,
         rootKey: RemuxSSHRootKey,
         rootConfiguration: RemuxSSHRootConfiguration,
-        operationTimeout: TimeAmount,
-        chunkSize: Int
-    ) async throws -> RemuxSFTPClientLease<RemuxCitadelSFTPClient> {
+        operationTimeout: TimeAmount
+    ) async throws -> RemuxTransferSFTPSessions.Session {
         let claimedRoot = try await sshRootService.claimRoot(
             for: rootKey,
             configuration: rootConfiguration,
@@ -336,14 +358,21 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
             )
             let client = RemuxCitadelSFTPClient(
                 sftp: sftp,
-                chunkSize: chunkSize,
                 operationTimeout: operationTimeout,
                 leaseState: leaseState
             )
-            return RemuxSFTPClientLease(
+            return RemuxTransferSFTPSessions.Session(
                 client: client,
+                isUsable: {
+                    let isInvalidated = await leaseState.isInvalidated
+                    return sftp.isActive && !isInvalidated
+                },
                 close: {
-                    try await leaseState.close()
+                    do {
+                        try await leaseState.close()
+                    } catch {
+                        NSLog("Remux Citadel SFTP session close failed: %@", String(describing: error))
+                    }
                 }
             )
         } catch {

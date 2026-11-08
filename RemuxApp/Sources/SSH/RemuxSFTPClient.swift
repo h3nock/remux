@@ -1,5 +1,6 @@
 import Foundation
 import NIO
+import Synchronization
 
 enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
     case operationTimedOut
@@ -27,7 +28,8 @@ struct RemuxSFTPFileMetadata: Equatable, Sendable {
     let modificationDate: Date?
 }
 
-final class RemuxSFTPReadableFile {
+/// An open remote file's reads. Reads may run at once: each names its own offset.
+final class RemuxSFTPReadableFile: Sendable {
     static let maximumChunkLength = 4 * 1024 * 1024
 
     private let readChunkHandler: @Sendable (UInt64, UInt32) async throws -> Data
@@ -57,17 +59,34 @@ final class RemuxSFTPReadableFile {
 protocol RemuxSFTPReadOnlyClient: Sendable {
     func metadata(atPath path: String) async throws -> RemuxSFTPFileMetadata
 
+    /// Opens the file at `path` for reading, runs `operation` on it with its metadata, and closes it. The metadata
+    /// is `knownMetadata` when given; otherwise it is asked for together with the open, so both take one round trip.
     func withFile<ReturnValue: Sendable>(
         atPath path: String,
-        _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
+        knownMetadata: RemuxSFTPFileMetadata?,
+        _ operation: @Sendable (RemuxSFTPReadableFile, RemuxSFTPFileMetadata) async throws -> ReturnValue
     ) async throws -> ReturnValue
 }
 
 typealias RemuxSFTPFileUploadProgressHandler = @Sendable (Int64) async -> Void
 
+/// How the server answered one mkdir.
+enum RemuxSFTPMakeDirectoryResult: Equatable, Sendable {
+    case created
+    /// No such file: a parent directory is missing.
+    case parentMissing
+    /// Any other refusal. OpenSSH answers a mkdir of a directory that already exists this way, with a generic
+    /// failure, so only a stat tells the two apart.
+    case refused
+}
+
 protocol RemuxSFTPUploadClient: Sendable {
+    /// One mkdir.
+    func makeDirectory(atPath path: String) async throws -> RemuxSFTPMakeDirectoryResult
+    /// Whether anything exists at `path`: one stat.
+    func itemExists(atPath path: String) async throws -> Bool
     func realPath(atPath path: String) async throws -> String
-    func ensureDirectoryExists(atPath path: String) async throws
+    /// Progress is the bytes the server has acknowledged.
     func uploadFile(
         from localURL: URL,
         to remotePath: String,
@@ -83,6 +102,18 @@ protocol RemuxSFTPClientProvider: Sendable {
     func withClient<ReturnValue: Sendable>(
         _ operation: @Sendable (Client) async throws -> ReturnValue
     ) async throws -> ReturnValue
+}
+
+/// SFTP for sending files to one server.
+protocol RemuxSFTPUploadClientProvider: RemuxSFTPClientProvider where Client: RemuxSFTPUploadClient {
+    /// Runs `upload` once the server's earlier uploads have finished: one at a time, in the order they began, so
+    /// the first one sent arrives first instead of sharing the link with the next. Other operations don't wait.
+    func withUploadTurn<ReturnValue: Sendable>(
+        _ upload: @Sendable (Client) async throws -> ReturnValue
+    ) async throws -> ReturnValue
+
+    /// Opens what a send needs (the server connection and its SFTP session) ahead of the send. Best effort.
+    func prepare() async
 }
 
 struct RemuxSFTPClientLease<Client: Sendable>: Sendable {
@@ -122,6 +153,10 @@ actor RemuxSFTPLeaseTeardown {
         if let invalidationError {
             throw invalidationError
         }
+    }
+
+    var isInvalidated: Bool {
+        invalidationError != nil
     }
 
     func invalidate(
@@ -253,6 +288,7 @@ struct RemuxShortLivedSFTPClientProvider<Client: Sendable>: RemuxSFTPClientProvi
 enum RemuxSFTPTimeout {
     static func run<Value: Sendable>(
         timeout: TimeAmount,
+        extendWhile isMakingProgress: (@Sendable (_ windowStart: NIODeadline) -> Bool)? = nil,
         operation: @escaping @Sendable () async throws -> Value,
         onTimeout: @escaping @Sendable () async -> Void = {},
         cleanupLateSuccess: @escaping @Sendable (Value) async -> Void = { _ in }
@@ -260,9 +296,26 @@ enum RemuxSFTPTimeout {
         try await RemuxOperationTimeout.run(
             timeout: timeout,
             timeoutError: RemuxSFTPClientError.operationTimedOut,
+            extendWhile: isMakingProgress,
             operation: operation,
             onTimeout: onTimeout,
             cleanupLateSuccess: cleanupLateSuccess
         )
+    }
+}
+
+/// When an SFTP session last got an answer. The server answers a session's requests in the order they came, so an
+/// operation can wait behind others (a preview's read behind an upload's writes on a slow link, or the last of a
+/// window of reads): its timeout goes on while the session keeps getting answers, and only a silent session times
+/// out.
+final class RemuxSFTPActivity: Sendable {
+    private let lastAnswer = Mutex(NIODeadline.now())
+
+    func recordAnswer() {
+        lastAnswer.withLock { $0 = .now() }
+    }
+
+    func hasAnswered(since start: NIODeadline) -> Bool {
+        lastAnswer.withLock { $0 > start }
     }
 }
