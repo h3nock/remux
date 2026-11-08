@@ -392,7 +392,10 @@ private enum RemuxSSHSessionOpenFailure {
     case connectionLost
 
     init?(_ error: Error, on root: RemuxSSHRoot) {
-        if let error = error as? NIOSSHError, error.type == .channelSetupRejected {
+        if error is CancellationError {
+            // The consumer stopped wanting the session; it goes nowhere else.
+            return nil
+        } else if let error = error as? NIOSSHError, error.type == .channelSetupRejected {
             self = .refused
         } else if !root.rootChannel.isActive {
             self = .connectionLost
