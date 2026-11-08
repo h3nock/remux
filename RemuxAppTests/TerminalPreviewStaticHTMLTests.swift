@@ -123,8 +123,19 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
             )
             XCTAssertNil(response.value(forHTTPHeaderField: "Content-Length"), path)
         }
-        XCTAssertTrue(TerminalPreviewStaticHTMLResponse.contentSecurityPolicy.contains("sandbox allow-scripts"))
-        XCTAssertFalse(TerminalPreviewStaticHTMLResponse.contentSecurityPolicy.contains("allow-same-origin"))
+
+        let directives = Dictionary(
+            uniqueKeysWithValues: TerminalPreviewStaticHTMLResponse.contentSecurityPolicy
+                .split(separator: ";")
+                .map { $0.split(separator: " ").map(String.init) }
+                .map { ($0[0], Array($0.dropFirst())) }
+        )
+        XCTAssertEqual(directives["sandbox"], ["allow-scripts", "allow-popups", "allow-forms", "allow-modals"])
+        // No connection back to the page's own scheme: only network schemes.
+        XCTAssertEqual(directives["connect-src"], ["https:", "http:", "wss:", "ws:"])
+        for directive in ["frame-src", "child-src", "worker-src", "object-src"] {
+            XCTAssertEqual(directives[directive], ["'none'"], directive)
+        }
     }
 
     func testOpeningAsksForTheFolderAndThePageInOneRoundTrip() async throws {
@@ -179,19 +190,22 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
         }
     }
 
-    func testOpeningRefusesAPageThatIsNotARegularFile() async throws {
-        let server = StaticHTMLServer(
-            files: ["/srv/app/index.html": ""],
-            modes: ["/srv/app/index.html": 0o010644]
-        )
-
-        await XCTAssertThrowsErrorAsync {
-            _ = try await TerminalPreviewStaticHTMLResource.open(
-                remotePath: "/srv/app/index.html",
-                readLease: server.readLease()
+    func testOpeningRefusesAPageThatIsNotKnownToBeARegularFile() async throws {
+        // A named pipe, a folder, and a file whose server sent no type.
+        for mode: UInt32? in [0o010644, 0o040755, nil, 0o644] {
+            let server = StaticHTMLServer(
+                files: ["/srv/app/index.html": ""],
+                modes: ["/srv/app/index.html": mode]
             )
-        } verify: {
-            XCTAssertEqual($0 as? TerminalPreviewStaticHTMLError, .resourceNotAFile)
+
+            await XCTAssertThrowsErrorAsync {
+                _ = try await TerminalPreviewStaticHTMLResource.open(
+                    remotePath: "/srv/app/index.html",
+                    readLease: server.readLease()
+                )
+            } verify: {
+                XCTAssertEqual($0 as? TerminalPreviewStaticHTMLError, .resourceNotAFile, "mode \(String(describing: mode))")
+            }
         }
     }
 
@@ -369,7 +383,7 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
             remotePath: "/srv/app/index.html",
             readLease: TerminalPreviewStaticHTMLReadLease(
                 realPath: { $0 },
-                metadata: { _ in RemuxSFTPFileMetadata(size: 4, permissions: nil, modificationDate: nil) },
+                metadata: { _ in RemuxSFTPFileMetadata(size: 4, permissions: 0o100644, modificationDate: nil) },
                 stream: { _, metadata, onMetadata, onChunk in
                     await entered.open()
                     await release.wait()
@@ -402,6 +416,22 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
     /// its folder works, and no way of reading a neighbouring file's bytes does.
     @MainActor
     func testAPreviewedPageUsesItsFolderButCannotReadIt() async throws {
+        // The control: served without the preview's rules, the same page reads every one of those files, so a read
+        // that gets nothing in the preview below was stopped rather than broken.
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let plainHandler = PlainProbeSchemeHandler(files: Self.isolationProbeSite)
+        configuration.setURLSchemeHandler(plainHandler, forURLScheme: TerminalPreviewStaticHTMLResource.scheme)
+        let controlView = WKWebView(frame: .zero, configuration: configuration)
+        controlView.load(URLRequest(url: URL(string: "\(TerminalPreviewStaticHTMLResource.scheme)://control/srv/app/index.html")!))
+        let control = try await Self.probeResults(of: controlView)
+        for read in Self.probeReads {
+            XCTAssertTrue(control[read]?.hasPrefix("READ:") == true, "control \(read): \(control[read] ?? "missing")")
+        }
+        for feature in Self.probeFeatures {
+            XCTAssertEqual(control[feature], "yes", "control \(feature): \(control[feature] ?? "missing")")
+        }
+
         let server = StaticHTMLServer(files: Self.isolationProbeSite)
         let resource = try await TerminalPreviewStaticHTMLResource.open(
             remotePath: "/srv/app/index.html",
@@ -412,7 +442,81 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
         )
         XCTAssertTrue(webView.allowsBackForwardNavigationGestures)
         webView.load(URLRequest(url: resource.entryURL))
+        let results = try await Self.probeResults(of: webView)
 
+        for feature in Self.probeFeatures {
+            XCTAssertEqual(results[feature], "yes", "\(feature): \(results[feature] ?? "missing")")
+        }
+        for read in Self.probeReads {
+            let value = try XCTUnwrap(results[read], "\(read) did not report")
+            XCTAssertFalse(value.hasPrefix("READ:"), "\(read): \(value)")
+            XCTAssertFalse(value.contains("SECRET"), "\(read): \(value)")
+        }
+        XCTAssertEqual(results["origin"], "null", "the page has an origin of its own")
+    }
+
+    @MainActor
+    func testStoppingARequestWhileItsLookupIsPendingSendsAndReadsNothing() async throws {
+        let calls = StaticHTMLCallLog()
+        let answer = StaticHTMLTestGate()
+        let server = StaticHTMLServer(files: ["/srv/app/index.html": "page", "/srv/app/style.css": "p {}"])
+        let resource = try await TerminalPreviewStaticHTMLResource.open(
+            remotePath: "/srv/app/index.html",
+            readLease: server.readLease(calls: calls, answeringRealPathsAfter: answer, from: 4)
+        )
+        let handler = resource.makeSchemeHandler()
+        let webView = WKWebView()
+        let task = StaticHTMLSchemeTaskSpy(url: try XCTUnwrap(URL(string: "style.css", relativeTo: resource.entryURL)))
+
+        handler.webView(webView, start: task)
+        try await waitForCalls(calls, count: 5)
+        handler.webView(webView, stop: task)
+        await answer.open()
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertTrue(task.responses.isEmpty)
+        XCTAssertTrue(task.chunks.isEmpty)
+        XCTAssertTrue(task.errors.isEmpty)
+        XCTAssertEqual(task.finishCount, 0)
+        let streamed = await calls.streams
+        XCTAssertTrue(streamed.isEmpty, "a stopped request must not go on to read: \(streamed)")
+    }
+
+    @MainActor
+    func testClosingThePreviewWhileALookupIsPendingClosesTheLeaseOnce() async throws {
+        let calls = StaticHTMLCallLog()
+        let closes = StaticHTMLCloseCounter()
+        let answer = StaticHTMLTestGate()
+        let server = StaticHTMLServer(
+            files: ["/srv/app/index.html": "page", "/srv/app/style.css": "p {}"],
+            closes: closes
+        )
+        let resource = try await TerminalPreviewStaticHTMLResource.open(
+            remotePath: "/srv/app/index.html",
+            readLease: server.readLease(calls: calls, answeringRealPathsAfter: answer, from: 4)
+        )
+        let task = StaticHTMLSchemeTaskSpy(url: try XCTUnwrap(URL(string: "style.css", relativeTo: resource.entryURL)))
+
+        resource.makeSchemeHandler().webView(WKWebView(), start: task)
+        try await waitForCalls(calls, count: 5)
+        resource.close()
+        await answer.open()
+
+        for _ in 0..<200 {
+            if await closes.value() == 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let closeCount = await closes.value()
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertTrue(task.responses.isEmpty)
+        XCTAssertTrue(task.chunks.isEmpty)
+        let streamed = await calls.streams
+        XCTAssertTrue(streamed.isEmpty, "a closed preview must not go on to read: \(streamed)")
+    }
+
+    /// Runs the probe page in `webView` and returns what each read and feature reported.
+    @MainActor
+    private static func probeResults(of webView: WKWebView) async throws -> [String: String] {
         var results: [String: String] = [:]
         let deadline = ContinuousClock.now + .seconds(30)
         while results["done"] == nil, ContinuousClock.now < deadline {
@@ -425,22 +529,18 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
             }
         }
         XCTAssertEqual(results["done"], "yes", "the probe page did not finish: \(results)")
-
-        for feature in [
-            "inlineScript", "scriptFileRan", "moduleScriptRan", "dynamicImport", "stylesheetApplied", "imageShown",
-        ] {
-            XCTAssertEqual(results[feature], "yes", "\(feature): \(results[feature] ?? "missing")")
-        }
-        for read in [
-            "fetchNeighbour", "fetchSubfolder", "xhr", "xhrAsync", "iframeRead", "objectRead", "workerFetch",
-            "stylesheetRulesRead", "imagePixelsRead", "envAsScript",
-        ] {
-            let value = try XCTUnwrap(results[read], "\(read) did not report")
-            XCTAssertFalse(value.hasPrefix("READ:"), "\(read): \(value)")
-            XCTAssertFalse(value.contains("SECRET"), "\(read): \(value)")
-        }
-        XCTAssertEqual(results["origin"], "null", "the page has an origin of its own")
+        return results
     }
+
+    private static let probeFeatures = [
+        "inlineScript", "scriptFileRan", "moduleScriptRan", "dynamicImport", "stylesheetApplied", "imageShown",
+        "fontLoaded",
+    ]
+
+    private static let probeReads = [
+        "fetchNeighbour", "fetchSubfolder", "xhr", "xhrAsync", "iframeRead", "objectRead", "workerFetch",
+        "stylesheetRulesRead", "imagePixelsRead", "envAsScript",
+    ]
 
     @MainActor
     func testClosingSessionClosesStaticHTMLLeaseOnce() async throws {
@@ -562,7 +662,7 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
             remotePath: path,
             readLease: TerminalPreviewStaticHTMLReadLease(
                 realPath: { $0 },
-                metadata: { _ in RemuxSFTPFileMetadata(size: 64, permissions: nil, modificationDate: nil) },
+                metadata: { _ in RemuxSFTPFileMetadata(size: 64, permissions: 0o100644, modificationDate: nil) },
                 stream: { _, _, _, _ in },
                 close: { await closes.increment() }
             )
@@ -572,10 +672,24 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
     /// A page that tries each way of reading the files beside it (each reports `READ:` and what it read if it got
     /// through), and uses each thing a page needs from its folder (each reports `yes`).
     private static let isolationProbeSite: [String: Data] = isolationProbeText.mapValues { Data($0.utf8) }
-        .merging(["/srv/app/pixel.png": onePixelPNG]) { text, _ in text }
+        .merging(["/srv/app/pixel.png": onePixelPNG, "/srv/app/probe.ttf": oneGlyphFont]) { text, _ in text }
 
     private static let onePixelPNG = Data(
         base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )!
+
+    /// A TrueType font with one glyph (family RemuxProbe), made for this test with fontTools' FontBuilder.
+    private static let oneGlyphFont = Data(
+        base64Encoded: """
+        AAEAAAAKAIAAAwAgT1MvMkUhRDUAAAEoAAAAYGNtYXAADACUAAABkAAAADRnbHlmTjxOOgAAAcwAAAA0aGVhZC+bgDQAAACsAAAANmhoZWEFegH2\
+        AAAA5AAAACRobXR4ArwAZAAAAYgAAAAGbG9jYQAaAA0AAAHEAAAABm1heHAABAAGAAABCAAAACBuYW1lQS1H4AAAAgAAAABpcG9zdAAoAAAAAAJs\
+        AAAAJgABAAAAAQAAjDvhcl8PPPUAAwPoAAAAAOcWnkwAAAAA5xaeTABkAAAB9AK8AAAAAwACAAAAAAAAAAEAAAMg/zgAAAJYAGQAZAH0AAEAAAAA\
+        AAAAAAAAAAAAAAABAAEAAAACAAQAAQAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwJYAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\
+        AAAAAAABAAAAAAAAAAAAAAAAPz8/PwAAAEEAQQMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAACWABkAGQAAAAAAAIAAAADAAAAFAADAAEAAAAU\
+        AAQAIAAAAAQABAABAAAAQf//AAAAQf///8AAAQAAAAAAAAANABoAAAABAGQAAAH0ArwAAwAAMxEhEWQBkAK8/UQAAAEAZAAAAfQCvAADAAAzESER\
+        ZAGQArz9RAAAAAAEADYAAQAAAAAAAQAKAAAAAQAAAAAAAgAHAAoAAwABBAkAAQAUABEAAwABBAkAAgAOACVSZW11eFByb2JlUmVndWxhcgBSAGUA\
+        bQB1AHgAUAByAG8AYgBlAFIAZQBnAHUAbABhAHIAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAJAAA
+        """
     )!
 
     private static let isolationProbeText: [String: String] = [
@@ -640,12 +754,16 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
           R('scriptFileRan', window.appLoaded === true ? 'yes' : 'no');
           R('moduleScriptRan', window.moduleLoaded === true ? 'yes' : 'no');
           try { const m = await import('./value.js'); R('dynamicImport', m.value === 42 ? 'yes' : 'no'); } catch (e) { R('dynamicImport', 'blocked: ' + e); }
+          try { const faces = await document.fonts.load('16px RemuxProbe'); R('fontLoaded', faces.length > 0 ? 'yes' : 'no'); } catch (e) { R('fontLoaded', 'error: ' + e); }
           R('done', 'yes');
         }
         window.addEventListener('load', () => wait(200).then(run));
         </script></body></html>
         """,
-        "/srv/app/style.css": "#probe { color: rgb(1, 2, 3); }",
+        "/srv/app/style.css": """
+        @font-face { font-family: RemuxProbe; src: url(probe.ttf); }
+        #probe { color: rgb(1, 2, 3); font-family: RemuxProbe; }
+        """,
         "/srv/app/app.js": "window.appLoaded = true;",
         "/srv/app/module.mjs": "window.moduleLoaded = true;",
         "/srv/app/value.js": "export const value = 42;",
@@ -667,28 +785,33 @@ private enum StaticHTMLServerError: Error, Equatable {
 }
 
 /// A server's files for the preview to read: contents by real path, the real path of each requested path that
-/// isn't its own (a symlink), paths the server can't resolve, and file modes.
+/// isn't its own (a symlink), paths the server can't resolve, and file modes (a regular file's unless given; nil
+/// for a server that sends none).
 private struct StaticHTMLServer: Sendable {
     var files: [String: Data]
     var realPaths: [String: String] = [:]
     var unresolvable: Set<String> = []
-    var modes: [String: UInt32] = [:]
+    var modes: [String: UInt32?] = [:]
     /// Each file arrives in two chunks.
     var chunked = false
+    /// Counts the lease's closes.
+    var closes: StaticHTMLCloseCounter?
 
     init(
         files: [String: String],
         realPaths: [String: String] = [:],
         unresolvable: Set<String> = [],
-        modes: [String: UInt32] = [:],
-        chunked: Bool = false
+        modes: [String: UInt32?] = [:],
+        chunked: Bool = false,
+        closes: StaticHTMLCloseCounter? = nil
     ) {
         self.init(
             files: files.mapValues { Data($0.utf8) },
             realPaths: realPaths,
             unresolvable: unresolvable,
             modes: modes,
-            chunked: chunked
+            chunked: chunked,
+            closes: closes
         )
     }
 
@@ -696,14 +819,16 @@ private struct StaticHTMLServer: Sendable {
         files: [String: Data],
         realPaths: [String: String] = [:],
         unresolvable: Set<String> = [],
-        modes: [String: UInt32] = [:],
-        chunked: Bool = false
+        modes: [String: UInt32?] = [:],
+        chunked: Bool = false,
+        closes: StaticHTMLCloseCounter? = nil
     ) {
         self.files = files
         self.realPaths = realPaths
         self.unresolvable = unresolvable
         self.modes = modes
         self.chunked = chunked
+        self.closes = closes
     }
 
     /// With `answeringAfter`, every lookup waits for that gate; with `answeringRealPathsAfter`, real-path lookups
@@ -730,7 +855,7 @@ private struct StaticHTMLServer: Sendable {
                 guard let data = server.files[realPath] else { throw StaticHTMLServerError.noSuchFile }
                 return RemuxSFTPFileMetadata(
                     size: UInt64(data.count),
-                    permissions: server.modes[path] ?? 0o100644,
+                    permissions: server.modes.keys.contains(path) ? server.modes[path] ?? nil : 0o100644,
                     modificationDate: nil
                 )
             },
@@ -746,7 +871,7 @@ private struct StaticHTMLServer: Sendable {
                     try await onChunk(data)
                 }
             },
-            close: {}
+            close: { await server.closes?.increment() }
         )
     }
 }
@@ -774,6 +899,34 @@ private func waitForCalls(_ calls: StaticHTMLCallLog, count: Int) async throws {
     }
     let made = await calls.lookups
     XCTAssertGreaterThanOrEqual(made.count, count, "lookups so far: \(made)")
+}
+
+/// Serves files by path with no rules at all, the way the preview did before it isolated pages: the probe's control.
+private final class PlainProbeSchemeHandler: NSObject, WKURLSchemeHandler {
+    private let files: [String: Data]
+
+    init(files: [String: Data]) {
+        self.files = files
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        guard let url = urlSchemeTask.request.url, let data = files[url.path] else {
+            urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+            return
+        }
+        urlSchemeTask.didReceive(
+            URLResponse(
+                url: url,
+                mimeType: TerminalPreviewStaticHTMLResponse.contentType(forPath: url.path).mimeType,
+                expectedContentLength: data.count,
+                textEncodingName: nil
+            )
+        )
+        urlSchemeTask.didReceive(data)
+        urlSchemeTask.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {}
 }
 
 private final class StaticHTMLSchemeTaskSpy: NSObject, WKURLSchemeTask, @unchecked Sendable {

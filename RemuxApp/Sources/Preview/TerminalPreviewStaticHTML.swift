@@ -112,7 +112,8 @@ struct TerminalPreviewStaticHTMLClient: Sendable {
 /// A previewed page is shown the way a desktop browser shows a local file: it renders and runs its scripts, and it
 /// can use the scripts, styles and images in its folder, but it cannot read the bytes of other files, and nothing
 /// outside its folder is served. Scripts and styles it loads do reveal what they define (a stylesheet's values, a
-/// script's functions), as in a browser, and the page can still reach the internet.
+/// script's functions), as in a browser, and the page can still reach the internet. Having an origin of its own, it
+/// has no storage, workers or frames.
 final class TerminalPreviewStaticHTMLResource: @unchecked Sendable, Equatable {
     static let scheme = "remux-static-preview"
 
@@ -278,9 +279,9 @@ struct TerminalPreviewStaticHTMLServedFile: Sendable {
         guard let path = TerminalPreviewRemotePath.normalized(lookup.realPath),
               TerminalPreviewRemotePath.isInside(path, folder: folderRealPath)
         else { throw TerminalPreviewStaticHTMLError.resourceOutsideDocumentRoot }
-        // The type bits of the mode; a server that sends none leaves them zero.
-        let fileType = (lookup.metadata.permissions ?? 0) & 0o170000
-        guard fileType == 0 || fileType == 0o100000 else {
+        // Only what the server says is a regular file: opening a named pipe would hold the session, and a server
+        // that sends no file type leaves nothing to go on.
+        guard let mode = lookup.metadata.permissions, mode & 0o170000 == 0o100000 else {
             throw TerminalPreviewStaticHTMLError.resourceNotAFile
         }
         self.path = path
@@ -586,6 +587,8 @@ private actor TerminalPreviewStaticHTMLTransport {
                         folderRealPath: folderRealPath
                     )
                 }
+                // Stopped or closed while the server answered: don't start reading.
+                try Task.checkCancellation()
                 try await readLease.stream(
                     file,
                     onMetadata: { _ in

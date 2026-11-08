@@ -15,14 +15,15 @@ final class TerminalPreviewStaticHTMLLiveTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: trustedHostRoot) }
         let host = LiveHost(configuration: configuration, trustedHostRoot: trustedHostRoot)
         let root = "/tmp/remux-html-\(UUID().uuidString.prefix(8).lowercased())"
-        try await host.run(Self.setupScript, arguments: [root])
+        // Before the setup, so a setup that fails part way leaves nothing either.
         addTeardownBlock {
             do {
-                try await host.run("rm -rf -- \"$1\"", arguments: [root])
+                try await host.run("rm -rf -- \"$(printf %b \"$1\")\"", arguments: [root])
             } catch {
                 XCTFail("The live folder \(root) was not removed: \(error)")
             }
         }
+        try await host.run(Self.setupScript, arguments: [root])
 
         // A page that is a symlink out of its folder is refused when the preview opens.
         let refusedLease = try await host.openSFTPLease()
@@ -33,14 +34,22 @@ final class TerminalPreviewStaticHTMLLiveTests: XCTestCase {
             )
             XCTFail("A page that resolves outside its folder was opened")
         } catch {
-            XCTAssertEqual(error as? TerminalPreviewStaticHTMLError, .resourceOutsideDocumentRoot)
+            XCTAssertEqual(error as? TerminalPreviewStaticHTMLError, .resourceOutsideDocumentRoot, "\(error)")
         }
         try await refusedLease.close()
 
-        let resource = try await TerminalPreviewStaticHTMLResource.open(
-            remotePath: "\(root)/site/index.html",
-            readLease: TerminalPreviewStaticHTMLReadLease(lease: try await host.openSFTPLease())
-        )
+        let lease = try await host.openSFTPLease()
+        let resource: TerminalPreviewStaticHTMLResource
+        do {
+            resource = try await TerminalPreviewStaticHTMLResource.open(
+                remotePath: "\(root)/site/index.html",
+                readLease: TerminalPreviewStaticHTMLReadLease(lease: lease)
+            )
+        } catch {
+            try? await lease.close()
+            XCTFail("The preview did not open: \(error)")
+            return
+        }
         defer { resource.close() }
         let handler = resource.makeSchemeHandler()
 
@@ -62,15 +71,16 @@ final class TerminalPreviewStaticHTMLLiveTests: XCTestCase {
             let task = LiveSchemeTaskSpy(url: try XCTUnwrap(URL(string: name, relativeTo: resource.entryURL)))
             handler.webView(WKWebView(), start: task)
             try await waitUntil("\(name) was not refused") { task.finished || !task.errors.isEmpty }
-            XCTAssertEqual(task.errors.first as? TerminalPreviewStaticHTMLError, expected, name)
+            XCTAssertEqual(task.errors.first as? TerminalPreviewStaticHTMLError, expected, "\(name): \(task.errors)")
             XCTAssertFalse(task.receivedResponse, name)
             XCTAssertTrue(task.body.isEmpty, name)
         }
     }
 
+    /// Arguments arrive octal-encoded (`RemoteShellArgument`); `printf %b` decodes them.
     private static let setupScript = """
     set -eu
-    root="$1"
+    root=$(printf %b "$1")
     mkdir "$root"
     mkdir "$root/site" "$root/outside"
     printf '<!doctype html><title>page</title>' > "$root/site/index.html"
