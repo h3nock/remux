@@ -1261,7 +1261,7 @@ private struct ConnectionLibraryView: View {
                             Button("Edit") {
                                 onEditWorkspace(server.id, workspace.id)
                             }
-                            .tint(LibraryHomePalette.controlAccent)
+                            .tint(.accentColor)
 
                             Button("Delete", role: .destructive) {
                                 onDeleteWorkspace(workspace.id)
@@ -1360,7 +1360,7 @@ private struct ConnectionLibraryView: View {
                         Button("Resume") {
                             onConnect(latest.id)
                         }
-                        .tint(LibraryHomePalette.controlAccent)
+                        .tint(.accentColor)
                     }
                 }
                 .swipeActions(edge: .leading) {
@@ -1370,7 +1370,7 @@ private struct ConnectionLibraryView: View {
                             showsServerSummary: true
                         )
                     }
-                    .tint(LibraryHomePalette.controlAccent)
+                    .tint(.accentColor)
                 }
                 .libraryHomeListRowSurface()
             }
@@ -1597,7 +1597,7 @@ private struct ServerDetailView: View {
                         Button("Edit") {
                             onEditWorkspace(server.id, workspace.id)
                         }
-                        .tint(LibraryHomePalette.controlAccent)
+                        .tint(.accentColor)
 
                         Button("Delete", role: .destructive) {
                             onDeleteWorkspace(workspace.id)
@@ -1745,7 +1745,7 @@ private struct ServerDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(isChanged ? "Host key changed" : "Verify this server")
                         .font(.headline)
-                        .foregroundStyle(isChanged ? Color.red : LibraryHomePalette.controlAccent)
+                        .foregroundStyle(isChanged ? Color.red : Color.accentColor)
                     Text(isChanged ? "Remux won't connect until you review it." : "First connection. Check its host key.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -1920,7 +1920,6 @@ private struct LibraryEmptyState: View {
         } actions: {
             LibraryEmptyAddServerButton(action: onAddServer)
         }
-        .tint(LibraryHomePalette.controlAccent)
         .padding(.horizontal, 40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .offset(y: -48)
@@ -2144,7 +2143,7 @@ private struct TerminalSettingsView: View {
         Form {
             Section("Font") {
                 Toggle("Use default size", isOn: useDefaultFontBinding)
-                    .tint(LibraryHomePalette.controlAccent)
+                    .tint(.accentColor)
                     .accessibilityIdentifier("settings.use-default-font")
 
                 Stepper(
@@ -2183,7 +2182,7 @@ private struct TerminalSettingsView: View {
                     "Zoom multipane windows",
                     isOn: zoomMultipaneWindowsByDefaultBinding
                 )
-                .tint(LibraryHomePalette.controlAccent)
+                .tint(.accentColor)
                 .accessibilityIdentifier("settings.zoom-multipane-windows-by-default")
             } header: {
                 Text("Windows & Panes")
@@ -2228,14 +2227,14 @@ private struct TerminalSettingsView: View {
                         Text("Bells and agents")
                         Text("Vibrate when a program rings the bell, or an agent needs you or finishes.")
                     }
-                    .tint(LibraryHomePalette.controlAccent)
+                    .tint(.accentColor)
                     .accessibilityIdentifier("settings.haptics.bells-and-agents")
 
                     Toggle(isOn: vibratesForKeysAndButtonsBinding) {
                         Text("Keys and buttons")
                         Text("Vibrate when you press toolbar keys and buttons in Remux.")
                     }
-                    .tint(LibraryHomePalette.controlAccent)
+                    .tint(.accentColor)
                     .accessibilityIdentifier("settings.haptics.keys-and-buttons")
                 }
                 .libraryHomeListRowSurface()
@@ -2243,7 +2242,7 @@ private struct TerminalSettingsView: View {
 
             Section {
                 Toggle("Allow older RSA host keys", isOn: allowInsecureRSAHostKeysBinding)
-                    .tint(LibraryHomePalette.controlAccent)
+                    .tint(.accentColor)
                     .accessibilityIdentifier("settings.allow-insecure-rsa")
                     .accessibilityHint(
                         "Allows legacy RSA host-key signatures using SHA-1; "
