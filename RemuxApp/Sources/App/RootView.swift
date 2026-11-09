@@ -2563,7 +2563,8 @@ struct ConnectionSetupView: View {
 
             if showsEditableServerFields {
                 Section {
-                    DisclosureGroup("Advanced", isExpanded: advancedExpansion) {
+                    advancedToggleRow
+                    if isAdvancedShown {
                         tmuxExecutableInputRow()
                         herdrExecutableInputRow()
                     }
@@ -2732,13 +2733,27 @@ struct ConnectionSetupView: View {
         isAdvancedExpanded || hasExecutablePathProblem
     }
 
-    private var advancedExpansion: Binding<Bool> {
-        Binding(
-            get: { isAdvancedShown },
-            // A collapse is ignored while a path's problem holds Advanced open, so correcting the
-            // path doesn't close it mid-edit.
-            set: { isAdvancedExpanded = $0 || hasExecutablePathProblem }
-        )
+    /// Opens and closes Advanced. Its fields follow as rows of the same section, lined up with the form's other
+    /// fields; a disclosure group would indent them as if they were nested.
+    private var advancedToggleRow: some View {
+        Button {
+            withAnimation {
+                // A collapse is ignored while a path's problem holds Advanced open, so correcting the
+                // path doesn't close it mid-edit.
+                isAdvancedExpanded = !isAdvancedShown || hasExecutablePathProblem
+            }
+        } label: {
+            HStack {
+                Text("Advanced")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.bold))
+                    .rotationEffect(.degrees(isAdvancedShown ? 90 : 0))
+            }
+            .foregroundStyle(Color.primary)
+            .contentShape(Rectangle())
+        }
+        .accessibilityValue(isAdvancedShown ? "Expanded" : "Collapsed")
     }
 
     /// Choosing Herdr fills in Herdr's default name when the field is empty, and choosing tmux takes it
