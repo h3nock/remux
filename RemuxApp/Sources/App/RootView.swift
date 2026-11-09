@@ -341,16 +341,17 @@ private struct RemuxWorkspaceShell: View {
                         .confirmationDialog(
                             "Discard Changes?",
                             isPresented: $isConfirmingSetupDiscard,
-                            titleVisibility: .visible
-                        ) {
+                            titleVisibility: .visible,
+                            presenting: discardMessage(for: setup.mode)
+                        ) { _ in
                             Button("Discard", role: .destructive) {
                                 model.cancelSetup()
                             }
                             .accessibilityIdentifier("connection.discard")
                             Button("Keep Editing", role: .cancel) {}
                                 .accessibilityIdentifier("connection.keep-editing")
-                        } message: {
-                            Text(discardMessage(for: setup.mode))
+                        } message: { message in
+                            Text(message)
                         }
                     }
                 }
@@ -358,10 +359,11 @@ private struct RemuxWorkspaceShell: View {
             .presentationDetents(presentationDetents(for: setup.mode))
             .presentationDragIndicator(.visible)
             // A pull closes the sheet as the X does, except while it's connecting, and asks first when something
-            // has been entered. A sheet holding a password closes through the X's path even untouched: that empties
-            // the password fields before the sheet goes, and closing with them filled makes iOS offer to save them.
+            // has been entered in a server form. A sheet holding a password closes through the X's path even
+            // untouched: that empties the password fields before the sheet goes, and closing with them filled makes
+            // iOS offer to save them.
             .interactiveDismissDisabled(
-                model.isSetupActionInProgress || setup.hasChanges || holdsSecretText(setup.draft)
+                model.isSetupActionInProgress || asksBeforeDiscarding(setup) || holdsSecretText(setup.draft)
             )
             .onSheetDismissAttempt {
                 guard !model.isSetupActionInProgress else { return }
@@ -374,7 +376,7 @@ private struct RemuxWorkspaceShell: View {
                 // SwiftUI finishes closing the last question later in this same update, and drops one asked before
                 // then.
                 DispatchQueue.main.async {
-                    if model.connectionSetup?.hasChanges == true {
+                    if let setup = model.connectionSetup, asksBeforeDiscarding(setup) {
                         isConfirmingSetupDiscard = true
                     }
                 }
@@ -398,28 +400,32 @@ private struct RemuxWorkspaceShell: View {
         }
     }
 
-    /// What discarding loses, under the dialog's title.
-    private func discardMessage(for mode: RemuxRootModel.SetupMode) -> String {
+    /// What discarding loses, under the question's title, for the forms that ask first. A server form holds a host,
+    /// a user and a key or password; a session form holds only a name, so it closes without asking.
+    private func discardMessage(for mode: RemuxRootModel.SetupMode) -> String? {
         switch mode {
         case .newServer:
             "The new server won't be saved."
-        case .newWorkspace:
-            "The new session won't be saved."
         case .editServer:
             "Your changes to this server won't be saved."
-        case .editWorkspace:
-            "Your changes to this session won't be saved."
+        case .newWorkspace, .editWorkspace:
+            nil
         }
+    }
+
+    /// Whether closing the setup asks first: something has been entered in a form that asks.
+    private func asksBeforeDiscarding(_ setup: RemuxRootModel.ConnectionSetupState) -> Bool {
+        setup.hasChanges && discardMessage(for: setup.mode) != nil
     }
 
     private func holdsSecretText(_ draft: TmuxConnectionDraft) -> Bool {
         !draft.password.isEmpty || !draft.privateKeyPassphrase.isEmpty
     }
 
-    /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered. The keyboard
-    /// goes with the sheet.
+    /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered in a server
+    /// form. The keyboard goes with the sheet.
     private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
-        guard !setup.hasChanges else {
+        guard !asksBeforeDiscarding(setup) else {
             askToDiscard()
             return
         }
