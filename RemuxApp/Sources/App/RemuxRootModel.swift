@@ -465,6 +465,8 @@ final class RemuxRootModel: ObservableObject {
         var validation: TmuxConnectionDraftValidation
         var submissionIssue: SubmissionIssue?
         let mode: SetupMode
+        /// The draft as the setup began.
+        let initialDraft: TmuxConnectionDraft
 
         init(
             draft: TmuxConnectionDraft,
@@ -476,7 +478,11 @@ final class RemuxRootModel: ObservableObject {
             self.validation = validation
             self.submissionIssue = submissionIssue
             self.mode = mode
+            self.initialDraft = draft
         }
+
+        /// Whether closing the setup would throw away something entered since it began.
+        var hasChanges: Bool { draft != initialDraft }
     }
 
     enum State: Equatable {

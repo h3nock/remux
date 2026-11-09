@@ -100,6 +100,13 @@ private final class LastConnectionSetup {
     var setup: RemuxRootModel.ConnectionSetupState?
 }
 
+/// The setup sheet's discard question as SwiftUI last reported it, and whether an X waits for it to close. A
+/// reference, so keeping it current doesn't redraw the shell.
+private final class SetupDiscardQuestion {
+    var wasShowing = false
+    var asksAgainOnceClosed = false
+}
+
 private struct RemuxWorkspaceShell: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: RemuxRootModel
@@ -111,6 +118,8 @@ private struct RemuxWorkspaceShell: View {
     @State private var presentedServerID: SavedServer.ID?
     @State private var connectionSetupSheetShowsServerSummary = true
     @State private var isConnectionSetupSheetPresented = false
+    @State private var isConfirmingSetupDiscard = false
+    @State private var setupDiscardQuestion = SetupDiscardQuestion()
     @State private var lastConnectionSetup = LastConnectionSetup()
 
     var body: some View {
@@ -241,13 +250,19 @@ private struct RemuxWorkspaceShell: View {
         .sheet(
             isPresented: $isConnectionSetupSheetPresented,
             onDismiss: {
+                // Pulled down while the app still means to show it: cancel the setup, as the X does. When the session
+                // switcher takes the setup over, the sheet isn't meant to show and the setup carries on there.
+                if model.connectionSetup != nil, showsConnectionSetupSheet {
+                    model.cancelSetup()
+                }
                 if model.connectionSetup == nil {
                     lastConnectionSetup.setup = nil
                 }
+                // A question belongs to the sheet it was asked in.
+                setupDiscardQuestion = SetupDiscardQuestion()
             }
         ) {
             connectionSetupSheet
-                .interactiveDismissDisabled()
                 .tailscaleSSHCheckAlert(
                     request: $tailscaleSSHCheckRequest,
                     isActive: true
@@ -263,9 +278,14 @@ private struct RemuxWorkspaceShell: View {
                 isConnectionSetupSheetPresented = true
                 return
             }
-            // The closing sheet first redraws its secure fields empty. SwiftUI
-            // drops content changes made in the update that dismisses a
-            // sheet, so dismiss it on the next turn.
+            // A closing sheet holding a password first redraws its secure fields
+            // empty. SwiftUI drops content changes made in the update that
+            // dismisses a sheet, so that one is dismissed on the next turn; a
+            // sheet without one has nothing to redraw and goes at once.
+            guard lastConnectionSetup.setup.map({ holdsSecretText($0.draft) }) ?? false else {
+                isConnectionSetupSheetPresented = false
+                return
+            }
             DispatchQueue.main.async {
                 isConnectionSetupSheetPresented = showsConnectionSetupSheet
             }
@@ -309,19 +329,56 @@ private struct RemuxWorkspaceShell: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button {
-                            dismissKeyboard()
-                            model.cancelSetup()
+                            closeConnectionSetup(setup)
                         } label: {
                             Image(systemName: "xmark")
                         }
                         .accessibilityLabel("Cancel")
                         .accessibilityIdentifier("connection.cancel")
                         .disabled(model.isSetupActionInProgress)
+                        // On the X, so iOS presents the question from the button that closes the sheet, for a
+                        // refused pull too.
+                        .confirmationDialog(
+                            "Discard Changes?",
+                            isPresented: $isConfirmingSetupDiscard,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Discard", role: .destructive) {
+                                model.cancelSetup()
+                            }
+                            .accessibilityIdentifier("connection.discard")
+                            Button("Keep Editing", role: .cancel) {}
+                                .accessibilityIdentifier("connection.keep-editing")
+                        } message: {
+                            Text(discardMessage(for: setup.mode))
+                        }
                     }
                 }
             }
             .presentationDetents(presentationDetents(for: setup.mode))
             .presentationDragIndicator(.visible)
+            // A pull closes the sheet as the X does, except while it's connecting, and asks first when something
+            // has been entered. A sheet holding a password closes through the X's path even untouched: that empties
+            // the password fields before the sheet goes, and closing with them filled makes iOS offer to save them.
+            .interactiveDismissDisabled(
+                model.isSetupActionInProgress || setup.hasChanges || holdsSecretText(setup.draft)
+            )
+            .onSheetDismissAttempt {
+                guard !model.isSetupActionInProgress else { return }
+                closeConnectionSetup(setup)
+            }
+            .onChange(of: isConfirmingSetupDiscard) { _, isAsking in
+                setupDiscardQuestion.wasShowing = isAsking
+                guard !isAsking, setupDiscardQuestion.asksAgainOnceClosed else { return }
+                setupDiscardQuestion.asksAgainOnceClosed = false
+                // SwiftUI finishes closing the last question later in this same update, and drops one asked before
+                // then.
+                DispatchQueue.main.async {
+                    if model.connectionSetup?.hasChanges == true {
+                        isConfirmingSetupDiscard = true
+                    }
+                }
+            }
             .remuxSheetPresentationBackground()
             .ghosttyTerminalChromePresentation(
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
@@ -338,6 +395,45 @@ private struct RemuxWorkspaceShell: View {
             } message: { issue in
                 Text(setupSubmissionIssueMessage(issue))
             }
+        }
+    }
+
+    /// What discarding loses, under the dialog's title.
+    private func discardMessage(for mode: RemuxRootModel.SetupMode) -> String {
+        switch mode {
+        case .newServer:
+            "The new server won't be saved."
+        case .newWorkspace:
+            "The new session won't be saved."
+        case .editServer:
+            "Your changes to this server won't be saved."
+        case .editWorkspace:
+            "Your changes to this session won't be saved."
+        }
+    }
+
+    private func holdsSecretText(_ draft: TmuxConnectionDraft) -> Bool {
+        !draft.password.isEmpty || !draft.privateKeyPassphrase.isEmpty
+    }
+
+    /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered. The keyboard
+    /// goes with the sheet.
+    private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
+        guard !setup.hasChanges else {
+            askToDiscard()
+            return
+        }
+        model.cancelSetup()
+    }
+
+    /// Shows the discard question at once, as iOS's own apps do. iOS reports a question closed only once its close
+    /// animation has ended, and SwiftUI finishes closing it in the update after that; one asked before then is shown
+    /// once it has.
+    private func askToDiscard() {
+        if isConfirmingSetupDiscard || setupDiscardQuestion.wasShowing {
+            setupDiscardQuestion.asksAgainOnceClosed = true
+        } else {
+            isConfirmingSetupDiscard = true
         }
     }
 
@@ -3720,6 +3816,85 @@ private func dismissKeyboard() {
         from: nil,
         for: nil
     )
+}
+
+private extension View {
+    /// Runs `action` when someone pulls down this sheet while `interactiveDismissDisabled` holds it, so the sheet can
+    /// ask what to do, as iOS's own forms do. SwiftUI only reports dismissals that happen.
+    func onSheetDismissAttempt(_ action: @escaping () -> Void) -> some View {
+        background(SheetDismissAttemptObserver(action: action))
+    }
+}
+
+/// UIKit tells a sheet's presentation controller delegate about a refused pull. SwiftUI owns that delegate, so the
+/// observer puts a proxy in front of it that reports the attempt and passes every other call on, which keeps SwiftUI's
+/// own handling, such as running the sheet's `onDismiss`.
+private struct SheetDismissAttemptObserver: UIViewControllerRepresentable {
+    let action: () -> Void
+
+    func makeUIViewController(context: Context) -> Observer {
+        Observer(action: action)
+    }
+
+    func updateUIViewController(_ observer: Observer, context: Context) {
+        observer.action = action
+    }
+
+    final class Observer: UIViewController {
+        var action: () -> Void
+        /// The presentation controller holds its delegate weakly.
+        private var proxy: DismissAttemptProxy?
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            // The sheet's presentation controller belongs to the outermost controller of its content.
+            var root: UIViewController = self
+            while let parent = root.parent {
+                root = parent
+            }
+            guard let presentation = root.presentationController,
+                  !(presentation.delegate is DismissAttemptProxy)
+            else { return }
+            let proxy = DismissAttemptProxy(forwardingTo: presentation.delegate) { [weak self] in
+                self?.action()
+            }
+            presentation.delegate = proxy
+            self.proxy = proxy
+        }
+    }
+
+    final class DismissAttemptProxy: NSObject, UIAdaptivePresentationControllerDelegate {
+        private weak var forwardee: (any UIAdaptivePresentationControllerDelegate)?
+        private let onAttempt: () -> Void
+
+        init(forwardingTo forwardee: (any UIAdaptivePresentationControllerDelegate)?, onAttempt: @escaping () -> Void) {
+            self.forwardee = forwardee
+            self.onAttempt = onAttempt
+        }
+
+        func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
+            onAttempt()
+            forwardee?.presentationControllerDidAttemptToDismiss?(presentationController)
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || forwardee?.responds(to: selector) == true
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            forwardee?.responds(to: selector) == true ? forwardee : super.forwardingTarget(for: selector)
+        }
+    }
 }
 
 private struct FailureView: View {
