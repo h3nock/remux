@@ -523,8 +523,15 @@ PREVIEW_FILE
 PREVIEW_HTML
   cat >"$script_path" <<'PREVIEW_JS'
 document.addEventListener('DOMContentLoaded', function () {
-  var reloadCount = Number(sessionStorage.getItem('remuxReloadCount') || '0') + 1;
-  sessionStorage.setItem('remuxReloadCount', String(reloadCount));
+  var reloadCount;
+  try {
+    reloadCount = Number(sessionStorage.getItem('remuxReloadCount') || '0') + 1;
+    sessionStorage.setItem('remuxReloadCount', String(reloadCount));
+  } catch (error) {
+    // A previewed HTML file runs sandboxed, with no storage.
+    var navigation = performance.getEntriesByType('navigation')[0];
+    reloadCount = navigation && navigation.type === 'reload' ? 2 : 1;
+  }
   var banner = document.createElement('p');
   banner.textContent = 'Reload count ' + reloadCount;
   banner.style.color = '#f8fafc';

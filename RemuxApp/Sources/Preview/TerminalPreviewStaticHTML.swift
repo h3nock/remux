@@ -86,19 +86,8 @@ struct TerminalPreviewStaticHTMLClient: Sendable {
         self.init { remotePath in
             let lease = try await provider.openClientLease()
             do {
-                let metadata = try await lease.client.metadata(atPath: remotePath)
-                if let size = metadata.size,
-                   size > TerminalPreviewFileLoader<RemuxSessionCitadelSFTPClientProvider>
-                    .defaultMaximumByteCount {
-                    throw TerminalPreviewFileError.tooLarge(
-                        maximumByteCount: TerminalPreviewFileLoader<
-                            RemuxSessionCitadelSFTPClientProvider
-                        >.defaultMaximumByteCount
-                    )
-                }
-                return try TerminalPreviewStaticHTMLResource(
+                return try await TerminalPreviewStaticHTMLResource.open(
                     remotePath: remotePath,
-                    entryMetadata: metadata,
                     readLease: TerminalPreviewStaticHTMLReadLease(lease: lease)
                 )
             } catch {
@@ -120,6 +109,11 @@ struct TerminalPreviewStaticHTMLClient: Sendable {
     }
 }
 
+/// A previewed page is shown the way a desktop browser shows a local file: it renders and runs its scripts, and it
+/// can use the scripts, styles and images in its folder, but it cannot read the bytes of other files, and nothing
+/// outside its folder is served. Scripts and styles it loads do reveal what they define (a stylesheet's values, a
+/// script's functions), as in a browser, and the page can still reach the internet. Having an origin of its own, it
+/// has no storage, workers or frames.
 final class TerminalPreviewStaticHTMLResource: @unchecked Sendable, Equatable {
     static let scheme = "remux-static-preview"
 
@@ -127,19 +121,47 @@ final class TerminalPreviewStaticHTMLResource: @unchecked Sendable, Equatable {
     private let resolver: TerminalPreviewStaticHTMLPathResolver
     private let transport: TerminalPreviewStaticHTMLTransport
 
-    init(
+    /// Opens the preview of the page at `remotePath`. The folder it may read is pinned as the server's real path of
+    /// the selected page's folder (a page that is a symlink doesn't move it), and the page itself is checked like
+    /// any file it loads; both lookups share one round trip.
+    static func open(
         remotePath: String,
-        entryMetadata: RemuxSFTPFileMetadata,
         readLease: TerminalPreviewStaticHTMLReadLease
-    ) throws {
-        let resolver = try TerminalPreviewStaticHTMLPathResolver(
-            entryRemotePath: remotePath
+    ) async throws -> TerminalPreviewStaticHTMLResource {
+        let resolver = try TerminalPreviewStaticHTMLPathResolver(entryRemotePath: remotePath)
+        async let folder = readLease.realPath(resolver.documentRoot)
+        async let entry = readLease.lookUp(resolver.entryPath)
+        guard let folderRealPath = TerminalPreviewRemotePath.normalized(try await folder) else {
+            throw TerminalPreviewStaticHTMLError.resourceOutsideDocumentRoot
+        }
+        let entryFile = try TerminalPreviewStaticHTMLServedFile(
+            lookup: try await entry,
+            folderRealPath: folderRealPath
         )
+        let maximumByteCount = TerminalPreviewFileLoader<RemuxSessionCitadelSFTPClientProvider>.defaultMaximumByteCount
+        if let size = entryFile.metadata.size, size > maximumByteCount {
+            throw TerminalPreviewFileError.tooLarge(maximumByteCount: maximumByteCount)
+        }
+        return TerminalPreviewStaticHTMLResource(
+            resolver: resolver,
+            folderRealPath: folderRealPath,
+            entry: entryFile,
+            readLease: readLease
+        )
+    }
+
+    private init(
+        resolver: TerminalPreviewStaticHTMLPathResolver,
+        folderRealPath: String,
+        entry: TerminalPreviewStaticHTMLServedFile,
+        readLease: TerminalPreviewStaticHTMLReadLease
+    ) {
         self.entryURL = resolver.entryURL
         self.resolver = resolver
         self.transport = TerminalPreviewStaticHTMLTransport(
             entryURL: resolver.entryURL,
-            entryMetadata: entryMetadata,
+            folderRealPath: folderRealPath,
+            entry: entry,
             readLease: readLease
         )
     }
@@ -174,6 +196,7 @@ enum TerminalPreviewStaticHTMLError: LocalizedError, Equatable, Sendable {
     case invalidEntryPath
     case invalidResourceURL
     case resourceOutsideDocumentRoot
+    case resourceNotAFile
 
     var errorDescription: String? {
         switch self {
@@ -183,55 +206,179 @@ enum TerminalPreviewStaticHTMLError: LocalizedError, Equatable, Sendable {
             return "The HTML preview requested an invalid resource."
         case .resourceOutsideDocumentRoot:
             return "The HTML preview cannot read outside its document folder."
+        case .resourceNotAFile:
+            return "The HTML preview can only open files."
         }
     }
 }
 
+/// Remote paths as the preview handles them: by their bytes, without asking anything of the phone's own files. A
+/// server's file names are bytes, so two spellings Swift counts as one string (a composed é and an e followed by a
+/// combining accent) can name different folders.
+enum TerminalPreviewRemotePath {
+    private static let slash = UInt8(ascii: "/")
+    private static let dot = UInt8(ascii: ".")
+
+    /// `path` with empty and `.` components dropped and each `..` applied, or nil unless it is absolute and free of
+    /// NUL, CR and LF. A `..` at the top stays at `/`.
+    static func normalized(_ path: String) -> String? {
+        let bytes = Array(path.utf8)
+        guard bytes.first == slash,
+              !bytes.contains(0),
+              !bytes.contains(UInt8(ascii: "\n")),
+              !bytes.contains(UInt8(ascii: "\r"))
+        else { return nil }
+        var components: [ArraySlice<UInt8>] = []
+        for component in bytes.split(separator: slash) {
+            if component.elementsEqual([dot]) { continue }
+            if component.elementsEqual([dot, dot]) {
+                _ = components.popLast()
+                continue
+            }
+            components.append(component)
+        }
+        guard !components.isEmpty else { return "/" }
+        var normalized: [UInt8] = []
+        for component in components {
+            normalized.append(slash)
+            normalized.append(contentsOf: component)
+        }
+        return String(decoding: normalized, as: UTF8.self)
+    }
+
+    /// Whether normalized `path` is normalized `folder` or inside it.
+    static func isInside(_ path: String, folder: String) -> Bool {
+        let path = Array(path.utf8)
+        let folder = Array(folder.utf8)
+        if folder == [slash] { return path.first == slash }
+        guard path.starts(with: folder) else { return false }
+        return path.count == folder.count || path[folder.count] == slash
+    }
+
+    /// The folder holding normalized `path`.
+    static func parent(of path: String) -> String {
+        let bytes = Array(path.utf8)
+        guard let lastSlash = bytes.lastIndex(of: slash), lastSlash > 0 else { return "/" }
+        return String(decoding: bytes[..<lastSlash], as: UTF8.self)
+    }
+}
+
+/// What the server reported for a requested path: where it really is, and what it is.
+struct TerminalPreviewStaticHTMLLookup: Sendable {
+    let realPath: String
+    let metadata: RemuxSFTPFileMetadata
+}
+
+/// A file the preview may serve: a regular file whose real path on the server is inside the preview's folder.
+/// It is read through that real path, and typed by that path's name.
+struct TerminalPreviewStaticHTMLServedFile: Sendable {
+    let path: String
+    let metadata: RemuxSFTPFileMetadata
+
+    init(lookup: TerminalPreviewStaticHTMLLookup, folderRealPath: String) throws {
+        guard let path = TerminalPreviewRemotePath.normalized(lookup.realPath),
+              TerminalPreviewRemotePath.isInside(path, folder: folderRealPath)
+        else { throw TerminalPreviewStaticHTMLError.resourceOutsideDocumentRoot }
+        // Only what the server says is a regular file: opening a named pipe would hold the session, and a server
+        // that sends no file type leaves nothing to go on.
+        guard let mode = lookup.metadata.permissions, mode & 0o170000 == 0o100000 else {
+            throw TerminalPreviewStaticHTMLError.resourceNotAFile
+        }
+        self.path = path
+        self.metadata = lookup.metadata
+    }
+}
+
+/// What each response tells WebKit: the file's type, and the rules that keep the page from reading the files beside
+/// it (see `TerminalPreviewStaticHTMLResource`).
+enum TerminalPreviewStaticHTMLResponse {
+    /// `sandbox` gives the page an origin of its own, so it can show and run what its folder holds but not read
+    /// it. The other directives close what WebKit leaves open under the sandbox alone, where a synchronous
+    /// XMLHttpRequest still read a neighbouring file: no connections, frames, workers or plugins from the folder.
+    /// The page may still load from and send to the internet.
+    static let contentSecurityPolicy = "default-src 'self' https: http: data: blob: 'unsafe-inline' 'unsafe-eval'; "
+        + "connect-src https: http: wss: ws:; frame-src 'none'; child-src 'none'; worker-src 'none'; "
+        + "object-src 'none'; sandbox allow-scripts allow-popups allow-forms allow-modals"
+
+    /// No Content-Length: the reader reads on past a size that changed after the lookup, which a declared length
+    /// would cut off.
+    static func make(url: URL, servedPath: String) -> HTTPURLResponse? {
+        let type = contentType(forPath: servedPath)
+        var headers = [
+            "Content-Type": type.mimeType,
+            "Content-Security-Policy": contentSecurityPolicy,
+            // Scripts and styles load only when typed as such, so a data file next to the page (a .env of
+            // NAME="value" lines) can't run as a script and give up its values.
+            "X-Content-Type-Options": "nosniff",
+        ]
+        if type.isScript {
+            // The sandboxed page loads module scripts across origins; only scripts, which run rather than read.
+            headers["Access-Control-Allow-Origin"] = "*"
+        }
+        return HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)
+    }
+
+    /// The type a file is served as, by its name: web types explicitly, then the system's, then a type nothing runs.
+    static func contentType(forPath path: String) -> (mimeType: String, isScript: Bool) {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "js", "mjs", "cjs":
+            return ("text/javascript", true)
+        case "html", "htm":
+            return ("text/html", false)
+        case "xhtml":
+            return ("application/xhtml+xml", false)
+        case "css":
+            return ("text/css", false)
+        case "json", "map":
+            return ("application/json", false)
+        case "svg":
+            return ("image/svg+xml", false)
+        case "wasm":
+            return ("application/wasm", false)
+        case let pathExtension:
+            let mimeType = UTType(filenameExtension: pathExtension)?.preferredMIMEType
+            return (mimeType ?? "application/octet-stream", false)
+        }
+    }
+}
+
+/// Maps preview URLs to remote paths by their text alone. This is the first filter; the server's real path of
+/// each file is what decides (see `TerminalPreviewStaticHTMLServedFile`).
 struct TerminalPreviewStaticHTMLPathResolver: Equatable, Sendable {
     let entryURL: URL
+    /// The selected page, normalized.
+    let entryPath: String
+    /// The selected page's folder, normalized.
+    let documentRoot: String
 
     private let host: String
-    private let documentRoot: String
 
     init(entryRemotePath: String, identifier: UUID = UUID()) throws {
-        guard entryRemotePath.hasPrefix("/"),
-              !entryRemotePath.contains("\0"),
-              !entryRemotePath.contains("\n"),
-              !entryRemotePath.contains("\r")
-        else { throw TerminalPreviewStaticHTMLError.invalidEntryPath }
-
-        let standardizedPath = (entryRemotePath as NSString).standardizingPath
-        guard standardizedPath.hasPrefix("/") else {
+        guard let entryPath = TerminalPreviewRemotePath.normalized(entryRemotePath), entryPath != "/" else {
             throw TerminalPreviewStaticHTMLError.invalidEntryPath
         }
-        let documentRoot = (standardizedPath as NSString).deletingLastPathComponent
         let host = identifier.uuidString.lowercased()
         var components = URLComponents()
         components.scheme = TerminalPreviewStaticHTMLResource.scheme
         components.host = host
-        components.path = standardizedPath
+        components.path = entryPath
         guard let entryURL = components.url else {
             throw TerminalPreviewStaticHTMLError.invalidEntryPath
         }
 
         self.entryURL = entryURL
+        self.entryPath = entryPath
+        self.documentRoot = TerminalPreviewRemotePath.parent(of: entryPath)
         self.host = host
-        self.documentRoot = documentRoot.isEmpty ? "/" : documentRoot
     }
 
     func remotePath(for url: URL) throws -> String {
         guard url.scheme == TerminalPreviewStaticHTMLResource.scheme,
               url.host == host,
-              !url.path.contains("\0"),
-              !url.path.contains("\n"),
-              !url.path.contains("\r")
+              let path = TerminalPreviewRemotePath.normalized(url.path)
         else { throw TerminalPreviewStaticHTMLError.invalidResourceURL }
 
-        let path = (url.path as NSString).standardizingPath
-        let isInsideRoot = documentRoot == "/"
-            ? path.hasPrefix("/")
-            : path == documentRoot || path.hasPrefix(documentRoot + "/")
-        guard isInsideRoot else {
+        guard TerminalPreviewRemotePath.isInside(path, folder: documentRoot) else {
             throw TerminalPreviewStaticHTMLError.resourceOutsideDocumentRoot
         }
         return path
@@ -242,37 +389,47 @@ struct TerminalPreviewStaticHTMLReadLease: Sendable {
     typealias MetadataHandler = TerminalPreviewRemoteFileReader.MetadataHandler
     typealias ChunkHandler = TerminalPreviewRemoteFileReader.ChunkHandler
 
+    private let realPathHandler: @Sendable (String) async throws -> String
+    private let metadataHandler: @Sendable (String) async throws -> RemuxSFTPFileMetadata
     private let streamHandler: @Sendable (
         String,
-        RemuxSFTPFileMetadata?,
+        RemuxSFTPFileMetadata,
         @escaping MetadataHandler,
         @escaping ChunkHandler
     ) async throws -> Void
     private let closeHandler: @Sendable () async throws -> Void
 
+    /// `stream` reads the file at a path already looked up, whose metadata it is given, calling `onMetadata`
+    /// before the first chunk.
     init(
+        realPath: @escaping @Sendable (String) async throws -> String,
+        metadata: @escaping @Sendable (String) async throws -> RemuxSFTPFileMetadata,
         stream: @escaping @Sendable (
             String,
-            RemuxSFTPFileMetadata?,
+            RemuxSFTPFileMetadata,
             @escaping MetadataHandler,
             @escaping ChunkHandler
         ) async throws -> Void,
         close: @escaping @Sendable () async throws -> Void
     ) {
+        self.realPathHandler = realPath
+        self.metadataHandler = metadata
         self.streamHandler = stream
         self.closeHandler = close
     }
 
     init(lease: RemuxSFTPClientLease<RemuxCitadelSFTPClient>) {
         self.init(
-            stream: { remotePath, knownMetadata, onMetadata, onChunk in
+            realPath: { try await lease.client.realPath(atPath: $0) },
+            metadata: { try await lease.client.metadata(atPath: $0) },
+            stream: { remotePath, metadata, onMetadata, onChunk in
                 _ = try await TerminalPreviewRemoteFileReader.stream(
                     client: lease.client,
                     remotePath: remotePath,
                     maximumByteCount: TerminalPreviewFileLoader<
                         RemuxSessionCitadelSFTPClientProvider
                     >.defaultMaximumByteCount,
-                    knownMetadata: knownMetadata,
+                    knownMetadata: metadata,
                     onMetadata: onMetadata,
                     onChunk: onChunk
                 )
@@ -281,13 +438,24 @@ struct TerminalPreviewStaticHTMLReadLease: Sendable {
         )
     }
 
+    func realPath(_ remotePath: String) async throws -> String {
+        try await realPathHandler(remotePath)
+    }
+
+    /// The server's real path and metadata for `remotePath`, asked together so they share a round trip. The
+    /// metadata follows symlinks, as the real path does.
+    func lookUp(_ remotePath: String) async throws -> TerminalPreviewStaticHTMLLookup {
+        async let realPath = realPathHandler(remotePath)
+        async let metadata = metadataHandler(remotePath)
+        return TerminalPreviewStaticHTMLLookup(realPath: try await realPath, metadata: try await metadata)
+    }
+
     func stream(
-        remotePath: String,
-        knownMetadata: RemuxSFTPFileMetadata?,
+        _ file: TerminalPreviewStaticHTMLServedFile,
         onMetadata: @escaping MetadataHandler,
         onChunk: @escaping ChunkHandler
     ) async throws {
-        try await streamHandler(remotePath, knownMetadata, onMetadata, onChunk)
+        try await streamHandler(file.path, file.metadata, onMetadata, onChunk)
     }
 
     func close() async throws {
@@ -364,18 +532,22 @@ private actor TerminalPreviewStaticHTMLTransport {
     }
 
     private let entryURL: URL
-    private var entryMetadata: RemuxSFTPFileMetadata?
+    private let folderRealPath: String
+    /// The page as checked when the preview opened, for its first request only; a reload looks it up again.
+    private var entry: TerminalPreviewStaticHTMLServedFile?
     private let readLease: TerminalPreviewStaticHTMLReadLease
     private var operations: [ObjectIdentifier: Operation] = [:]
     private var closed = false
 
     init(
         entryURL: URL,
-        entryMetadata: RemuxSFTPFileMetadata,
+        folderRealPath: String,
+        entry: TerminalPreviewStaticHTMLServedFile,
         readLease: TerminalPreviewStaticHTMLReadLease
     ) {
         self.entryURL = entryURL
-        self.entryMetadata = entryMetadata
+        self.folderRealPath = folderRealPath
+        self.entry = entry
         self.readLease = readLease
     }
 
@@ -391,12 +563,13 @@ private actor TerminalPreviewStaticHTMLTransport {
         }
         guard !sink.isStopped else { return }
         let readLease = readLease
-        let knownMetadata: RemuxSFTPFileMetadata?
+        let folderRealPath = folderRealPath
+        let checkedEntry: TerminalPreviewStaticHTMLServedFile?
         if url == entryURL {
-            knownMetadata = entryMetadata
-            entryMetadata = nil
+            checkedEntry = entry
+            entry = nil
         } else {
-            knownMetadata = nil
+            checkedEntry = nil
         }
         let token = UUID()
         let task = Task {
@@ -404,17 +577,24 @@ private actor TerminalPreviewStaticHTMLTransport {
                 guard let url else {
                     throw TerminalPreviewStaticHTMLError.invalidResourceURL
                 }
-                let remotePath = try resolver.remotePath(for: url)
+                let requestedPath = try resolver.remotePath(for: url)
+                let file: TerminalPreviewStaticHTMLServedFile
+                if let checkedEntry {
+                    file = checkedEntry
+                } else {
+                    file = try TerminalPreviewStaticHTMLServedFile(
+                        lookup: try await readLease.lookUp(requestedPath),
+                        folderRealPath: folderRealPath
+                    )
+                }
+                // Stopped or closed while the server answered: don't start reading.
+                try Task.checkCancellation()
+                guard !sink.isStopped else { return }
                 try await readLease.stream(
-                    remotePath: remotePath,
-                    knownMetadata: knownMetadata,
-                    onMetadata: { metadata in
+                    file,
+                    onMetadata: { _ in
                         try Task.checkCancellation()
-                        await sink.receiveResponse(
-                            for: url,
-                            remotePath: remotePath,
-                            metadata: metadata
-                        )
+                        try await sink.receiveResponse(for: url, servedPath: file.path)
                     },
                     onChunk: { data in
                         try Task.checkCancellation()
@@ -488,19 +668,11 @@ private final class TerminalPreviewStaticHTMLSchemeTaskSink: @unchecked Sendable
     }
 
     @MainActor
-    func receiveResponse(
-        for url: URL,
-        remotePath: String,
-        metadata: RemuxSFTPFileMetadata
-    ) {
+    func receiveResponse(for url: URL, servedPath: String) throws {
         guard isActive else { return }
-        let type = UTType(filenameExtension: (remotePath as NSString).pathExtension)
-        let response = URLResponse(
-            url: url,
-            mimeType: type?.preferredMIMEType ?? "application/octet-stream",
-            expectedContentLength: metadata.size.map { Int(clamping: $0) } ?? -1,
-            textEncodingName: nil
-        )
+        guard let response = TerminalPreviewStaticHTMLResponse.make(url: url, servedPath: servedPath) else {
+            throw TerminalPreviewStaticHTMLError.invalidResourceURL
+        }
         task.didReceive(response)
     }
 
