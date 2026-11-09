@@ -417,7 +417,7 @@ private struct RemuxWorkspaceShell: View {
     }
 
     /// The X, and a pull the sheet held: closes the setup, asking first when something has been entered. The keyboard
-    /// goes away with the question, or else with the sheet.
+    /// goes with the sheet.
     private func closeConnectionSetup(_ setup: RemuxRootModel.ConnectionSetupState) {
         guard !setup.hasChanges else {
             askToDiscard()
@@ -429,12 +429,7 @@ private struct RemuxWorkspaceShell: View {
     /// Shows the discard question at once, as iOS's own apps do. iOS reports a question closed only once its close
     /// animation has ended, and SwiftUI finishes closing it in the update after that; one asked before then is shown
     /// once it has.
-    ///
-    /// The keyboard goes away first, as in those apps, so a tap anywhere outside the question keeps editing rather
-    /// than typing. Putting it away once the question is being presented instead makes iOS take a typed password as
-    /// entered and offer to save it when the sheet closes.
     private func askToDiscard() {
-        dismissKeyboard()
         if isConfirmingSetupDiscard || setupDiscardQuestion.wasShowing {
             setupDiscardQuestion.asksAgainOnceClosed = true
         } else {
