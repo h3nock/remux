@@ -34,6 +34,9 @@ struct RemuxApp: App {
             fatalError(failure)
         }
         #endif
+        #if DEBUG || REMUX_LIVE_UI_TESTING
+        DebugTouchVisualizer.installIfRequested()
+        #endif
     }
 
     var body: some Scene {
