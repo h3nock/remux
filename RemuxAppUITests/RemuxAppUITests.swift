@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ObjectiveC
 import UIKit
 import XCTest
 
@@ -126,6 +127,213 @@ final class RemuxAppUITests: XCTestCase {
         _ = waitForTerminalHomeButton()
     }
 
+    /// The server form closes when pulled down, as an iOS sheet does, and the setup ends with it, so Add Server
+    /// opens it again. Once something has been typed, the pull asks first, and keeping on editing keeps the typing.
+    func testServerFormClosesOnPullAndAsksBeforeDiscardingTyping() {
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+
+        openConnectionSetup()
+        pullFormDown()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Pulling down the empty form didn't close it.")
+
+        openConnectionSetup()
+        name.tap()
+        name.typeText("Draft server")
+        pullFormDown()
+        // iOS shows the question as a menu at the X; tapping elsewhere keeps editing.
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Pulling down the typed-in form didn't ask first.")
+        XCTAssertTrue(app.staticTexts["Discard Changes?"].exists, "The dialog's title is missing.")
+        XCTAssertTrue(app.staticTexts["The new server won't be saved."].exists, "The dialog's message is missing.")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        XCTAssertTrue(discard.waitForNonExistence(timeout: 5), "Tapping elsewhere didn't keep editing.")
+        XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
+
+        pullFormDown()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The second pull didn't ask either.")
+        discard.tap()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Discard didn't close the form.")
+        XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
+    }
+
+    /// An untouched Edit Server form holds the saved password; a pull closes it without asking, and without iOS
+    /// offering to save that password.
+    func testUntouchedEditServerFormClosesOnPullWithoutPasswordSaveOffer() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        openFirstServerDetail()
+        let edit = app.buttons["library.server.edit"]
+        let name = app.textFields["connection.name"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+
+        pullFormDown()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Pulling down the untouched form didn't close it.")
+        XCTAssertFalse(app.buttons["connection.discard"].firstMatch.exists, "The untouched form asked to discard.")
+        assertNoPasswordSaveOffer(after: "pulling Edit Server down")
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5), "Edit Server didn't open again after the pull.")
+    }
+
+    /// Tapping the X again right after keeping on editing asks again, once iOS has closed the first question, rather
+    /// than being lost while that question is still closing. A person taps sooner than XCUITest's own waits allow, so
+    /// the two taps run without them.
+    func testXRightAfterKeepingEditingAsksAgain() throws {
+        // From iOS 26 the question grows from the X, which stays tappable while it closes. Before, it's an action
+        // sheet whose dimmed backdrop covers the X until it has closed, so a tap that soon never reaches the app.
+        guard ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+        ) else {
+            throw XCTSkip("Before iOS 26 the closing action sheet covers the X, so the quick tap never reaches the app.")
+        }
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+        openConnectionSetup()
+        name.tap()
+        name.typeText("Draft server")
+        let x = app.buttons["connection.cancel"]
+        x.tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The X didn't ask.")
+
+        let outside = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        let xAgain = x.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        try withoutWaitingForTheAppToSettle {
+            outside.tap()
+            xAgain.tap()
+        }
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "The X tapped right after keeping on editing was lost.")
+        XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
+    }
+
+    /// A session form holds only a name, so a pull or the X closes it without asking, even once typed in; the
+    /// server forms ask first.
+    func testSessionFormClosesWithoutAskingEvenTypedIn() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        openFirstServerDetail()
+        let newSession = app.buttons["library.server.new-session.toolbar"]
+        let name = app.textFields["connection.session"]
+        let discard = app.buttons["connection.discard"].firstMatch
+
+        XCTAssertTrue(newSession.waitForExistence(timeout: 5))
+        newSession.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("draft")
+        pullSheetDown(titled: "New Session")
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Pulling down the typed-in session form didn't close it.")
+        XCTAssertFalse(discard.exists, "The session form asked before discarding.")
+
+        XCTAssertTrue(newSession.waitForExistence(timeout: 5))
+        newSession.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("draft")
+        app.buttons["connection.cancel"].tap()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "The X didn't close the typed-in session form.")
+        XCTAssertFalse(discard.exists, "The session form asked before discarding.")
+    }
+
+    /// Edit Session closes the same way: a pull or the X, without asking, with its name changed.
+    func testEditSessionFormClosesWithoutAskingWhenChanged() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        let session = app.descendants(matching: .any)
+            .matching(identifier: "library.session.resume")
+            .firstMatch
+        let name = app.textFields["connection.session"]
+        let discard = app.buttons["connection.discard"].firstMatch
+
+        for closesWithX in [false, true] {
+            XCTAssertTrue(session.waitForExistence(timeout: 5))
+            session.swipeLeft()
+            let edit = app.buttons["Edit"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 2), "The session row offered no Edit.")
+            edit.tap()
+            XCTAssertTrue(name.waitForExistence(timeout: 5))
+            name.tap()
+            name.typeText("-renamed")
+            if closesWithX {
+                app.buttons["connection.cancel"].tap()
+            } else {
+                pullSheetDown(titled: "Edit Session")
+            }
+            XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Edit Session didn't close.")
+            XCTAssertFalse(discard.exists, "Edit Session asked before discarding.")
+        }
+    }
+
+    /// Pulls a sheet down from its navigation bar, wherever its height puts the bar.
+    private func pullSheetDown(titled title: String) {
+        let bar = app.navigationBars[title]
+        XCTAssertTrue(bar.waitForExistence(timeout: 2), "No \(title) sheet to pull down.")
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(
+            forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)),
+            withVelocity: XCUIGestureVelocity(900),
+            thenHoldForDuration: 0
+        )
+    }
+
+    /// Runs `taps` with XCUITest's wait for the app to settle before each event switched off, so they land as soon
+    /// after each other as a person's would, then switches it back on. The wait is an XCTest internal; without it the
+    /// test can't tap quickly enough, so it skips.
+    private func withoutWaitingForTheAppToSettle(_ taps: () -> Void) throws {
+        guard let process = NSClassFromString("XCUIApplicationProcess"),
+              let wait = class_getInstanceMethod(
+                  process,
+                  NSSelectorFromString("waitForQuiescenceIncludingAnimationsIdle:isPreEvent:")
+              )
+        else {
+            throw XCTSkip("This Xcode's XCUITest has no settle wait to switch off.")
+        }
+        let returnAtOnce: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+        let original = method_setImplementation(wait, imp_implementationWithBlock(returnAtOnce))
+        defer { method_setImplementation(wait, original) }
+        taps()
+    }
+
+    /// Pulls the open sheet down from its top, quickly, as a thumb flicks it away.
+    private func pullFormDown() {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(
+            forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)),
+            withVelocity: XCUIGestureVelocity(900),
+            thenHoldForDuration: 0
+        )
+    }
+
     /// iOS offers to save a typed password when the form holding it closes.
     /// Remux keeps server passwords in its own Keychain, so the server form
     /// closes without that offer.
@@ -134,6 +342,9 @@ final class RemuxAppUITests: XCTestCase {
         openConnectionSetup()
         fillConnectionForm()
         app.buttons["connection.cancel"].tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Closing a filled form didn't ask before discarding it.")
+        discard.tap()
         XCTAssertTrue(app.buttons["library.empty.add-server"].waitForExistence(timeout: 5))
         assertNoPasswordSaveOffer(after: "Cancel")
 
@@ -2804,6 +3015,9 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(serverName.value as? String, "Draft server", "The typing in the server form was lost.")
         captureLiveHerdrStep("n8-form-kept", in: configuration)
         app.buttons["connection.cancel"].tap()
+        let discard = app.buttons["connection.discard"].firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Closing the typed-in form didn't ask before discarding it.")
+        discard.tap()
         XCTAssertTrue(serverName.waitForNonExistence(timeout: 5))
     }
 

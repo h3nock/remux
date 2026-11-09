@@ -22,6 +22,70 @@ struct HerdrLiveConfiguration: Decodable {
         }
         return try JSONDecoder().decode(Self.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
     }
+
+    /// The live host as a saved server whose host key is trusted in a store under `trustedHostRoot`, and how to
+    /// sign in to it.
+    func signIn(
+        trustedHostRoot: URL,
+        serverID: UUID = UUID()
+    ) throws -> (server: SavedServer, configuration: RemuxSSHRootConfiguration) {
+        let keyParts = hostKey.split(separator: " ")
+        guard keyParts.count >= 2 else {
+            throw HerdrLiveError(description: "hostKey must be an OpenSSH public key line")
+        }
+        let trustedHostStore = TrustedHostStore(rootURL: trustedHostRoot)
+        let savedServer = SavedServer(
+            id: serverID,
+            displayName: "herdr-live",
+            host: host,
+            port: port,
+            username: username,
+            identityID: serverID
+        )
+        try trustedHostStore.trustHostKey(
+            SSHHostKeyTrustChallenge(
+                kind: .unknown,
+                serverID: serverID,
+                host: host,
+                trustedKeyType: nil,
+                trustedOpenSSHPublicKey: nil,
+                receivedKeyType: String(keyParts[0]),
+                receivedOpenSSHPublicKey: "\(keyParts[0]) \(keyParts[1])"
+            )
+        )
+        let username = username
+        let credential = SSHPrivateKeyCredential(privateKeyPEM: privateKeyPEM)
+        return (
+            savedServer,
+            RemuxSSHRootConfiguration(
+                host: host,
+                port: port,
+                authenticationMethod: {
+                    try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential))
+                },
+                hostKeyValidator: trustedHostStore.validator(for: savedServer),
+                connectTimeout: .seconds(10)
+            )
+        )
+    }
+
+    /// A new dedicated SSH connection to the live host.
+    func claimDedicatedRoot(
+        trustedHostRoot: URL,
+        serverID: UUID = UUID(),
+        trace: RemuxTransportStartupTrace
+    ) async throws -> RemuxSSHClaimedRoot {
+        let prepared = RemuxSSHPreparedRoot.dedicated(
+            configuration: try signIn(trustedHostRoot: trustedHostRoot, serverID: serverID).configuration,
+            trace: trace
+        )
+        do {
+            return try await prepared.claim(try await prepared.sshRoot(), trace: trace)
+        } catch {
+            await prepared.cancelAndCleanup()
+            throw error
+        }
+    }
 }
 
 struct HerdrLiveError: Error, CustomStringConvertible {
@@ -136,50 +200,7 @@ final class HerdrLiveFixture: @unchecked Sendable {
 
     /// A new dedicated SSH connection to the live host.
     func claimRoot(trace: RemuxTransportStartupTrace) async throws -> RemuxSSHClaimedRoot {
-        let keyParts = configuration.hostKey.split(separator: " ")
-        guard keyParts.count >= 2 else {
-            throw HerdrLiveError(description: "hostKey must be an OpenSSH public key line")
-        }
-        let trustedHostStore = TrustedHostStore(rootURL: trustedHostRoot)
-        let savedServer = SavedServer(
-            id: serverID,
-            displayName: "herdr-live",
-            host: configuration.host,
-            port: configuration.port,
-            username: configuration.username,
-            identityID: serverID
-        )
-        try trustedHostStore.trustHostKey(
-            SSHHostKeyTrustChallenge(
-                kind: .unknown,
-                serverID: serverID,
-                host: configuration.host,
-                trustedKeyType: nil,
-                trustedOpenSSHPublicKey: nil,
-                receivedKeyType: String(keyParts[0]),
-                receivedOpenSSHPublicKey: "\(keyParts[0]) \(keyParts[1])"
-            )
-        )
-        let username = configuration.username
-        let credential = SSHPrivateKeyCredential(privateKeyPEM: configuration.privateKeyPEM)
-        let prepared = RemuxSSHPreparedRoot.dedicated(
-            configuration: RemuxSSHRootConfiguration(
-                host: configuration.host,
-                port: configuration.port,
-                authenticationMethod: {
-                    try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential))
-                },
-                hostKeyValidator: trustedHostStore.validator(for: savedServer),
-                connectTimeout: .seconds(10)
-            ),
-            trace: trace
-        )
-        do {
-            return try await prepared.claim(try await prepared.sshRoot(), trace: trace)
-        } catch {
-            await prepared.cancelAndCleanup()
-            throw error
-        }
+        try await configuration.claimDedicatedRoot(trustedHostRoot: trustedHostRoot, serverID: serverID, trace: trace)
     }
 
     private func runScript(_ script: String, arguments: [String]) async throws -> RemuxSSHExecResult {
