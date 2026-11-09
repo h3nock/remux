@@ -300,19 +300,22 @@ struct RemuxCitadelSFTPClientProvider: RemuxSFTPClientProvider {
         do {
             let sftpOpenStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
             GhosttyRuntimeTrace.latency("sftp.open begin host=\(rootConfiguration.host):\(rootConfiguration.port)")
-            let sftp = try await RemuxSFTPTimeout.run(
-                timeout: operationTimeout,
-                operation: {
-                    try await SFTPClient.open(overAuthenticatedSSHChannel: claimedRoot.sshRoot.rootChannel)
-                },
-                cleanupLateSuccess: { sftp in
-                    do {
-                        try await sftp.close()
-                    } catch {
-                        NSLog("Remux Citadel SFTP late open close failed: %@", String(describing: error))
+            // The SFTP subsystem takes one of the server's sessions, so a refused or unanswered start moves the
+            // claim to another of the server's connections, as an exec session's does.
+            let sftp = try await claimedRoot.openSession(trace: RemuxTransportStartupTrace(flowID: nil)) { root in
+                try await root.withOpenDeadline(
+                    {
+                        try await SFTPClient.open(overAuthenticatedSSHChannel: root.rootChannel)
+                    },
+                    cleanupLateSuccess: { sftp in
+                        do {
+                            try await sftp.close()
+                        } catch {
+                            NSLog("Remux Citadel SFTP late open close failed: %@", String(describing: error))
+                        }
                     }
-                }
-            )
+                )
+            }
             if let sftpOpenStartedAt {
                 GhosttyRuntimeTrace.latency(
                     "sftp.open end host=\(rootConfiguration.host):\(rootConfiguration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"

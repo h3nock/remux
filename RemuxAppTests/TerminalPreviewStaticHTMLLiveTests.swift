@@ -140,7 +140,7 @@ private struct LiveHost: Sendable {
         )
         return try await RemuxCitadelSFTPClientProvider(
             sshRootService: pool,
-            rootKey: RemuxSSHRootKey(target: target),
+            rootKey: RemuxSSHRootKey(target: target, purpose: .transfer),
             rootConfiguration: rootConfiguration,
             operationTimeout: .seconds(15)
         ).openClientLease()

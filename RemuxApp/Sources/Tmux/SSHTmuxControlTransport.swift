@@ -164,6 +164,8 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
     case closed
     case stalePreparedConnection
     case controlSessionNoResponse(TimeAmount)
+    /// A channel open on the connection got no answer, so the connection was closed as dead.
+    case connectionUnresponsive
 
     var description: String {
         switch self {
@@ -187,6 +189,8 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
             return "stalePreparedConnection"
         case .controlSessionNoResponse(let timeout):
             return "tmux control session produced no output within \(timeout)"
+        case .connectionUnresponsive:
+            return "connectionUnresponsive"
         }
     }
 
@@ -206,6 +210,8 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
             return "The prepared SSH root reservation is no longer valid."
         case .controlSessionNoResponse(let timeout):
             return "The remote tmux control session produced no output within \(timeout)."
+        case .connectionUnresponsive:
+            return "The server stopped answering."
         }
     }
 
@@ -420,6 +426,8 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             return SSHTmuxControlTransportError.closed
         case .stalePreparedRoot:
             return SSHTmuxControlTransportError.stalePreparedConnection
+        case .channelOpenTimedOut:
+            return SSHTmuxControlTransportError.connectionUnresponsive
         }
     }
 

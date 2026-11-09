@@ -249,122 +249,7 @@ struct RemuxShortLivedSFTPClientProvider<Client: Sendable>: RemuxSFTPClientProvi
     }
 }
 
-final class RemuxSFTPTimeoutGate<Value: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Value, Error>?
-    private var pendingResult: Result<Value, Error>?
-    private var tasks: [Task<Void, Never>] = []
-    private var isFinished = false
-
-    func install(_ continuation: CheckedContinuation<Value, Error>) {
-        let pendingResult: Result<Value, Error>?
-        lock.lock()
-        if isFinished {
-            pendingResult = self.pendingResult
-        } else {
-            self.continuation = continuation
-            pendingResult = nil
-        }
-        lock.unlock()
-
-        if let pendingResult {
-            continuation.resume(with: pendingResult)
-        }
-    }
-
-    func setTasks(_ tasks: [Task<Void, Never>]) {
-        let tasksToCancel: [Task<Void, Never>]
-        lock.lock()
-        if isFinished {
-            tasksToCancel = tasks
-        } else {
-            self.tasks = tasks
-            tasksToCancel = []
-        }
-        lock.unlock()
-
-        for task in tasksToCancel {
-            task.cancel()
-        }
-    }
-
-    @discardableResult
-    func succeed(_ value: Value) -> Bool {
-        finish(.success(value))
-    }
-
-    @discardableResult
-    func fail(_ error: Error) -> Bool {
-        finish(.failure(error))
-    }
-
-    func cancel() {
-        _ = fail(CancellationError())
-    }
-
-    func beginTimeout() -> Bool {
-        let tasksToCancel: [Task<Void, Never>]
-
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return false
-        }
-
-        isFinished = true
-        tasksToCancel = tasks
-        tasks.removeAll()
-        lock.unlock()
-
-        for task in tasksToCancel {
-            task.cancel()
-        }
-        return true
-    }
-
-    func finishTimeout() {
-        let result = Result<Value, Error>.failure(
-            RemuxSFTPClientError.operationTimedOut
-        )
-        let continuation: CheckedContinuation<Value, Error>?
-
-        lock.lock()
-        pendingResult = result
-        continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
-
-        continuation?.resume(with: result)
-    }
-
-    @discardableResult
-    private func finish(_ result: Result<Value, Error>) -> Bool {
-        let continuation: CheckedContinuation<Value, Error>?
-        let tasksToCancel: [Task<Void, Never>]
-
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return false
-        }
-
-        isFinished = true
-        pendingResult = result
-        continuation = self.continuation
-        self.continuation = nil
-        tasksToCancel = tasks
-        tasks.removeAll()
-        lock.unlock()
-
-        for task in tasksToCancel {
-            task.cancel()
-        }
-
-        continuation?.resume(with: result)
-        return true
-    }
-}
-
+/// SFTP operations against a deadline, failing with `RemuxSFTPClientError.operationTimedOut`.
 enum RemuxSFTPTimeout {
     static func run<Value: Sendable>(
         timeout: TimeAmount,
@@ -372,39 +257,12 @@ enum RemuxSFTPTimeout {
         onTimeout: @escaping @Sendable () async -> Void = {},
         cleanupLateSuccess: @escaping @Sendable (Value) async -> Void = { _ in }
     ) async throws -> Value {
-        let gate = RemuxSFTPTimeoutGate<Value>()
-        let timeoutNanos = UInt64(clamping: timeout.nanoseconds)
-
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                gate.install(continuation)
-                let operationTask = Task {
-                    do {
-                        let value = try await operation()
-                        if !gate.succeed(value) {
-                            await cleanupLateSuccess(value)
-                        }
-                    } catch {
-                        _ = gate.fail(error)
-                    }
-                }
-                let timeoutTask = Task {
-                    do {
-                        try await Task.sleep(nanoseconds: timeoutNanos)
-                        if gate.beginTimeout() {
-                            await onTimeout()
-                            gate.finishTimeout()
-                        }
-                    } catch is CancellationError {
-                        return
-                    } catch {
-                        _ = gate.fail(error)
-                    }
-                }
-                gate.setTasks([operationTask, timeoutTask])
-            }
-        } onCancel: {
-            gate.cancel()
-        }
+        try await RemuxOperationTimeout.run(
+            timeout: timeout,
+            timeoutError: RemuxSFTPClientError.operationTimedOut,
+            operation: operation,
+            onTimeout: onTimeout,
+            cleanupLateSuccess: cleanupLateSuccess
+        )
     }
 }

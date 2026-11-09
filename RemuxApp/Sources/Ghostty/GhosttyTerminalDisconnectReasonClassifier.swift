@@ -63,7 +63,7 @@ enum GhosttyTerminalDisconnectReasonClassifier {
                 return TerminalDisconnectReason(kind: .profile, message: message)
             case .closed:
                 return TerminalDisconnectReason(kind: .transportIO, message: message)
-            case .stalePreparedConnection:
+            case .stalePreparedConnection, .connectionUnresponsive:
                 return TerminalDisconnectReason(kind: .transportIO, message: message)
             case .alreadyStarted, .unsupportedInboundChannel, .controlSessionNoResponse:
                 return TerminalDisconnectReason(kind: .profile, message: message)
