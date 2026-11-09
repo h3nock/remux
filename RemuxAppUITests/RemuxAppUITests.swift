@@ -218,6 +218,94 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(name.value as? String, "Draft server", "Keeping on editing lost the typing.")
     }
 
+    /// A session form holds only a name, so a pull or the X closes it without asking, even once typed in; the
+    /// server forms ask first.
+    func testSessionFormClosesWithoutAskingEvenTypedIn() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        openFirstServerDetail()
+        let newSession = app.buttons["library.server.new-session.toolbar"]
+        let name = app.textFields["connection.session"]
+        let discard = app.buttons["connection.discard"].firstMatch
+
+        XCTAssertTrue(newSession.waitForExistence(timeout: 5))
+        newSession.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("draft")
+        pullSheetDown(titled: "New Session")
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Pulling down the typed-in session form didn't close it.")
+        XCTAssertFalse(discard.exists, "The session form asked before discarding.")
+
+        XCTAssertTrue(newSession.waitForExistence(timeout: 5))
+        newSession.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("draft")
+        app.buttons["connection.cancel"].tap()
+        XCTAssertTrue(name.waitForNonExistence(timeout: 5), "The X didn't close the typed-in session form.")
+        XCTAssertFalse(discard.exists, "The session form asked before discarding.")
+    }
+
+    /// Edit Session closes the same way: a pull or the X, without asking, with its name changed.
+    func testEditSessionFormClosesWithoutAskingWhenChanged() {
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        let session = app.descendants(matching: .any)
+            .matching(identifier: "library.session.resume")
+            .firstMatch
+        let name = app.textFields["connection.session"]
+        let discard = app.buttons["connection.discard"].firstMatch
+
+        for closesWithX in [false, true] {
+            XCTAssertTrue(session.waitForExistence(timeout: 5))
+            session.swipeLeft()
+            let edit = app.buttons["Edit"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 2), "The session row offered no Edit.")
+            edit.tap()
+            XCTAssertTrue(name.waitForExistence(timeout: 5))
+            name.tap()
+            name.typeText("-renamed")
+            if closesWithX {
+                app.buttons["connection.cancel"].tap()
+            } else {
+                pullSheetDown(titled: "Edit Session")
+            }
+            XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Edit Session didn't close.")
+            XCTAssertFalse(discard.exists, "Edit Session asked before discarding.")
+        }
+    }
+
+    /// Pulls a sheet down from its navigation bar, wherever its height puts the bar.
+    private func pullSheetDown(titled title: String) {
+        let bar = app.navigationBars[title]
+        XCTAssertTrue(bar.waitForExistence(timeout: 2), "No \(title) sheet to pull down.")
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(
+            forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)),
+            withVelocity: XCUIGestureVelocity(900),
+            thenHoldForDuration: 0
+        )
+    }
+
     /// Runs `taps` with XCUITest's wait for the app to settle before each event switched off, so they land as soon
     /// after each other as a person's would, then switches it back on. The wait is an XCTest internal; without it the
     /// test can't tap quickly enough, so it skips.
