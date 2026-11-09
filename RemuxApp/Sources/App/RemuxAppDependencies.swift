@@ -49,6 +49,10 @@ struct RemuxAppDependencies: Sendable {
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) async -> Void
+    private let sshConnectionChecker: @Sendable (
+        _ reason: String,
+        _ sshRootService: RemuxSSHRootService
+    ) async -> Void
     private let attachmentTransferServiceFactory: @Sendable (
         _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
@@ -104,6 +108,10 @@ struct RemuxAppDependencies: Sendable {
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) async -> Void = RemuxAppDependencies.liveSSHConnectionPrewarmer,
+        sshConnectionChecker: @escaping @Sendable (
+            _ reason: String,
+            _ sshRootService: RemuxSSHRootService
+        ) async -> Void = { reason, sshRootService in await sshRootService.checkConnections(reason: reason) },
         attachmentTransferServiceFactory: @escaping @Sendable (
             _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
@@ -150,6 +158,7 @@ struct RemuxAppDependencies: Sendable {
         self.sshRootService = sshRootService
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
+        self.sshConnectionChecker = sshConnectionChecker
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
         self.terminalPreviewClientFactory = terminalPreviewClientFactory
         self.tmuxSessionDiscoverer = tmuxSessionDiscoverer
@@ -235,6 +244,11 @@ struct RemuxAppDependencies: Sendable {
 
     func prewarmSSHConnection(for target: SessionTarget) async {
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
+    }
+
+    /// Checks that every open server connection still answers, closing the dead ones so their sessions reconnect.
+    func checkSSHConnections(reason: String) async {
+        await sshConnectionChecker(reason, sshRootService)
     }
 
     func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
@@ -341,7 +355,7 @@ struct RemuxAppDependencies: Sendable {
             sessionName: target.workspace.sessionName,
             sessionOpening: target.opening,
             traceFlowID: traceFlowID,
-            sshRootKey: RemuxSSHRootKey(target: target)
+            sshRootKey: RemuxSSHRootKey(target: target, purpose: .interactive)
         )
     }
 
@@ -372,21 +386,21 @@ struct RemuxAppDependencies: Sendable {
         )
         let provider = RemuxCitadelSFTPClientProvider(
             sshRootService: sshRootService,
-            rootKey: RemuxSSHRootKey(target: target),
+            rootKey: RemuxSSHRootKey(target: target, purpose: .transfer),
             rootConfiguration: rootConfiguration,
             operationTimeout: RemuxConnectionTimeouts.sftpOperation
         )
         return GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
     }
 
-    /// Each preview claims the server's pooled SSH connection, as one of its consumers, as attachments do:
-    /// a file while it downloads, a page while it is open.
+    /// Each preview claims a place on the server's transfer connection, as attachments do: a file while it
+    /// downloads, a page while it is open. Terminal traffic stays on the interactive connection.
     private static func liveTerminalPreviewClient(
         target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) -> TerminalPreviewClient? {
-        let rootKey = RemuxSSHRootKey(target: target)
+        let rootKey = RemuxSSHRootKey(target: target, purpose: .transfer)
         let rootConfiguration = transferSSHRootConfiguration(
             for: target,
             trustedHostStore: trustedHostStore,
@@ -476,7 +490,7 @@ struct RemuxAppDependencies: Sendable {
     ) async throws -> any HerdrBridgeTransport {
         let trace = RemuxTransportStartupTrace(flowID: "session.open.\(target.workspace.id.uuidString)")
         let preparedRoot = await sshRootService.preparedRoot(
-            for: RemuxSSHRootKey(target: target),
+            for: RemuxSSHRootKey(target: target, purpose: .interactive),
             configuration: sshRootConfiguration(
                 for: target,
                 trustedHostStore: trustedHostStore,
