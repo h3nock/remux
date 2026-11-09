@@ -964,7 +964,7 @@ private struct ActiveTerminalSessionView: View {
         self.onShowLibrary = onShowLibrary
         _previewSession = StateObject(
             wrappedValue: TerminalPreviewSession(
-                client: entry.runtime.terminalPreviewClient,
+                client: entry.terminalPreviewClientFactory(),
                 serverDisplayName: entry.runtime.target.server.displayName
             )
         )
@@ -1010,13 +1010,14 @@ private struct ActiveTerminalSessionView: View {
         )
     }
 
-    /// Only a tmux session has previews, which resolve paths through its panes.
+    /// A preview resolves a relative path in the directory of the pane it was printed in.
     private var previewSelectionHandler: ((UUID, TerminalPreviewCandidate) -> Void)? {
-        guard case .tmux(let model) = entry.runtime, previewSession.canOpenPreview else { return nil }
+        guard previewSession.canOpenPreview else { return nil }
+        let runtime = entry.runtime
         return { [previewSession] surfaceID, candidate in
             previewSession.open(
                 candidate,
-                resolvingPathWith: model.terminalPreviewPathResolver(
+                resolvingPathWith: runtime.terminalPreviewPathResolver(
                     for: candidate,
                     from: surfaceID
                 )

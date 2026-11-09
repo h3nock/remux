@@ -1644,20 +1644,46 @@ final class HerdrScreenModel {
         }
     }
 
-    /// A plain-text link's visible regions and completeness at `cell`, a history cell of `paneID`, which
-    /// Herdr finds across the pane's wrapped rows; nil when absent. It is asked about the frame on screen,
-    /// and its regions, rows of that frame's viewport, come back as history rows. The answer holds only
-    /// while the terminal still shows that frame: as Herdr's client does, one found in content or a viewport
-    /// that has changed since is dropped. As for Herdr's client the question is optional, so a failure says
-    /// nothing.
-    func resolveLink(at cell: GhosttyTerminalCell, inPane paneID: String) async -> HerdrResolvedLink? {
+    /// What Herdr says of `selection` in `paneID`, made around `cell`, a history cell of the pane, when it
+    /// reaches a row edge. First the plain-text link at `cell`, which Herdr finds across the pane's wrapped
+    /// rows: its regions, rows of the frame's viewport, come back as history rows. Herdr finds only web
+    /// links, so for other text, as a path, Herdr reads the cells across each edge the selection reaches,
+    /// which say whether its line goes on there (`HerdrRowEdgeRead`). Everything is asked about the frame on
+    /// screen, and holds only while the terminal still shows it: as Herdr's client does, an answer about
+    /// content or a viewport that has changed since is dropped. As for Herdr's client the question is
+    /// optional, so a failure says nothing.
+    func completion(
+        of selection: GhosttyHistorySelection, at cell: GhosttyTerminalCell, inPane paneID: String
+    ) async -> HerdrSelectionCompletion? {
         guard let attempt = shownAttempt,
               let content = await engine.content(ofPane: paneID),
               let request = HerdrLinkResolve(paneID: paneID, cell: cell, content: content),
               let reply = try? await command(Self.paneLinkResolveMethod, params: request, on: attempt).get(),
               await engine.content(ofPane: paneID) == content
         else { return nil }
-        return try? request.link(fromReply: reply.json)
+        if let link = try? request.link(fromReply: reply.json) { return .link(link) }
+        for edge in HerdrRowEdgeRead.reads(for: selection, in: content) {
+            let read = HerdrSelectionRead(paneID: paneID, selection: edge.cells, contentRevision: content.revision)
+            guard let reply = try? await command(Self.paneSelectionReadMethod, params: read, on: attempt).get(),
+                  await engine.content(ofPane: paneID) == content,
+                  let text = try? HerdrSelectionRead.text(fromReply: reply.json)
+            else { return nil }
+            if edge.lineGoesOn(text) { return .text(isWhole: false) }
+        }
+        return .text(isWhole: true)
+    }
+
+    /// The current directory of the pane `surfaceID` shows, from the newest snapshot of the server boot on
+    /// screen: Herdr sends a pane's directory whenever it changes, so it is read now, at the tap. A popup's is
+    /// unknown, since Herdr sends only its panes'.
+    func paneCurrentDirectory(from surfaceID: UUID) -> @Sendable () async throws -> String {
+        guard let paneID = terminalScreenAdapter.paneID(for: surfaceID),
+              let snapshot, snapshot.bootID == layout?.bootID,
+              let directory = snapshot.currentDirectory(ofPane: paneID)
+        else {
+            return { throw TerminalPreviewPathError.invalidCurrentDirectory }
+        }
+        return { directory }
     }
 
     /// `method` through the engine's lane, after the operations asked before it: it waits in line behind

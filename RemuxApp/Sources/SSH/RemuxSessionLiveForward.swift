@@ -319,72 +319,71 @@ struct RemuxLiveForwardHandle: Sendable {
     let close: @Sendable () async throws -> Void
 }
 
-/// Session-scoped live-forward capability. Activated once with the claimed
-/// root's opener factory; every open forward registers with the session
-/// child scope so transport shutdown drains it and a dirty remote-channel
-/// close retires the shared root from pool reuse.
-actor RemuxSessionLiveForwardProvider {
-    typealias OpenerFactory = @Sendable (
-        RemuxSSHDirectTCPIPTarget
-    ) -> RemuxLiveForwardConnectionOpener
-
-    private let scope: RemuxSessionSFTPChildScope
-    private var openerFactory: OpenerFactory?
-
-    init(scope: RemuxSessionSFTPChildScope) {
-        self.scope = scope
+/// Live-page forwards on the server's pooled SSH connection. A forward claims the connection, as one of its
+/// consumers, while it listens, and each browser connection it accepts opens a direct-TCPIP channel on it.
+/// Closing gives the connection back, out of reuse when a channel refused to close.
+struct RemuxPooledLiveForwardProvider: Sendable {
+    /// One claim of the connection for a forward: what opens a channel per browser connection, and how to give
+    /// the connection back.
+    struct Claim: Sendable {
+        let opener: RemuxLiveForwardConnectionOpener
+        let release: @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
     }
 
-    func activate(openerFactory: @escaping OpenerFactory) {
-        self.openerFactory = openerFactory
+    private let claim: @Sendable (RemuxSSHDirectTCPIPTarget) async throws -> Claim
+
+    init(claim: @escaping @Sendable (RemuxSSHDirectTCPIPTarget) async throws -> Claim) {
+        self.claim = claim
+    }
+
+    init(
+        sshRootService: RemuxSSHRootService,
+        rootKey: RemuxSSHRootKey,
+        rootConfiguration: RemuxSSHRootConfiguration
+    ) {
+        self.init { target in
+            let claimedRoot = try await sshRootService.claimRoot(
+                for: rootKey,
+                configuration: rootConfiguration,
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            return Claim(
+                opener: .directTCPIP(
+                    sshRoot: claimedRoot.sshRoot,
+                    target: target,
+                    originatorAddress: Self.originatorAddress
+                ),
+                release: { disposition in await claimedRoot.release(disposition) }
+            )
+        }
     }
 
     func openForward(
         to target: RemuxSSHDirectTCPIPTarget
     ) async throws -> RemuxLiveForwardHandle {
-        guard let openerFactory else {
-            throw RemuxSFTPClientError.sessionUnavailable
-        }
-        let registration = try await scope.begin()
+        let claim = try await claim(target)
+        let listener: RemuxLiveForwardListener
         do {
-            let listener = try await RemuxLiveForwardListener.start(
-                opener: openerFactory(target)
-            )
-            let teardown = RemuxSFTPLeaseTeardown(
-                closeBorrowedChild: {
-                    try await listener.shutdown()
-                }
-            )
-            guard await scope.register(teardown, for: registration) else {
-                await teardown.invalidate(reason: .sessionUnavailable)
-                let childCloseResult = await teardown.childCloseResult()
-                await scope.finish(
-                    registration,
-                    childDrain: RemuxSFTPChildDrain(closeResult: childCloseResult)
-                )
-                throw RemuxSFTPClientError.sessionUnavailable
-            }
-            return RemuxLiveForwardHandle(
-                localPort: listener.localPort,
-                close: { [scope] in
-                    let closeResult: Result<Void, Error>
-                    do {
-                        try await teardown.close()
-                        closeResult = .success(())
-                    } catch {
-                        closeResult = .failure(error)
-                    }
-                    let childCloseResult = await teardown.childCloseResult()
-                    await scope.finish(
-                        registration,
-                        childDrain: RemuxSFTPChildDrain(closeResult: childCloseResult)
-                    )
-                    try closeResult.get()
-                }
-            )
+            listener = try await RemuxLiveForwardListener.start(opener: claim.opener)
         } catch {
-            await scope.finish(registration)
+            // The listener is local: nothing was opened on the connection.
+            await claim.release(.reusable)
             throw error
         }
+        let teardown = RemuxSFTPLeaseTeardown(
+            closeChild: { try await listener.shutdown() },
+            releaseRoot: claim.release
+        )
+        return RemuxLiveForwardHandle(
+            localPort: listener.localPort,
+            close: { try await teardown.close() }
+        )
     }
+
+    // The SSH wire format requires an IP-literal originator; the real
+    // originator is always this device's loopback browser connection.
+    private static let originatorAddress = try! SocketAddress(
+        ipAddress: "127.0.0.1",
+        port: 0
+    )
 }
