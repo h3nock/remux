@@ -28,6 +28,24 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         XCTAssertEqual(attachments.map(\.title), ["Photo 1", "Photo 2"])
     }
 
+    func testMediaSelectionContinuesNumberingAfterEarlierPhotos() {
+        let first = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.png]])
+        let second = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.jpeg]], existingPhotoCount: 1)
+        let draft = first.map { $0.numberedAsFirstPhoto() } + second
+
+        XCTAssertEqual(first.map(\.title), ["Photo"])
+        XCTAssertEqual(draft.map(\.title), ["Photo 1", "Photo 2"])
+        XCTAssertEqual(draft[0].id, first[0].id)
+    }
+
+    func testNumberingAsFirstPhotoLeavesOtherAttachmentsAlone() {
+        let numbered = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.png], [.jpeg]])
+        let pasted = GhosttyPendingAttachment.pasteboardImagePlaceholder()
+
+        XCTAssertEqual(numbered.map { $0.numberedAsFirstPhoto().title }, ["Photo 1", "Photo 2"])
+        XCTAssertEqual(pasted.numberedAsFirstPhoto(), pasted)
+    }
+
     func testEmptyMediaSelectionCreatesNoAttachments() {
         XCTAssertTrue(GhosttyPendingAttachment.mediaSelections(contentTypes: []).isEmpty)
     }

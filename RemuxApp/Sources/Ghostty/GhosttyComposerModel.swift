@@ -183,11 +183,12 @@ final class GhosttyComposerModel: ObservableObject {
         preparing transferService: any GhosttyAttachmentTransferService
     ) -> Bool {
         let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
-            contentTypes: items.map(\.supportedContentTypes)
+            contentTypes: items.map(\.supportedContentTypes),
+            existingPhotoCount: attachments.count { $0.kind == .photo }
         )
         guard !pendingAttachments.isEmpty else { return false }
 
-        attachments.append(contentsOf: pendingAttachments)
+        attachments = attachments.map { $0.numberedAsFirstPhoto() } + pendingAttachments
         statusMessage = nil
         prepareTransfer(transferService)
         for (item, attachment) in zip(items, pendingAttachments) {

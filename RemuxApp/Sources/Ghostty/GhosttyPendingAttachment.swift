@@ -256,21 +256,40 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         }
     }
 
-    static func mediaSelections(contentTypes: [[UTType]]) -> [GhosttyPendingAttachment] {
+    /// `existingPhotoCount` is how many photos the draft already holds, so photos added in separate picks still
+    /// get different names.
+    static func mediaSelections(
+        contentTypes: [[UTType]],
+        existingPhotoCount: Int = 0
+    ) -> [GhosttyPendingAttachment] {
         guard !contentTypes.isEmpty else { return [] }
 
-        let shouldNumber = contentTypes.count > 1
+        let shouldNumber = existingPhotoCount + contentTypes.count > 1
         return contentTypes.enumerated().compactMap { index, contentTypes in
             let kind = mediaKind(contentTypes)
             guard kind == .photo else { return nil }
 
             return GhosttyPendingAttachment(
                 kind: kind,
-                title: mediaTitle(kind, number: shouldNumber ? index + 1 : nil),
+                title: mediaTitle(kind, number: shouldNumber ? existingPhotoCount + index + 1 : nil),
                 detail: "Preparing…",
                 preparationState: .preparing
             )
         }
+    }
+
+    /// The draft's first photo is added unnumbered; once a second photo joins it, it becomes "Photo 1".
+    func numberedAsFirstPhoto() -> GhosttyPendingAttachment {
+        guard kind == .photo, title == Self.mediaTitle(.photo, number: nil) else { return self }
+        return GhosttyPendingAttachment(
+            id: id,
+            kind: kind,
+            title: Self.mediaTitle(.photo, number: 1),
+            detail: detail,
+            payload: payload,
+            previewPayload: previewPayload,
+            preparationState: preparationState
+        )
     }
 
     static func file(url: URL) -> GhosttyPendingAttachment {
