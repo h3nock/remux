@@ -524,7 +524,7 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             drawing = canvasView.drawing
             // The stroke's undo registration lands after this callback.
-            DispatchQueue.main.async { [undo] in
+            Task { @MainActor [undo] in
                 undo.refresh()
             }
         }

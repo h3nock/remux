@@ -184,7 +184,7 @@ final class GhosttyComposerModel: ObservableObject {
     ) -> Bool {
         let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
             contentTypes: items.map(\.supportedContentTypes),
-            existingPhotoCount: attachments.count { $0.kind == .photo }
+            highestPhotoNumber: GhosttyPendingAttachment.highestPhotoNumber(in: attachments)
         )
         guard !pendingAttachments.isEmpty else { return false }
 

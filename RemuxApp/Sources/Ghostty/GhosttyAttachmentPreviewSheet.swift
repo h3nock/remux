@@ -66,7 +66,7 @@ struct GhosttyAttachmentPreviewSheet: View {
                     saveMarkup(result, request: request)
                 }
             )
-            .frame(height: previewStageHeight, alignment: .top)
+            .frame(maxHeight: previewStageHeight, alignment: .top)
             .frame(maxHeight: .infinity, alignment: .top)
         } else {
             pager

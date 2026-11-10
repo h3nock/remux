@@ -30,12 +30,27 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
 
     func testMediaSelectionContinuesNumberingAfterEarlierPhotos() {
         let first = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.png]])
-        let second = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.jpeg]], existingPhotoCount: 1)
+        let second = GhosttyPendingAttachment.mediaSelections(
+            contentTypes: [[.jpeg]],
+            highestPhotoNumber: GhosttyPendingAttachment.highestPhotoNumber(in: first)
+        )
         let draft = first.map { $0.numberedAsFirstPhoto() } + second
 
         XCTAssertEqual(first.map(\.title), ["Photo"])
         XCTAssertEqual(draft.map(\.title), ["Photo 1", "Photo 2"])
         XCTAssertEqual(draft[0].id, first[0].id)
+    }
+
+    func testMediaSelectionDoesNotReuseANumberAfterARemoval() {
+        let pair = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.png], [.jpeg]])
+        let afterRemovingTheFirst = [pair[1]]
+        let added = GhosttyPendingAttachment.mediaSelections(
+            contentTypes: [[.heic]],
+            highestPhotoNumber: GhosttyPendingAttachment.highestPhotoNumber(in: afterRemovingTheFirst)
+        )
+
+        XCTAssertEqual((afterRemovingTheFirst + added).map(\.title), ["Photo 2", "Photo 3"])
+        XCTAssertEqual(GhosttyPendingAttachment.highestPhotoNumber(in: []), 0)
     }
 
     func testNumberingAsFirstPhotoLeavesOtherAttachmentsAlone() {
