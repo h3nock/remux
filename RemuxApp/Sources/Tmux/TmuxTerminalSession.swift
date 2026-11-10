@@ -36,6 +36,9 @@ final class TmuxTerminalSession: ObservableObject {
     private let createPaneSurface: PaneSurfaceCreator
 
     @Published private(set) var surfacesByPaneID: [TmuxPaneID: TmuxPaneSurface] = [:]
+    /// Previews are captured one at a time: the generation tells a capture it was ended, and the
+    /// awaited pane is the one whose frame it waits for.
+    private var pickerPreviewCapture: (generation: Int, awaitedPaneID: TmuxPaneID?) = (0, nil)
     private var pendingTerminalsByPaneID: [
         TmuxPaneID: TmuxSessionController.RetainedPaneTerminal
     ] = [:]
@@ -436,34 +439,139 @@ final class TmuxTerminalSession: ObservableObject {
 
     // MARK: Composite presentation
 
+    /// Before a pane's window is shown: a picker frame still pending must not complete into the
+    /// window's presentation.
     func prepareForPaneSelection(paneID: TmuxPaneID) {
         guard !isShutDown else { return }
+        cancelPickerPreview()
+    }
+
+    /// The preview of the window `paneID` is the active pane of: the window's rows around that pane's
+    /// cursor, with every pane that has a part in them. The other panes are best-effort; without the
+    /// active one there is no preview. A capture ends the one before it.
+    func capturePickerPreview(
+        paneID: TmuxPaneID,
+        budget: GhosttyPanePreviewSession.PixelBudget
+    ) async -> GhosttyPanePreviewSession.Preview? {
+        cancelPickerPreview()
+        let generation = pickerPreviewCapture.generation
+        // A window whose panes change while they are captured is captured once more, as it then is.
+        for _ in 0..<2 {
+            guard let window = pickerPreviewWindow(activePaneID: paneID) else { return nil }
+            let preview = await capturePickerPreview(
+                of: window, activePaneID: paneID, budget: budget, generation: generation
+            )
+            guard generation == pickerPreviewCapture.generation else { return nil }
+            if pickerPreviewWindow(activePaneID: paneID) == window { return preview }
+        }
+        return nil
+    }
+
+    /// Ends the running preview capture, whichever pane's frame it waits for.
+    func cancelPickerPreview() {
+        pickerPreviewCapture.generation += 1
+        guard let paneID = pickerPreviewCapture.awaitedPaneID else { return }
+        pickerPreviewCapture.awaitedPaneID = nil
         surfacesByPaneID[paneID]?.renderer.cancelPickerCaptureForPresentation()
     }
 
-    func capturePickerPreview(
-        paneID: TmuxPaneID,
-        columns: UInt32,
-        rows: UInt32,
-        windowColumns: UInt32,
-        budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> UIImage? {
+    private struct PickerPreviewWindow: Equatable {
+        let grid: GhosttyTerminalGridSize
+        let panes: [PanePreviewLayout.WindowPane<TmuxPaneID>]
+    }
+
+    /// The window `paneID` is the active pane of, as its preview shows it.
+    private func pickerPreviewWindow(activePaneID paneID: TmuxPaneID) -> PickerPreviewWindow? {
         guard !isShutDown,
               state == .ready,
               livePaneIDs.contains(paneID),
-              let surface = surfacesByPaneID[paneID],
-              !surface.renderer.isClosing
+              let topology,
+              let active = topology.panes.first(where: { $0.id == paneID }),
+              let window = topology.windows.first(where: { $0.id == active.windowID })
         else { return nil }
-        return await surface.renderer.capturePickerPreview(
-            columns: columns,
-            rows: rows,
-            windowColumns: windowColumns,
-            budget: budget
-        )
+        // A zoomed window shows its active pane alone, at the window's size.
+        let panes: [PanePreviewLayout.WindowPane<TmuxPaneID>] = window.zoomed && window.activePaneID == paneID
+            ? [.init(id: paneID, frame: .init(x: 0, y: 0, columns: window.width, rows: window.height))]
+            : topology.panes.filter { $0.windowID == window.id }.map {
+                .init(id: $0.id, frame: .init(x: $0.x, y: $0.y, columns: $0.width, rows: $0.height))
+            }
+        return PickerPreviewWindow(grid: .init(columns: window.width, rows: window.height), panes: panes)
     }
 
-    func cancelPickerPreview(paneID: TmuxPaneID) {
-        surfacesByPaneID[paneID]?.renderer.cancelPickerCaptureForPresentation()
+    private func capturePickerPreview(
+        of window: PickerPreviewWindow,
+        activePaneID paneID: TmuxPaneID,
+        budget: GhosttyPanePreviewSession.PixelBudget,
+        generation: Int
+    ) async -> GhosttyPanePreviewSession.Preview? {
+        guard let geometry = surfacesByPaneID[paneID]?.renderer.pickerPreviewGeometry else { return nil }
+        let zoom = PanePreviewLayout.previewZoom(
+            windowWidth: Int(window.grid.columns) * geometry.cellWidth,
+            budget: budget
+        )
+        guard let plan = PanePreviewLayout.windowPreviewPlan(
+            grid: window.grid,
+            panes: window.panes,
+            focusedPaneID: paneID,
+            cellWidth: geometry.cellWidth,
+            cellHeight: geometry.cellHeight,
+            cursorRowTop: geometry.cursorRowTop,
+            budget: budget,
+            zoom: zoom
+        ) else { return nil }
+
+        var frames: [(frame: GhosttyIOSurfaceFrame, origin: CGPoint)] = []
+        for part in plan.parts {
+            guard !isShutDown, state == .ready else { return nil }
+            var frame: GhosttyIOSurfaceFrame?
+            if let pane = window.panes.first(where: { $0.id == part.id }),
+               let surface = surfacesByPaneID[part.id],
+               !surface.renderer.isClosing {
+                pickerPreviewCapture.awaitedPaneID = part.id
+                frame = await surface.renderer.capturePickerFrame(
+                    columns: pane.frame.columns,
+                    rows: pane.frame.rows,
+                    sourceRect: part.sourceRect
+                )
+                guard generation == pickerPreviewCapture.generation else { return nil }
+                pickerPreviewCapture.awaitedPaneID = nil
+            }
+            if let frame {
+                frames.append((frame, part.origin))
+            } else if part.id == paneID {
+                return nil
+            }
+        }
+
+        // The pixels are drawn `zoom` times their size.
+        let imageScale = geometry.contentScale / zoom
+        func points(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / imageScale, y: point.y / imageScale)
+        }
+        let size = CGSize(width: plan.size.width / imageScale, height: plan.size.height / imageScale)
+        let separators = plan.separators.map {
+            GhosttyPanePreviewSession.Preview.Line(start: points($0.start), end: points($0.end))
+        }
+        let placed = frames.map { (frame: $0.frame, origin: points($0.origin)) }
+        return await Task.detached(priority: .userInitiated) {
+            do {
+                return GhosttyPanePreviewSession.Preview(
+                    size: size,
+                    panes: try placed.map {
+                        .init(
+                            image: UIImage(cgImage: try $0.frame.image(), scale: imageScale, orientation: .up),
+                            origin: $0.origin
+                        )
+                    },
+                    separators: separators
+                )
+            } catch {
+                GhosttyRuntimeTrace.diagnostics(
+                    "tmux.windowPreview failed pane=\(paneID) error=\(String(describing: error))"
+                )
+                return nil
+            }
+        }.value
     }
 
     private func reconcilePresentationActivity() {

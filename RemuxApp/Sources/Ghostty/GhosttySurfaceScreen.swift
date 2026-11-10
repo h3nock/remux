@@ -2324,6 +2324,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     topLevelNoun: model.topLevelNoun,
                     sessionName: presentation.sessionName,
                     terminalBackground: Color(uiColor: presentation.terminalTheme.terminalBackgroundUIColor),
+                    terminalSeparator: Color(uiColor: presentation.terminalTheme.terminalCompositeSeparatorUIColor),
                     layout: windowLayout,
                     contentHeight: contentHeight,
                     commandFailureMessage: selectionSheetCommandFailureMessage,

@@ -548,24 +548,12 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 capture: { [weak self] leafID, budget in
                     guard let self,
                           let session = self.session,
-                          let paneID = self.identities.paneID(for: leafID),
-                          let topology = self.latestTopology,
-                          let pane = topology.panes.first(where: { $0.id == paneID }),
-                          let window = topology.windows.first(where: { $0.id == pane.windowID })
-                    else { return nil }
-                    return await session.capturePickerPreview(
-                        paneID: paneID,
-                        columns: pane.width,
-                        rows: pane.height,
-                        windowColumns: window.width,
-                        budget: budget
-                    )
-                },
-                cancelCapture: { [weak self] leafID in
-                    guard let self,
                           let paneID = self.identities.paneID(for: leafID)
-                    else { return }
-                    self.session?.cancelPickerPreview(paneID: paneID)
+                    else { return nil }
+                    return await session.capturePickerPreview(paneID: paneID, budget: budget)
+                },
+                cancelCapture: { [weak self] _ in
+                    self?.session?.cancelPickerPreview()
                 }
             )
         )

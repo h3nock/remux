@@ -1,11 +1,12 @@
 import CoreGraphics
+import Foundation
 
 /// Single source of truth for window-preview geometry and capture budgets.
 ///
-/// A tile is a picture of its window's focused pane over a caption. A preview
-/// holds the pane's own pixels for the area the picture shows, with the scale
-/// they are drawn at, so it is scaled once, as it is drawn, and a tile of
-/// another size is captured again.
+/// A tile is a picture of its window over a caption. A preview holds the
+/// panes' own pixels for the area the picture shows, with the scale they are
+/// drawn at, so it is scaled once, as it is drawn, and a tile of another size
+/// is captured again.
 enum PanePreviewLayout {
     struct Metrics: Equatable {
         let columnCount: Int
@@ -122,9 +123,8 @@ enum PanePreviewLayout {
         )
     }
 
-    /// How large a preview draws its pane's pixels: its window's whole width fits the preview, so every
-    /// preview of a session draws text at one size and a split pane takes its share of the width.
-    /// `windowWidth` is the window's, in the pane's pixels.
+    /// How large a preview draws its window's pixels: the window's whole width fits the preview, so
+    /// every preview of a session draws text at one size. `windowWidth` is in the panes' pixels.
     static func previewZoom(
         windowWidth: Int,
         budget: GhosttyPanePreviewSession.PixelBudget
@@ -133,12 +133,12 @@ enum PanePreviewLayout {
         return min(1, max(minimumPreviewZoom, CGFloat(budget.width) / CGFloat(windowWidth)))
     }
 
-    /// The part of a pane's published frame its preview shows, in the frame's pixels: from the left
-    /// edge, where lines start, in whole rows ending a few below the cursor's, which hold a program's
-    /// footer when it has one and are empty under a shell's prompt. Fewer rows there, or above, show
-    /// the pane's last, or first, rows.
+    /// The part of a window its preview shows, in the window's pixels: from the left edge, where
+    /// lines start, in whole rows ending a few below the cursor's, which hold a program's footer when
+    /// it has one and are empty under a shell's prompt. Fewer rows there, or above, show the window's
+    /// last, or first, rows.
     ///
-    /// `cursorRowTop` is the top of the cursor's row; nil shows the frame's last rows, which then may
+    /// `cursorRowTop` is the top of the cursor's row; nil shows the window's last rows, which then may
     /// start part-way through a row.
     static func previewSourceRect(
         frameWidth: Int,
@@ -169,6 +169,101 @@ enum PanePreviewLayout {
         let bottom = min(lastRowBottom, cursorTop + (1 + rowsBelowCursor) * cellHeight)
         let top = max(firstRowTop, bottom - rows * cellHeight)
         return CGRect(x: 0, y: top, width: width, height: min(rows * cellHeight, lastRowBottom - top))
+    }
+
+    /// A window's pane, in the window's cells.
+    struct WindowPane<ID: Hashable>: Equatable {
+        let id: ID
+        let frame: GhosttyTerminalGridRect
+    }
+
+    /// What a window's preview shows of it, in the panes' pixels: each pane's part of the area the
+    /// preview covers, and the lines between panes.
+    struct WindowPreviewPlan<ID: Hashable>: Equatable {
+        struct Part: Equatable {
+            let id: ID
+            /// In the pane's own frame.
+            let sourceRect: CGRect
+            /// Where the part goes in the preview.
+            let origin: CGPoint
+        }
+
+        struct Line: Equatable {
+            let start: CGPoint
+            let end: CGPoint
+        }
+
+        let size: CGSize
+        let parts: [Part]
+        let separators: [Line]
+    }
+
+    /// The preview of a window: the rows `previewSourceRect` picks for the focused pane's cursor,
+    /// with every pane that has a part in them where the window has it. `cursorRowTop` is in the
+    /// focused pane's pixels.
+    static func windowPreviewPlan<ID: Hashable>(
+        grid: GhosttyTerminalGridSize,
+        panes: [WindowPane<ID>],
+        focusedPaneID: ID,
+        cellWidth: Int,
+        cellHeight: Int,
+        cursorRowTop: CGFloat?,
+        budget: GhosttyPanePreviewSession.PixelBudget,
+        zoom: CGFloat
+    ) -> WindowPreviewPlan<ID>? {
+        guard cellWidth > 0, cellHeight > 0,
+              let focused = panes.first(where: { $0.id == focusedPaneID }),
+              let shown = previewSourceRect(
+                frameWidth: Int(grid.columns) * cellWidth,
+                frameHeight: Int(grid.rows) * cellHeight,
+                cellHeight: cellHeight,
+                cursorRowTop: cursorRowTop.map { CGFloat(Int(focused.frame.y) * cellHeight) + $0 },
+                budget: budget,
+                zoom: zoom
+              )
+        else { return nil }
+
+        let cell = CGSize(width: cellWidth, height: cellHeight)
+        let parts = panes.compactMap { pane -> WindowPreviewPlan<ID>.Part? in
+            let frame = CGRect(
+                x: CGFloat(pane.frame.x) * cell.width,
+                y: CGFloat(pane.frame.y) * cell.height,
+                width: CGFloat(pane.frame.columns) * cell.width,
+                height: CGFloat(pane.frame.rows) * cell.height
+            )
+            let part = frame.intersection(shown)
+            guard !part.isNull, !part.isEmpty else { return nil }
+            return .init(
+                id: pane.id,
+                sourceRect: part.offsetBy(dx: -frame.minX, dy: -frame.minY),
+                origin: CGPoint(x: part.minX - shown.minX, y: part.minY - shown.minY)
+            )
+        }
+        let separators = GhosttyPaneSeparatorLayout.segments(
+            for: panes.map { .init(id: UUID(), frame: $0.frame) }
+        ).compactMap { segment -> WindowPreviewPlan<ID>.Line? in
+            switch segment.orientation {
+            case .vertical:
+                let x = segment.position * cell.width
+                let top = max(segment.start * cell.height, shown.minY)
+                let bottom = min(segment.end * cell.height, shown.maxY)
+                guard x > shown.minX, x < shown.maxX, top < bottom else { return nil }
+                return .init(
+                    start: CGPoint(x: x - shown.minX, y: top - shown.minY),
+                    end: CGPoint(x: x - shown.minX, y: bottom - shown.minY)
+                )
+            case .horizontal:
+                let y = segment.position * cell.height
+                let left = max(segment.start * cell.width, shown.minX)
+                let right = min(segment.end * cell.width, shown.maxX)
+                guard y > shown.minY, y < shown.maxY, left < right else { return nil }
+                return .init(
+                    start: CGPoint(x: left - shown.minX, y: y - shown.minY),
+                    end: CGPoint(x: right - shown.minX, y: y - shown.minY)
+                )
+            }
+        }
+        return .init(size: shown.size, parts: parts, separators: separators)
     }
 
     private static func clampUInt32(_ value: CGFloat) -> UInt32 {

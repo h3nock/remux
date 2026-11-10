@@ -1,7 +1,8 @@
 import UIKit
 
-/// Picker-scoped preview images and one sequential capture task. Native
-/// renderers and terminals stay owned by the session behind PreviewClient.
+/// Picker-scoped window previews, keyed by each window's focused pane, and one
+/// sequential capture task. Native renderers and terminals stay owned by the
+/// session behind PreviewClient.
 @MainActor
 final class GhosttyPanePreviewSession: ObservableObject {
     /// The size a preview is drawn at, in device pixels.
@@ -10,13 +11,31 @@ final class GhosttyPanePreviewSession: ObservableObject {
         let height: UInt32
     }
 
+    /// A window's preview, in points: its panes' pixels, each image with the scale it is drawn at,
+    /// where the window has them, and the lines between panes.
+    struct Preview: Sendable {
+        struct Pane: Sendable {
+            let image: UIImage
+            let origin: CGPoint
+        }
+
+        struct Line: Sendable {
+            let start: CGPoint
+            let end: CGPoint
+        }
+
+        let size: CGSize
+        let panes: [Pane]
+        let separators: [Line]
+    }
+
     struct PreviewClient {
-        /// A pane's preview for the budget: its pixels, with the scale they are drawn at.
-        let capture: @MainActor (UUID, PixelBudget) async -> UIImage?
+        /// The preview, for the budget, of the window a pane is the focused one of.
+        let capture: @MainActor (UUID, PixelBudget) async -> Preview?
         let cancelCapture: @MainActor (UUID) -> Void
 
         init(
-            capture: @escaping @MainActor (UUID, PixelBudget) async -> UIImage?,
+            capture: @escaping @MainActor (UUID, PixelBudget) async -> Preview?,
             cancelCapture: @escaping @MainActor (UUID) -> Void = { _ in }
         ) {
             self.capture = capture
@@ -26,7 +45,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     enum PreviewState {
         case pending
-        case ready(UIImage)
+        case ready(Preview)
         case failed
     }
 
@@ -94,7 +113,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
                 imagesByPaneID[leafID] = .pending
                 activeCaptureLeafID = leafID
                 activeCaptureIsValid = true
-                let image = await client.capture(leafID, pixelBudget)
+                let preview = await client.capture(leafID, pixelBudget)
                 let captureIsValid = activeCaptureLeafID == leafID
                     && activeCaptureIsValid
                 if activeCaptureLeafID == leafID {
@@ -105,8 +124,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
                 guard captureIsValid, trackedLeafIDs.contains(leafID) else {
                     continue
                 }
-                if let image {
-                    imagesByPaneID[leafID] = .ready(image)
+                if let preview {
+                    imagesByPaneID[leafID] = .ready(preview)
                 } else {
                     imagesByPaneID[leafID] = .failed
                 }

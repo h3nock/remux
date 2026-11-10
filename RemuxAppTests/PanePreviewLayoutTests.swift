@@ -109,4 +109,82 @@ final class PanePreviewLayoutTests: XCTestCase {
             CGRect(x: 0, y: 2_190 - 1_060, width: 1_200, height: 1_060)
         )
     }
+
+    // MARK: A window's preview
+
+    /// A 50 by 41 window of 24 by 53 pixel cells, whose preview shows 21 rows.
+    private func windowPlan(
+        panes: [PanePreviewLayout.WindowPane<Int>],
+        focused: Int,
+        cursorRow: Int
+    ) -> PanePreviewLayout.WindowPreviewPlan<Int>? {
+        PanePreviewLayout.windowPreviewPlan(
+            grid: .init(columns: 50, rows: 41),
+            panes: panes,
+            focusedPaneID: focused,
+            cellWidth: 24,
+            cellHeight: 53,
+            cursorRowTop: CGFloat(cursorRow * 53),
+            budget: .init(width: 504, height: 483),
+            zoom: 0.42
+        )
+    }
+
+    func testPreviewOfPanesSideBySideShowsBothWithTheLineBetweenThem() {
+        let plan = windowPlan(
+            panes: [
+                .init(id: 1, frame: .init(x: 0, y: 0, columns: 25, rows: 41)),
+                .init(id: 2, frame: .init(x: 26, y: 0, columns: 24, rows: 41)),
+            ],
+            focused: 2,
+            cursorRow: 40
+        )
+        XCTAssertEqual(plan?.size, CGSize(width: 1_200, height: 21 * 53))
+        XCTAssertEqual(plan?.parts, [
+            .init(id: 1, sourceRect: CGRect(x: 0, y: 20 * 53, width: 600, height: 21 * 53), origin: .zero),
+            .init(
+                id: 2,
+                sourceRect: CGRect(x: 0, y: 20 * 53, width: 576, height: 21 * 53),
+                origin: CGPoint(x: 624, y: 0)
+            ),
+        ])
+        XCTAssertEqual(plan?.separators, [
+            .init(start: CGPoint(x: 612, y: 0), end: CGPoint(x: 612, y: 21 * 53)),
+        ])
+    }
+
+    func testPreviewOfStackedPanesFollowsTheFocusedPanesCursorInTheWindow() {
+        let panes: [PanePreviewLayout.WindowPane<Int>] = [
+            .init(id: 1, frame: .init(x: 0, y: 0, columns: 50, rows: 28)),
+            .init(id: 2, frame: .init(x: 0, y: 29, columns: 50, rows: 12)),
+        ]
+        // The lower pane's last row is the window's: the preview ends there, and starts in the upper pane.
+        let lower = windowPlan(panes: panes, focused: 2, cursorRow: 11)
+        XCTAssertEqual(lower?.parts, [
+            .init(id: 1, sourceRect: CGRect(x: 0, y: 20 * 53, width: 1_200, height: 8 * 53), origin: .zero),
+            .init(
+                id: 2,
+                sourceRect: CGRect(x: 0, y: 0, width: 1_200, height: 12 * 53),
+                origin: CGPoint(x: 0, y: 9 * 53)
+            ),
+        ])
+        XCTAssertEqual(lower?.separators, [
+            .init(start: CGPoint(x: 0, y: 8.5 * 53), end: CGPoint(x: 1_200, y: 8.5 * 53)),
+        ])
+
+        // A cursor near the window's top shows its first rows, which the lower pane has no part in.
+        let upper = windowPlan(panes: panes, focused: 1, cursorRow: 5)
+        XCTAssertEqual(upper?.parts, [
+            .init(id: 1, sourceRect: CGRect(x: 0, y: 0, width: 1_200, height: 21 * 53), origin: .zero),
+        ])
+        XCTAssertEqual(upper?.separators, [])
+    }
+
+    func testPreviewOfAWindowWithoutItsFocusedPaneIsNil() {
+        XCTAssertNil(windowPlan(
+            panes: [.init(id: 1, frame: .init(x: 0, y: 0, columns: 50, rows: 41))],
+            focused: 2,
+            cursorRow: 40
+        ))
+    }
 }

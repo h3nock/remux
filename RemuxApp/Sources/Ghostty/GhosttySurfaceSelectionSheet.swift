@@ -37,6 +37,7 @@ struct GhosttyWindowSelectionSheet: View {
     let sessionName: String
     /// The terminal theme's background, which a preview sits on.
     let terminalBackground: Color
+    let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
     let contentHeight: CGFloat
     let commandFailureMessage: String?
@@ -69,6 +70,7 @@ struct GhosttyWindowSelectionSheet: View {
                                 projection: projection,
                                 topLevelNoun: topLevelNoun,
                                 terminalBackground: terminalBackground,
+                                terminalSeparator: terminalSeparator,
                                 layout: layout,
                                 onSelect: select,
                                 onClose: close
@@ -318,6 +320,7 @@ private struct GhosttyWindowPreviewGrid: View {
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let topLevelNoun: GhosttyTopLevelNoun
     let terminalBackground: Color
+    let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
     let onSelect: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
     let onClose: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
@@ -348,6 +351,7 @@ private struct GhosttyWindowPreviewGrid: View {
                         },
                         chromeStyle: chromeStyle,
                         terminalBackground: terminalBackground,
+                        terminalSeparator: terminalSeparator,
                         layout: layout
                     )
                 }
@@ -668,6 +672,7 @@ private struct GhosttyWindowSelectionTile: View {
     let previewState: GhosttyPanePreviewSession.PreviewState?
     let chromeStyle: GhosttyTerminalChromeStyle
     let terminalBackground: Color
+    let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
 
     private static let pictureShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -694,9 +699,8 @@ private struct GhosttyWindowSelectionTile: View {
             terminalBackground
 
             switch previewState {
-            case .ready(let image):
-                // The pane's own pixels, scaled once, as they are drawn.
-                Image(uiImage: image)
+            case .ready(let preview):
+                GhosttyWindowPreviewPicture(preview: preview, separator: terminalSeparator)
                     .padding(PanePreviewLayout.pictureInset)
                     .transition(.opacity)
 
@@ -771,6 +775,32 @@ private struct GhosttyWindowSelectionTile: View {
 }
 
 /// A window's number, as tmux counts it, filled for the current window.
+/// A window's preview as the window has it: each pane's own pixels, scaled once, as they are drawn,
+/// and the lines between panes.
+private struct GhosttyWindowPreviewPicture: View {
+    @Environment(\.displayScale) private var displayScale
+
+    let preview: GhosttyPanePreviewSession.Preview
+    let separator: Color
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(preview.panes.indices, id: \.self) { index in
+                Image(uiImage: preview.panes[index].image)
+                    .offset(x: preview.panes[index].origin.x, y: preview.panes[index].origin.y)
+            }
+            Path { path in
+                for line in preview.separators {
+                    path.move(to: line.start)
+                    path.addLine(to: line.end)
+                }
+            }
+            .stroke(separator, lineWidth: 1 / max(displayScale, 1))
+        }
+        .frame(width: preview.size.width, height: preview.size.height, alignment: .topLeading)
+    }
+}
+
 private struct GhosttyWindowIndexBadge: View {
     let displayIndex: Int
     let isSelected: Bool

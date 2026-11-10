@@ -319,7 +319,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         XCTAssertEqual(harness.requests.count, 1)
     }
 
-    private func preview(marker: UInt32) throws -> UIImage {
+    private func preview(marker: UInt32) throws -> GhosttyPanePreviewSession.Preview {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(CGContext(
             data: nil,
@@ -337,7 +337,8 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             alpha: 1
         )
         context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
-        return UIImage(cgImage: try XCTUnwrap(context.makeImage()))
+        let image = UIImage(cgImage: try XCTUnwrap(context.makeImage()))
+        return .init(size: image.size, panes: [.init(image: image, origin: .zero)], separators: [])
     }
 
     private func assertPending(
@@ -352,14 +353,14 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
 
     private func assertReady(
         _ state: GhosttyPanePreviewSession.PreviewState?,
-        image: UIImage,
+        image: GhosttyPanePreviewSession.Preview,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
         guard case .ready(let renderedImage)? = state else {
             return XCTFail("expected ready preview", file: file, line: line)
         }
-        XCTAssertTrue(renderedImage === image, file: file, line: line)
+        XCTAssertTrue(renderedImage.panes.first?.image === image.panes.first?.image, file: file, line: line)
     }
 
     private func waitUntil(
@@ -386,13 +387,13 @@ private final class CaptureHarness {
     private(set) var cancelledPaneIDs: [UUID] = []
     private(set) var completedPaneIDs: [UUID] = []
     private var continuations: [
-        UUID: CheckedContinuation<UIImage?, Never>
+        UUID: CheckedContinuation<GhosttyPanePreviewSession.Preview?, Never>
     ] = [:]
 
     func capture(
         paneID: UUID,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> UIImage? {
+    ) async -> GhosttyPanePreviewSession.Preview? {
         requests.append(.init(paneID: paneID, budget: budget))
         let result = await withCheckedContinuation { continuations[paneID] = $0 }
         completedPaneIDs.append(paneID)
@@ -405,7 +406,7 @@ private final class CaptureHarness {
 
     func resolve(
         paneID: UUID,
-        with result: UIImage?
+        with result: GhosttyPanePreviewSession.Preview?
     ) {
         continuations.removeValue(forKey: paneID)?.resume(returning: result)
     }
