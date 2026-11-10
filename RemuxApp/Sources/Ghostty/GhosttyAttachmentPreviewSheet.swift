@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 /// The attachments of a draft, one at a time. Swiping or tapping a thumbnail moves between them, an image can be
-/// marked up in place, and the one in view can be taken out of the draft.
+/// marked up in place, and the one in view can be taken out of the draft, whether it is one of several or the
+/// only one.
 struct GhosttyAttachmentPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
@@ -114,10 +115,13 @@ struct GhosttyAttachmentPreviewSheet: View {
             closeButton
         }
 
-        if let selectedAttachment, selectedAttachment.supportsImageMarkup {
+        if let selectedAttachment {
             ToolbarItemGroup(placement: .bottomBar) {
-                markupButton(for: selectedAttachment)
+                if selectedAttachment.supportsImageMarkup {
+                    markupButton(for: selectedAttachment)
+                }
                 Spacer()
+                removeButton(for: selectedAttachment)
             }
         }
     }
@@ -156,6 +160,16 @@ struct GhosttyAttachmentPreviewSheet: View {
         .accessibilityIdentifier("terminal.attachments.preview.markup-selected")
     }
 
+    private func removeButton(for attachment: GhosttyPendingAttachment) -> some View {
+        Button(role: .destructive) {
+            remove(attachment)
+        } label: {
+            Label("Remove", systemImage: "trash")
+        }
+        .accessibilityLabel("Remove \(attachment.title)")
+        .accessibilityIdentifier("terminal.attachments.preview.remove")
+    }
+
     private var thumbnailRail: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
@@ -179,33 +193,18 @@ struct GhosttyAttachmentPreviewSheet: View {
         .accessibilityIdentifier("terminal.attachments.preview.strip")
     }
 
-    /// The thumbnail of the attachment in view carries the control that takes it out of the draft.
     private func thumbnailRailItem(_ attachment: GhosttyPendingAttachment) -> some View {
         let isInView = isSelected(attachment)
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
 
         return Button {
-            if isInView {
-                remove(attachment)
-            } else {
-                Haptic.selection()
-                withAnimation(.snappy) {
-                    selectedAttachmentID = attachment.id
-                }
+            guard !isInView else { return }
+            Haptic.selection()
+            withAnimation(.snappy) {
+                selectedAttachmentID = attachment.id
             }
         } label: {
             GhosttyAttachmentPreviewThumbnail(attachment: attachment)
-                .overlay {
-                    if isInView {
-                        ZStack {
-                            Color.black.opacity(0.45)
-                            Image(systemName: "trash")
-                                .font(.system(size: 17, weight: .medium))
-                                .foregroundStyle(.white)
-                        }
-                    }
-                }
-                .clipShape(shape)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .opacity(isInView ? 1 : 0.55)
                 .padding(4)
                 .overlay {
@@ -216,10 +215,9 @@ struct GhosttyAttachmentPreviewSheet: View {
                 }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isInView ? "Remove \(attachment.title)" : "Show \(attachment.title)")
-        .accessibilityIdentifier(
-            isInView ? "terminal.attachments.preview.remove" : "terminal.attachments.preview.thumbnail"
-        )
+        .accessibilityLabel(attachment.title)
+        .accessibilityAddTraits(isInView ? .isSelected : [])
+        .accessibilityIdentifier("terminal.attachments.preview.thumbnail")
     }
 
     private func remove(_ attachment: GhosttyPendingAttachment) {
