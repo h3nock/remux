@@ -170,6 +170,42 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
         }
     }
 
+    func testAFailedWriteWithAnotherStuckEndsOnTheSessionsSilence() async throws {
+        // A failure ends the upload only once the other writes are answered, and a sent write can't be cancelled;
+        // when one is never answered and nothing else is, the session's silence ends the upload instead.
+        let writes = GatedWrites()
+        let timeouts = Counter()
+        // Should the upload wait for the stuck write, this frees it so the test fails rather than hangs.
+        let release = Task {
+            try await Task.sleep(for: .seconds(5))
+            writes.acknowledge(0)
+        }
+        let start = ContinuousClock.now
+
+        do {
+            try await RemuxSFTPUploadWindow(maxInFlight: 2, writeLength: 4, noProgressTimeout: .milliseconds(200))
+                .upload(
+                    try makeLocalFile(Data(repeating: 6, count: 8)),
+                    activity: RemuxLastActivity(),
+                    onTimeout: { timeouts.increment() },
+                    progress: { _ in },
+                    write: { data, offset in
+                        if offset == 4 { throw WriteFailure() }
+                        try await writes.write(data, at: offset)
+                    }
+                )
+            XCTFail("Expected the upload to time out")
+        } catch let error as RemuxSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        }
+
+        XCTAssertEqual(timeouts.value, 1)
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(4), "it returns without waiting for the stuck write")
+        release.cancel()
+        try await waitUntil { writes.pendingOffsets == [0] }
+        writes.acknowledge(0)
+    }
+
     func testAFailedWriteStillCountsAsTheSessionAnswering() async throws {
         // The session is shared: a preview waiting on it must not time out while the server is answering, even
         // when the answers are this upload's write failures.
