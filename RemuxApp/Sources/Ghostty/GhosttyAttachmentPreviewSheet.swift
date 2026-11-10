@@ -10,7 +10,6 @@ struct GhosttyAttachmentPreviewSheet: View {
     @State private var markupRequest: GhosttyAttachmentMarkupRequest?
     @State private var preparingMarkupAttachmentID: UUID?
     @State private var markupFailureMessage: String?
-    @State private var previewStageHeight: CGFloat?
     @Binding var attachments: [GhosttyPendingAttachment]
     let onRemove: (GhosttyPendingAttachment.ID) -> Void
 
@@ -52,7 +51,8 @@ struct GhosttyAttachmentPreviewSheet: View {
         )
     }
 
-    /// Markup takes the preview's place in the same frame, so the picture does not move when the bars change.
+    /// Markup takes the preview's place between the same bars: the thumbnail band and the bottom bar keep their
+    /// space while their contents go, so the picture does not move, and the drawing palette floats over that space.
     @ViewBuilder
     private var stage: some View {
         if let request = markupRequest {
@@ -66,18 +66,17 @@ struct GhosttyAttachmentPreviewSheet: View {
                     saveMarkup(result, request: request)
                 }
             )
-            .frame(maxHeight: previewStageHeight, alignment: .top)
-            .frame(maxHeight: .infinity, alignment: .top)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: GhosttyAttachmentPreviewStyle.thumbnailBandHeight)
+            }
+            .toolbar {
+                emptyBottomBar
+            }
         } else {
             pager
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { height in
-                    previewStageHeight = height
-                }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     // The band is kept for a single attachment too, so the picture does not move when the
-                    // thumbnails come and go, and a tall picture stays clear of the drawing palette.
+                    // thumbnails come and go.
                     ZStack {
                         if attachments.count > 1 {
                             thumbnailRail
@@ -89,6 +88,20 @@ struct GhosttyAttachmentPreviewSheet: View {
                 .toolbar {
                     previewToolbar
                 }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var emptyBottomBar: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .bottomBar) {
+                Color.clear.frame(width: 1, height: 1)
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .bottomBar) {
+                Color.clear.frame(width: 1, height: 1)
+            }
         }
     }
 
