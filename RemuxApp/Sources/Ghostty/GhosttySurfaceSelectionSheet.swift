@@ -722,9 +722,8 @@ private struct GhosttyWindowSelectionTile: View {
         .clipShape(Self.pictureShape)
         .overlay {
             Self.pictureShape.strokeBorder(
-                isSelected
-                    ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
-                    : TerminalSelectionSheetPalette.stroke,
+                // The ring is its chip's colour.
+                isSelected ? chromeStyle.accent : TerminalSelectionSheetPalette.stroke,
                 lineWidth: isSelected ? 2 : 1
             )
         }
@@ -752,7 +751,7 @@ private struct GhosttyWindowSelectionTile: View {
             if paneCount > 1 {
                 Text("\(paneCount) panes")
                     .font(.system(size: 12))
-                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                    .foregroundStyle(.secondary)
                     .layoutPriority(1)
             }
 
