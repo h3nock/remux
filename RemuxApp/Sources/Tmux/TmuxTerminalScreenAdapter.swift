@@ -3,59 +3,6 @@ import CoreGraphics
 import Foundation
 import GhosttyKit
 
-struct TmuxMultipaneZoomDefaultPolicy {
-    var isEnabled = false
-    private var resolvedWindowIDs: Set<TmuxWindowID> = []
-
-    init(isEnabled: Bool = false) {
-        self.isEnabled = isEnabled
-    }
-
-    mutating func setEnabled(_ enabled: Bool) -> Bool {
-        guard enabled != isEnabled else { return false }
-        isEnabled = enabled
-        resolvedWindowIDs.removeAll(keepingCapacity: true)
-        return true
-    }
-
-    mutating func windowIDsNeedingChange(
-        in topology: TmuxSessionController.TopologySnapshot,
-        includingMatchingWindows: Bool = false
-    ) -> [TmuxWindowID] {
-        var targets: [TmuxWindowID] = []
-
-        for window in topology.windows {
-            var paneCount = 0
-            for pane in topology.panes where pane.windowID == window.id {
-                paneCount += 1
-                if paneCount == 2 { break }
-            }
-            guard paneCount == 2 else {
-                resolvedWindowIDs.remove(window.id)
-                continue
-            }
-            guard !resolvedWindowIDs.contains(window.id),
-                  window.activePaneID != nil
-            else { continue }
-
-            resolvedWindowIDs.insert(window.id)
-            if includingMatchingWindows || window.zoomed != isEnabled {
-                targets.append(window.id)
-            }
-        }
-        return targets
-    }
-
-    mutating func recordWindowChoice(_ windowID: TmuxWindowID) {
-        resolvedWindowIDs.insert(windowID)
-    }
-
-    mutating func reset() {
-        resolvedWindowIDs.removeAll(keepingCapacity: false)
-    }
-}
-
-
 /// Presents a `TmuxTerminalSession` through the `GhosttyTerminalScreenModeling`
 /// boundary so `GhosttySurfaceScreen` renders it.
 ///
@@ -87,7 +34,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var pendingZoomOwnershipWindowIDs: Set<TmuxWindowID> = []
     private var pendingOwnedZoomPreservation: (windowID: TmuxWindowID, paneID: TmuxPaneID)?
     private var didAdoptZoomMarks = false
-    private var multipaneZoomDefault = TmuxMultipaneZoomDefaultPolicy()
 
     private lazy var commandFailure = GhosttyTerminalNotice { [weak self] in
         self?.objectWillChange.send()
@@ -105,7 +51,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     ) {
         self.session = session
         self.controller = session.controller
-        multipaneZoomDefault.isEnabled = zoomMultipaneWindowsByDefault
+        setZoomMultipaneWindowsByDefault(zoomMultipaneWindowsByDefault)
         self.initialViewportHandler = initialViewportHandler
         self.viewportStabilityHandler = viewportStabilityHandler
 
@@ -118,7 +64,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 self.latestTopology = topology
                 if let topology {
                     self.reconcileZoomOwnership(with: topology)
-                    self.applyMultipaneZoomDefaultIfNeeded(to: topology)
                     self.adoptZoomMarksOnce()
                 } else {
                     self.ownedZoomWindowIDs.removeAll()
@@ -189,7 +134,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         pendingZoomOwnershipWindowIDs.removeAll()
         pendingOwnedZoomPreservation = nil
         didAdoptZoomMarks = false
-        multipaneZoomDefault.reset()
         activeManagedPaneID = nil
         pendingFocusedPaneID = nil
         session = nil
@@ -798,28 +742,16 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         else {
             return .missingTarget(.focusedPane)
         }
-        let hasSibling = topology.panes.contains {
-            $0.windowID == window.id && $0.id != pane.id
-        }
-        let appliesDefaultZoom = !hasSibling
-            && !window.zoomed
-            && multipaneZoomDefault.isEnabled
-        let onZoomCreated: (@Sendable () -> Void)?
-        if appliesDefaultZoom {
-            let windowID = window.id
-            onZoomCreated = { [weak self] in
+        let windowID = window.id
+        controller.requestSplit(
+            paneID: activeManagedPaneID,
+            direction: TmuxSessionController.SplitDirection(actionDirection: direction),
+            zoom: window.zoomed,
+            onZoomCreated: { [weak self] in
                 DispatchQueue.main.async {
                     self?.pendingZoomOwnershipWindowIDs.insert(windowID)
                 }
             }
-        } else {
-            onZoomCreated = nil
-        }
-        controller.requestSplit(
-            paneID: activeManagedPaneID,
-            direction: TmuxSessionController.SplitDirection(actionDirection: direction),
-            zoom: window.zoomed || appliesDefaultZoom,
-            onZoomCreated: onZoomCreated
         )
         return .queued
     }
@@ -833,7 +765,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         else {
             return .missingTarget(.focusedPane)
         }
-        multipaneZoomDefault.recordWindowChoice(activeWindowID)
         controller.requestSetPaneZoomed(
             paneID: activeManagedPaneID,
             zoomed: zoomed,
@@ -846,26 +777,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return .queued
     }
 
+    /// The controller decides the default for each topology as it arrives;
+    /// the zooms it submits are Remux's once tmux shows them.
     func setZoomMultipaneWindowsByDefault(_ enabled: Bool) {
-        guard multipaneZoomDefault.setEnabled(enabled), let latestTopology else { return }
-        applyMultipaneZoomDefaultIfNeeded(
-            to: latestTopology,
-            includingMatchingWindows: true
-        )
-    }
-
-    private func applyMultipaneZoomDefaultIfNeeded(
-        to topology: TmuxSessionController.TopologySnapshot,
-        includingMatchingWindows: Bool = false
-    ) {
-        let windowIDs = multipaneZoomDefault.windowIDsNeedingChange(
-            in: topology,
-            includingMatchingWindows: includingMatchingWindows
-        )
-        guard !windowIDs.isEmpty else { return }
-        controller?.requestSetWindowsZoomed(
-            windowIDs: windowIDs,
-            zoomed: multipaneZoomDefault.isEnabled,
+        controller?.setZoomMultipaneWindowsByDefault(
+            enabled,
             onZoomSubmitted: { [weak self] windowIDs in
                 DispatchQueue.main.async {
                     self?.pendingZoomOwnershipWindowIDs.formUnion(windowIDs)

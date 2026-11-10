@@ -224,6 +224,9 @@ final class TmuxSessionController: @unchecked Sendable {
     private let callbacks: Callbacks
     /// Whose zooms this client marks on their windows; nil records none.
     private let zoomOwner: TmuxZoomOwner?
+    /// The multi-pane zoom default; nil until it is first set, applying none.
+    private var zoomDefault: TmuxMultipaneZoomDefaultPolicy?
+    private var onDefaultZoomSubmitted: @Sendable ([TmuxWindowID]) -> Void = { _ in }
     private var client: ghostty_tmux_client_t?
     private var state: SessionState = .detached(nil)
     private var topology: TopologySnapshot?
@@ -554,6 +557,10 @@ final class TmuxSessionController: @unchecked Sendable {
             self.callbacks.onTopology(snapshot)
         }
         admitDeferredMutationsIfPossible()
+        // Submitted from the client's topology callback, the zoom reaches tmux
+        // ahead of the client's own commands that load this topology's new
+        // panes, so each of them is loaded once, at its zoomed width.
+        applyZoomDefault(drainOutbound: false)
     }
 
     private func handlePaneChanged(_ change: ghostty_tmux_pane_change_s) {
@@ -899,6 +906,9 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    /// `zoom` asks for a zoomed split; with the multi-pane zoom default on, a
+    /// split of a window's only pane is zoomed too. `onZoomCreated` runs once
+    /// tmux accepts a split that zooms a window that wasn't zoomed.
     func requestSplit(
         paneID: TmuxPaneID,
         direction: SplitDirection,
@@ -911,19 +921,23 @@ final class TmuxSessionController: @unchecked Sendable {
         case .up: "-v -b"
         case .down: "-v"
         }
-        let zoomFlag = zoom ? " -Z" : ""
         queue.async { [self] in
             _ = admitActiveViewportClaimIfNeeded()
-            let split = "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)"
-            guard zoom,
-                  let zoomOwner,
-                  let window = window(containing: paneID),
-                  !window.zoomed
-            else {
-                enqueueOnWriter(command: split, request: .splitPane, onSuccess: onZoomCreated)
+            let window = self.window(containing: paneID)
+            let splitsOnlyPane = window.map { window in
+                topology?.panes.contains { $0.windowID == window.id && $0.id != paneID } == false
+            } ?? false
+            let zooms = zoom || (splitsOnlyPane && zoomDefault?.isEnabled == true)
+            let split = "split-window \(flags)\(zooms ? " -Z" : "") -t %\(paneID.rawValue)"
+            guard zooms, let window, !window.zoomed else {
+                enqueueOnWriter(command: split, request: .splitPane, onSuccess: nil)
                 return
             }
             // This split creates the window's zoom, so it is Remux's.
+            guard let zoomOwner else {
+                enqueueOnWriter(command: split, request: .splitPane, onSuccess: onZoomCreated)
+                return
+            }
             submitCommandGroupOnWriter(
                 commands: [split, zoomOwner.markIfZoomedCommand(windowID: window.id)],
                 request: .splitPane,
@@ -958,12 +972,17 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    /// The user's own zoom choice; the multi-pane zoom default then leaves the
+    /// pane's window alone.
     func requestSetPaneZoomed(
         paneID: TmuxPaneID,
         zoomed: Bool,
         onZoomSubmitted: @escaping @Sendable (TmuxWindowID) -> Void = { _ in }
     ) {
         queue.async { [self] in
+            if let window = window(containing: paneID) {
+                zoomDefault?.recordWindowChoice(window.id)
+            }
             submitNavigation(.zoom(
                 paneID,
                 desired: zoomed,
@@ -972,17 +991,23 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
-    func requestSetWindowsZoomed(
-        windowIDs: [TmuxWindowID],
-        zoomed: Bool,
+    /// Whether each multi-pane window is zoomed (or, off, unzoomed) by
+    /// default, once per window, as topologies arrive. The client applies no
+    /// default until this is first called. `onZoomSubmitted` receives the
+    /// windows of each zoom the default submits.
+    func setZoomMultipaneWindowsByDefault(
+        _ enabled: Bool,
         onZoomSubmitted: @escaping @Sendable ([TmuxWindowID]) -> Void = { _ in }
     ) {
         queue.async { [self] in
-            submitWindowZoom(WindowZoomIntent(
-                windowIDs: windowIDs,
-                change: zoomed ? .zoom : .unzoom,
-                onZoomSubmitted: onZoomSubmitted
-            ))
+            onDefaultZoomSubmitted = onZoomSubmitted
+            guard zoomDefault != nil else {
+                zoomDefault = TmuxMultipaneZoomDefaultPolicy(isEnabled: enabled)
+                applyZoomDefault(drainOutbound: true)
+                return
+            }
+            guard zoomDefault?.setEnabled(enabled) == true else { return }
+            applyZoomDefault(includingMatchingWindows: true, drainOutbound: true)
         }
     }
 
@@ -990,11 +1015,14 @@ final class TmuxSessionController: @unchecked Sendable {
     /// zoomed and clears this owner's marks.
     func requestReleaseZoom(windowIDs: [TmuxWindowID]) {
         queue.async { [self] in
-            submitWindowZoom(WindowZoomIntent(
-                windowIDs: windowIDs,
-                change: .release,
-                onZoomSubmitted: { _ in }
-            ))
+            submitWindowZoom(
+                WindowZoomIntent(
+                    windowIDs: windowIDs,
+                    change: .release,
+                    onZoomSubmitted: { _ in }
+                ),
+                drainOutbound: true
+            )
         }
     }
 
@@ -1103,7 +1131,7 @@ final class TmuxSessionController: @unchecked Sendable {
         evaluateNavigation(intent, drainOutbound: true)
     }
 
-    private func submitWindowZoom(_ intent: WindowZoomIntent) {
+    private func submitWindowZoom(_ intent: WindowZoomIntent, drainOutbound: Bool) {
         preconditionOnWriterQueue()
         guard !awaitingTopologyMutationSettlement else {
             deferredWindowZoomIntent = intent
@@ -1114,7 +1142,32 @@ final class TmuxSessionController: @unchecked Sendable {
             intent.windowIDs,
             change: intent.change,
             onZoomSubmitted: intent.onZoomSubmitted,
-            drainOutbound: true
+            drainOutbound: drainOutbound
+        )
+    }
+
+    /// Submits the zoom changes the multi-pane zoom default asks of the
+    /// current topology's windows.
+    private func applyZoomDefault(
+        includingMatchingWindows: Bool = false,
+        drainOutbound: Bool
+    ) {
+        preconditionOnWriterQueue()
+        guard let topology,
+              let windowIDs = zoomDefault?.windowIDsNeedingChange(
+                  in: topology,
+                  includingMatchingWindows: includingMatchingWindows
+              ),
+              !windowIDs.isEmpty,
+              let zoomsWindows = zoomDefault?.isEnabled
+        else { return }
+        submitWindowZoom(
+            WindowZoomIntent(
+                windowIDs: windowIDs,
+                change: zoomsWindows ? .zoom : .unzoom,
+                onZoomSubmitted: onDefaultZoomSubmitted
+            ),
+            drainOutbound: drainOutbound
         )
     }
 
@@ -1831,6 +1884,56 @@ final class TmuxSessionController: @unchecked Sendable {
         return topology.windows.first(where: { $0.id == windowID })?.activePaneID
     }
 
+}
+
+/// Which windows the multi-pane zoom default changes: each window once while
+/// it has more than one pane, unless the user chose its zoom.
+struct TmuxMultipaneZoomDefaultPolicy {
+    var isEnabled = false
+    private var resolvedWindowIDs: Set<TmuxWindowID> = []
+
+    init(isEnabled: Bool = false) {
+        self.isEnabled = isEnabled
+    }
+
+    mutating func setEnabled(_ enabled: Bool) -> Bool {
+        guard enabled != isEnabled else { return false }
+        isEnabled = enabled
+        resolvedWindowIDs.removeAll(keepingCapacity: true)
+        return true
+    }
+
+    mutating func windowIDsNeedingChange(
+        in topology: TmuxSessionController.TopologySnapshot,
+        includingMatchingWindows: Bool = false
+    ) -> [TmuxWindowID] {
+        var targets: [TmuxWindowID] = []
+
+        for window in topology.windows {
+            var paneCount = 0
+            for pane in topology.panes where pane.windowID == window.id {
+                paneCount += 1
+                if paneCount == 2 { break }
+            }
+            guard paneCount == 2 else {
+                resolvedWindowIDs.remove(window.id)
+                continue
+            }
+            guard !resolvedWindowIDs.contains(window.id),
+                  window.activePaneID != nil
+            else { continue }
+
+            resolvedWindowIDs.insert(window.id)
+            if includingMatchingWindows || window.zoomed != isEnabled {
+                targets.append(window.id)
+            }
+        }
+        return targets
+    }
+
+    mutating func recordWindowChoice(_ windowID: TmuxWindowID) {
+        resolvedWindowIDs.insert(windowID)
+    }
 }
 
 private struct TopologyAccumulator {

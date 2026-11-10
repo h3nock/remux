@@ -696,11 +696,288 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
+    // MARK: Multi-pane zoom default against tmux's replies
+
+    func testMultipaneZoomDefaultZoomsBeforeTheAttachLoadsThePanes() async throws {
+        let harness = try await attachedSession(
+            zoomsByDefault: true,
+            listWindows: Self.singleAndSplitWindows
+        )
+
+        let sent = harness.outbound.take()
+        let zoom = "resize-pane -Z -t %1 ; \(Self.zoomOwner.markIfZoomedCommand(windowID: 1))\n"
+        let zoomRange = try XCTUnwrap(sent.range(of: zoom), "the two-pane window was not zoomed: \(sent)")
+        let paneStateRange = try XCTUnwrap(sent.range(of: "list-panes -s -F"))
+        let captureRange = try XCTUnwrap(sent.range(of: "capture-pane"))
+        XCTAssertLessThan(
+            zoomRange.lowerBound, paneStateRange.lowerBound,
+            "the zoom must reach tmux before the client reads the panes' sizes"
+        )
+        XCTAssertLessThan(
+            zoomRange.lowerBound, captureRange.lowerBound,
+            "the zoom must reach tmux before the client captures the panes"
+        )
+        XCTAssertEqual(sent.components(separatedBy: "resize-pane").count - 1, 1)
+        await harness.tearDown()
+    }
+
+    func testDisabledMultipaneZoomDefaultLeavesAnUnzoomedWindowAlone() async throws {
+        let harness = try await attachedSession(
+            zoomsByDefault: false,
+            listWindows: Self.singleAndSplitWindows
+        )
+
+        let sent = harness.outbound.take()
+        XCTAssertTrue(sent.contains(TmuxZoomOwner.marksQuery), "the attach did not settle: \(sent)")
+        XCTAssertFalse(sent.contains("resize-pane"), sent)
+        await harness.tearDown()
+    }
+
+    func testMultipaneZoomDefaultDoesNotToggleAWindowZoomedAtAttach() async throws {
+        let harness = try await attachedSession(
+            zoomsByDefault: true,
+            listWindows: Self.zoomedSplitAndSingleWindows
+        )
+
+        let sent = harness.outbound.take()
+        XCTAssertTrue(sent.contains(TmuxZoomOwner.marksQuery), "the attach did not settle: \(sent)")
+        XCTAssertFalse(sent.contains("resize-pane"), sent)
+        await harness.tearDown()
+    }
+
+    func testMultipaneZoomDefaultZoomsAWindowThatBecomesMultipaneBeforeItsNewPaneLoads() async throws {
+        let harness = try await attachedSession(
+            zoomsByDefault: true,
+            listWindows: Self.twoSinglePaneWindows
+        )
+        let attach = harness.outbound.take()
+        XCTAssertFalse(attach.contains("resize-pane"), attach)
+        await harness.reply(to: attach)
+
+        let split = "4084,83x44,0,0[83x22,0,0,2,83x21,0,23,3]"
+        await harness.receive("%layout-change @1 \(split) \(split) *\n")
+
+        let sent = harness.outbound.take()
+        XCTAssertTrue(sent.contains("capture-pane -p -P -C -t %3"), "the new pane was not loaded: \(sent)")
+        let zoom = "resize-pane -Z -t %2 ; \(Self.zoomOwner.markIfZoomedCommand(windowID: 1))\n"
+        let zoomRange = try XCTUnwrap(sent.range(of: zoom), "the split window was not zoomed: \(sent)")
+        let newPaneCaptureRange = try XCTUnwrap(sent.range(of: "capture-pane"))
+        let paneStateRange = try XCTUnwrap(sent.range(of: "list-panes -s -F"))
+        XCTAssertLessThan(
+            zoomRange.lowerBound, paneStateRange.lowerBound,
+            "the zoom must reach tmux before the client reads the new pane's size"
+        )
+        XCTAssertLessThan(
+            zoomRange.lowerBound, newPaneCaptureRange.lowerBound,
+            "the zoom must reach tmux before the client captures the new pane"
+        )
+        XCTAssertEqual(sent.components(separatedBy: "resize-pane").count - 1, 1)
+        await harness.tearDown()
+    }
+
+    /// The adapter reconciles every topology, including the zoomed one, and
+    /// none of them toggles the window again; the zoom is Remux's to release.
+    func testMultipaneZoomDefaultZoomsOnceAndOwnsTheZoom() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await attachedSession(
+            zoomsByDefault: true,
+            listWindows: Self.singleAndSplitWindows
+        )
+        let attach = harness.outbound.take()
+        // tmux ran the zoom before the pane-state scan, so it reports pane 1
+        // at the window's width.
+        await harness.reply(
+            to: attach,
+            paneState: Self.paneState(id: 0, width: 83)
+                + Self.paneState(id: 1, width: 83)
+                + Self.paneState(id: 2, width: 41)
+        )
+        await harness.receive(
+            "%layout-change @1 9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} b7de,83x44,0,0,1 *Z\n"
+        )
+        XCTAssertTrue(harness.adapter.terminalScreenPresentationProjection.viewport.isServerZoomed)
+
+        let afterZoom = harness.outbound.take()
+        XCTAssertEqual(
+            afterZoom, "",
+            "the zoomed window is neither zoomed again nor loaded again"
+        )
+        XCTAssertEqual((attach + afterZoom).components(separatedBy: "resize-pane -Z -t %").count - 1, 1)
+
+        harness.adapter.releaseZoomOwnership()
+        await harness.settle()
+        XCTAssertEqual(
+            harness.outbound.take(),
+            "resize-pane -Z -t @1 ; \(owner.clearMarkCommand(windowID: 1))\n"
+        )
+        await harness.tearDown()
+    }
+
+    func testTurningTheMultipaneZoomDefaultOnZoomsTheAttachedWindow() async throws {
+        let harness = try await attachedSession(
+            zoomsByDefault: false,
+            listWindows: Self.singleAndSplitWindows
+        )
+        _ = harness.outbound.take()
+
+        harness.adapter.setZoomMultipaneWindowsByDefault(true)
+        await harness.settle()
+
+        XCTAssertEqual(
+            harness.outbound.take(),
+            "resize-pane -Z -t %1 ; \(Self.zoomOwner.markIfZoomedCommand(windowID: 1))\n"
+        )
+        await harness.tearDown()
+    }
+
+    private func attachedSession(
+        zoomsByDefault: Bool,
+        listWindows: String
+    ) async throws -> AttachedSession {
+        let runtime = try GhosttyKitRuntime()
+        let session = TmuxTerminalSession(
+            app: runtime.appHandleForTesting,
+            transport: DeterministicTmuxControlTransport(chunks: []),
+            baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
+            paneViewTheme: { .remuxDark },
+            zoomOwner: Self.zoomOwner
+        )
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            zoomMultipaneWindowsByDefault: zoomsByDefault,
+            initialViewportHandler: { _, _, _ in },
+            viewportStabilityHandler: { _ in }
+        )
+        let attached = AttachedSession(runtime: runtime, session: session, adapter: adapter)
+        session.controller.setOutboundSink { [outbound = attached.outbound] in outbound.append($0) }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.controller.start(initialSize: .init(cols: 83, rows: 44)) {
+                continuation.resume(with: $0)
+            }
+        }
+        await attached.receive("%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n")
+        XCTAssertTrue(attached.outbound.take().contains("list-windows -F"))
+        await attached.receive(
+            "%begin 2 2 1\n3.1\n%end 2 2 1\n%begin 3 3 1\n%end 3 3 1\n"
+                + "%begin 4 4 1\n\(listWindows)%end 4 4 1\n"
+        )
+        return attached
+    }
+
+    private static let zoomOwner = TmuxZoomOwner(
+        serverID: UUID(uuidString: "6B1E0C3A-9F24-4D8B-A5C7-2E9D3F60B714")!
+    )
+
+    /// A one-pane window and a current two-pane window, neither zoomed.
+    private static let singleAndSplitWindows =
+        windowRecord(id: 0, active: false, paneID: 0, layout: "b7dd,83x44,0,0,0")
+        + windowRecord(id: 1, active: true, paneID: 1, layout: "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}")
+
+    private static let zoomedSplitAndSingleWindows =
+        windowRecord(
+            id: 0,
+            active: true,
+            paneID: 0,
+            layout: "607b,83x44,0,0[83x22,0,0,0,83x21,0,23,1]",
+            visibleLayout: "b7dd,83x44,0,0,0"
+        )
+        + windowRecord(id: 1, active: false, paneID: 2, layout: "b7df,83x44,0,0,2")
+
+    private static let twoSinglePaneWindows =
+        windowRecord(id: 0, active: false, paneID: 0, layout: "b7dd,83x44,0,0,0")
+        + windowRecord(id: 1, active: true, paneID: 2, layout: "b7df,83x44,0,0,2")
+
+    private static func windowRecord(
+        id: Int,
+        active: Bool,
+        paneID: Int,
+        layout: String,
+        visibleLayout: String? = nil
+    ) -> String {
+        "$42 @\(id) \(active ? 1 : 0) %\(paneID) 83 44 \(layout) \(visibleLayout ?? layout) window-\(id)\n"
+    }
+
+    /// One line of the client's pane-state scan for a 44-row pane at the prompt.
+    private static func paneState(id: Int, width: Int) -> String {
+        "%\(id);\(width);44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/tmp\n"
+    }
+
     private func drain(_ controller: TmuxSessionController) async {
         await withCheckedContinuation { continuation in
             controller.queue.async {
                 DispatchQueue.main.async { continuation.resume() }
             }
+        }
+    }
+}
+
+/// A session whose own controller is fed tmux's bytes directly, with every
+/// outbound byte recorded. Replies are numbered after the attach's four
+/// commands.
+@MainActor
+private final class AttachedSession {
+    let runtime: GhosttyKitRuntime
+    let session: TmuxTerminalSession
+    let adapter: TmuxTerminalScreenAdapter
+    let outbound = ZoomDefaultOutboundRecorder()
+    private var nextCommandNumber = 5
+
+    init(runtime: GhosttyKitRuntime, session: TmuxTerminalSession, adapter: TmuxTerminalScreenAdapter) {
+        self.runtime = runtime
+        self.session = session
+        self.adapter = adapter
+    }
+
+    /// Lets the writer queue and the main actor finish what each sent the other.
+    func settle() async {
+        for _ in 0..<3 {
+            await withCheckedContinuation { continuation in
+                session.controller.queue.async {
+                    DispatchQueue.main.async { continuation.resume() }
+                }
+            }
+        }
+    }
+
+    func receive(_ text: String) async {
+        session.controller.pump(Data(text.utf8))
+        await settle()
+    }
+
+    /// Answers each command in `sent`, in order: the pane-state scan with
+    /// `paneState`, every other command with an empty reply.
+    func reply(to sent: String, paneState: String = "") async {
+        var replies = ""
+        for command in sent.split(separator: "\n").flatMap({ $0.components(separatedBy: " ; ") }) {
+            let number = nextCommandNumber
+            nextCommandNumber += 1
+            let body = command.hasPrefix("list-panes -s -F") ? paneState : ""
+            replies += "%begin \(number) \(number) 1\n\(body)%end \(number) \(number) 1\n"
+        }
+        await receive(replies)
+    }
+
+    func tearDown() async {
+        adapter.invalidate()
+        await session.shutdown()
+        withExtendedLifetime(runtime) {}
+    }
+}
+
+private final class ZoomDefaultOutboundRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func append(_ data: Data) {
+        lock.withLock { text += String(decoding: data, as: UTF8.self) }
+    }
+
+    /// Everything sent since the last take.
+    func take() -> String {
+        lock.withLock {
+            defer { text = "" }
+            return text
         }
     }
 }

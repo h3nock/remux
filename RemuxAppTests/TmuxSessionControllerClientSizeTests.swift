@@ -468,10 +468,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             expectedPaneCount: 4
         )
 
-        harness.controller.requestSetWindowsZoomed(
-            windowIDs: [0, 1],
-            zoomed: false
-        )
+        harness.controller.requestReleaseZoom(windowIDs: [0, 1])
         await drain(harness.controller)
 
         XCTAssertEqual(
@@ -486,10 +483,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             expectedPaneCount: 4
         )
 
-        harness.controller.requestSetWindowsZoomed(
-            windowIDs: [0, 1],
-            zoomed: true
-        )
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
         await drain(harness.controller)
 
         XCTAssertEqual(
@@ -506,7 +500,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             zoomOwner: owner
         )
 
-        harness.controller.requestSetWindowsZoomed(windowIDs: [0, 1], zoomed: true)
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
         await drain(harness.controller)
 
         XCTAssertEqual(
@@ -609,10 +603,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             expectedPaneCount: 4
         )
 
-        harness.controller.requestSetWindowsZoomed(
-            windowIDs: [0, 1],
-            zoomed: true
-        )
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
         await drain(harness.controller)
 
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
@@ -625,8 +616,8 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
         var nextCommandNumber = harness.nextCommandNumber
 
-        harness.controller.requestSetWindowsZoomed(windowIDs: [1], zoomed: true)
-        harness.controller.requestSetWindowsZoomed(windowIDs: [1], zoomed: false)
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
+        harness.controller.setZoomMultipaneWindowsByDefault(false)
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["resize-pane -Z -t %1\n"])
 
@@ -652,7 +643,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         var nextCommandNumber = harness.nextCommandNumber
 
         harness.controller.requestSelectPane(paneID: 2)
-        harness.controller.requestSetWindowsZoomed(windowIDs: [1], zoomed: true)
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
         harness.controller.requestSelectPane(paneID: 1)
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["select-pane -t %2\n"])
@@ -1101,6 +1092,49 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             commandNumber: &nextCommandNumber
         ).utf8))
         await fulfillment(of: [zoomCreated], timeout: 1)
+    }
+
+    func testZoomDefaultZoomsTheSplitOfAWindowsOnlyPane() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            zoomOwner: owner
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let zoomCreated = expectation(description: "zooming split accepted")
+
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
+        harness.controller.requestSplit(
+            paneID: 0,
+            direction: .right,
+            zoom: false,
+            onZoomCreated: { zoomCreated.fulfill() }
+        )
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["split-window -h -Z -t %0 ; \(owner.markIfZoomedCommand(windowID: 0))\n"]
+        )
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber
+        ).utf8))
+        await fulfillment(of: [zoomCreated], timeout: 1)
+    }
+
+    func testZoomDefaultDoesNotZoomTheSplitOfAPaneWithSiblings() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.twoPaneUnzoomedWindow,
+            expectedPaneCount: 2
+        )
+        harness.controller.setZoomMultipaneWindowsByDefault(true)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["resize-pane -Z -t %1\n"])
+
+        harness.controller.requestSplit(paneID: 2, direction: .right, zoom: false)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["split-window -h -t %2\n"])
     }
 
     func testZoomedInactivePaneCloseBatchesDeleteAndRezoom() async throws {
