@@ -610,7 +610,7 @@ struct GhosttyComposeBar: View {
             Haptic.chromeControlPress()
             onClose()
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: "chevron.down")
                 .font(.system(size: 18, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
