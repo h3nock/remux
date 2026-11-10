@@ -175,6 +175,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
         // when one is never answered and nothing else is, the session's silence ends the upload instead.
         let writes = GatedWrites()
         let timeouts = Counter()
+        let failures = Counter()
         // Should the upload wait for the stuck write, this frees it so the test fails rather than hangs.
         let release = Task {
             try await Task.sleep(for: .seconds(5))
@@ -190,7 +191,10 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
                     onTimeout: { timeouts.increment() },
                     progress: { _ in },
                     write: { data, offset in
-                        if offset == 4 { throw WriteFailure() }
+                        if offset == 4 {
+                            failures.increment()
+                            throw WriteFailure()
+                        }
                         try await writes.write(data, at: offset)
                     }
                 )
@@ -199,6 +203,7 @@ final class RemuxSFTPUploadWindowTests: XCTestCase {
             XCTAssertEqual(error, .operationTimedOut)
         }
 
+        XCTAssertEqual(failures.value, 1)
         XCTAssertEqual(timeouts.value, 1)
         XCTAssertLessThan(ContinuousClock.now - start, .seconds(4), "it returns without waiting for the stuck write")
         release.cancel()
