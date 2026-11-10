@@ -637,7 +637,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
                     attachments: composerAttachmentsBinding,
-                    initiallySelectedAttachmentID: request.attachmentID
+                    initiallySelectedAttachmentID: request.attachmentID,
+                    onRemove: removePendingAttachment
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)

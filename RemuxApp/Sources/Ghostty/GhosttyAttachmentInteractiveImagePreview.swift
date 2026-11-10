@@ -56,10 +56,10 @@ final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate 
     }
 
     private func setup() {
-        backgroundColor = .black
+        backgroundColor = .clear
 
         scrollView.delegate = self
-        scrollView.backgroundColor = .black
+        scrollView.backgroundColor = .clear
         scrollView.bouncesZoom = true
         scrollView.minimumZoomScale = 1
         scrollView.maximumZoomScale = 4

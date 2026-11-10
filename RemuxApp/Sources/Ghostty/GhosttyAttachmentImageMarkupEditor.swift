@@ -3,128 +3,130 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// Markup of one image, shown in the attachment preview's own frame. Its controls go to the surrounding
+/// navigation bar: cancel, undo and redo, and the confirmation that keeps the marks.
 struct GhosttyAttachmentImageMarkupEditor: View {
     let imageURL: URL
     let outputFormat: GhosttyAttachmentImageMarkupOutputFormat
     let onCancel: () -> Void
     let onDone: (GhosttyAttachmentImageMarkupResult) -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var phase: LoadPhase = .loading
     @State private var drawing = PKDrawing()
     @State private var toolPickerVisibilityRequest = UUID()
     @State private var isRendering = false
+    @State private var isConfirmingDiscard = false
     @State private var saveFailureMessage: String?
+    @StateObject private var undo = GhosttyAttachmentMarkupUndo()
 
     var body: some View {
-        ZStack(alignment: .top) {
-            editorContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.bottom, phase.loadedImage == nil ? 0 : 88)
-
-            editorChromeScrim
-
-            toolbar
-        }
-        .background(Color.black.ignoresSafeArea())
-        .foregroundStyle(.white)
-        .task(id: imageURL) {
-            await loadImage()
-        }
-        .alert(
-            "Annotation Unavailable",
-            isPresented: saveFailureAlertBinding,
-            actions: {
-                Button("OK", role: .cancel) {}
-            },
-            message: {
-                Text(saveFailureMessage ?? "Annotation could not be saved.")
+        editorContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("Markup")
+            .toolbar {
+                toolbarContent
             }
-        )
-    }
-
-    private var toolbar: some View {
-        toolbarContent
-        .padding(.horizontal, 20)
-        .padding(.top, 10)
-    }
-
-    private var toolbarContent: some View {
-        HStack(spacing: 12) {
-            Button {
-                onCancel()
-                dismiss()
-            } label: {
-                Text("Cancel")
-                    .frame(width: 92, height: 44)
+            .interactiveDismissDisabled()
+            .task(id: imageURL) {
+                await loadImage()
             }
-            .ghosttyMarkupToolbarButtonStyle(.secondary)
-            .disabled(isRendering)
-            .accessibilityIdentifier("terminal.attachments.markup.cancel")
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                if isRendering {
-                    ProgressView()
-                        .tint(.white)
-                        .controlSize(.small)
+            .alert(
+                "Markup Unavailable",
+                isPresented: saveFailureAlertBinding,
+                actions: {
+                    Button("OK", role: .cancel) {}
+                },
+                message: {
+                    Text(saveFailureMessage ?? "Markup could not be saved.")
                 }
+            )
+    }
 
-                if phase.loadedImage != nil, hasDrawing {
-                    Button {
-                        clearAnnotation()
-                    } label: {
-                        Image(systemName: "trash")
-                            .frame(width: 44, height: 44)
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        // Cancel stands on its own, ahead of undo and redo, as in the system's Markup.
+        ToolbarItem(placement: .topBarLeading) {
+            cancelButton
+                .disabled(isRendering)
+                .accessibilityIdentifier("terminal.attachments.markup.cancel")
+                .confirmationDialog(
+                    "Are you sure you want to discard your changes?",
+                    isPresented: $isConfirmingDiscard,
+                    titleVisibility: .visible
+                ) {
+                    Button("Discard Changes", role: .destructive) {
+                        onCancel()
                     }
-                    .ghosttyMarkupToolbarButtonStyle(.destructiveIcon)
-                    .disabled(isRendering)
-                    .accessibilityLabel("Clear annotation")
-                    .accessibilityIdentifier("terminal.attachments.markup.clear")
+                    Button("Keep Editing", role: .cancel) {}
                 }
+        }
 
-                Button {
-                    finishAnnotation()
-                } label: {
-                    Text("Done")
-                        .frame(width: 82, height: 44)
-                }
-                .ghosttyMarkupToolbarButtonStyle(.primary)
-                .disabled(!canFinish)
-                .accessibilityIdentifier("terminal.attachments.markup.done")
+        if #available(iOS 26.0, *) {
+            ToolbarSpacer(.fixed, placement: .topBarLeading)
+        }
+
+        ToolbarItemGroup(placement: .topBarLeading) {
+            Button {
+                undo.undo()
+            } label: {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(!undo.canUndo || isRendering)
+            .accessibilityIdentifier("terminal.attachments.markup.undo")
+
+            Button {
+                undo.redo()
+            } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            }
+            .disabled(!undo.canRedo || isRendering)
+            .accessibilityIdentifier("terminal.attachments.markup.redo")
+        }
+
+        ToolbarItem(placement: .confirmationAction) {
+            if isRendering {
+                ProgressView()
+            } else {
+                doneButton
+                    .disabled(!canFinish)
+                    .accessibilityIdentifier("terminal.attachments.markup.done")
             }
         }
     }
 
-    private var editorChromeScrim: some View {
-        VStack(spacing: 0) {
-            LinearGradient(
-                colors: [
-                    .black.opacity(0.82),
-                    .black.opacity(0.46),
-                    .black.opacity(0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 164)
-
-            Spacer()
-
-            LinearGradient(
-                colors: [
-                    .black.opacity(0),
-                    .black.opacity(0.42),
-                    .black.opacity(0.78),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 190)
+    @ViewBuilder
+    private var cancelButton: some View {
+        if #available(iOS 26.0, *) {
+            Button(role: .cancel) {
+                cancel()
+            }
+        } else {
+            Button("Cancel") {
+                cancel()
+            }
         }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var doneButton: some View {
+        if #available(iOS 26.0, *) {
+            Button(role: .confirm) {
+                finishMarkup()
+            }
+        } else {
+            Button("Done") {
+                finishMarkup()
+            }
+        }
+    }
+
+    /// Marks are only kept by the confirmation, so leaving with any on the canvas asks first.
+    private func cancel() {
+        if hasDrawing {
+            isConfirmingDiscard = true
+        } else {
+            onCancel()
+        }
     }
 
     @ViewBuilder
@@ -132,7 +134,6 @@ struct GhosttyAttachmentImageMarkupEditor: View {
         switch phase {
         case .loading:
             ProgressView()
-                .tint(.white)
                 .controlSize(.large)
 
         case .loaded(let image):
@@ -140,9 +141,10 @@ struct GhosttyAttachmentImageMarkupEditor: View {
                 image: image,
                 documentSize: GhosttyAttachmentImageMarkupRenderer.documentSize(for: image.size),
                 drawing: $drawing,
+                undo: undo,
                 toolPickerVisibilityRequest: toolPickerVisibilityRequest
             )
-            .accessibilityLabel("Annotation canvas")
+            .accessibilityLabel("Markup canvas")
             .accessibilityIdentifier("terminal.attachments.markup.canvas")
 
         case .failed:
@@ -152,13 +154,8 @@ struct GhosttyAttachmentImageMarkupEditor: View {
                 Text("Image could not be opened.")
                     .font(.system(size: 15, weight: .semibold))
             }
-            .foregroundStyle(.white.opacity(0.82))
+            .foregroundStyle(.secondary)
         }
-    }
-
-    private func clearAnnotation() {
-        guard !drawing.bounds.isEmpty else { return }
-        drawing = PKDrawing()
     }
 
     private var hasDrawing: Bool {
@@ -196,11 +193,10 @@ struct GhosttyAttachmentImageMarkupEditor: View {
         phase = .loaded(image)
     }
 
-    private func finishAnnotation() {
+    private func finishMarkup() {
         guard case .loaded(let image) = phase, canFinish else { return }
         guard !drawing.bounds.isEmpty else {
             onCancel()
-            dismiss()
             return
         }
 
@@ -217,77 +213,32 @@ struct GhosttyAttachmentImageMarkupEditor: View {
             onDone(result)
         } catch {
             isRendering = false
-            saveFailureMessage = "Annotation could not be saved."
+            saveFailureMessage = "Markup could not be saved."
         }
     }
 }
 
-private enum GhosttyAttachmentMarkupToolbarButtonKind {
-    case secondary
-    case primary
-    case destructiveIcon
+/// Undo and redo for the canvas. PencilKit registers each stroke with the canvas's own undo manager.
+@MainActor
+final class GhosttyAttachmentMarkupUndo: ObservableObject {
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+    fileprivate weak var canvasView: PKCanvasView?
 
-    var foreground: Color {
-        .white
+    func undo() {
+        canvasView?.undoManager?.undo()
+        refresh()
     }
 
-    var fontSize: CGFloat {
-        switch self {
-        case .destructiveIcon:
-            return 17
-        case .primary, .secondary:
-            return 16
-        }
-    }
-}
-
-private struct GhosttyAttachmentMarkupToolbarButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    let kind: GhosttyAttachmentMarkupToolbarButtonKind
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: kind.fontSize, weight: .semibold))
-            .foregroundStyle(kind.foreground.opacity(isEnabled ? 1 : 0.45))
-            .ghosttyMarkupToolbarButtonSurface(
-                isPressed: configuration.isPressed,
-                isEnabled: isEnabled
-            )
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.975 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-            .animation(.easeOut(duration: 0.12), value: isEnabled)
-    }
-}
-
-private extension View {
-    func ghosttyMarkupToolbarButtonStyle(_ kind: GhosttyAttachmentMarkupToolbarButtonKind) -> some View {
-        buttonStyle(GhosttyAttachmentMarkupToolbarButtonStyle(kind: kind))
+    func redo() {
+        canvasView?.undoManager?.redo()
+        refresh()
     }
 
-    @ViewBuilder
-    func ghosttyMarkupToolbarButtonSurface(
-        isPressed: Bool,
-        isEnabled: Bool
-    ) -> some View {
-        let shape = Capsule(style: .continuous)
-        let pressedOverlay = Color.primary.opacity(isPressed && isEnabled ? 0.08 : 0)
-
-        self
-            .background(
-                isPressed && isEnabled
-                    ? GhosttyShortcutSurfacePalette.embeddedPressedFill
-                    : GhosttyShortcutSurfacePalette.embeddedFill,
-                in: shape
-            )
-            .overlay {
-                shape.fill(pressedOverlay)
-            }
-            .overlay {
-                shape.strokeBorder(GhosttyShortcutSurfacePalette.contentStroke, lineWidth: 1)
-            }
-            .contentShape(shape)
-            .opacity(isEnabled ? 1 : 0.62)
+    fileprivate func refresh() {
+        let manager = canvasView?.undoManager
+        canUndo = manager?.canUndo ?? false
+        canRedo = manager?.canRedo ?? false
     }
 }
 
@@ -496,11 +447,13 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
     let image: UIImage
     let documentSize: CGSize
     @Binding var drawing: PKDrawing
+    let undo: GhosttyAttachmentMarkupUndo
     let toolPickerVisibilityRequest: UUID
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             drawing: $drawing,
+            undo: undo,
             documentSize: documentSize
         )
     }
@@ -538,17 +491,20 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
 
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         @Binding private var drawing: PKDrawing
+        private let undo: GhosttyAttachmentMarkupUndo
         private let toolPicker: PKToolPicker
         private var requestedVisibilityRequest: UUID?
         private weak var surfaceView: GhosttyAttachmentMarkupSurfaceView?
 
-        init(drawing: Binding<PKDrawing>, documentSize: CGSize) {
+        init(drawing: Binding<PKDrawing>, undo: GhosttyAttachmentMarkupUndo, documentSize: CGSize) {
             _drawing = drawing
+            self.undo = undo
             toolPicker = Self.makeToolPicker(documentSize: documentSize)
         }
 
         func attach(to surfaceView: GhosttyAttachmentMarkupSurfaceView) {
             self.surfaceView = surfaceView
+            undo.canvasView = surfaceView.canvasView
             surfaceView.scrollView.delegate = self
             surfaceView.canvasView.delegate = self
         }
@@ -567,6 +523,10 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             drawing = canvasView.drawing
+            // The stroke's undo registration lands after this callback.
+            DispatchQueue.main.async { [undo] in
+                undo.refresh()
+            }
         }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
@@ -758,9 +718,9 @@ private final class GhosttyAttachmentMarkupSurfaceView: UIView {
     }
 
     private func setup() {
-        backgroundColor = .black
+        backgroundColor = .clear
 
-        scrollView.backgroundColor = .black
+        scrollView.backgroundColor = .clear
         scrollView.bouncesZoom = true
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
@@ -773,7 +733,7 @@ private final class GhosttyAttachmentMarkupSurfaceView: UIView {
         scrollView.addSubview(contentView)
 
         imageView.contentMode = .scaleAspectFit
-        imageView.backgroundColor = .black
+        imageView.backgroundColor = .clear
         contentView.addSubview(imageView)
 
         canvasView.backgroundColor = .clear

@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 
+/// The attachments of a draft, one at a time. Swiping or tapping a thumbnail moves between them, an image can be
+/// marked up in place, and the one in view can be taken out of the draft.
 struct GhosttyAttachmentPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
@@ -8,47 +10,35 @@ struct GhosttyAttachmentPreviewSheet: View {
     @State private var markupRequest: GhosttyAttachmentMarkupRequest?
     @State private var preparingMarkupAttachmentID: UUID?
     @State private var markupFailureMessage: String?
+    @State private var previewStageHeight: CGFloat?
     @Binding var attachments: [GhosttyPendingAttachment]
+    let onRemove: (GhosttyPendingAttachment.ID) -> Void
 
     init(
         attachments: Binding<[GhosttyPendingAttachment]>,
-        initiallySelectedAttachmentID: GhosttyPendingAttachment.ID
+        initiallySelectedAttachmentID: GhosttyPendingAttachment.ID,
+        onRemove: @escaping (GhosttyPendingAttachment.ID) -> Void
     ) {
         _attachments = attachments
         _selectedAttachmentID = State(initialValue: initiallySelectedAttachmentID)
+        self.onRemove = onRemove
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-
-            if attachments.count > 1 {
-                attachmentStrip
-            }
-
-            attachmentPreview
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NavigationStack {
+            stage
+                .navigationBarTitleDisplayMode(.inline)
+                .containerBackground(.clear, for: .navigation)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 16)
         .onAppear {
             ensureSelectedAttachment()
         }
-        .onChange(of: attachments) { _, _ in
-            ensureSelectedAttachment()
-        }
-        .fullScreenCover(item: $markupRequest) { request in
-            GhosttyAttachmentImageMarkupEditor(
-                imageURL: request.editingURL,
-                outputFormat: request.outputFormat,
-                onCancel: {
-                    cancelMarkup(request)
-                },
-                onDone: { result in
-                    saveMarkup(result, request: request)
-                }
-            )
+        .onChange(of: attachments) { _, attachments in
+            if attachments.isEmpty {
+                dismiss()
+            } else {
+                ensureSelectedAttachment()
+            }
         }
         .alert(
             "Markup Unavailable",
@@ -62,77 +52,126 @@ struct GhosttyAttachmentPreviewSheet: View {
         )
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            GhosttyAttachmentPreviewHeader(
-                title: previewTitle
+    /// Markup takes the preview's place in the same frame, so the picture does not move when the bars change.
+    @ViewBuilder
+    private var stage: some View {
+        if let request = markupRequest {
+            GhosttyAttachmentImageMarkupEditor(
+                imageURL: request.editingURL,
+                outputFormat: request.outputFormat,
+                onCancel: {
+                    cancelMarkup(request)
+                },
+                onDone: { result in
+                    saveMarkup(result, request: request)
+                }
             )
-            .layoutPriority(1)
+            .frame(height: previewStageHeight, alignment: .top)
+            .frame(maxHeight: .infinity, alignment: .top)
+        } else {
+            pager
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    previewStageHeight = height
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    // The band is kept for a single attachment too, so the picture does not move when the
+                    // thumbnails come and go, and a tall picture stays clear of the drawing palette.
+                    ZStack {
+                        if attachments.count > 1 {
+                            thumbnailRail
+                        }
+                    }
+                    .frame(height: GhosttyAttachmentPreviewStyle.thumbnailBandHeight)
+                }
+                .navigationTitle(navigationTitle)
+                .toolbar {
+                    previewToolbar
+                }
+        }
+    }
 
-            Spacer(minLength: 0)
-
-            if let selectedAttachment,
-               selectedAttachment.supportsImageMarkup {
-                markupButton(for: selectedAttachment)
+    private var pager: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 0) {
+                ForEach(attachments) { attachment in
+                    page(attachment)
+                        .containerRelativeFrame(.horizontal)
+                }
             }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $selectedAttachmentID)
+        .scrollIndicators(.hidden)
+        .accessibilityIdentifier("terminal.attachments.preview.pager")
+    }
 
+    @ToolbarContentBuilder
+    private var previewToolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            closeButton
+        }
+
+        if let selectedAttachment, selectedAttachment.supportsImageMarkup {
+            ToolbarItemGroup(placement: .bottomBar) {
+                markupButton(for: selectedAttachment)
+                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var closeButton: some View {
+        if #available(iOS 26.0, *) {
+            Button(role: .close) {
+                Haptic.tap()
+                dismiss()
+            }
+            .accessibilityIdentifier("terminal.attachments.preview.close")
+        } else {
             Button {
                 Haptic.tap()
                 dismiss()
             } label: {
-                Text("Close")
-                    .font(.system(size: 15, weight: .semibold))
-                    .padding(.horizontal, 16)
-                    .frame(height: 38)
+                Label("Close", systemImage: "xmark")
             }
-            .buttonStyle(GhosttyAttachmentPreviewCloseButtonStyle())
             .accessibilityIdentifier("terminal.attachments.preview.close")
         }
     }
 
-    private var attachmentStrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(attachments) { attachment in
-                        Button {
-                            Haptic.selection()
-                            withAnimation(.easeOut(duration: 0.16)) {
-                                selectedAttachmentID = attachment.id
-                            }
-                        } label: {
-                            HStack(spacing: 7) {
-                                Image(systemName: attachment.systemName)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .symbolRenderingMode(.monochrome)
+    private func markupButton(for attachment: GhosttyPendingAttachment) -> some View {
+        Button {
+            Haptic.chromeControlPress()
+            beginMarkup(attachment)
+        } label: {
+            if preparingMarkupAttachmentID == attachment.id {
+                ProgressView()
+            } else {
+                Label("Markup", systemImage: "pencil.tip.crop.circle")
+            }
+        }
+        .disabled(preparingMarkupAttachmentID != nil)
+        .accessibilityIdentifier("terminal.attachments.preview.markup-selected")
+    }
 
-                                Text(attachment.title)
-                                    .font(.system(size: 12.5, weight: .semibold))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .frame(
-                                        maxWidth: GhosttyAttachmentPreviewStyle.chipTitleMaxWidth,
-                                        alignment: .leading
-                                    )
-                            }
-                            .padding(.horizontal, 11)
-                            .frame(height: 34)
-                        }
-                        .buttonStyle(
-                            GhosttyAttachmentPreviewChipButtonStyle(
-                                isSelected: isSelected(attachment),
-                                chromeStyle: chromeStyle
-                            )
-                        )
-                        .id(attachment.id)
+    private var thumbnailRail: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(attachments) { attachment in
+                        thumbnailRailItem(attachment)
+                            .id(attachment.id)
                     }
                 }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 1)
+                .padding(.horizontal, 12)
             }
+            .scrollIndicators(.hidden)
+            .defaultScrollAnchor(.center, for: .alignment)
             .onChange(of: selectedAttachmentID) { _, id in
                 guard let id else { return }
-                withAnimation(.easeOut(duration: 0.18)) {
+                withAnimation(.snappy) {
                     proxy.scrollTo(id, anchor: .center)
                 }
             }
@@ -140,63 +179,81 @@ struct GhosttyAttachmentPreviewSheet: View {
         .accessibilityIdentifier("terminal.attachments.preview.strip")
     }
 
-    @ViewBuilder
-    private var attachmentPreview: some View {
-        if let attachment = selectedAttachment {
-            attachmentPreviewCard(attachment)
-        } else {
-            unavailablePreviewCard
-        }
-    }
-
-    private func attachmentPreviewCard(_ attachment: GhosttyPendingAttachment) -> some View {
-        attachmentPreviewBody(attachment)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func markupButton(for attachment: GhosttyPendingAttachment) -> some View {
-        let isPreparingSelectedMarkup = preparingMarkupAttachmentID == attachment.id
+    /// The thumbnail of the attachment in view carries the control that takes it out of the draft.
+    private func thumbnailRailItem(_ attachment: GhosttyPendingAttachment) -> some View {
+        let isInView = isSelected(attachment)
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
 
         return Button {
-            Haptic.chromeControlPress()
-            beginMarkup(attachment)
-        } label: {
-            if isPreparingSelectedMarkup {
-                ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: 38, height: 38)
+            if isInView {
+                remove(attachment)
             } else {
-                Image(systemName: "pencil.tip")
-                    .font(.system(size: 14, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .frame(width: 38, height: 38)
+                Haptic.selection()
+                withAnimation(.snappy) {
+                    selectedAttachmentID = attachment.id
+                }
             }
+        } label: {
+            GhosttyAttachmentPreviewThumbnail(attachment: attachment)
+                .overlay {
+                    if isInView {
+                        ZStack {
+                            Color.black.opacity(0.45)
+                            Image(systemName: "trash")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                }
+                .clipShape(shape)
+                .opacity(isInView ? 1 : 0.55)
+                .padding(4)
+                .overlay {
+                    if isInView {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .strokeBorder(GhosttySheetPalette.primary, lineWidth: 2)
+                    }
+                }
         }
-        .buttonStyle(
-            GhosttyAttachmentPreviewActionButtonStyle(
-                foreground: GhosttySheetPalette.primary
-            )
+        .buttonStyle(.plain)
+        .accessibilityLabel(isInView ? "Remove \(attachment.title)" : "Show \(attachment.title)")
+        .accessibilityIdentifier(
+            isInView ? "terminal.attachments.preview.remove" : "terminal.attachments.preview.thumbnail"
         )
-        .disabled(preparingMarkupAttachmentID != nil)
-        .accessibilityLabel("Markup attachment")
-        .accessibilityIdentifier("terminal.attachments.preview.markup-selected")
+    }
+
+    private func remove(_ attachment: GhosttyPendingAttachment) {
+        guard let index = attachments.firstIndex(where: { $0.id == attachment.id }) else { return }
+        Haptic.chromeControlPress()
+        let neighbor = attachments.indices.contains(index + 1)
+            ? attachments[index + 1].id
+            : (index > 0 ? attachments[index - 1].id : nil)
+        withAnimation(.snappy) {
+            selectedAttachmentID = neighbor
+            onRemove(attachment.id)
+        }
     }
 
     @ViewBuilder
-    private func attachmentPreviewBody(_ attachment: GhosttyPendingAttachment) -> some View {
+    private func page(_ attachment: GhosttyPendingAttachment) -> some View {
         switch attachment.previewPayload {
         case .imageData(let data):
             imagePreview(data)
         case .file(let url):
             filePreview(url)
+                .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         case .securityScopedFile(let file):
             filePreview(file)
+                .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         case .link(let url):
             linkPreview(url)
+                .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         case .text:
             textPreview(textBinding: textBinding(for: attachment))
+                .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         default:
             unavailablePreview
+                .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         }
     }
 
@@ -205,11 +262,9 @@ struct GhosttyAttachmentPreviewSheet: View {
         if let image = UIImage(data: data) {
             GhosttyAttachmentInteractiveImagePreview(image: image)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ghosttyAttachmentPreviewContentSurface(
-                    fill: GhosttyAttachmentPreviewStyle.mediaFill
-                )
         } else {
             unavailablePreview
+                .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         }
     }
 
@@ -313,10 +368,6 @@ struct GhosttyAttachmentPreviewSheet: View {
         .ghosttyAttachmentPreviewContentSurface()
     }
 
-    private var unavailablePreviewCard: some View {
-        unavailablePreview
-    }
-
     private var selectedAttachment: GhosttyPendingAttachment? {
         if let selectedAttachmentID,
            let attachment = attachments.first(where: { $0.id == selectedAttachmentID }) {
@@ -326,19 +377,10 @@ struct GhosttyAttachmentPreviewSheet: View {
         return attachments.first(where: \.isPreviewable) ?? attachments.first
     }
 
-    private var previewTitle: String {
-        guard let selectedAttachment else {
-            return "Attachment"
-        }
-
-        guard attachments.count > 1,
-              let selectedIndex = attachments.firstIndex(where: {
-                  $0.id == selectedAttachment.id
-              }) else {
-            return selectedAttachment.title
-        }
-
-        return "\(selectedAttachment.title) · \(selectedIndex + 1) of \(attachments.count)"
+    /// A picture needs no title; a file is known by its name.
+    private var navigationTitle: String {
+        guard let selectedAttachment, selectedAttachment.kind == .file else { return "" }
+        return selectedAttachment.title
     }
 
     private func isSelected(_ attachment: GhosttyPendingAttachment) -> Bool {
@@ -575,14 +617,24 @@ private enum GhosttyAttachmentMarkupError: Error {
     case previewUnavailable
 }
 
-private struct GhosttyAttachmentPreviewHeader: View {
-    let title: String
+private struct GhosttyAttachmentPreviewThumbnail: View {
+    let attachment: GhosttyPendingAttachment
 
     var body: some View {
-        Text(title)
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(GhosttySheetPalette.primary)
-            .lineLimit(1)
-            .truncationMode(.middle)
+        Group {
+            if case .imageData(let data) = attachment.previewPayload,
+               let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: attachment.systemName)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(GhosttySheetPalette.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(GhosttyAttachmentPreviewStyle.controlFill)
+            }
+        }
+        .frame(width: 48, height: 48)
     }
 }
