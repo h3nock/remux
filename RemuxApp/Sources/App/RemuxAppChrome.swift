@@ -6,7 +6,6 @@ enum RemuxAppPalette {
     static let rowSurface = Color(uiColor: .remuxAppRowSurface)
     static let separator = Color(uiColor: .remuxAppSeparator)
     static let sectionHeader = Color(uiColor: .remuxAppSectionHeader)
-    static let controlAccent = Color(uiColor: .remuxAppControlAccent)
     static let rowIconForeground = Color(uiColor: .remuxAppRowIconForeground)
     static let rowIconSurface = Color(uiColor: .remuxAppRowIconSurface)
 }
@@ -76,15 +75,6 @@ private extension UIColor {
             UIColor(red: 0.72, green: 0.74, blue: 0.80, alpha: 1.0)
         default:
             .secondaryLabel
-        }
-    }
-
-    static let remuxAppControlAccent = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.39, green: 0.64, blue: 1.0, alpha: 1.0)
-        default:
-            .systemBlue
         }
     }
 

@@ -211,6 +211,7 @@
 		819C6CCB81DFE21F9AB77A71 /* herdr-08-connect-inactive-A.expected.json in Resources */ = {isa = PBXBuildFile; fileRef = 4887DEBA659B475B61235285 /* herdr-08-connect-inactive-A.expected.json */; };
 		81C2A83D10DA7B9DB4DB3454 /* herdr-01-handshake-all-caps-A.c2s.bin in Resources */ = {isa = PBXBuildFile; fileRef = 92798C2D703016631285E219 /* herdr-01-handshake-all-caps-A.c2s.bin */; };
 		842E6402F6F631B4DB19B8DE /* GhosttyTerminalResponderTextInputShim.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25DBECAA1C7625528DD0831B /* GhosttyTerminalResponderTextInputShim.swift */; };
+		84F8080DDD0DD2281DA4BAD2 /* TerminalPreviewStaticHTMLLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4784D6A46EBE949B3FAC441 /* TerminalPreviewStaticHTMLLiveTests.swift */; };
 		8538B4599CD88CEC07452142 /* GhosttyKitRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF11321286DB9076CB3FA983 /* GhosttyKitRuntime.swift */; };
 		8620C4D7CE5B8ABA4E3C9B47 /* HerdrPaneImages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 044FF7468C5503DE4E10F610 /* HerdrPaneImages.swift */; };
 		8683BBAC12E7AB477CA76A87 /* TerminalProgramMarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09C986AA13BBB4781CFCA167 /* TerminalProgramMarkTests.swift */; };
@@ -731,6 +732,7 @@
 		B31032F48814EB56909DCCDA /* herdr-08-connect-inactive-A.c2s.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "herdr-08-connect-inactive-A.c2s.bin"; sourceTree = "<group>"; };
 		B38F49B9EC49FF6E9791967C /* GhosttyKeyboardVisibilityProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyKeyboardVisibilityProjection.swift; sourceTree = "<group>"; };
 		B3F6DC763DA4E412B51A701F /* herdr-14-input-A.expected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "herdr-14-input-A.expected.json"; sourceTree = "<group>"; };
+		B4784D6A46EBE949B3FAC441 /* TerminalPreviewStaticHTMLLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPreviewStaticHTMLLiveTests.swift; sourceTree = "<group>"; };
 		B48BCD9B1FDCD4C806DAFDE3 /* HerdrTerminalScreenAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrTerminalScreenAdapter.swift; sourceTree = "<group>"; };
 		B4C18060375CA9A4243434C0 /* HerdrTerminalAttachmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrTerminalAttachmentTests.swift; sourceTree = "<group>"; };
 		B4C7136948AF9803FAAD6F82 /* GhosttyKeyboardCursorTrackpad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyKeyboardCursorTrackpad.swift; sourceTree = "<group>"; };
@@ -1044,6 +1046,7 @@
 				D5437829CC09E381C6615908 /* TerminalPreviewLiveWebTests.swift */,
 				45F1A5B80247A1A99DC699E1 /* TerminalPreviewRemoteFileReaderTests.swift */,
 				4494B99A635444622AEC6970 /* TerminalPreviewSessionTests.swift */,
+				B4784D6A46EBE949B3FAC441 /* TerminalPreviewStaticHTMLLiveTests.swift */,
 				642B17B3F845A938C581F1AA /* TerminalPreviewStaticHTMLTests.swift */,
 				09C986AA13BBB4781CFCA167 /* TerminalProgramMarkTests.swift */,
 				B1AAF15C6761B24466DD78D6 /* TerminalRuntimeStatusPresentationTests.swift */,
@@ -1992,6 +1995,7 @@
 				6548541B3AD17F7D70BFE8C0 /* TerminalPreviewLiveWebTests.swift in Sources */,
 				AB2BE2FA6B22D1BBA6028774 /* TerminalPreviewRemoteFileReaderTests.swift in Sources */,
 				F3A21C20385E6E8D75397B15 /* TerminalPreviewSessionTests.swift in Sources */,
+				84F8080DDD0DD2281DA4BAD2 /* TerminalPreviewStaticHTMLLiveTests.swift in Sources */,
 				289D7673486A18F986C60788 /* TerminalPreviewStaticHTMLTests.swift in Sources */,
 				8683BBAC12E7AB477CA76A87 /* TerminalProgramMarkTests.swift in Sources */,
 				44C12052281C243559EAFF20 /* TerminalRuntimeStatusPresentationTests.swift in Sources */,
