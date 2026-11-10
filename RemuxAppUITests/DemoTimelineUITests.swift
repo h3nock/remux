@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import XCTest
 
 /// Plays a demo timeline on Remux as it is set up on this simulator, for `scripts/site_demo.py play`, which records
@@ -63,7 +64,7 @@ enum DemoStep {
     case tap(DemoTarget)
     case press(DemoTarget, duration: TimeInterval)
     case drag(DemoTarget, to: DemoTarget, hold: TimeInterval, speed: CGFloat, end: TimeInterval)
-    case swipe(DemoSwipeDirection, from: DemoTarget, length: CGFloat, speed: CGFloat)
+    case swipe(DemoSwipeDirection, from: DemoTarget, length: CGFloat, speed: CGFloat, count: Int, gap: TimeInterval)
     case type(String, clear: Bool, speed: Double)
     case shot(String)
     case mark(String)
@@ -116,7 +117,7 @@ struct DemoTimeline {
 
     private static let options: [String: Set<String>] = [
         "wait": [], "waitFor": ["at", "timeout"], "tap": ["at"], "press": ["at", "for"],
-        "drag": ["at", "to", "hold", "speed", "end"], "swipe": ["on", "at", "length", "speed"],
+        "drag": ["at", "to", "hold", "speed", "end"], "swipe": ["on", "at", "length", "speed", "count", "gap"],
         "type": ["clear", "speed"], "shot": [], "mark": [],
     ]
 
@@ -154,11 +155,15 @@ struct DemoTimeline {
             }
             let on = try json["on"].map { try target($0, at: json["at"]) }
                 ?? DemoTarget(element: nil, point: try point(json["at"], "at") ?? CGVector(dx: 0.5, dy: 0.5))
+            let count = try number(json["count"], "count") ?? 1
+            guard count >= 1, count == count.rounded() else { throw DemoTimelineError("count is a whole number, 1 or more") }
             return .swipe(
                 direction, from: on,
                 length: CGFloat(try number(json["length"], "length") ?? 0.4),
                 // A steady scroll, slow enough that the touch's trail draws out behind it.
-                speed: CGFloat(try number(json["speed"], "speed") ?? 450)
+                speed: CGFloat(try number(json["speed"], "speed") ?? 450),
+                count: Int(count),
+                gap: try number(json["gap"], "gap") ?? 0.12
             )
         case "type":
             guard let text = value as? String else { throw DemoTimelineError("type takes a string") }
@@ -268,15 +273,22 @@ final class DemoPlayer {
                 forDuration: hold, thenDragTo: coordinate(to), withVelocity: XCUIGestureVelocity(speed),
                 thenHoldForDuration: end
             )
-        case .swipe(let direction, let target, let length, let speed):
+        case .swipe(let direction, let target, let length, let speed, let count, let gap):
             let half = CGVector(dx: direction.vector.dx * length / 2, dy: direction.vector.dy * length / 2)
             let start = target.moved(to: CGVector(dx: target.point.dx - half.dx, dy: target.point.dy - half.dy))
             let end = target.moved(to: CGVector(dx: target.point.dx + half.dx, dy: target.point.dy + half.dy))
-            // A brief touch-down, then a fling that lifts at speed, as a finger scrolls.
-            try coordinate(start).press(
-                forDuration: 0.05, thenDragTo: coordinate(end), withVelocity: XCUIGestureVelocity(speed),
-                thenHoldForDuration: 0
-            )
+            if count == 1 {
+                // A brief touch-down, then a fling that lifts at speed, as a finger scrolls.
+                try coordinate(start).press(
+                    forDuration: 0.05, thenDragTo: coordinate(end), withVelocity: XCUIGestureVelocity(speed),
+                    thenHoldForDuration: 0
+                )
+            } else {
+                try DemoTouchPath.flicks(
+                    from: coordinate(start).screenPoint, to: coordinate(end).screenPoint,
+                    speed: speed, count: count, gap: gap
+                )
+            }
         case .type(let text, let clear, let speed):
             if clear {
                 // An empty field reports its placeholder as its value, so this may delete a few characters too many,
@@ -369,5 +381,106 @@ final class DemoPlayer {
 
     private func wait(_ seconds: TimeInterval) {
         RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+}
+
+/// Several flicks in a row, as a person scrolls a long page: each lifts at speed and the next comes down `gap` seconds
+/// later. Every XCUITest gesture waits for the app to go idle before it returns, and a fling keeps the terminal
+/// coasting for about two seconds, so separate swipes land two seconds apart. XCTest's event record, which XCUITest
+/// gestures are built on (private; WebDriverAgent uses it the same way), plays a whole touch path on its own clock.
+enum DemoTouchPath {
+    private typealias Alloc = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer?
+    private typealias InitAtPoint = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, Double)
+        -> UnsafeMutableRawPointer?
+    private typealias InitWithName = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int)
+        -> UnsafeMutableRawPointer?
+    private typealias Getter = @convention(c) (AnyObject, Selector) -> UnsafeMutableRawPointer?
+    private typealias MoveTo = @convention(c) (AnyObject, Selector, CGPoint, Double) -> Void
+    private typealias AtOffset = @convention(c) (AnyObject, Selector, Double) -> Void
+    private typealias AddPath = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+    /// The synthesizer keeps the completion block and calls it when the path has played, so it escapes.
+    private typealias Synthesize = @convention(c) (
+        AnyObject, Selector, AnyObject, @escaping @convention(block) (Bool, NSError?) -> Void
+    ) -> Void
+
+    @MainActor
+    static func flicks(from start: CGPoint, to end: CGPoint, speed: CGFloat, count: Int, gap: TimeInterval) throws {
+        let duration = TimeInterval(hypot(end.x - start.x, end.y - start.y) / max(speed, 1))
+        let getSynthesizer = try method(XCUIDevice.shared, "eventSynthesizer", as: Getter.self)
+        guard let synthesizerPointer = getSynthesizer.call(XCUIDevice.shared, getSynthesizer.selector) else {
+            throw DemoTimelineError("XCUIDevice has no event synthesizer, so swipes can't repeat (count above 1)")
+        }
+        let synthesizer = Unmanaged<AnyObject>.fromOpaque(synthesizerPointer).takeUnretainedValue()
+        let synthesize = try method(synthesizer, "synthesizeEvent:completion:", as: Synthesize.self)
+        // One record per flick, each sent when the last has been delivered: within one record, a path that lifts and
+        // presses again plays as one unbroken touch, and separate paths play back to back with no time between them.
+        for flick in 0..<count {
+            if flick > 0 { RunLoop.current.run(until: Date().addingTimeInterval(gap)) }
+            let path = try instance(of: "XCPointerEventPath", "initForTouchAtPoint:offset:", as: InitAtPoint.self) {
+                $0($1, $2, start, 0)
+            }
+            let moveTo = try method(path, "moveToPoint:atOffset:", as: MoveTo.self)
+            let liftUp = try method(path, "liftUpAtOffset:", as: AtOffset.self)
+            moveTo.call(path, moveTo.selector, end, duration)
+            liftUp.call(path, liftUp.selector, duration)
+            let record = try instance(
+                of: "XCSynthesizedEventRecord", "initWithName:interfaceOrientation:", as: InitWithName.self
+            ) { $0($1, $2, "demo flick" as NSString, UIInterfaceOrientation.portrait.rawValue) }
+            let addPath = try method(record, "addPointerEventPath:", as: AddPath.self)
+            addPath.call(record, addPath.selector, path)
+
+            let outcome = Outcome()
+            synthesize.call(synthesizer, synthesize.selector, record) { delivered, error in
+                outcome.finish(delivered: delivered, error: error)
+            }
+            let deadline = Date().addingTimeInterval(duration + 15)
+            while outcome.result == nil, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            guard let (delivered, error) = outcome.result else {
+                throw DemoTimelineError("flick \(flick + 1) was still playing \(Int(duration + 15)) s after it began")
+            }
+            guard delivered else {
+                throw DemoTimelineError("flick \(flick + 1) was not delivered: \(error?.localizedDescription ?? "no reason given")")
+            }
+        }
+    }
+
+    /// The event synthesizer may finish on another thread.
+    private final class Outcome: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: (Bool, NSError?)?
+
+        var result: (Bool, NSError?)? { lock.withLock { stored } }
+        func finish(delivered: Bool, error: NSError?) { lock.withLock { stored = (delivered, error) } }
+    }
+
+    /// A new object of a private class. `alloc` hands over a reference that `init` takes and replaces with its own,
+    /// so both pass as raw pointers and ARC only ever sees the finished object.
+    private static func instance<T>(
+        of className: String, _ initializer: String, as type: T.Type,
+        _ call: (T, UnsafeMutableRawPointer, Selector) -> UnsafeMutableRawPointer?
+    ) throws -> AnyObject {
+        let allocSelector = NSSelectorFromString("alloc")
+        let initSelector = NSSelectorFromString(initializer)
+        guard let objectClass = NSClassFromString(className),
+              let allocMethod = class_getClassMethod(objectClass, allocSelector),
+              let initMethod = class_getInstanceMethod(objectClass, initSelector),
+              let allocated = unsafeBitCast(method_getImplementation(allocMethod), to: Alloc.self)(
+                objectClass, allocSelector
+              ),
+              let created = call(unsafeBitCast(method_getImplementation(initMethod), to: type), allocated, initSelector)
+        else {
+            throw DemoTimelineError("this XCTest has no \(className) \(initializer), so swipes can't repeat (count above 1)")
+        }
+        return Unmanaged<AnyObject>.fromOpaque(created).takeRetainedValue()
+    }
+
+    private static func method<T>(_ object: AnyObject, _ name: String, as type: T.Type) throws -> (selector: Selector, call: T) {
+        let selector = NSSelectorFromString(name)
+        guard let method = class_getInstanceMethod(object_getClass(object), selector) else {
+            throw DemoTimelineError("this XCTest has no \(name), so swipes can't repeat (count above 1)")
+        }
+        return (selector, unsafeBitCast(method_getImplementation(method), to: type))
     }
 }

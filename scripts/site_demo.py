@@ -19,9 +19,10 @@ each typing step (default 1). Steps:
   {"drag": TARGET, "to": [x, y], "hold": 0.6, "speed": 200, "end": 0.3}
       touch down, hold, move to `to` at `speed` points a second, hold at the end, lift. `to` is in the same
       element (or the screen) as the start. The terminal's arrow keys are a drag with a hold.
-  {"swipe": "up", "on": TARGET, "length": 0.4, "speed": 450}
+  {"swipe": "up", "on": TARGET, "length": 0.4, "speed": 450, "count": 1, "gap": 0.12}
       a flick over `length` of the element (or of the screen, without "on"), the finger moving up, down, left or
-      right
+      right. With "count", that many flicks in a row, each `gap` seconds after the last lifted, as a person scrolls
+      a long way
   {"type": "git status\\n"}               types into whatever has the keyboard, 10 characters a
                                          second ("speed"); \\n is Return. With "clear": true, first
                                          deletes what the field holds
