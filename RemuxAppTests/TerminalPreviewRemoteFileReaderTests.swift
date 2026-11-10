@@ -180,8 +180,8 @@ final class TerminalPreviewRemoteFileReaderTests: XCTestCase {
         XCTAssertEqual(client.cancelledReads, TerminalPreviewRemoteFileReader.readWindow)
     }
 
-    /// A read once sent can't be taken back, so a cancelled reader sends no more. These reads answer whatever happens
-    /// to their task, so only the reader's own check can stop the next ones.
+    /// A read once sent can't be taken back, so a cancelled reader issues no more. These reads answer whatever
+    /// happens to their task, so only the reader's own check can stop the next ones.
     func testReaderCancelledWhileHandingAChunkOnSendsNoMoreReads() async throws {
         let client = WindowReadClient(contents: Self.patternedData(count: 20 * length))
         let handingOn = AsyncFlag()

@@ -97,7 +97,8 @@ enum TerminalPreviewRemoteFileReader {
             var dataReadsBack = 0
             var endCameBackEarly = false
             for (index, read) in reads.enumerated() {
-                // A read once sent can't be taken back, so a cancelled reader sends no more.
+                // A read once sent can't be taken back, so a cancelled reader issues no more; ones already issued
+                // still go out.
                 try Task.checkCancellation()
                 while issued < reads.count, issued - index < readWindow {
                     let issuedIndex = issued

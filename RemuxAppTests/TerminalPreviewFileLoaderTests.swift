@@ -25,9 +25,10 @@ final class TerminalPreviewFileLoaderTests: XCTestCase {
         let fileURL = try XCTUnwrap(resource?.url)
         XCTAssertEqual(fileURL.lastPathComponent, "report.final.txt")
         XCTAssertEqual(try Data(contentsOf: fileURL), Data("abcdefghij".utf8))
-        // The file's bytes and the read that finds its end go out together.
+        // The file's bytes and the read that finds its end go out together; an end that answers first is confirmed
+        // with one more read at the same offset.
         let offsets = await recorder.offsets()
-        XCTAssertEqual(offsets.sorted(), [0, 10])
+        XCTAssertEqual(Set(offsets), [0, 10])
         let scopedDirectory = fileURL.deletingLastPathComponent()
         XCTAssertTrue(FileManager.default.fileExists(atPath: scopedDirectory.path))
 
