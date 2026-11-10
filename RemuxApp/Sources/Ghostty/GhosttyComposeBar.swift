@@ -491,9 +491,22 @@ struct GhosttyComposeBar: View {
             )
         } else {
             HStack(spacing: 2) {
-                attachmentMenu
+                attachmentSourceButton(
+                    systemName: "photo",
+                    accessibilityLabel: "Attach photos",
+                    accessibilityIdentifier: "terminal.composer.attachments.photos",
+                    action: onChoosePhotos
+                )
+                attachmentSourceButton(
+                    systemName: "folder",
+                    accessibilityLabel: "Attach files",
+                    accessibilityIdentifier: "terminal.composer.attachments.files",
+                    action: onChooseFiles
+                )
                 closeButton
             }
+            // Lines the photo glyph's left edge up with the draft text above it.
+            .padding(.leading, 2)
         }
     }
 
@@ -567,30 +580,27 @@ struct GhosttyComposeBar: View {
         return attachments.isEmpty ? "Compose…" : "Describe the task…"
     }
 
-    private var attachmentMenu: some View {
-        Menu {
-            Button(action: onChoosePhotos) {
-                Label("Photos", systemImage: "photo")
-            }
-
-            Button(action: onChooseFiles) {
-                Label("Files", systemImage: "folder")
-            }
+    private func attachmentSourceButton(
+        systemName: String,
+        accessibilityLabel: String,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            Haptic.chromeControlPress()
+            action()
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 20, weight: .regular))
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
-                .contentShape(Rectangle())
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuOrder(.fixed)
+        .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!submissionState.allowsComposerInput)
         .opacity(submissionState.allowsComposerInput ? 1 : 0.38)
-        .accessibilityLabel("Add attachment")
-        .accessibilityIdentifier("terminal.composer.attachments")
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
     private var closeButton: some View {

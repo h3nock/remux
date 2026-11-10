@@ -913,15 +913,20 @@ final class RemuxAppUITests: XCTestCase {
             "The editor must keep its full width as text wraps."
         )
 
-        let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let photosButton = app.buttons["terminal.composer.attachments.photos"]
+        let filesButton = app.buttons["terminal.composer.attachments.files"]
         let closeButton = app.buttons["terminal.composer.toggle"]
         let micButton = app.buttons["terminal.composer.mic"]
         let sendButton = app.buttons["terminal.composer.send"]
-        XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
-        XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
-        XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
+        XCTAssertEqual(photosButton.label, "Attach photos")
+        XCTAssertEqual(filesButton.label, "Attach files")
+        XCTAssertLessThanOrEqual(composerField.frame.maxY, photosButton.frame.minY)
+        XCTAssertEqual(photosButton.frame.midY, filesButton.frame.midY, accuracy: 1)
+        XCTAssertEqual(photosButton.frame.midY, closeButton.frame.midY, accuracy: 1)
+        XCTAssertEqual(photosButton.frame.midY, micButton.frame.midY, accuracy: 1)
         XCTAssertEqual(micButton.frame.midY, sendButton.frame.midY, accuracy: 1)
-        XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, closeButton.frame.minX)
+        XCTAssertLessThanOrEqual(photosButton.frame.maxX, filesButton.frame.minX)
+        XCTAssertLessThanOrEqual(filesButton.frame.maxX, closeButton.frame.minX)
         XCTAssertLessThan(closeButton.frame.maxX, micButton.frame.minX)
         attachScreenshot(named: "composer-multiline-width-stable")
 
