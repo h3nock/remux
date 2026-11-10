@@ -85,6 +85,9 @@ def main():
     render_parser.add_argument('--to', dest='end', help='where it ends: seconds or a mark (default: mark "end", else '
                                'a second and a half after the last touch)')
     render_parser.add_argument('--speed', type=float, default=1.0, help='playback speed (default 1)')
+    render_parser.add_argument('--fast', nargs=3, action='append', default=[], metavar=('FROM', 'TO', 'TIMES'),
+                               help='play part of the cut TIMES faster, such as a page loading: FROM and TO are '
+                               'seconds into the recording or marks (repeatable)')
     render_parser.add_argument('--width', type=int, default=900, help='video width in pixels (default 900: a 300 px '
                                'phone on a 3x display)')
     render_parser.add_argument('--poster', type=float, default=0.0, help='the poster frame, in seconds into the cut '
@@ -308,7 +311,18 @@ def render(args):
          'csv=p=0:s=x', str(video)]).strip().split('x'))
     height = round(source_height * args.width / source_width / 2) * 2
     size = args.width * height * 3 // 2
-    slots = int((end - start) / args.speed * 60)
+    fast = []
+    for first, last, factor in args.fast:
+        try:
+            fast.append((when(first, None), when(last, None), float(factor)))
+        except ValueError:
+            sys.exit(f'--fast {first} {last} {factor}: TIMES is a number')
+    # The moment of the recording each output frame shows: a steady step, shorter where the cut plays faster.
+    dues, due = [], start
+    while due < end:
+        dues.append(due)
+        due += args.speed * next((factor for first, last, factor in fast if first <= due < last), 1) / 60
+    slots = len(dues)
     poster_slot = min(slots - 1, int(args.poster * 60))
     raw = ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', f'{args.width}x{height}', '-color_range', 'tv',
            '-colorspace', 'bt709']
@@ -324,8 +338,7 @@ def render(args):
                                 '-an', '-c:v', 'libx264', '-preset', 'slow', '-crf', '20', '-pix_fmt', 'yuv420p',
                                 '-movflags', '+faststart', str(out / f'{name}.mp4')], stdin=subprocess.PIPE)
     frame, index = None, -1
-    for slot in range(slots):
-        due = start + slot * args.speed / 60
+    for slot, due in enumerate(dues):
         while index + 1 < len(times) and (frame is None or times[index + 1] <= due):
             index += 1
             frame = decoder.stdout.read(size)
