@@ -492,21 +492,23 @@ struct GhosttyComposeBar: View {
         } else {
             HStack(spacing: 2) {
                 attachmentSourceButton(
-                    systemName: "photo",
+                    systemName: "photo.on.rectangle",
                     accessibilityLabel: "Attach photos",
                     accessibilityIdentifier: "terminal.composer.attachments.photos",
                     action: onChoosePhotos
                 )
                 attachmentSourceButton(
-                    systemName: "folder",
+                    systemName: "doc",
                     accessibilityLabel: "Attach files",
                     accessibilityIdentifier: "terminal.composer.attachments.files",
                     action: onChooseFiles
                 )
+                // Sets closing the composer apart from the two things that add to it.
                 closeButton
+                    .padding(.leading, 10)
             }
-            // Lines the photo glyph's left edge up with the draft text above it.
-            .padding(.leading, 2)
+            // Lines the photos glyph's left edge up with the draft text above it.
+            .padding(.leading, 3)
         }
     }
 
@@ -609,7 +611,7 @@ struct GhosttyComposeBar: View {
             onClose()
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 17, weight: .medium))
+                .font(.system(size: 18, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
@@ -977,6 +979,12 @@ private final class GhosttyComposerUITextView: UITextView {
     }
 }
 
+/// Starts the attachments and their upload progress on the draft text's left edge. The strip still scrolls
+/// under this margin to the composer's own edge.
+private enum GhosttyComposerAttachmentInset {
+    static let horizontal: CGFloat = 13
+}
+
 private struct GhosttyComposerAttachmentStrip: View {
     let attachments: [GhosttyPendingAttachment]
     let isEnabled: Bool
@@ -992,7 +1000,7 @@ private struct GhosttyComposerAttachmentStrip: View {
                 }
             }
         }
-        .contentMargins(.horizontal, 2, for: .scrollContent)
+        .contentMargins(.horizontal, GhosttyComposerAttachmentInset.horizontal, for: .scrollContent)
         .accessibilityIdentifier("terminal.composer.attachment-strip")
     }
 
@@ -1167,7 +1175,7 @@ private struct GhosttyComposerAttachmentProgress: View {
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, GhosttyComposerAttachmentInset.horizontal)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(progressAccessibilityLabel)
         .accessibilityIdentifier("terminal.composer.attachment-progress")
