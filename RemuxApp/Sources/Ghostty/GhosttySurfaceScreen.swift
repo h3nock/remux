@@ -483,7 +483,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     onShowSessions: onShowSessions,
                                     onShowLibrary: onShowLibrary,
                                     onShowWindows: {
-                                        showWindows(availableSize: screenProxy.size)
+                                        showWindows()
                                     },
                                     onShowPanes: showPanes,
                                     onOpenComposer: openComposer,
@@ -584,6 +584,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     paneTopologySize: paneTopologySize,
                     maximumContentHeight: maximumContentHeight
                 )
+                let gridPresentation = selectionSheetGridPresentation(
+                    sheet,
+                    windowProjection: windowProjection,
+                    windowLayout: windowLayout,
+                    contentHeight: contentHeight
+                )
                 selectionSheetContent(
                     sheet,
                     windowProjection: windowProjection,
@@ -592,19 +598,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     contentHeight: contentHeight
                 )
                     .presentationDetents(
-                        [.height(TerminalSelectionSheetLayout.sheetHeight(
-                            contentHeight: contentHeight,
-                            navigationBarHeight: navigationBarHeight,
-                            headerHeight: headerHeight
-                        ))]
+                        selectionSheetDetents(
+                            fitted: .height(TerminalSelectionSheetLayout.sheetHeight(
+                                contentHeight: contentHeight,
+                                navigationBarHeight: navigationBarHeight,
+                                headerHeight: headerHeight
+                            )),
+                            gridPresentation: gridPresentation
+                        )
                     )
-                    .presentationContentInteraction(.scrolls)
-                    .presentationDragIndicator(.hidden)
+                    // A sheet that can be pulled taller grows before its grid scrolls.
+                    .presentationContentInteraction(gridPresentation == .fitted ? .scrolls : .automatic)
+                    .presentationDragIndicator(gridPresentation == .fitted ? .hidden : .visible)
                     .remuxSheetPresentationBackground()
-                    .ghosttyTerminalChromePresentation(
-                        presentation.terminalTheme.terminalChromeColorScheme,
-                        chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                    )
+                    .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .ghosttyCloseConfirmationDialog(selectionSheet == nil ? askedCloseQuestion : nil)
             .sheet(isPresented: $isShortcutsSettingsPresented) {
@@ -612,10 +619,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
                     .remuxSheetPresentationBackground()
-                    .ghosttyTerminalChromePresentation(
-                        presentation.terminalTheme.terminalChromeColorScheme,
-                        chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                    )
+                    .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .sheet(item: $shortcutEditorRequest) { request in
                 ShortcutEditorSheet(request: request) { shortcut, favorite in
@@ -629,10 +633,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .remuxSheetPresentationBackground()
-                .ghosttyTerminalChromePresentation(
-                    presentation.terminalTheme.terminalChromeColorScheme,
-                    chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                )
+                .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
@@ -642,10 +643,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .remuxSheetPresentationBackground()
-                .ghosttyTerminalChromePresentation(
-                    presentation.terminalTheme.terminalChromeColorScheme,
-                    chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                )
+                .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .photosPicker(
                 isPresented: $isAttachmentPhotosPickerPresented,
@@ -731,7 +729,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
 #endif
         }
-        .environment(\.ghosttyTerminalChromeStyle, presentation.terminalTheme.terminalChromeStyle)
         .onAppear {
             GhosttyRuntimeTrace.flowEvent(
                 sessionOpenFlowID,
@@ -1566,32 +1563,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return consumesDraft || sendTerminalKeyEvent(event)
     }
 
-    private func showWindows(availableSize: CGSize) {
+    private func showWindows() {
         guard !composer.isSubmitting, model.terminalScreenPresentationProjection.viewport.popup == nil else { return }
         model.claimActiveTmuxViewportIfNeeded()
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
-        let layout = PanePreviewLayout.windowMetrics(availableSize: availableSize)
-        let session = makeWindowPreviewSession(
-            leafIDs: projection.previewLeafIDs,
-            layout: layout
-        )
         shownWindowGroupID = nil
-        applySelectionSheetPresentation(.windows(session))
-        session?.startRefreshing()
-    }
-
-    private func makeWindowPreviewSession(
-        leafIDs: [UUID],
-        layout: PanePreviewLayout.Metrics
-    ) -> GhosttyPanePreviewSession? {
-        let dimensions = PanePreviewLayout.windowPhysicalPixelBudget(
-            metrics: layout,
-            scale: displayScale
-        )
-        return model.makePanePreviewSession(
-            leafIDs: leafIDs,
-            pixelBudget: .init(width: dimensions.width, height: dimensions.height)
+        applySelectionSheetPresentation(
+            .windows(model.makePanePreviewSession(leafIDs: projection.previewLeafIDs))
         )
     }
 
@@ -2328,6 +2307,33 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
+    /// How the sheet opens: only a grid of windows taller than its fitted height opens another way.
+    private func selectionSheetGridPresentation(
+        _ sheet: GhosttySurfaceSelectionSheet,
+        windowProjection: GhosttyWindowSelectionSheetRenderProjection?,
+        windowLayout: PanePreviewLayout.Metrics,
+        contentHeight: CGFloat
+    ) -> PanePreviewLayout.GridPresentation {
+        guard case .windows(let session) = sheet, session != nil, let windowProjection else { return .fitted }
+        return PanePreviewLayout.gridPresentation(
+            itemCount: windowProjection.windows.count,
+            currentIndex: windowProjection.windows.firstIndex(where: \.isSelected),
+            metrics: windowLayout,
+            fittedHeight: contentHeight
+        )
+    }
+
+    private func selectionSheetDetents(
+        fitted: PresentationDetent,
+        gridPresentation: PanePreviewLayout.GridPresentation
+    ) -> Set<PresentationDetent> {
+        switch gridPresentation {
+        case .fitted: [fitted]
+        case .fittedOrFull: [fitted, .large]
+        case .full: [.large]
+        }
+    }
+
     @ViewBuilder
     private func selectionSheetContent(
         _ sheet: GhosttySurfaceSelectionSheet,
@@ -2344,6 +2350,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     projection: windowProjection,
                     topLevelNoun: model.topLevelNoun,
                     sessionName: presentation.sessionName,
+                    terminalBackground: Color(uiColor: presentation.terminalTheme.terminalBackgroundUIColor),
+                    terminalSeparator: Color(uiColor: presentation.terminalTheme.terminalCompositeSeparatorUIColor),
                     layout: windowLayout,
                     contentHeight: contentHeight,
                     commandFailureMessage: selectionSheetCommandFailureMessage,
@@ -2694,12 +2702,7 @@ extension TerminalTheme {
     }
 
     var terminalChromeColorScheme: ColorScheme {
-        switch self {
-        case .remuxLight:
-            .light
-        case .ghosttyDefault, .remuxDark:
-            .dark
-        }
+        isLight ? .light : .dark
     }
 
     var terminalKeyboardAppearance: UIKeyboardAppearance {

@@ -211,7 +211,6 @@ private struct GhosttyComposerInputLayout: Layout {
 }
 
 struct GhosttyComposeBar: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @AppStorage("terminal.composer.keyboardDismissHintShown")
     private var hasShownKeyboardDismissHint = false
     @State private var isShowingKeyboardDismissHint = false
@@ -442,7 +441,7 @@ struct GhosttyComposeBar: View {
             ZStack(alignment: .topLeading) {
                 GhosttyComposerTextView(
                     text: $composer.draft,
-                    caretColor: UIColor(chromeStyle.accent),
+                    caretColor: RemuxAccent.uiFill,
                     allowsUserEdits: submissionState.allowsComposerInput
                         && !dictationPhase.isActive,
                     wantsFirstResponder: wantsKeyboardFocus,

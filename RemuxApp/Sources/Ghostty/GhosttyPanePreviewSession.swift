@@ -1,21 +1,41 @@
-import CoreGraphics
-import Foundation
+import UIKit
 
-/// Picker-scoped preview images and one sequential capture task. Native
-/// renderers and terminals stay owned by the session behind PreviewClient.
+/// Picker-scoped window previews, keyed by each window's focused pane, and one
+/// sequential capture task. Native renderers and terminals stay owned by the
+/// session behind PreviewClient.
 @MainActor
 final class GhosttyPanePreviewSession: ObservableObject {
+    /// The size a preview is drawn at, in device pixels.
     struct PixelBudget: Equatable, Sendable {
         let width: UInt32
         let height: UInt32
     }
 
+    /// A window's preview, in points: its panes' pixels, each image with the scale it is drawn at,
+    /// where the window has them, and the lines between panes.
+    struct Preview: Sendable {
+        struct Pane: Sendable {
+            let image: UIImage
+            let origin: CGPoint
+        }
+
+        struct Line: Sendable {
+            let start: CGPoint
+            let end: CGPoint
+        }
+
+        let size: CGSize
+        let panes: [Pane]
+        let separators: [Line]
+    }
+
     struct PreviewClient {
-        let capture: @MainActor (UUID, PixelBudget) async -> CGImage?
+        /// The preview, for the budget, of the window a pane is the focused one of.
+        let capture: @MainActor (UUID, PixelBudget) async -> Preview?
         let cancelCapture: @MainActor (UUID) -> Void
 
         init(
-            capture: @escaping @MainActor (UUID, PixelBudget) async -> CGImage?,
+            capture: @escaping @MainActor (UUID, PixelBudget) async -> Preview?,
             cancelCapture: @escaping @MainActor (UUID) -> Void = { _ in }
         ) {
             self.capture = capture
@@ -25,35 +45,37 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     enum PreviewState {
         case pending
-        case ready(CGImage)
+        case ready(Preview)
         case failed
     }
 
     let id = UUID()
     @Published private(set) var imagesByPaneID: [UUID: PreviewState] = [:]
 
-    private let pixelBudget: PixelBudget
     private let client: PreviewClient
     private var trackedLeafIDs: [UUID]
+    /// Nil until the picker says what size it draws previews at.
+    private var pixelBudget: PixelBudget?
     private var refreshTask: Task<Void, Never>?
-    private var didStartRefreshing = false
     private var cancelled = false
     private var activeCaptureLeafID: UUID?
     private var activeCaptureIsValid = false
 
     init(
         leafIDs: [UUID],
-        pixelBudget: PixelBudget,
         client: PreviewClient
     ) {
-        self.pixelBudget = pixelBudget
         self.client = client
         trackedLeafIDs = Self.unique(leafIDs)
     }
 
-    func startRefreshing() {
-        guard !didStartRefreshing, !cancelled else { return }
-        didStartRefreshing = true
+    /// Captures the previews for the size the picker draws them at. Another size, as after a rotation,
+    /// captures them again: a preview covers exactly the area it was captured for.
+    func present(pixelBudget: PixelBudget) {
+        guard !cancelled, pixelBudget != self.pixelBudget else { return }
+        self.pixelBudget = pixelBudget
+        cancelActiveCapture()
+        imagesByPaneID.removeAll()
         startRefreshIfNeeded()
     }
 
@@ -65,7 +87,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
             imagesByPaneID.removeValue(forKey: removed)
         }
         trackedLeafIDs = next
-        guard didStartRefreshing, !cancelled else { return }
+        guard pixelBudget != nil, !cancelled else { return }
         if let activeCaptureLeafID, !nextSet.contains(activeCaptureLeafID) {
             cancelActiveCapture()
         }
@@ -81,21 +103,17 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     private func startRefreshIfNeeded() {
-        guard refreshTask == nil,
-              didStartRefreshing,
-              !cancelled,
-              nextCaptureLeafID != nil
-        else { return }
+        guard refreshTask == nil, !cancelled, nextCaptureLeafID != nil else { return }
 
         refreshTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { refreshTask = nil }
-            while let leafID = nextCaptureLeafID {
+            while let pixelBudget, let leafID = nextCaptureLeafID {
                 guard !Task.isCancelled, !cancelled else { return }
                 imagesByPaneID[leafID] = .pending
                 activeCaptureLeafID = leafID
                 activeCaptureIsValid = true
-                let image = await client.capture(leafID, pixelBudget)
+                let preview = await client.capture(leafID, pixelBudget)
                 let captureIsValid = activeCaptureLeafID == leafID
                     && activeCaptureIsValid
                 if activeCaptureLeafID == leafID {
@@ -106,8 +124,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
                 guard captureIsValid, trackedLeafIDs.contains(leafID) else {
                     continue
                 }
-                if let image {
-                    imagesByPaneID[leafID] = .ready(image)
+                if let preview {
+                    imagesByPaneID[leafID] = .ready(preview)
                 } else {
                     imagesByPaneID[leafID] = .failed
                 }
@@ -122,7 +140,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     private var nextCaptureLeafID: UUID? {
-        trackedLeafIDs.first { imagesByPaneID[$0] == nil }
+        guard pixelBudget != nil else { return nil }
+        return trackedLeafIDs.first { imagesByPaneID[$0] == nil }
     }
 
     private static func unique(_ leafIDs: [UUID]) -> [UUID] {

@@ -238,10 +238,7 @@ private struct RemuxWorkspaceShell: View {
                 }
             )
             .remuxSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                model.terminalSettings.theme.terminalChromeColorScheme,
-                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
-            )
+            .ghosttyTerminalChromePresentation(model.terminalSettings.theme.terminalChromeColorScheme)
             .tailscaleSSHCheckAlert(
                 request: $tailscaleSSHCheckRequest,
                 isActive: true
@@ -382,9 +379,6 @@ private struct RemuxWorkspaceShell: View {
                 }
             }
             .remuxSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
-            )
             .alert(
                 setupSubmissionIssueTitle(setup.submissionIssue),
                 isPresented: setupSubmissionIssueIsPresented(setup.submissionIssue),
