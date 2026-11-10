@@ -1053,6 +1053,26 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    /// Rehydrates a pane's terminal from tmux. tmux re-wraps a pane's lines when it changes the pane's
+    /// width; the pane's terminal can only do the same for lines it received as output. The client does
+    /// this itself for the current window's panes. Best-effort: a pane that can't take a refresh yet
+    /// keeps its contents.
+    func requestRefreshPane(paneID: TmuxPaneID) {
+        queue.async { [self] in
+            preconditionOnWriterQueue()
+            guard let client, outboundSink != nil, !shuttingDown else { return }
+            let result = ghostty_tmux_client_refresh_pane(client, paneID.rawValue)
+            guard result == GHOSTTY_TMUX_RESULT_OK else {
+                if result == GHOSTTY_TMUX_RESULT_CLIENT_FAILED
+                    || result == GHOSTTY_TMUX_RESULT_CLOSED {
+                    handleClientFailure(result)
+                }
+                return
+            }
+            _ = drainOutbound()
+        }
+    }
+
     func requestRefreshWindowPaneMetadata(windowID: TmuxWindowID) {
         queue.async { [self] in
             preconditionOnWriterQueue()
