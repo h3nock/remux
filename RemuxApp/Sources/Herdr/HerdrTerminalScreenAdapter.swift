@@ -742,10 +742,7 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     var topLevelNoun: GhosttyTopLevelNoun { .tab }
 
     /// Herdr's Tabs sheet lists its tabs as rows, with no previews.
-    func makePanePreviewSession(
-        leafIDs: [UUID],
-        pixelBudget: GhosttyPanePreviewSession.PixelBudget
-    ) -> GhosttyPanePreviewSession? {
+    func makePanePreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession? {
         nil
     }
 

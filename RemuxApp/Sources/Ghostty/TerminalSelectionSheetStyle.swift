@@ -216,24 +216,4 @@ extension View {
                 }
         }
     }
-
-    func terminalSelectionTileChrome(
-        isSelected: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        return background(TerminalSelectionSheetPalette.row)
-            .clipShape(shape)
-            .overlay {
-                shape.strokeBorder(
-                    isSelected
-                        ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
-                        : TerminalSelectionSheetPalette.stroke,
-                    lineWidth: isSelected ? 1.25 : 1
-                )
-            }
-            // Clipping only hides what is drawn past the tile, such as a preview filling it, which would
-            // otherwise take the touches meant for the tile beside it.
-            .contentShape(shape)
-    }
 }

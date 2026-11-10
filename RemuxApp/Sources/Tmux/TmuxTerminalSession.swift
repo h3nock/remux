@@ -1,6 +1,6 @@
-import CoreGraphics
 import Foundation
 import GhosttyKit
+import UIKit
 
 /// MainActor owner of one control attachment and one retained renderer surface
 /// for every live pane. Active-window visibility and focus are projections of
@@ -445,8 +445,9 @@ final class TmuxTerminalSession: ObservableObject {
         paneID: TmuxPaneID,
         columns: UInt32,
         rows: UInt32,
+        windowColumns: UInt32,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> CGImage? {
+    ) async -> UIImage? {
         guard !isShutDown,
               state == .ready,
               livePaneIDs.contains(paneID),
@@ -456,6 +457,7 @@ final class TmuxTerminalSession: ObservableObject {
         return await surface.renderer.capturePickerPreview(
             columns: columns,
             rows: rows,
+            windowColumns: windowColumns,
             budget: budget
         )
     }

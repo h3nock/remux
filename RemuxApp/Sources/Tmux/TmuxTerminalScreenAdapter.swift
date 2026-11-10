@@ -541,24 +541,23 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         viewportStabilityHandler?(stable)
     }
 
-    func makePanePreviewSession(
-        leafIDs: [UUID],
-        pixelBudget: GhosttyPanePreviewSession.PixelBudget
-    ) -> GhosttyPanePreviewSession? {
+    func makePanePreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession? {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
-            pixelBudget: pixelBudget,
             client: GhosttyPanePreviewSession.PreviewClient(
                 capture: { [weak self] leafID, budget in
                     guard let self,
                           let session = self.session,
                           let paneID = self.identities.paneID(for: leafID),
-                          let pane = self.latestTopology?.panes.first(where: { $0.id == paneID })
+                          let topology = self.latestTopology,
+                          let pane = topology.panes.first(where: { $0.id == paneID }),
+                          let window = topology.windows.first(where: { $0.id == pane.windowID })
                     else { return nil }
                     return await session.capturePickerPreview(
                         paneID: paneID,
                         columns: pane.width,
                         rows: pane.height,
+                        windowColumns: window.width,
                         budget: budget
                     )
                 },

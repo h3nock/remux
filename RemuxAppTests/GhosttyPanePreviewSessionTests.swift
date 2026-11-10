@@ -1,4 +1,4 @@
-import CoreGraphics
+import UIKit
 import XCTest
 
 @testable import Remux
@@ -11,7 +11,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [first, second],
-            pixelBudget: .init(width: 640, height: 480),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -20,7 +19,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 640, height: 480))
         try await waitUntil { harness.requests.count == 1 }
         XCTAssertEqual(harness.requests.map(\.paneID), [first])
 
@@ -53,7 +52,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
-            pixelBudget: .init(width: 320, height: 240),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -62,7 +60,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 320, height: 240))
         try await waitUntil { harness.requests.count == 1 }
         harness.resolve(paneID: paneID, with: firstPreview)
         try await waitUntil {
@@ -90,7 +88,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [active, removed],
-            pixelBudget: .init(width: 320, height: 240),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -99,7 +96,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 320, height: 240))
         try await waitUntil { harness.requests.map(\.paneID) == [active] }
         session.reconcile(leafIDs: [active])
 
@@ -120,7 +117,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
-            pixelBudget: .init(width: 320, height: 240),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -129,7 +125,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 320, height: 240))
         try await waitUntil { harness.requests.count == 1 }
         harness.resolve(paneID: paneID, with: nil)
         try await waitUntil {
@@ -143,7 +139,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
-            pixelBudget: .init(width: 320, height: 240),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -152,7 +147,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 320, height: 240))
         try await waitUntil { harness.requests.count == 1 }
         session.cancelAll()
 
@@ -170,7 +165,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [removed],
-            pixelBudget: .init(width: 320, height: 240),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -179,7 +173,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 320, height: 240))
         try await waitUntil { harness.requests.map(\.paneID) == [removed] }
         session.reconcile(leafIDs: [current])
 
@@ -207,7 +201,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID, paneID, paneID],
-            pixelBudget: .init(width: 320, height: 240),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -216,7 +209,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 320, height: 240))
         try await waitUntil { harness.requests.count == 1 }
         XCTAssertEqual(harness.requests.map(\.paneID), [paneID])
         harness.resolve(paneID: paneID, with: nil)
@@ -231,7 +224,6 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let harness = CaptureHarness()
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
-            pixelBudget: .init(width: 304, height: 228),
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -239,7 +231,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             )
         )
 
-        session.startRefreshing()
+        session.present(pixelBudget: .init(width: 304, height: 228))
         try await waitUntil { harness.requests.count == 1 }
 
         XCTAssertEqual(
@@ -253,7 +245,81 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         }
     }
 
-    private func preview(marker: UInt32) throws -> CGImage {
+    func testAnotherSizeCapturesEveryPreviewAgainAtThatSize() async throws {
+        let first = UUID()
+        let second = UUID()
+        let harness = CaptureHarness()
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [first, second],
+            client: .init(
+                capture: {
+                    await harness.capture(paneID: $0, budget: $1)
+                },
+                cancelCapture: { harness.cancel(paneID: $0) }
+            )
+        )
+        let portrait = GhosttyPanePreviewSession.PixelBudget(width: 320, height: 240)
+        let landscape = GhosttyPanePreviewSession.PixelBudget(width: 480, height: 200)
+
+        session.present(pixelBudget: portrait)
+        try await waitUntil { harness.requests.count == 1 }
+        harness.resolve(paneID: first, with: try preview(marker: 1))
+        try await waitUntil { harness.requests.count == 2 }
+
+        // The second pane's capture is still out when the size changes.
+        session.present(pixelBudget: landscape)
+        XCTAssertEqual(harness.cancelledPaneIDs, [second])
+        XCTAssertNil(session.imagesByPaneID[first])
+        harness.resolve(paneID: second, with: try preview(marker: 2))
+
+        try await waitUntil { harness.requests.count == 3 }
+        let firstLandscape = try preview(marker: 3)
+        harness.resolve(paneID: first, with: firstLandscape)
+        try await waitUntil { harness.requests.count == 4 }
+        let secondLandscape = try preview(marker: 4)
+        harness.resolve(paneID: second, with: secondLandscape)
+        try await waitUntil {
+            if case .ready? = session.imagesByPaneID[second] { return true }
+            return false
+        }
+
+        XCTAssertEqual(
+            harness.requests,
+            [
+                .init(paneID: first, budget: portrait),
+                .init(paneID: second, budget: portrait),
+                .init(paneID: first, budget: landscape),
+                .init(paneID: second, budget: landscape),
+            ]
+        )
+        assertReady(session.imagesByPaneID[first], image: firstLandscape)
+        assertReady(session.imagesByPaneID[second], image: secondLandscape)
+    }
+
+    func testTheSameSizeAgainKeepsThePreviews() async throws {
+        let paneID = UUID()
+        let harness = CaptureHarness()
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            client: .init(capture: { await harness.capture(paneID: $0, budget: $1) })
+        )
+        let budget = GhosttyPanePreviewSession.PixelBudget(width: 320, height: 240)
+        let image = try preview(marker: 1)
+
+        session.present(pixelBudget: budget)
+        try await waitUntil { harness.requests.count == 1 }
+        harness.resolve(paneID: paneID, with: image)
+        try await waitUntil {
+            if case .ready? = session.imagesByPaneID[paneID] { return true }
+            return false
+        }
+        session.present(pixelBudget: budget)
+
+        assertReady(session.imagesByPaneID[paneID], image: image)
+        XCTAssertEqual(harness.requests.count, 1)
+    }
+
+    private func preview(marker: UInt32) throws -> UIImage {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(CGContext(
             data: nil,
@@ -271,7 +337,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             alpha: 1
         )
         context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
-        return try XCTUnwrap(context.makeImage())
+        return UIImage(cgImage: try XCTUnwrap(context.makeImage()))
     }
 
     private func assertPending(
@@ -286,7 +352,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
 
     private func assertReady(
         _ state: GhosttyPanePreviewSession.PreviewState?,
-        image: CGImage,
+        image: UIImage,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -320,13 +386,13 @@ private final class CaptureHarness {
     private(set) var cancelledPaneIDs: [UUID] = []
     private(set) var completedPaneIDs: [UUID] = []
     private var continuations: [
-        UUID: CheckedContinuation<CGImage?, Never>
+        UUID: CheckedContinuation<UIImage?, Never>
     ] = [:]
 
     func capture(
         paneID: UUID,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> CGImage? {
+    ) async -> UIImage? {
         requests.append(.init(paneID: paneID, budget: budget))
         let result = await withCheckedContinuation { continuations[paneID] = $0 }
         completedPaneIDs.append(paneID)
@@ -339,7 +405,7 @@ private final class CaptureHarness {
 
     func resolve(
         paneID: UUID,
-        with result: CGImage?
+        with result: UIImage?
     ) {
         continuations.removeValue(forKey: paneID)?.resume(returning: result)
     }

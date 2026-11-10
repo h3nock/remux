@@ -207,12 +207,14 @@ final class TerminalPaneRenderer {
 
     private final class FramePublicationWait: @unchecked Sendable {
         let budget: GhosttyPanePreviewSession.PixelBudget
+        let zoom: CGFloat
         var observation: NSKeyValueObservation?
         var continuation: CheckedContinuation<GhosttyIOSurfaceFrame?, Never>?
         var timeoutTask: Task<Void, Never>?
 
-        init(budget: GhosttyPanePreviewSession.PixelBudget) {
+        init(budget: GhosttyPanePreviewSession.PixelBudget, zoom: CGFloat) {
             self.budget = budget
+            self.zoom = zoom
         }
     }
 
@@ -631,11 +633,13 @@ final class TerminalPaneRenderer {
         cancelFramePublicationWait()
     }
 
+    /// The pane's preview for the budget, drawing its window's `windowColumns` across the preview.
     func capturePickerPreview(
         columns: UInt32,
         rows: UInt32,
+        windowColumns: UInt32,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> CGImage? {
+    ) async -> UIImage? {
         guard lifecycle == .active,
               framePublicationWait == nil,
               replacementCompletion == nil, rendererIsAvailable, presentationFailure == nil,
@@ -648,6 +652,10 @@ final class TerminalPaneRenderer {
         guard (current.columns == columns && current.rows == rows)
                 || isViewportSized(current)
         else { return nil }
+        let zoom = PanePreviewLayout.previewZoom(
+            windowWidth: Int(windowColumns) * Int(current.cell_width_px),
+            budget: budget
+        )
 
         let frame: GhosttyIOSurfaceFrame
         if presented {
@@ -655,7 +663,8 @@ final class TerminalPaneRenderer {
                   let sourceRect = previewSourceRect(
                     width: dimensions.width,
                     height: dimensions.height,
-                    budget: budget
+                    budget: budget,
+                    zoom: zoom
                   )
             else { return nil }
             guard let published = try? GhosttyIOSurfaceFrame.read(
@@ -665,19 +674,13 @@ final class TerminalPaneRenderer {
             frame = published
         } else {
             guard let published = await matchingPublication(
-                on: rendererLayer, budget: budget
+                on: rendererLayer, budget: budget, zoom: zoom
             )
             else { return nil }
             frame = published
         }
 
-        guard let image = await makePreviewImage(
-            from: frame,
-            budget: budget
-        ) else {
-            return nil
-        }
-        return image
+        return await makePreviewImage(from: frame, zoom: zoom)
     }
 
     func reportRendererFailure() { rendererDidFail() }
@@ -718,11 +721,9 @@ final class TerminalPaneRenderer {
 
     private func currentRendererSnapshot() -> CGImage? {
         guard let layer = GhosttyIOSurfaceFrame.rendererLayer(in: view.layer),
-              let frame = try? GhosttyIOSurfaceFrame.read(from: layer),
-              let width = UInt32(exactly: frame.width),
-              let height = UInt32(exactly: frame.height)
+              let frame = try? GhosttyIOSurfaceFrame.read(from: layer)
         else { return nil }
-        return try? frame.image(maxWidth: width, maxHeight: height)
+        return try? frame.image()
     }
 
     private func applyPresentationActivity() {
@@ -798,7 +799,8 @@ final class TerminalPaneRenderer {
 
     private func matchingPublication(
         on layer: CALayer,
-        budget: GhosttyPanePreviewSession.PixelBudget
+        budget: GhosttyPanePreviewSession.PixelBudget,
+        zoom: CGFloat
     ) async -> GhosttyIOSurfaceFrame? {
         // Drain stale display invalidation before observing the next renderer
         // publication.
@@ -808,7 +810,7 @@ final class TerminalPaneRenderer {
                 continuation.resume(returning: nil)
                 return
             }
-            let wait = FramePublicationWait(budget: budget)
+            let wait = FramePublicationWait(budget: budget, zoom: zoom)
             let layerReference = LayerReference(layer)
             let relay = previewRelay
             wait.continuation = continuation
@@ -845,7 +847,7 @@ final class TerminalPaneRenderer {
         else { return }
 
         guard let sourceRect = previewSourceRect(
-            width: dimensions.width, height: dimensions.height, budget: wait.budget
+            width: dimensions.width, height: dimensions.height, budget: wait.budget, zoom: wait.zoom
         ) else {
             finishFramePublicationWait(wait, publication: nil)
             return
@@ -883,17 +885,16 @@ final class TerminalPaneRenderer {
         finishFramePublicationWait(wait, publication: nil)
     }
 
+    /// The frame's pixels as an image drawn `zoom` times their size.
     private func makePreviewImage(
         from frame: GhosttyIOSurfaceFrame,
-        budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> CGImage? {
+        zoom: CGFloat
+    ) async -> UIImage? {
         let diagnosticName = diagnosticName
+        let scale = CGFloat(canonicalViewportMetrics.contentScale) / zoom
         return await Task.detached(priority: .userInitiated) {
             do {
-                return try frame.image(
-                    maxWidth: budget.width,
-                    maxHeight: budget.height
-                )
+                return UIImage(cgImage: try frame.image(), scale: scale, orientation: .up)
             } catch {
                 GhosttyRuntimeTrace.diagnostics(
                     "terminalPane.previewRead failed \(diagnosticName) error=\(String(describing: error))"
@@ -906,35 +907,18 @@ final class TerminalPaneRenderer {
     private func previewSourceRect(
         width: Int,
         height: Int,
-        budget: GhosttyPanePreviewSession.PixelBudget
+        budget: GhosttyPanePreviewSession.PixelBudget,
+        zoom: CGFloat
     ) -> CGRect? {
-        let viewportAnchor = CGRect(x: 0, y: 0, width: width, height: height)
-        let cropAnchor: CGRect
-        if let cursor = renderer?.control.cursorGeometry() {
-            let scale = CGFloat(canonicalViewportMetrics.contentScale)
-            cropAnchor = CGRect(
-                x: cursor.minX * scale,
-                y: cursor.minY * scale,
-                width: cursor.width * scale,
-                height: cursor.height * scale
-            )
-        } else {
-            cropAnchor = viewportAnchor
-        }
-        let cropWidth = UInt32(clamping: UInt64(budget.width) * 2)
-        let cropHeight = UInt32(clamping: UInt64(budget.height) * 2)
-        return GhosttyIOSurfaceFrame.sourceRect(
-            width: width,
-            height: height,
-            centeredOn: cropAnchor,
-            maxWidth: cropWidth,
-            maxHeight: cropHeight
-        ) ?? GhosttyIOSurfaceFrame.sourceRect(
-            width: width,
-            height: height,
-            centeredOn: viewportAnchor,
-            maxWidth: cropWidth,
-            maxHeight: cropHeight
+        guard let renderer else { return nil }
+        let scale = CGFloat(canonicalViewportMetrics.contentScale)
+        return PanePreviewLayout.previewSourceRect(
+            frameWidth: width,
+            frameHeight: height,
+            cellHeight: Int(renderer.control.currentSize().cell_height_px),
+            cursorRowTop: renderer.control.cursorGeometry().map { $0.minY * scale },
+            budget: budget,
+            zoom: zoom
         )
     }
 

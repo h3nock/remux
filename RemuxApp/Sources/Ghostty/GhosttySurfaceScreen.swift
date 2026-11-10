@@ -483,7 +483,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     onShowSessions: onShowSessions,
                                     onShowLibrary: onShowLibrary,
                                     onShowWindows: {
-                                        showWindows(availableSize: screenProxy.size)
+                                        showWindows()
                                     },
                                     onShowPanes: showPanes,
                                     onOpenComposer: openComposer,
@@ -1563,32 +1563,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return consumesDraft || sendTerminalKeyEvent(event)
     }
 
-    private func showWindows(availableSize: CGSize) {
+    private func showWindows() {
         guard !composer.isSubmitting, model.terminalScreenPresentationProjection.viewport.popup == nil else { return }
         model.claimActiveTmuxViewportIfNeeded()
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
-        let layout = PanePreviewLayout.windowMetrics(availableSize: availableSize)
-        let session = makeWindowPreviewSession(
-            leafIDs: projection.previewLeafIDs,
-            layout: layout
-        )
         shownWindowGroupID = nil
-        applySelectionSheetPresentation(.windows(session))
-        session?.startRefreshing()
-    }
-
-    private func makeWindowPreviewSession(
-        leafIDs: [UUID],
-        layout: PanePreviewLayout.Metrics
-    ) -> GhosttyPanePreviewSession? {
-        let dimensions = PanePreviewLayout.windowPhysicalPixelBudget(
-            metrics: layout,
-            scale: displayScale
-        )
-        return model.makePanePreviewSession(
-            leafIDs: leafIDs,
-            pixelBudget: .init(width: dimensions.width, height: dimensions.height)
+        applySelectionSheetPresentation(
+            .windows(model.makePanePreviewSession(leafIDs: projection.previewLeafIDs))
         )
     }
 
@@ -2341,6 +2323,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     projection: windowProjection,
                     topLevelNoun: model.topLevelNoun,
                     sessionName: presentation.sessionName,
+                    terminalBackground: Color(uiColor: presentation.terminalTheme.terminalBackgroundUIColor),
                     layout: windowLayout,
                     contentHeight: contentHeight,
                     commandFailureMessage: selectionSheetCommandFailureMessage,
