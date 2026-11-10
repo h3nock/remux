@@ -292,6 +292,8 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
 }
 
 struct FailingComposerAttachmentTransferService: GhosttyAttachmentTransferService {
+    func prepare() async {}
+
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
         progress: @escaping GhosttyAttachmentTransferProgressHandler
@@ -321,5 +323,83 @@ final class GhosttyComposerModelStatusMessageTests: XCTestCase {
         composer.draft = "unchanged"
 
         XCTAssertEqual(composer.statusMessage, "Couldn’t send. Message kept.")
+    }
+}
+
+@MainActor
+final class GhosttyComposerAttachmentPrepareTests: XCTestCase {
+    func testAddingAPastedFilePreparesTheDestinationsTransfer() async throws {
+        let composer = GhosttyComposerModel()
+        let service = PrepareRecordingAttachmentTransferService()
+        let url = try makeTemporaryFile()
+
+        composer.addPastedFile(url, preparing: service)
+
+        try await waitForPrepareCount(1, of: service)
+        XCTAssertEqual(composer.attachments.count, 1)
+    }
+
+    func testAddingChosenFilesPreparesTheDestinationsTransferOnce() async throws {
+        let composer = GhosttyComposerModel()
+        let service = PrepareRecordingAttachmentTransferService()
+        let urls = [try makeTemporaryFile(), try makeTemporaryFile()]
+
+        let didAdd = try await composer.addSecurityScopedFiles(urls, preparing: service)
+
+        XCTAssertTrue(didAdd)
+        try await waitForPrepareCount(1, of: service)
+    }
+
+    func testAddingNothingPreparesNothing() async throws {
+        let composer = GhosttyComposerModel()
+        let service = PrepareRecordingAttachmentTransferService()
+
+        let didAdd = try await composer.addSecurityScopedFiles([], preparing: service)
+
+        XCTAssertFalse(didAdd)
+        try await Task.sleep(for: .milliseconds(50))
+        let prepareCount = await service.prepareCount
+        XCTAssertEqual(prepareCount, 0)
+    }
+
+    private func waitForPrepareCount(
+        _ expected: Int,
+        of service: PrepareRecordingAttachmentTransferService
+    ) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while await service.prepareCount < expected, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        // Settles any extra prepare the add might have started.
+        try await Task.sleep(for: .milliseconds(20))
+        let prepareCount = await service.prepareCount
+        XCTAssertEqual(prepareCount, expected)
+    }
+
+    private func makeTemporaryFile() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("remux-composer-prepare-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let url = directory.appendingPathComponent("report.txt")
+        try Data("hello".utf8).write(to: url)
+        return url
+    }
+}
+
+private actor PrepareRecordingAttachmentTransferService: GhosttyAttachmentTransferService {
+    private(set) var prepareCount = 0
+
+    func prepare() {
+        prepareCount += 1
+    }
+
+    func transfer(
+        _ job: GhosttyAttachmentTransferJob,
+        progress: @escaping GhosttyAttachmentTransferProgressHandler
+    ) async throws -> GhosttyAttachmentTransferResult {
+        throw GhosttyAttachmentTransferError.cancelled
     }
 }

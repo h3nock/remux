@@ -95,11 +95,12 @@ final class TerminalPreviewStaticHTMLLiveTests: XCTestCase {
     """
 }
 
-/// The live host: scripts run over a dedicated connection, and SFTP leases from a pool of its own.
+/// The live host: scripts run over a dedicated connection, and SFTP leases from a pool and kept sessions of its own.
 private struct LiveHost: Sendable {
     let configuration: HerdrLiveConfiguration
     let trustedHostRoot: URL
     private let pool = RemuxSSHRootService()
+    private let sessions = RemuxTransferSFTPSessions()
     private let serverID = UUID()
 
     init(configuration: HerdrLiveConfiguration, trustedHostRoot: URL) {
@@ -140,6 +141,7 @@ private struct LiveHost: Sendable {
         )
         return try await RemuxCitadelSFTPClientProvider(
             sshRootService: pool,
+            sessions: sessions,
             rootKey: RemuxSSHRootKey(target: target, purpose: .transfer),
             rootConfiguration: rootConfiguration,
             operationTimeout: .seconds(15)

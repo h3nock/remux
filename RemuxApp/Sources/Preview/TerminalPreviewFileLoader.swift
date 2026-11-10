@@ -18,9 +18,22 @@ enum TerminalPreviewFileError: LocalizedError, Equatable, Sendable {
     }
 }
 
+/// Reads a remote file in order, failing with `TerminalPreviewFileError.tooLarge` past `maximumByteCount`.
+///
+/// When the server gives the file's size, reads go out `readWindow` at a time at explicit offsets, and their data is
+/// handed on in order. The window's last read asks at the known size: it finds the end, or, when the file grew, data
+/// to read on from without another round trip. An end that came back before the reads ahead of it may be out of date
+/// (the file can grow in between), so it is confirmed with one more read. Otherwise, and after a short read, the file
+/// is read one read at a time to its end.
 enum TerminalPreviewRemoteFileReader {
     typealias MetadataHandler = @Sendable (RemuxSFTPFileMetadata) async throws -> Void
     typealias ChunkHandler = @Sendable (Data) async throws -> Void
+
+    /// Reads outstanding at once: eight of `readLength` are about 2 MiB, the window every SSH channel is given and
+    /// about what an upload keeps on the way. Measured on far and cellular links, more gained nothing.
+    static let readWindow = 8
+    /// The most OpenSSH's SFTP server returns for one read.
+    static let readLength = 255 * 1024
 
     static func stream<Client: RemuxSFTPReadOnlyClient>(
         client: Client,
@@ -30,43 +43,138 @@ enum TerminalPreviewRemoteFileReader {
         onMetadata: @escaping MetadataHandler = { _ in },
         onChunk: @escaping ChunkHandler
     ) async throws -> RemuxSFTPFileMetadata {
-        let metadata: RemuxSFTPFileMetadata
-        if let knownMetadata {
-            metadata = knownMetadata
-        } else {
-            metadata = try await client.metadata(atPath: remotePath)
-        }
-        if let size = metadata.size, size > maximumByteCount {
-            throw TerminalPreviewFileError.tooLarge(
-                maximumByteCount: maximumByteCount
-            )
-        }
-        try await onMetadata(metadata)
-
-        try await client.withFile(atPath: remotePath) { remoteFile in
-            var offset: UInt64 = 0
-            while true {
-                try Task.checkCancellation()
-                let remaining = maximumByteCount - min(offset, maximumByteCount)
-                let requestedLength = Int(min(
-                    UInt64(RemuxSFTPReadableFile.maximumChunkLength),
-                    remaining + 1
-                ))
-                let data = try await remoteFile.readChunk(
-                    from: offset,
-                    length: requestedLength
+        try await client.withFile(atPath: remotePath, knownMetadata: knownMetadata) { remoteFile, metadata in
+            if let size = metadata.size, size > maximumByteCount {
+                throw TerminalPreviewFileError.tooLarge(
+                    maximumByteCount: maximumByteCount
                 )
-                guard !data.isEmpty else { break }
-                guard UInt64(data.count) <= remaining else {
-                    throw TerminalPreviewFileError.tooLarge(
-                        maximumByteCount: maximumByteCount
-                    )
-                }
-                try await onChunk(data)
-                offset += UInt64(data.count)
             }
+            try await onMetadata(metadata)
+
+            var offset: UInt64 = 0
+            if let size = metadata.size {
+                guard let next = try await readWindowed(
+                    remoteFile,
+                    size: size,
+                    maximumByteCount: maximumByteCount,
+                    onChunk: onChunk
+                ) else {
+                    return metadata
+                }
+                offset = next
+            }
+            try await readSequentially(
+                remoteFile,
+                from: offset,
+                maximumByteCount: maximumByteCount,
+                onChunk: onChunk
+            )
+            return metadata
         }
-        return metadata
+    }
+
+    /// Reads a file of known size; returns the offset to read on from one read at a time, or nil when the file
+    /// ended at that size.
+    private static func readWindowed(
+        _ remoteFile: RemuxSFTPReadableFile,
+        size: UInt64,
+        maximumByteCount: UInt64,
+        onChunk: ChunkHandler
+    ) async throws -> UInt64? {
+        let chunkLength = UInt64(readLength)
+        var reads = stride(from: UInt64(0), to: size, by: Int(chunkLength)).map { offset in
+            (offset: offset, length: Int(min(chunkLength, size - offset)))
+        }
+        reads.append((
+            offset: size,
+            length: sequentialReadLength(at: size, maximumByteCount: maximumByteCount)
+        ))
+
+        let endIndex = reads.count - 1
+        return try await withThrowingTaskGroup(of: (index: Int, data: Data).self) { group in
+            var issued = 0
+            var arrived: [Int: Data] = [:]
+            var dataReadsBack = 0
+            var endCameBackEarly = false
+            for (index, read) in reads.enumerated() {
+                // A read once sent can't be taken back, so a cancelled reader issues no more; ones already issued
+                // still go out.
+                try Task.checkCancellation()
+                while issued < reads.count, issued - index < readWindow {
+                    let issuedIndex = issued
+                    let issuedRead = reads[issuedIndex]
+                    group.addTask {
+                        let data = try await remoteFile.readChunk(from: issuedRead.offset, length: issuedRead.length)
+                        return (index: issuedIndex, data: data)
+                    }
+                    issued += 1
+                }
+                while arrived[index] == nil, let result = try await group.next() {
+                    if result.index == endIndex {
+                        endCameBackEarly = dataReadsBack < endIndex
+                    } else {
+                        dataReadsBack += 1
+                    }
+                    arrived[result.index] = result.data
+                }
+                guard let data = arrived.removeValue(forKey: index) else {
+                    preconditionFailure("read \(index) was issued and not delivered")
+                }
+
+                if read.offset == size {
+                    // An end found while reads ahead of it were out may predate growth: one more read confirms it.
+                    guard !data.isEmpty else { return endCameBackEarly ? size : nil }
+                    // The file grew since its size was read.
+                    guard UInt64(data.count) <= maximumByteCount - size else {
+                        throw TerminalPreviewFileError.tooLarge(
+                            maximumByteCount: maximumByteCount
+                        )
+                    }
+                    try await onChunk(data)
+                    return size + UInt64(data.count)
+                }
+                if !data.isEmpty {
+                    try await onChunk(data)
+                }
+                if data.count < read.length {
+                    // The server caps reads below `readLength`, or the file shrank: the rest is read in order.
+                    group.cancelAll()
+                    return read.offset + UInt64(data.count)
+                }
+            }
+            preconditionFailure("the read at the known size ends the window")
+        }
+    }
+
+    private static func readSequentially(
+        _ remoteFile: RemuxSFTPReadableFile,
+        from start: UInt64,
+        maximumByteCount: UInt64,
+        onChunk: ChunkHandler
+    ) async throws {
+        var offset = start
+        while true {
+            try Task.checkCancellation()
+            let remaining = maximumByteCount - min(offset, maximumByteCount)
+            let data = try await remoteFile.readChunk(
+                from: offset,
+                length: sequentialReadLength(at: offset, maximumByteCount: maximumByteCount)
+            )
+            guard !data.isEmpty else { break }
+            guard UInt64(data.count) <= remaining else {
+                throw TerminalPreviewFileError.tooLarge(
+                    maximumByteCount: maximumByteCount
+                )
+            }
+            try await onChunk(data)
+            offset += UInt64(data.count)
+        }
+    }
+
+    /// One byte past the maximum at most, which is how a file over it shows.
+    private static func sequentialReadLength(at offset: UInt64, maximumByteCount: UInt64) -> Int {
+        let remaining = maximumByteCount - min(offset, maximumByteCount)
+        return Int(min(UInt64(RemuxSFTPReadableFile.maximumChunkLength), remaining + 1))
     }
 }
 

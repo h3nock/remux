@@ -175,8 +175,13 @@ final class GhosttyComposerModel: ObservableObject {
         dictationController.stopImmediately()
     }
 
+    /// Each add below also prepares `transferService`, the server the attachment will be sent to, so Send doesn't
+    /// wait for its connection.
     @discardableResult
-    func addPhotoSelections(_ items: [PhotosPickerItem]) -> Bool {
+    func addPhotoSelections(
+        _ items: [PhotosPickerItem],
+        preparing transferService: any GhosttyAttachmentTransferService
+    ) -> Bool {
         let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
             contentTypes: items.map(\.supportedContentTypes)
         )
@@ -184,6 +189,7 @@ final class GhosttyComposerModel: ObservableObject {
 
         attachments.append(contentsOf: pendingAttachments)
         statusMessage = nil
+        prepareTransfer(transferService)
         for (item, attachment) in zip(items, pendingAttachments) {
             beginAttachmentPreparation(attachment.id, from: .photo(item))
         }
@@ -191,7 +197,10 @@ final class GhosttyComposerModel: ObservableObject {
     }
 
     @discardableResult
-    func addSecurityScopedFiles(_ urls: [URL]) async throws -> Bool {
+    func addSecurityScopedFiles(
+        _ urls: [URL],
+        preparing transferService: any GhosttyAttachmentTransferService
+    ) async throws -> Bool {
         guard !urls.isEmpty else { return false }
         let pendingAttachments = try await Task.detached(priority: .utility) {
             try GhosttyPendingAttachment.securityScopedFiles(urls: urls)
@@ -200,19 +209,25 @@ final class GhosttyComposerModel: ObservableObject {
 
         attachments.append(contentsOf: pendingAttachments)
         statusMessage = nil
+        prepareTransfer(transferService)
         return true
     }
 
     func addPastedImage(
-        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest
+        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
+        preparing transferService: any GhosttyAttachmentTransferService
     ) {
         let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
         attachments.append(attachment)
         statusMessage = nil
+        prepareTransfer(transferService)
         beginAttachmentPreparation(attachment.id, from: .pastedImage(request))
     }
 
-    func addPastedFile(_ url: URL) {
+    func addPastedFile(
+        _ url: URL,
+        preparing transferService: any GhosttyAttachmentTransferService
+    ) {
         let filename = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         let placeholder = GhosttyPendingAttachment(
             kind: .file,
@@ -222,7 +237,14 @@ final class GhosttyComposerModel: ObservableObject {
         )
         attachments.append(placeholder)
         statusMessage = nil
+        prepareTransfer(transferService)
         beginAttachmentPreparation(placeholder.id, from: .pastedFile(url))
+    }
+
+    private func prepareTransfer(_ transferService: any GhosttyAttachmentTransferService) {
+        Task {
+            await transferService.prepare()
+        }
     }
 
     func removeAttachment(_ id: GhosttyPendingAttachment.ID) {
