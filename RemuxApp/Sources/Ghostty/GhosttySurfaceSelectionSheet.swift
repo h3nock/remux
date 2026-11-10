@@ -736,7 +736,6 @@ private struct GhosttyWindowSelectionTile: View {
         .clipShape(Self.pictureShape)
         .overlay {
             Self.pictureShape.strokeBorder(
-                // The ring is its chip's colour.
                 isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.stroke,
                 lineWidth: isSelected ? 2 : 1
             )
@@ -746,10 +745,7 @@ private struct GhosttyWindowSelectionTile: View {
 
     private var caption: some View {
         HStack(spacing: 6) {
-            GhosttyWindowIndexBadge(
-                displayIndex: displayIndex,
-                isSelected: isSelected
-            )
+            GhosttyWindowIndexBadge(displayIndex: displayIndex)
 
             if let agentStatus {
                 TerminalAgentDot(status: agentStatus)
@@ -813,24 +809,20 @@ private struct GhosttyWindowPreviewPicture: View {
     }
 }
 
+/// A window's number. The ring around the picture alone marks the current window.
 private struct GhosttyWindowIndexBadge: View {
     let displayIndex: Int
-    let isSelected: Bool
 
     var body: some View {
         Text("\(displayIndex)")
             .font(.system(size: 12, weight: .bold, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(
-                isSelected
-                    ? RemuxAccent.onFill
-                    : TerminalSelectionSheetPalette.primary
-            )
+            .foregroundStyle(TerminalSelectionSheetPalette.primary)
             .padding(.horizontal, 5)
             .frame(minWidth: PanePreviewLayout.captionHeight)
             .frame(height: PanePreviewLayout.captionHeight)
             .background(
-                isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.controlFill,
+                TerminalSelectionSheetPalette.controlFill,
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
     }
