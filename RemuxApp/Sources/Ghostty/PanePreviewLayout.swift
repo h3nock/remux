@@ -66,6 +66,30 @@ enum PanePreviewLayout {
         return min(heightWithPeek, fullHeight, budget)
     }
 
+    /// How a sheet of windows opens.
+    enum GridPresentation: Equatable {
+        /// The whole grid shows at the fitted height.
+        case fitted
+        /// The fitted height shows the current window and part of the grid; the sheet can be pulled
+        /// to full height for more.
+        case fittedOrFull
+        /// The fitted height would not show the current window, so the sheet has the full height.
+        case full
+    }
+
+    static func gridPresentation(
+        itemCount: Int,
+        currentIndex: Int?,
+        metrics: Metrics,
+        fittedHeight: CGFloat
+    ) -> GridPresentation {
+        guard metrics.gridHeight(itemCount: itemCount) > fittedHeight else { return .fitted }
+        let rowPitch = metrics.tilePointSize.height + metrics.rowSpacing
+        let wholeRows = Int((fittedHeight + metrics.rowSpacing) / rowPitch)
+        guard let currentIndex, metrics.columnCount > 0 else { return .fittedOrFull }
+        return currentIndex / metrics.columnCount < wholeRows ? .fittedOrFull : .full
+    }
+
     static let captionHeight: CGFloat = 20
     static let pictureToCaptionSpacing: CGFloat = 6
     /// The picture's own padding, as a terminal has.

@@ -187,4 +187,34 @@ final class PanePreviewLayoutTests: XCTestCase {
             cursorRow: 40
         ))
     }
+
+    // MARK: How a sheet of windows opens
+
+    private func gridPresentation(itemCount: Int, currentIndex: Int?) -> PanePreviewLayout.GridPresentation {
+        let metrics = PanePreviewLayout.windowMetrics(availableSize: CGSize(width: 402, height: 874))
+        // Two rows and half of a third.
+        let fittedHeight = metrics.gridHeight(itemCount: 4) + metrics.rowSpacing + metrics.tilePointSize.height / 2
+        return PanePreviewLayout.gridPresentation(
+            itemCount: itemCount,
+            currentIndex: currentIndex,
+            metrics: metrics,
+            fittedHeight: fittedHeight
+        )
+    }
+
+    func testASheetThatShowsEveryWindowOpensFitted() {
+        XCTAssertEqual(gridPresentation(itemCount: 4, currentIndex: 3), .fitted)
+    }
+
+    func testASheetWithMoreWindowsThanItShowsCanBePulledToFullHeight() {
+        XCTAssertEqual(gridPresentation(itemCount: 10, currentIndex: 0), .fittedOrFull)
+        XCTAssertEqual(gridPresentation(itemCount: 10, currentIndex: 3), .fittedOrFull)
+        XCTAssertEqual(gridPresentation(itemCount: 10, currentIndex: nil), .fittedOrFull)
+    }
+
+    func testASheetThatWouldNotShowTheCurrentWindowOpensAtFullHeight() {
+        // The third row is only half in view at the fitted height.
+        XCTAssertEqual(gridPresentation(itemCount: 10, currentIndex: 4), .full)
+        XCTAssertEqual(gridPresentation(itemCount: 10, currentIndex: 9), .full)
+    }
 }

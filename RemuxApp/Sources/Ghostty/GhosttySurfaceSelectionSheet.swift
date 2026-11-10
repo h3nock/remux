@@ -29,6 +29,7 @@ struct GhosttyWindowSelectionSheet: View {
     @State private var removal = GhosttyTileRemoval<GhosttyWindowSelectionSheetRenderProjection.Window>()
     @State private var renamePrompt: TerminalRenamePrompt?
     @State private var renameName = ""
+    @State private var keepsCurrentWindowInView = true
 
     /// The windows' previews; nil lists the windows as rows.
     let session: GhosttyPanePreviewSession?
@@ -64,23 +65,41 @@ struct GhosttyWindowSelectionSheet: View {
             } content: {
                 Group {
                     if let session {
-                        ScrollView(showsIndicators: false) {
-                            GhosttyWindowPreviewGrid(
-                                session: session,
-                                projection: projection,
-                                topLevelNoun: topLevelNoun,
-                                terminalBackground: terminalBackground,
-                                terminalSeparator: terminalSeparator,
-                                layout: layout,
-                                onSelect: select,
-                                onClose: close
+                        // The grid takes the sheet's height, which a sheet with more windows than it
+                        // shows can be pulled taller.
+                        ScrollViewReader { scroll in
+                            ScrollView(showsIndicators: false) {
+                                GhosttyWindowPreviewGrid(
+                                    session: session,
+                                    projection: projection,
+                                    topLevelNoun: topLevelNoun,
+                                    terminalBackground: terminalBackground,
+                                    terminalSeparator: terminalSeparator,
+                                    layout: layout,
+                                    onSelect: select,
+                                    onClose: close
+                                )
+                            }
+                            .contentMargins(
+                                .horizontal,
+                                TerminalSelectionSheetLayout.horizontalContentPadding,
+                                for: .scrollContent
                             )
+                            .terminalSelectionSheetScrollFades()
+                            // The current window stays in view as the sheet takes its height, until
+                            // the grid is scrolled by hand.
+                            .onScrollPhaseChange { _, phase in
+                                if phase == .interacting { keepsCurrentWindowInView = false }
+                            }
+                            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                                geometry.containerSize.height
+                            } action: { _, _ in
+                                guard keepsCurrentWindowInView,
+                                      let current = projection.windows.first(where: \.isSelected)
+                                else { return }
+                                scroll.scrollTo(current.id, anchor: .bottom)
+                            }
                         }
-                        .contentMargins(
-                            .horizontal,
-                            TerminalSelectionSheetLayout.horizontalContentPadding,
-                            for: .scrollContent
-                        )
                     } else {
                         GhosttyWindowRowList(
                             windows: projection.windows,
@@ -89,9 +108,9 @@ struct GhosttyWindowSelectionSheet: View {
                             onClose: close,
                             onRename: rename
                         )
+                        .frame(height: contentHeight)
                     }
                 }
-                .frame(height: contentHeight)
                 .accessibilityIdentifier("terminal.windows.scroll")
             } actions: {
                 TerminalSelectionSheetActionButton(
