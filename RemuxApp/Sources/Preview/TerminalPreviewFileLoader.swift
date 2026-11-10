@@ -29,7 +29,8 @@ enum TerminalPreviewRemoteFileReader {
     typealias MetadataHandler = @Sendable (RemuxSFTPFileMetadata) async throws -> Void
     typealias ChunkHandler = @Sendable (Data) async throws -> Void
 
-    /// Reads outstanding at once. Measured on far and cellular links, more gained nothing.
+    /// Reads outstanding at once: eight of `readLength` are about 2 MiB, the window every SSH channel is given and
+    /// about what an upload keeps on the way. Measured on far and cellular links, more gained nothing.
     static let readWindow = 8
     /// The most OpenSSH's SFTP server returns for one read.
     static let readLength = 255 * 1024
@@ -96,6 +97,8 @@ enum TerminalPreviewRemoteFileReader {
             var dataReadsBack = 0
             var endCameBackEarly = false
             for (index, read) in reads.enumerated() {
+                // A read once sent can't be taken back, so a cancelled reader sends no more.
+                try Task.checkCancellation()
                 while issued < reads.count, issued - index < readWindow {
                     let issuedIndex = issued
                     let issuedRead = reads[issuedIndex]

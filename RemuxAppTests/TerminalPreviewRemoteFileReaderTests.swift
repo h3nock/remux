@@ -180,6 +180,63 @@ final class TerminalPreviewRemoteFileReaderTests: XCTestCase {
         XCTAssertEqual(client.cancelledReads, TerminalPreviewRemoteFileReader.readWindow)
     }
 
+    /// A read once sent can't be taken back, so a cancelled reader sends no more. These reads answer whatever happens
+    /// to their task, so only the reader's own check can stop the next ones.
+    func testReaderCancelledWhileHandingAChunkOnSendsNoMoreReads() async throws {
+        let client = WindowReadClient(contents: Self.patternedData(count: 20 * length))
+        let handingOn = AsyncFlag()
+        let cancelled = AsyncFlag()
+        let reading = Task {
+            try await TerminalPreviewRemoteFileReader.stream(
+                client: client,
+                remotePath: "/srv/file.bin",
+                maximumByteCount: 64 * 1024 * 1024
+            ) { _ in
+                await handingOn.set()
+                await cancelled.wait()
+            }
+        }
+        await handingOn.wait()
+        reading.cancel()
+        await cancelled.set()
+
+        do {
+            _ = try await reading.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        }
+        // The first window went out before the cancel; nothing refilled it.
+        XCTAssertEqual(client.requests.count, TerminalPreviewRemoteFileReader.readWindow)
+    }
+
+    func testReaderCancelledBeforeItsFirstReadSendsNone() async throws {
+        let client = WindowReadClient(contents: Self.patternedData(count: 20 * length))
+        let handingOn = AsyncFlag()
+        let cancelled = AsyncFlag()
+        let reading = Task {
+            try await TerminalPreviewRemoteFileReader.stream(
+                client: client,
+                remotePath: "/srv/file.bin",
+                maximumByteCount: 64 * 1024 * 1024,
+                onMetadata: { _ in
+                    await handingOn.set()
+                    await cancelled.wait()
+                },
+                onChunk: { _ in }
+            )
+        }
+        await handingOn.wait()
+        reading.cancel()
+        await cancelled.set()
+
+        do {
+            _ = try await reading.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        }
+        XCTAssertTrue(client.requests.isEmpty)
+    }
+
     private static func patternedData(count: Int) -> Data {
         Data((0..<count).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 8) })
     }
