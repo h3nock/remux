@@ -70,19 +70,13 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> GhosttyCompositeViewportContainerView {
         let view = GhosttyCompositeViewportContainerView()
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.updateSelectionHandleStyle(
-            terminalTheme.terminalChromeStyle,
-            separatorColor: terminalTheme.terminalCompositeSeparatorUIColor
-        )
+        view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
         return view
     }
 
     func updateUIView(_ view: GhosttyCompositeViewportContainerView, context: Context) {
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.updateSelectionHandleStyle(
-            terminalTheme.terminalChromeStyle,
-            separatorColor: terminalTheme.terminalCompositeSeparatorUIColor
-        )
+        view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
         view.update(
             projection: projection,
             surfaceLookup: surfaceLookup,
@@ -119,7 +113,6 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private let linesView = GhosttyPaneLinesUIView()
     /// The backend's popup, in front of the panes while it shows, and behind the selection's handles.
     private let popupView = GhosttyTerminalPopupFrameView()
-    private var focusedSeparatorColor = UIColor.clear
     private var separatorColor = UIColor.clear
     private var trackpadDriver: GhosttyKeyboardCursorTrackpadDriver?
 
@@ -233,22 +226,9 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         return handle.hitTest(convert(point, to: handle), with: event)
     }
 
-    func updateSelectionHandleStyle(
-        _ style: GhosttyTerminalChromeStyle,
-        separatorColor: UIColor
-    ) {
-        let fillColor = UIColor(style.accent)
-        let borderColor = UIColor(style.accentForeground).cgColor
-        let styleChanged = !focusedSeparatorColor.isEqual(fillColor)
-            || !self.separatorColor.isEqual(separatorColor)
-            || startSelectionHandle.layer.borderColor != borderColor
-        guard styleChanged else { return }
-        focusedSeparatorColor = fillColor
+    func updateSeparatorColor(_ separatorColor: UIColor) {
+        guard !self.separatorColor.isEqual(separatorColor) else { return }
         self.separatorColor = separatorColor
-        startSelectionHandle.backgroundColor = fillColor
-        endSelectionHandle.backgroundColor = fillColor
-        startSelectionHandle.layer.borderColor = borderColor
-        endSelectionHandle.layer.borderColor = borderColor
         flushLayoutIfPossible()
     }
 
@@ -415,7 +395,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         let startedAt = GhosttyRuntimeTrace.perfEnabled
             ? GhosttyRuntimeTrace.nowNanos()
             : nil
-        let inks = GhosttyPaneLinesUIView.Inks(separator: separatorColor, focus: focusedSeparatorColor)
+        let inks = GhosttyPaneLinesUIView.Inks(separator: separatorColor, focus: RemuxAccent.uiFill)
         guard let grid = projection.windowGrid,
               let cell = projection.cellMetrics,
               let layout = GhosttyCompositeViewportLayout(
@@ -1091,6 +1071,8 @@ private final class GhosttySelectionHandleView: UIView {
     init(endpoint: ghostty_terminal_surface_selection_endpoint_e) {
         self.endpoint = endpoint
         super.init(frame: CGRect(x: 0, y: 0, width: 18, height: 18))
+        backgroundColor = RemuxAccent.uiFill
+        layer.borderColor = RemuxAccent.uiOnFill.cgColor
         layer.borderWidth = 1
         layer.cornerRadius = 9
     }
@@ -1130,7 +1112,7 @@ private extension GhosttySurfacePanGesture.WindowNavigationDirection {
 /// animation, so lines drawn into the area's own layer would stretch over the panes, which are laid out without
 /// animation. The canvas keeps its place through the animation, and this view's geometry never animates.
 final class GhosttyPaneLinesUIView: UIView {
-    /// The colours of the inks the backend leaves to the theme.
+    /// The colours of the inks the backend leaves to the app: the theme's separator and the app's accent.
     struct Inks: Equatable {
         var separator: UIColor
         var focus: UIColor

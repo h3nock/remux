@@ -45,7 +45,6 @@ struct TerminalPreviewView: View {
                 .toolbarBackground(.visible, for: .navigationBar)
         }
         .tint(.primary)
-        .environment(\.ghosttyTerminalChromeStyle, terminalTheme.terminalChromeStyle)
     }
 
     @ViewBuilder
@@ -89,7 +88,7 @@ struct TerminalPreviewView: View {
                     .multilineTextAlignment(.center)
                 Button("Retry", action: session.restart)
                     .buttonStyle(.borderedProminent)
-                    .tint(terminalTheme.terminalChromeStyle.accent)
+                    .tint(RemuxAccent.fill)
                     .accessibilityIdentifier("terminal.preview.retry")
             }
             .padding(28)

@@ -29,12 +29,16 @@ struct GhosttyWindowSelectionSheet: View {
     @State private var removal = GhosttyTileRemoval<GhosttyWindowSelectionSheetRenderProjection.Window>()
     @State private var renamePrompt: TerminalRenamePrompt?
     @State private var renameName = ""
+    @State private var keepsCurrentWindowInView = true
 
     /// The windows' previews; nil lists the windows as rows.
     let session: GhosttyPanePreviewSession?
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let topLevelNoun: GhosttyTopLevelNoun
     let sessionName: String
+    /// The terminal theme's background, which a preview sits on.
+    let terminalBackground: Color
+    let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
     let contentHeight: CGFloat
     let commandFailureMessage: String?
@@ -61,21 +65,41 @@ struct GhosttyWindowSelectionSheet: View {
             } content: {
                 Group {
                     if let session {
-                        ScrollView(showsIndicators: false) {
-                            GhosttyWindowPreviewGrid(
-                                session: session,
-                                projection: projection,
-                                topLevelNoun: topLevelNoun,
-                                layout: layout,
-                                onSelect: select,
-                                onClose: close
+                        // The grid takes the sheet's height, which a sheet with more windows than it
+                        // shows can be pulled taller.
+                        ScrollViewReader { scroll in
+                            ScrollView(showsIndicators: false) {
+                                GhosttyWindowPreviewGrid(
+                                    session: session,
+                                    projection: projection,
+                                    topLevelNoun: topLevelNoun,
+                                    terminalBackground: terminalBackground,
+                                    terminalSeparator: terminalSeparator,
+                                    layout: layout,
+                                    onSelect: select,
+                                    onClose: close
+                                )
+                            }
+                            .contentMargins(
+                                .horizontal,
+                                TerminalSelectionSheetLayout.horizontalContentPadding,
+                                for: .scrollContent
                             )
+                            .terminalSelectionSheetScrollFades()
+                            // The current window stays in view as the sheet takes its height, until
+                            // the grid is scrolled by hand.
+                            .onScrollPhaseChange { _, phase in
+                                if phase == .interacting { keepsCurrentWindowInView = false }
+                            }
+                            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                                geometry.containerSize.height
+                            } action: { _, _ in
+                                guard keepsCurrentWindowInView,
+                                      let current = projection.windows.first(where: \.isSelected)
+                                else { return }
+                                scroll.scrollTo(current.id, anchor: .bottom)
+                            }
                         }
-                        .contentMargins(
-                            .horizontal,
-                            TerminalSelectionSheetLayout.horizontalContentPadding,
-                            for: .scrollContent
-                        )
                     } else {
                         GhosttyWindowRowList(
                             windows: projection.windows,
@@ -84,9 +108,9 @@ struct GhosttyWindowSelectionSheet: View {
                             onClose: close,
                             onRename: rename
                         )
+                        .frame(height: contentHeight)
                     }
                 }
-                .frame(height: contentHeight)
                 .accessibilityIdentifier("terminal.windows.scroll")
             } actions: {
                 TerminalSelectionSheetActionButton(
@@ -167,7 +191,6 @@ struct GhosttyWindowSelectionSheet: View {
 
 struct GhosttyPaneSelectionSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @State private var removal = GhosttyTileRemoval<GhosttyPaneSelectionSheetRenderProjection.Pane>()
     @State private var renamePrompt: TerminalRenamePrompt?
     @State private var renameName = ""
@@ -222,8 +245,7 @@ struct GhosttyPaneSelectionSheet: View {
                             isOn: Binding(
                                 get: { projection.isServerZoomed },
                                 set: { zoomed in onSetZoomed(zoomed) }
-                            ),
-                            accent: chromeStyle.accent
+                            )
                         )
                     }
                 }
@@ -268,7 +290,6 @@ struct GhosttyPaneSelectionSheet: View {
             panes: projection.panes,
             selectedPaneID: projection.selectedPaneID,
             size: topologySize,
-            accent: chromeStyle.selectedStroke,
             onSelect: { paneID in
                 Haptic.selection()
                 removal.end()
@@ -308,11 +329,13 @@ struct GhosttyPaneSelectionSheet: View {
 
 /// The windows as a grid of previews of their focused panes. A long press on a tile offers its removal.
 private struct GhosttyWindowPreviewGrid: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
+    @Environment(\.displayScale) private var displayScale
     @ObservedObject var session: GhosttyPanePreviewSession
 
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let topLevelNoun: GhosttyTopLevelNoun
+    let terminalBackground: Color
+    let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
     let onSelect: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
     let onClose: (GhosttyWindowSelectionSheetRenderProjection.Window) -> Void
@@ -324,7 +347,7 @@ private struct GhosttyWindowPreviewGrid: View {
                 count: layout.columnCount
             ),
             alignment: .center,
-            spacing: layout.gridSpacing
+            spacing: layout.rowSpacing
         ) {
             ForEach(projection.windows) { window in
                 Button {
@@ -341,7 +364,8 @@ private struct GhosttyWindowPreviewGrid: View {
                         previewState: window.focusedPreviewPaneID.flatMap { pane in
                             projection.previewLeafIDs.contains(pane) ? session.imagesByPaneID[pane] : .failed
                         },
-                        chromeStyle: chromeStyle,
+                        terminalBackground: terminalBackground,
+                        terminalSeparator: terminalSeparator,
                         layout: layout
                     )
                 }
@@ -363,11 +387,20 @@ private struct GhosttyWindowPreviewGrid: View {
         .frame(maxWidth: .infinity, alignment: .top)
         .onAppear {
             session.reconcile(leafIDs: projection.previewLeafIDs)
+            session.present(pixelBudget: pixelBudget)
             GhosttyRuntimeTrace.perf("panePreview.presentation activate kind=windows")
         }
         .onChange(of: projection.previewLeafIDs) { _, newValue in
             session.reconcile(leafIDs: newValue)
         }
+        .onChange(of: pixelBudget) { _, newValue in
+            session.present(pixelBudget: newValue)
+        }
+    }
+
+    /// The size the tiles draw their previews at, which is the size the previews are captured at.
+    private var pixelBudget: GhosttyPanePreviewSession.PixelBudget {
+        PanePreviewLayout.windowPhysicalPixelBudget(metrics: layout, scale: displayScale)
     }
 }
 
@@ -640,21 +673,8 @@ struct GhosttySelectionSheetFailureBanner: View {
     }
 }
 
-private struct GhosttyRenderedPreviewSurface: View {
-    let image: CGImage
-    let size: CGSize
-
-    var body: some View {
-        Image(decorative: image, scale: PanePreviewLayout.currentScale())
-            .resizable()
-            .aspectRatio(contentMode: .fill)
-            .frame(width: size.width, height: size.height)
-            .background(Color.black.opacity(0.30))
-            .clipped()
-    }
-
-}
-
+/// A window as a picture of its focused pane over a caption: its number, its agent's state, its name
+/// and, when it is split, how many panes it has.
 private struct GhosttyWindowSelectionTile: View {
     let topLevelNoun: GhosttyTopLevelNoun
     let displayIndex: Int
@@ -664,76 +684,89 @@ private struct GhosttyWindowSelectionTile: View {
     let isSelected: Bool
     let agentStatus: TerminalAgentStatus?
     let previewState: GhosttyPanePreviewSession.PreviewState?
-    let chromeStyle: GhosttyTerminalChromeStyle
+    let terminalBackground: Color
+    let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
 
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            previewSurface
+    private static let pictureShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
 
-            metadata
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                    Color.black.opacity(0.78),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                )
-                .padding(8)
+    var body: some View {
+        VStack(spacing: PanePreviewLayout.pictureToCaptionSpacing) {
+            picture
+            caption
         }
         .frame(
             width: layout.tilePointSize.width,
             height: layout.tilePointSize.height,
-            alignment: .topLeading
+            alignment: .top
         )
-        .terminalSelectionTileChrome(isSelected: isSelected, chromeStyle: chromeStyle)
-        .overlay(alignment: .topLeading) {
-            GhosttyPreviewIndexBadge(
-                displayIndex: displayIndex,
-                isSelected: isSelected,
-                chromeStyle: chromeStyle
-            )
-            .padding(8)
-        }
+        .contentShape(Self.pictureShape)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(previewState.accessibilityValue)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
-    @ViewBuilder
-    private var previewSurface: some View {
-        switch previewState {
-        case .ready(let image):
-            GhosttyRenderedPreviewSurface(
-                image: image,
-                size: layout.tilePointSize
-            )
+    private var picture: some View {
+        ZStack(alignment: .topLeading) {
+            terminalBackground
 
-        case .pending, .none, .failed:
-            Color.black.opacity(0.30)
-                .frame(width: layout.tilePointSize.width, height: layout.tilePointSize.height)
+            switch previewState {
+            case .ready(let preview):
+                GhosttyWindowPreviewPicture(preview: preview, separator: terminalSeparator)
+                    .padding(PanePreviewLayout.pictureInset)
+                    .transition(.opacity)
+
+            case .failed:
+                Image(systemName: "apple.terminal")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(TerminalSelectionSheetPalette.tertiary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            case .pending, .none:
+                EmptyView()
+            }
         }
+        .frame(
+            width: layout.picturePointSize.width,
+            height: layout.picturePointSize.height,
+            alignment: .topLeading
+        )
+        .clipShape(Self.pictureShape)
+        .overlay {
+            Self.pictureShape.strokeBorder(
+                isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.stroke,
+                lineWidth: isSelected ? 2 : 1
+            )
+        }
+        .animation(.easeOut(duration: 0.18), value: previewState.isReady)
     }
 
-    private var metadata: some View {
-        HStack(spacing: 4) {
+    private var caption: some View {
+        HStack(spacing: 6) {
+            GhosttyWindowIndexBadge(displayIndex: displayIndex)
+
             if let agentStatus {
                 TerminalAgentDot(status: agentStatus)
-                    // The label sits on a dark plate in either appearance.
-                    .environment(\.colorScheme, .dark)
             }
 
+            // A long name keeps both its ends, where window names differ.
             Text(displayName.isEmpty ? "\(topLevelNoun.singular) \(displayIndex)" : displayName)
-                .fontWeight(.semibold)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(TerminalSelectionSheetPalette.primary)
+                .truncationMode(.middle)
 
-            Text("·")
+            if paneCount > 1 {
+                Text("\(paneCount) panes")
+                    .font(.system(size: 12))
+                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                    .layoutPriority(1)
+            }
 
-            Text("\(paneCount) \(paneCount == 1 ? "pane" : "panes")")
+            Spacer(minLength: 0)
         }
-        .font(.system(size: 11))
-        .foregroundStyle(Color.white.opacity(0.94))
         .lineLimit(1)
-        .truncationMode(.tail)
+        .frame(height: PanePreviewLayout.captionHeight)
     }
 
     private var accessibilityLabel: String {
@@ -748,37 +781,55 @@ private struct GhosttyWindowSelectionTile: View {
     }
 }
 
-private struct GhosttyPreviewIndexBadge: View {
+/// A window's number, as tmux counts it, filled for the current window.
+/// A window's preview as the window has it: each pane's own pixels, scaled once, as they are drawn,
+/// and the lines between panes.
+private struct GhosttyWindowPreviewPicture: View {
+    @Environment(\.displayScale) private var displayScale
+
+    let preview: GhosttyPanePreviewSession.Preview
+    let separator: Color
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(preview.panes.indices, id: \.self) { index in
+                Image(uiImage: preview.panes[index].image)
+                    .offset(x: preview.panes[index].origin.x, y: preview.panes[index].origin.y)
+            }
+            Path { path in
+                for line in preview.separators {
+                    path.move(to: line.start)
+                    path.addLine(to: line.end)
+                }
+            }
+            .stroke(separator, lineWidth: 1 / max(displayScale, 1))
+        }
+        .frame(width: preview.size.width, height: preview.size.height, alignment: .topLeading)
+    }
+}
+
+/// A window's number. The ring around the picture alone marks the current window.
+private struct GhosttyWindowIndexBadge: View {
     let displayIndex: Int
-    let isSelected: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     var body: some View {
         Text("\(displayIndex)")
             .font(.system(size: 12, weight: .bold, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(
-                isSelected
-                    ? chromeStyle.accentForeground
-                    : TerminalSelectionSheetPalette.primary
-            )
-            .frame(width: 28, height: 28)
+            .foregroundStyle(TerminalSelectionSheetPalette.primary)
+            .padding(.horizontal, 5)
+            .frame(minWidth: PanePreviewLayout.captionHeight)
+            .frame(height: PanePreviewLayout.captionHeight)
             .background(
-                isSelected
-                    ? chromeStyle.accent
-                    : Color(uiColor: .secondarySystemBackground).opacity(0.84),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                TerminalSelectionSheetPalette.controlFill,
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
-            .overlay {
-                if !isSelected {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 0.75)
-                }
-            }
     }
 }
 
 private struct GhosttyPaneTopologyDiagram: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     static let contentInset: CGFloat = 6
     private static let outerCornerRadius: CGFloat = 12
     private static let tileInset: CGFloat = 2
@@ -786,7 +837,6 @@ private struct GhosttyPaneTopologyDiagram: View {
     let panes: [GhosttyPaneSelectionSheetRenderProjection.Pane]
     let selectedPaneID: UUID?
     let size: CGSize
-    let accent: Color
     let onSelect: (UUID) -> Void
     let onClose: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
     let onRename: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
@@ -826,14 +876,21 @@ private struct GhosttyPaneTopologyDiagram: View {
         .frame(width: Self.contentSize(for: size).width, height: Self.contentSize(for: size).height)
         .padding(Self.contentInset)
         .frame(width: size.width, height: size.height)
-        .background(
-            Color.black.opacity(0.18),
-            in: RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
-        )
+        .background(wellFill, in: RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
                 .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 1)
         }
+    }
+
+    /// The panes sit lifted from a well: in the light look as in the dark one, a pane is lighter than
+    /// what it sits in.
+    private var wellFill: Color {
+        colorScheme == .dark ? Color.black.opacity(0.18) : Color.black.opacity(0.06)
+    }
+
+    private var paneFill: Color {
+        colorScheme == .dark ? TerminalSelectionSheetPalette.row.opacity(0.84) : Color.white.opacity(0.6)
     }
 
     private func paneTile(
@@ -890,15 +947,14 @@ private struct GhosttyPaneTopologyDiagram: View {
         }
         .frame(width: size.width, height: size.height)
         .background(
-            selected
-                ? accent.opacity(0.24)
-                : TerminalSelectionSheetPalette.row.opacity(0.84),
+            selected ? RemuxAccent.selectedFill : .clear,
             in: RoundedRectangle(cornerRadius: radius, style: .continuous)
         )
+        .background(paneFill, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(
-                    selected ? accent : TerminalSelectionSheetPalette.stroke,
+                    selected ? RemuxAccent.fill : TerminalSelectionSheetPalette.stroke,
                     lineWidth: selected ? 2 : 1
                 )
         }
@@ -916,22 +972,22 @@ private struct GhosttyPaneTopologyDiagram: View {
         for pane: GhosttyPaneSelectionSheetRenderProjection.Pane,
         size: CGSize
     ) -> some View {
-        VStack(spacing: 2) {
-            Text(directoryName(pane))
+        // A pane's folder over its program; a pane without a folder is named by its program alone.
+        let hasFolder = !pane.currentPath.isEmpty
+        return VStack(spacing: 2) {
+            Text(hasFolder ? directoryName(pane) : commandName(for: pane))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(
-                    pane.id == selectedPaneID
-                        ? accent
-                        : TerminalSelectionSheetPalette.primary
-                )
+                .foregroundStyle(TerminalSelectionSheetPalette.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            Text(commandName(for: pane))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if hasFolder {
+                Text(commandName(for: pane))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
 
             if let agent = pane.agent {
                 TerminalAgentStateLine(state: agent)
@@ -1005,7 +1061,6 @@ private struct GhosttyPaneSheetActionButtonStyle: ButtonStyle {
 
 private struct GhosttyPaneSheetZoomControl: View {
     @Binding var isOn: Bool
-    let accent: Color
 
     var body: some View {
         Toggle(isOn: $isOn) {
@@ -1016,7 +1071,7 @@ private struct GhosttyPaneSheetZoomControl: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
-        .tint(accent)
+        .tint(RemuxAccent.fill)
         .padding(.horizontal, 11)
         .frame(height: TerminalSelectionSheetLayout.actionBarHeight)
         .fixedSize(horizontal: true, vertical: false)
@@ -1036,6 +1091,11 @@ private struct GhosttyPaneSheetControlDivider: View {
 }
 
 private extension Optional where Wrapped == GhosttyPanePreviewSession.PreviewState {
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
     var accessibilityValue: String {
         switch self {
         case .ready:

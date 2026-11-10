@@ -172,7 +172,6 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     }
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
     let projection: SessionSwitcherProjection
     let servers: [SavedServer]
@@ -471,8 +470,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             ActiveSessionSwitcherRow(
                 session: session,
                 disclosure: disclosure,
-                agentStatus: herdrAgents(session.id)?.status,
-                chromeStyle: chromeStyle
+                agentStatus: herdrAgents(session.id)?.status
             )
         }
         .buttonStyle(.plain)
@@ -509,8 +507,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                 workspace: workspace,
                 isCurrent: isCurrent,
                 agentStatus: agentStatus,
-                isStale: isStale,
-                chromeStyle: chromeStyle
+                isStale: isStale
             )
         }
         .buttonStyle(.plain)
@@ -573,7 +570,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         } label: {
             Label("New Workspace", systemImage: "plus")
                 .font(.body)
-                .foregroundStyle(chromeStyle.accent)
+                .foregroundStyle(RemuxAccent.fill)
                 .padding(.leading, HerdrWorkspaceSwitcherRow.leadingInset)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
@@ -771,7 +768,6 @@ private struct ActiveSessionSwitcherRow: View {
     let disclosure: Bool?
     /// The session's most urgent agent, for a session that reports agents.
     let agentStatus: TerminalAgentStatus?
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     var body: some View {
         HStack(spacing: 12) {
@@ -813,7 +809,7 @@ private struct ActiveSessionSwitcherRow: View {
             if session.showsCheckmark(disclosure: disclosure) {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(chromeStyle.accent)
+                    .foregroundStyle(RemuxAccent.fill)
                     .accessibilityHidden(true)
             }
 
@@ -855,7 +851,6 @@ private struct HerdrWorkspaceSwitcherRow: View {
     let agentStatus: TerminalAgentStatus?
     /// The session isn't connected, so the agents' state may be out of date.
     let isStale: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     private var tabCount: String {
         workspace.tabs.count == 1 ? "1 tab" : "\(workspace.tabs.count) tabs"
@@ -891,7 +886,7 @@ private struct HerdrWorkspaceSwitcherRow: View {
             if isCurrent {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(chromeStyle.accent)
+                    .foregroundStyle(RemuxAccent.fill)
                     .accessibilityHidden(true)
             }
         }

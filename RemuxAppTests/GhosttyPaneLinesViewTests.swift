@@ -104,20 +104,20 @@ final class GhosttyPaneLinesViewTests: XCTestCase {
         XCTAssertEqual(lines.layer.animationKeys() ?? [], [], "the frame's lines' geometry animated")
     }
 
-    /// A new theme reaches the lines: the area's theme sets the inks, and the lines are drawn again in the new
-    /// theme's separator and accent.
+    /// A new theme reaches the lines: the area's theme sets the separator, and the lines are drawn again in the new
+    /// theme's separator and the app's accent.
     func testANewThemeDrawsThePanesLinesInItsInks() throws {
-        let (first, second) = try XCTUnwrap(Self.themesOfOtherInks())
+        let (first, second) = try XCTUnwrap(Self.themesOfOtherSeparators())
         let projection = twoPanes(focusingLeft: true)
         let (window, host) = show(viewport(projection, theme: first))
         defer { hide(window) }
         let lines = try XCTUnwrap(descendant(of: host.view, named: "GhosttyPaneLinesUIView"), "no view of the lines")
-        assertLines(lines, left: Self.focus(first), right: Self.separator(first))
+        assertLines(lines, left: Self.focus, right: Self.separator(first))
 
         host.rootView = viewport(projection, theme: second)
         settle(host)
 
-        assertLines(lines, left: Self.focus(second), right: Self.separator(second))
+        assertLines(lines, left: Self.focus, right: Self.separator(second))
     }
 
     /// The focus moving to another pane changes only the lines, no pane's frame: the lines are drawn again, the
@@ -127,12 +127,12 @@ final class GhosttyPaneLinesViewTests: XCTestCase {
         let (window, host) = show(viewport(twoPanes(focusingLeft: true), theme: theme))
         defer { hide(window) }
         let lines = try XCTUnwrap(descendant(of: host.view, named: "GhosttyPaneLinesUIView"), "no view of the lines")
-        assertLines(lines, left: Self.focus(theme), right: Self.separator(theme))
+        assertLines(lines, left: Self.focus, right: Self.separator(theme))
 
         host.rootView = viewport(twoPanes(focusingLeft: false), theme: theme)
         settle(host)
 
-        assertLines(lines, left: Self.separator(theme), right: Self.focus(theme))
+        assertLines(lines, left: Self.separator(theme), right: Self.focus)
     }
 
     /// Two panes side by side, the left one's left side and the right one's right side lined, in the accent on
@@ -189,18 +189,15 @@ final class GhosttyPaneLinesViewTests: XCTestCase {
         theme.terminalCompositeSeparatorUIColor
     }
 
-    private static func focus(_ theme: TerminalTheme) -> UIColor {
-        UIColor(theme.terminalChromeStyle.accent)
-    }
+    private static let focus = RemuxAccent.uiFill
 
-    /// Two themes whose separators and accents both differ.
-    private static func themesOfOtherInks() -> (TerminalTheme, TerminalTheme)? {
+    /// Two themes whose separators differ, neither of them the accent.
+    private static func themesOfOtherSeparators() -> (TerminalTheme, TerminalTheme)? {
         for first in TerminalTheme.allCases {
             for second in TerminalTheme.allCases where second != first {
                 if sRGB(of: separator(first)) != sRGB(of: separator(second)),
-                   sRGB(of: focus(first)) != sRGB(of: focus(second)),
-                   sRGB(of: focus(first)) != sRGB(of: separator(second)),
-                   sRGB(of: separator(first)) != sRGB(of: focus(second)) {
+                   sRGB(of: focus) != sRGB(of: separator(first)),
+                   sRGB(of: focus) != sRGB(of: separator(second)) {
                     return (first, second)
                 }
             }

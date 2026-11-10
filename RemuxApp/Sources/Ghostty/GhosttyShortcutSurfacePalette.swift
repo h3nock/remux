@@ -7,13 +7,10 @@ enum GhosttyShortcutSurfacePalette {
 
     static let embeddedFill = Color(uiColor: .secondarySystemFill)
     static let embeddedPressedFill = Color(uiColor: .tertiarySystemFill)
+    static let embeddedSelectedFill = RemuxAccent.selectedFill
 
     static let cornerRadiusLarge: CGFloat = 22
     static let cornerRadiusMedium: CGFloat = 14
-
-    static func embeddedSelectedFill(_ chromeStyle: GhosttyTerminalChromeStyle) -> Color {
-        chromeStyle.selectedFill
-    }
 }
 
 enum GhosttyShortcutTypography {

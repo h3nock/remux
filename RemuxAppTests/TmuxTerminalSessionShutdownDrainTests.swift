@@ -358,8 +358,8 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         fixture.surface.renderer.setPresented(false)
         let managed = try XCTUnwrap(fixture.surface.renderer.managedSurface)
         XCTAssertFalse(managed.rendererIsAvailable)
-        let preview = await fixture.surface.renderer.capturePickerPreview(
-            columns: 83, rows: 44, budget: .init(width: 200, height: 120)
+        let preview = await fixture.surface.renderer.capturePickerFrame(
+            columns: 83, rows: 44, sourceRect: CGRect(x: 0, y: 0, width: 200, height: 120)
         )
         XCTAssertNotNil(preview)
         XCTAssertEqual(fixture.surface.renderer.presentation, .pending)

@@ -242,7 +242,7 @@ struct GhosttyPaneLine: Equatable, Sendable {
     enum Ink: Equatable, Sendable {
         /// The theme's separator colour.
         case separator
-        /// The theme's accent, which marks the focused pane.
+        /// The app's accent, which marks the focused pane.
         case focus
         case color(red: UInt8, green: UInt8, blue: UInt8)
     }

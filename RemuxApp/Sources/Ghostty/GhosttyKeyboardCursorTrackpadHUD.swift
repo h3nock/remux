@@ -3,8 +3,6 @@ import SwiftUI
 /// Displays either the stable committed rate or the complete shape currently
 /// being armed. The repeat scheduler remains driven only by `committedTier`.
 struct GhosttyKeyboardCursorTrackpadHUD: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let state: GhosttyKeyboardCursorTrackpad.FeedbackState
 
     private let cornerRadius: CGFloat = 14
@@ -130,7 +128,7 @@ struct GhosttyKeyboardCursorTrackpadHUD: View {
             Image(systemName: symbol)
                 .foregroundStyle(Color.white.opacity(0.42))
             Image(systemName: symbol)
-                .foregroundStyle(chromeStyle.accent)
+                .foregroundStyle(RemuxAccent.fill)
                 .mask {
                     GeometryReader { proxy in
                         Rectangle()
