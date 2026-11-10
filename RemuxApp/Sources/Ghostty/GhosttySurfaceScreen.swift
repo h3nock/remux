@@ -601,10 +601,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .presentationContentInteraction(.scrolls)
                     .presentationDragIndicator(.hidden)
                     .remuxSheetPresentationBackground()
-                    .ghosttyTerminalChromePresentation(
-                        presentation.terminalTheme.terminalChromeColorScheme,
-                        chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                    )
+                    .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .ghosttyCloseConfirmationDialog(selectionSheet == nil ? askedCloseQuestion : nil)
             .sheet(isPresented: $isShortcutsSettingsPresented) {
@@ -612,10 +609,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
                     .remuxSheetPresentationBackground()
-                    .ghosttyTerminalChromePresentation(
-                        presentation.terminalTheme.terminalChromeColorScheme,
-                        chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                    )
+                    .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .sheet(item: $shortcutEditorRequest) { request in
                 ShortcutEditorSheet(request: request) { shortcut, favorite in
@@ -629,10 +623,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .remuxSheetPresentationBackground()
-                .ghosttyTerminalChromePresentation(
-                    presentation.terminalTheme.terminalChromeColorScheme,
-                    chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                )
+                .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
@@ -642,10 +633,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .remuxSheetPresentationBackground()
-                .ghosttyTerminalChromePresentation(
-                    presentation.terminalTheme.terminalChromeColorScheme,
-                    chromeStyle: presentation.terminalTheme.terminalChromeStyle
-                )
+                .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
             .photosPicker(
                 isPresented: $isAttachmentPhotosPickerPresented,
@@ -731,7 +719,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
 #endif
         }
-        .environment(\.ghosttyTerminalChromeStyle, presentation.terminalTheme.terminalChromeStyle)
         .onAppear {
             GhosttyRuntimeTrace.flowEvent(
                 sessionOpenFlowID,
@@ -2675,12 +2662,7 @@ extension TerminalTheme {
     }
 
     var terminalChromeColorScheme: ColorScheme {
-        switch self {
-        case .remuxLight:
-            .light
-        case .ghosttyDefault, .remuxDark:
-            .dark
-        }
+        isLight ? .light : .dark
     }
 
     var terminalKeyboardAppearance: UIKeyboardAppearance {

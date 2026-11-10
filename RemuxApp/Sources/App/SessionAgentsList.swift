@@ -147,8 +147,6 @@ struct SessionAgentsProjection: Equatable {
 /// an agent that appears, or comes back to the filter, is added after the rest and keeps its place from then
 /// on. Herdr's client sorts again at once.
 struct SessionAgentsList: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let projection: SessionAgentsProjection
     @Binding var filter: SessionAgentsFilter
     let onOpen: (SessionAgentsProjection.Session, HerdrAgentPresentation.Agent) -> Void
@@ -208,11 +206,11 @@ struct SessionAgentsList: View {
                     Text("\(option.title) \(count)")
                         .font(.system(size: 13, weight: .semibold))
                         .monospacedDigit()
-                        .foregroundStyle(isSelected ? chromeStyle.accentForeground : TerminalSelectionSheetPalette.primary)
+                        .foregroundStyle(isSelected ? RemuxAccent.onFill : TerminalSelectionSheetPalette.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
-                            isSelected ? chromeStyle.accent : TerminalSelectionSheetPalette.controlFill,
+                            isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.controlFill,
                             in: Capsule()
                         )
                         .contentShape(Capsule())

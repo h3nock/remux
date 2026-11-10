@@ -172,7 +172,6 @@ struct GhosttyWindowSelectionSheet: View {
 
 struct GhosttyPaneSelectionSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @State private var removal = GhosttyTileRemoval<GhosttyPaneSelectionSheetRenderProjection.Pane>()
     @State private var renamePrompt: TerminalRenamePrompt?
     @State private var renameName = ""
@@ -227,8 +226,7 @@ struct GhosttyPaneSelectionSheet: View {
                             isOn: Binding(
                                 get: { projection.isServerZoomed },
                                 set: { zoomed in onSetZoomed(zoomed) }
-                            ),
-                            accent: chromeStyle.accent
+                            )
                         )
                     }
                 }
@@ -273,7 +271,7 @@ struct GhosttyPaneSelectionSheet: View {
             panes: projection.panes,
             selectedPaneID: projection.selectedPaneID,
             size: topologySize,
-            accent: chromeStyle.selectedStroke,
+            accent: RemuxAccent.selectedStroke,
             onSelect: { paneID in
                 Haptic.selection()
                 removal.end()
@@ -313,7 +311,6 @@ struct GhosttyPaneSelectionSheet: View {
 
 /// The windows as a grid of previews of their focused panes. A long press on a tile offers its removal.
 private struct GhosttyWindowPreviewGrid: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @Environment(\.displayScale) private var displayScale
     @ObservedObject var session: GhosttyPanePreviewSession
 
@@ -349,7 +346,6 @@ private struct GhosttyWindowPreviewGrid: View {
                         previewState: window.focusedPreviewPaneID.flatMap { pane in
                             projection.previewLeafIDs.contains(pane) ? session.imagesByPaneID[pane] : .failed
                         },
-                        chromeStyle: chromeStyle,
                         terminalBackground: terminalBackground,
                         terminalSeparator: terminalSeparator,
                         layout: layout
@@ -670,7 +666,6 @@ private struct GhosttyWindowSelectionTile: View {
     let isSelected: Bool
     let agentStatus: TerminalAgentStatus?
     let previewState: GhosttyPanePreviewSession.PreviewState?
-    let chromeStyle: GhosttyTerminalChromeStyle
     let terminalBackground: Color
     let terminalSeparator: Color
     let layout: PanePreviewLayout.Metrics
@@ -723,7 +718,7 @@ private struct GhosttyWindowSelectionTile: View {
         .overlay {
             Self.pictureShape.strokeBorder(
                 // The ring is its chip's colour.
-                isSelected ? chromeStyle.accent : TerminalSelectionSheetPalette.stroke,
+                isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.stroke,
                 lineWidth: isSelected ? 2 : 1
             )
         }
@@ -734,8 +729,7 @@ private struct GhosttyWindowSelectionTile: View {
         HStack(spacing: 6) {
             GhosttyWindowIndexBadge(
                 displayIndex: displayIndex,
-                isSelected: isSelected,
-                chromeStyle: chromeStyle
+                isSelected: isSelected
             )
 
             if let agentStatus {
@@ -803,7 +797,6 @@ private struct GhosttyWindowPreviewPicture: View {
 private struct GhosttyWindowIndexBadge: View {
     let displayIndex: Int
     let isSelected: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     var body: some View {
         Text("\(displayIndex)")
@@ -811,14 +804,14 @@ private struct GhosttyWindowIndexBadge: View {
             .monospacedDigit()
             .foregroundStyle(
                 isSelected
-                    ? chromeStyle.accentForeground
+                    ? RemuxAccent.onFill
                     : TerminalSelectionSheetPalette.primary
             )
             .padding(.horizontal, 5)
             .frame(minWidth: PanePreviewLayout.captionHeight)
             .frame(height: PanePreviewLayout.captionHeight)
             .background(
-                isSelected ? chromeStyle.accent : TerminalSelectionSheetPalette.controlFill,
+                isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.controlFill,
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
     }
@@ -1051,7 +1044,6 @@ private struct GhosttyPaneSheetActionButtonStyle: ButtonStyle {
 
 private struct GhosttyPaneSheetZoomControl: View {
     @Binding var isOn: Bool
-    let accent: Color
 
     var body: some View {
         Toggle(isOn: $isOn) {
@@ -1062,7 +1054,7 @@ private struct GhosttyPaneSheetZoomControl: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
-        .tint(accent)
+        .tint(RemuxAccent.fill)
         .padding(.horizontal, 11)
         .frame(height: TerminalSelectionSheetLayout.actionBarHeight)
         .fixedSize(horizontal: true, vertical: false)

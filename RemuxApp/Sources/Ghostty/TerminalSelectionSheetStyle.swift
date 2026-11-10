@@ -10,10 +10,7 @@ enum TerminalSelectionSheetPalette {
     static let primary = Color.primary.opacity(0.92)
     static let secondary = Color.secondary.opacity(0.78)
     static let tertiary = Color.secondary.opacity(0.56)
-
-    static func selectedStroke(_ chromeStyle: GhosttyTerminalChromeStyle) -> Color {
-        chromeStyle.selectedStroke
-    }
+    static let selectedStroke = RemuxAccent.selectedStroke
 }
 
 /// Selector-sheet layout below the system navigation bar. The sheet's height

@@ -3,7 +3,6 @@ import UIKit
 
 struct GhosttyAttachmentPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @State private var selectedAttachmentID: UUID?
     @State private var markupRequest: GhosttyAttachmentMarkupRequest?
     @State private var preparingMarkupAttachmentID: UUID?
@@ -120,8 +119,7 @@ struct GhosttyAttachmentPreviewSheet: View {
                         }
                         .buttonStyle(
                             GhosttyAttachmentPreviewChipButtonStyle(
-                                isSelected: isSelected(attachment),
-                                chromeStyle: chromeStyle
+                                isSelected: isSelected(attachment)
                             )
                         )
                         .id(attachment.id)
@@ -233,7 +231,7 @@ struct GhosttyAttachmentPreviewSheet: View {
                 HStack(spacing: 8) {
                     Image(systemName: "globe")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(chromeStyle.accent)
+                        .foregroundStyle(RemuxAccent.fill)
                         .accessibilityHidden(true)
 
                     Text(linkTitle(for: url))
@@ -259,11 +257,11 @@ struct GhosttyAttachmentPreviewSheet: View {
                     .padding(.horizontal, 18)
                     .frame(height: 40)
                     .frame(maxWidth: .infinity)
-                    .foregroundStyle(chromeStyle.accent)
-                    .background(chromeStyle.selectedFill, in: Capsule())
+                    .foregroundStyle(RemuxAccent.fill)
+                    .background(RemuxAccent.selectedFill, in: Capsule())
                     .overlay {
                         Capsule()
-                            .strokeBorder(chromeStyle.accent.opacity(0.18), lineWidth: 0.75)
+                            .strokeBorder(RemuxAccent.fill.opacity(0.18), lineWidth: 0.75)
                     }
             }
         }
@@ -289,7 +287,7 @@ struct GhosttyAttachmentPreviewSheet: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .scrollContentBackground(.hidden)
-            .tint(chromeStyle.accent)
+            .tint(RemuxAccent.fill)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
