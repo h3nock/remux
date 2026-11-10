@@ -8,7 +8,7 @@ enum TerminalSelectionSheetPalette {
     static let controlPressedFill = Color.primary.opacity(0.08)
     static let controlGroupGlassTint = Color.primary.opacity(0.035)
     static let primary = Color.primary.opacity(0.92)
-    static let secondary = Color.secondary.opacity(0.78)
+    static let secondary = Color.secondary
     static let tertiary = Color.secondary.opacity(0.56)
     static let selectedStroke = RemuxAccent.selectedStroke
 }

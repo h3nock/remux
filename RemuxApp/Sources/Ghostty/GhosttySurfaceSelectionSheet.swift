@@ -290,7 +290,6 @@ struct GhosttyPaneSelectionSheet: View {
             panes: projection.panes,
             selectedPaneID: projection.selectedPaneID,
             size: topologySize,
-            accent: RemuxAccent.selectedStroke,
             onSelect: { paneID in
                 Haptic.selection()
                 removal.end()
@@ -760,7 +759,7 @@ private struct GhosttyWindowSelectionTile: View {
             if paneCount > 1 {
                 Text("\(paneCount) panes")
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
                     .layoutPriority(1)
             }
 
@@ -829,6 +828,8 @@ private struct GhosttyWindowIndexBadge: View {
 }
 
 private struct GhosttyPaneTopologyDiagram: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     static let contentInset: CGFloat = 6
     private static let outerCornerRadius: CGFloat = 12
     private static let tileInset: CGFloat = 2
@@ -836,7 +837,6 @@ private struct GhosttyPaneTopologyDiagram: View {
     let panes: [GhosttyPaneSelectionSheetRenderProjection.Pane]
     let selectedPaneID: UUID?
     let size: CGSize
-    let accent: Color
     let onSelect: (UUID) -> Void
     let onClose: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
     let onRename: (GhosttyPaneSelectionSheetRenderProjection.Pane) -> Void
@@ -876,14 +876,21 @@ private struct GhosttyPaneTopologyDiagram: View {
         .frame(width: Self.contentSize(for: size).width, height: Self.contentSize(for: size).height)
         .padding(Self.contentInset)
         .frame(width: size.width, height: size.height)
-        .background(
-            Color.black.opacity(0.18),
-            in: RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
-        )
+        .background(wellFill, in: RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
                 .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 1)
         }
+    }
+
+    /// The panes sit lifted from a well: in the light look as in the dark one, a pane is lighter than
+    /// what it sits in.
+    private var wellFill: Color {
+        colorScheme == .dark ? Color.black.opacity(0.18) : Color.black.opacity(0.06)
+    }
+
+    private var paneFill: Color {
+        colorScheme == .dark ? TerminalSelectionSheetPalette.row.opacity(0.84) : Color.white.opacity(0.6)
     }
 
     private func paneTile(
@@ -940,15 +947,14 @@ private struct GhosttyPaneTopologyDiagram: View {
         }
         .frame(width: size.width, height: size.height)
         .background(
-            selected
-                ? accent.opacity(0.24)
-                : TerminalSelectionSheetPalette.row.opacity(0.84),
+            selected ? RemuxAccent.selectedFill : .clear,
             in: RoundedRectangle(cornerRadius: radius, style: .continuous)
         )
+        .background(paneFill, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(
-                    selected ? accent : TerminalSelectionSheetPalette.stroke,
+                    selected ? RemuxAccent.fill : TerminalSelectionSheetPalette.stroke,
                     lineWidth: selected ? 2 : 1
                 )
         }
@@ -966,22 +972,22 @@ private struct GhosttyPaneTopologyDiagram: View {
         for pane: GhosttyPaneSelectionSheetRenderProjection.Pane,
         size: CGSize
     ) -> some View {
-        VStack(spacing: 2) {
-            Text(directoryName(pane))
+        // A pane's folder over its program; a pane without a folder is named by its program alone.
+        let hasFolder = !pane.currentPath.isEmpty
+        return VStack(spacing: 2) {
+            Text(hasFolder ? directoryName(pane) : commandName(for: pane))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(
-                    pane.id == selectedPaneID
-                        ? accent
-                        : TerminalSelectionSheetPalette.primary
-                )
+                .foregroundStyle(TerminalSelectionSheetPalette.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            Text(commandName(for: pane))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if hasFolder {
+                Text(commandName(for: pane))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
 
             if let agent = pane.agent {
                 TerminalAgentStateLine(state: agent)
