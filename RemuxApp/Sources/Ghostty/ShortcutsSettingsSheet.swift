@@ -4,15 +4,17 @@ import UIKit
 #endif
 
 private enum ShortcutsSettingsSheetPalette {
-    static let iconSurface = RemuxAppPalette.rowIconSurface
+    static let iconSurface = Color(uiColor: .tertiarySystemFill)
 }
 
+/// The editors draw a grouped form's look themselves: a grouped page, rows and separators as iOS draws them.
 private enum ShortcutEditorPalette {
-    static let sectionFill = RemuxAppPalette.rowSurface
-    static let sectionStroke = RemuxAppPalette.separator
-    static let separator = RemuxAppPalette.separator
-    static let modeRailFill = RemuxAppPalette.rowIconSurface
-    static let modeRailStroke = RemuxAppPalette.separator
+    static let pageBackground = Color(uiColor: .systemGroupedBackground)
+    static let sectionFill = Color(uiColor: .secondarySystemGroupedBackground)
+    static let sectionStroke = Color(uiColor: .separator)
+    static let separator = Color(uiColor: .separator)
+    static let modeRailFill = Color(uiColor: .tertiarySystemFill)
+    static let modeRailStroke = Color(uiColor: .separator)
     static let sectionCornerRadius = GhosttyShortcutSurfacePalette.cornerRadiusLarge
 }
 
@@ -51,7 +53,6 @@ struct ShortcutsSettingsView: View {
             Section {
                 ForEach(store.snapshot.orderedCollections) { collection in
                     collectionRow(collection)
-                        .shortcutSettingsListRowSurface()
                 }
                 .onDelete { indexSet in
                     let collections = store.snapshot.orderedCollections
@@ -68,7 +69,7 @@ struct ShortcutsSettingsView: View {
             } header: {
                 Text("Collections")
                     .font(GhosttyShortcutTypography.sectionLabel)
-                    .foregroundStyle(RemuxAppPalette.sectionHeader)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
             }
 
             if store.snapshot.hasMissingStarterCollections {
@@ -83,14 +84,12 @@ struct ShortcutsSettingsView: View {
                     } label: {
                         Label("Restore Default Collections", systemImage: "arrow.counterclockwise")
                     }
-                    .shortcutSettingsListRowSurface()
                 }
             }
         }
         .navigationTitle("Shortcuts")
         .navigationBarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
-        .remuxAppGroupedScrollBackground()
         .toolbar {
             if let onDismiss {
                 ToolbarItem(placement: .cancellationAction) {
@@ -209,7 +208,6 @@ private struct ShortcutCollectionDetailView: View {
                             store.update { $0.setHidden(!shortcut.isHidden, shortcutID: shortcut.id) }
                         }
                     )
-                    .shortcutSettingsListRowSurface()
                 }
                 .onDelete { indexSet in
                     let shortcuts = store.snapshot.shortcuts(in: collectionID)
@@ -250,7 +248,6 @@ private struct ShortcutCollectionDetailView: View {
                         .foregroundStyle(GhosttySheetPalette.primary)
                         .padding(.vertical, 4)
                     }
-                    .shortcutSettingsListRowSurface()
                 } footer: {
                     Text("Re-adds deleted built-in shortcuts. Existing shortcuts and edits stay unchanged.")
                 }
@@ -259,7 +256,6 @@ private struct ShortcutCollectionDetailView: View {
         .navigationTitle(store.snapshot.collectionTitle(collectionID))
         .navigationBarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
-        .remuxAppGroupedScrollBackground()
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 EditButton()
@@ -280,12 +276,6 @@ private struct ShortcutCollectionDetailView: View {
             }
         }
         .environment(\.editMode, $editMode)
-    }
-}
-
-private extension View {
-    func shortcutSettingsListRowSurface() -> some View {
-        remuxAppListRowSurface()
     }
 }
 
@@ -495,7 +485,7 @@ struct ShortcutCollectionEditorSheet: View {
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(RemuxAppPalette.background.ignoresSafeArea())
+            .background(ShortcutEditorPalette.pageBackground.ignoresSafeArea())
             .navigationTitle(request.collection == nil ? "New Collection" : "Edit Collection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -794,7 +784,7 @@ struct ShortcutEditorSheet: View {
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(RemuxAppPalette.background.ignoresSafeArea())
+            .background(ShortcutEditorPalette.pageBackground.ignoresSafeArea())
             .navigationTitle(request.shortcut == nil ? "New Shortcut" : "Edit Shortcut")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

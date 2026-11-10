@@ -1101,7 +1101,10 @@ private struct ConnectionLibraryView: View {
 
         Group {
             if snapshot.servers.isEmpty {
+                // On the page colour the server list has.
                 LibraryEmptyState(onAddServer: onAddServer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             } else {
                 List {
                     activeSessionsSection
@@ -1128,7 +1131,6 @@ private struct ConnectionLibraryView: View {
         } message: { server in
             Text(ServerDeletionConfirmation(server: server, snapshot: snapshot).message)
         }
-        .libraryHomeGroupedScrollBackground()
         .task(id: terminalRendererWarmupID) {
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
@@ -1207,7 +1209,6 @@ private struct ConnectionLibraryView: View {
                         }
                         .tint(.red)
                     }
-                    .libraryHomeListRowSurface()
                 }
 
                 if sortedActiveSessions.count > Self.collapsedConnectedSessionCount {
@@ -1222,7 +1223,6 @@ private struct ConnectionLibraryView: View {
                         )
                     }
                     .accessibilityIdentifier("library.connected-sessions.toggle")
-                    .libraryHomeListRowSurface()
                 }
             } header: {
                 LibraryHomeSectionHeader("Active Sessions")
@@ -1262,7 +1262,6 @@ private struct ConnectionLibraryView: View {
                             }
                             .tint(.red)
                         }
-                        .libraryHomeListRowSurface()
                     }
                 }
 
@@ -1278,7 +1277,6 @@ private struct ConnectionLibraryView: View {
                         )
                     }
                     .accessibilityIdentifier("library.recent-sessions.toggle")
-                    .libraryHomeListRowSurface()
                 }
             } header: {
                 LibraryHomeSectionHeader("Recent Sessions")
@@ -1366,7 +1364,6 @@ private struct ConnectionLibraryView: View {
                     }
                     .tint(.accentColor)
                 }
-                .libraryHomeListRowSurface()
             }
             .onMove(perform: onMoveServers)
         } header: {
@@ -1479,11 +1476,13 @@ private struct ConnectionLibraryView: View {
     }
 }
 
+/// A server form keeps iOS's grouped surfaces; a session form, which opens at half height, shows the sheet's glass
+/// through its rows.
 private extension View {
     @ViewBuilder
-    func connectionSetupListRowSurface(usesLibraryChrome: Bool) -> some View {
-        if usesLibraryChrome {
-            remuxAppListRowSurface()
+    func connectionSetupListRowSurface(usesGroupedSurfaces: Bool) -> some View {
+        if usesGroupedSurfaces {
+            self
         } else {
             listRowBackground(Color.clear)
                 .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
@@ -1491,9 +1490,9 @@ private extension View {
     }
 
     @ViewBuilder
-    func connectionSetupChrome(usesLibraryChrome: Bool) -> some View {
-        if usesLibraryChrome {
-            remuxAppGroupedScrollBackground()
+    func connectionSetupChrome(usesGroupedSurfaces: Bool) -> some View {
+        if usesGroupedSurfaces {
+            self
         } else {
             scrollContentBackground(.hidden)
         }
@@ -1510,7 +1509,8 @@ private struct LibraryHomeSectionHeader: View {
     var body: some View {
         Text(title)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(LibraryHomePalette.sectionHeader)
+            // The label colour itself: a header is already drawn secondary, so `.secondary` would fade it again.
+            .foregroundStyle(Color(uiColor: .secondaryLabel))
             .textCase(nil)
     }
 }
@@ -1543,7 +1543,6 @@ private struct ServerDetailView: View {
                 Section {
                     hostKeyRow(challenge)
                 }
-                .libraryHomeListRowSurface()
             }
 
             Section("Sessions") {
@@ -1653,10 +1652,8 @@ private struct ServerDetailView: View {
                     .accessibilityIdentifier("library.server.available.view-all")
                 }
             }
-            .libraryHomeListRowSurface()
         }
         .listStyle(.insetGrouped)
-        .libraryHomeGroupedScrollBackground()
         .refreshable {
             await onRefreshSessions(server.id)
         }
@@ -1841,10 +1838,8 @@ private struct ServerAvailableSessionsView: View {
                         .listRowSeparator(.hidden)
                 }
             }
-            .libraryHomeListRowSurface()
         }
         .listStyle(.insetGrouped)
-        .libraryHomeGroupedScrollBackground()
         .navigationTitle("Available Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search sessions")
@@ -2071,9 +2066,9 @@ private struct ServerLibraryRow: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "server.rack")
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(LibraryHomePalette.rowIconForeground)
+                .foregroundStyle(Color(uiColor: .secondaryLabel))
                 .frame(width: 30, height: 30)
-                .background(LibraryHomePalette.rowIconSurface, in: RoundedRectangle(cornerRadius: 7))
+                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 7))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(server.displayName)
@@ -2155,7 +2150,6 @@ private struct TerminalSettingsView: View {
                 .disabled(settings.fontSize == nil)
                 .accessibilityIdentifier("settings.font-size.stepper")
             }
-            .libraryHomeListRowSurface()
 
             Section("Theme") {
                 Picker("Terminal theme", selection: themeBinding) {
@@ -2169,7 +2163,6 @@ private struct TerminalSettingsView: View {
                 TerminalThemePreviewPanel(settings: settings)
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 16, trailing: 16))
             }
-            .libraryHomeListRowSurface()
 
             Section {
                 Toggle(
@@ -2187,7 +2180,6 @@ private struct TerminalSettingsView: View {
                         + "the zoom while you're in a Herdr session, and until you end a tmux session."
                 )
             }
-            .libraryHomeListRowSurface()
 
             Section("Keyboard") {
                 NavigationLink {
@@ -2212,7 +2204,6 @@ private struct TerminalSettingsView: View {
                 }
                 .accessibilityIdentifier("settings.shortcuts")
             }
-            .libraryHomeListRowSurface()
 
             // Only a phone vibrates.
             if UIDevice.current.userInterfaceIdiom == .phone {
@@ -2231,7 +2222,6 @@ private struct TerminalSettingsView: View {
                     .tint(.accentColor)
                     .accessibilityIdentifier("settings.haptics.keys-and-buttons")
                 }
-                .libraryHomeListRowSurface()
             }
 
             Section {
@@ -2250,9 +2240,7 @@ private struct TerminalSettingsView: View {
                         + "immediately; disabling takes effect after restarting Remux."
                 )
             }
-            .libraryHomeListRowSurface()
         }
-        .libraryHomeGroupedScrollBackground()
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.form")
@@ -2375,7 +2363,6 @@ private struct TerminalToolbarKeysSettingsView: View {
                         + "Touch and hold the first key to open Shortcuts."
                 )
             }
-            .libraryHomeListRowSurface()
 
             if toolbarKeys != .default {
                 Section {
@@ -2384,10 +2371,8 @@ private struct TerminalToolbarKeysSettingsView: View {
                     }
                     .accessibilityIdentifier("settings.toolbar-keys.reset")
                 }
-                .libraryHomeListRowSurface()
             }
         }
-        .libraryHomeGroupedScrollBackground()
         .navigationTitle("Toolbar Keys")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.toolbar-keys.form")
@@ -2623,14 +2608,14 @@ struct ConnectionSetupView: View {
                         Text(serverSectionFooter)
                     }
                 }
-                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
+                .connectionSetupListRowSurface(usesGroupedSurfaces: showsEditableServerFields)
             }
 
             if showsServerSummary {
                 Section("Server") {
                     ConnectionServerSummaryRow(draft: draft)
                 }
-                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
+                .connectionSetupListRowSurface(usesGroupedSurfaces: showsEditableServerFields)
             }
 
             if showsAuthenticationFields {
@@ -2654,7 +2639,7 @@ struct ConnectionSetupView: View {
                 } header: {
                     Text("Authentication")
                 }
-                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
+                .connectionSetupListRowSurface(usesGroupedSurfaces: showsEditableServerFields)
             }
 
             if showsEditableServerFields {
@@ -2669,7 +2654,7 @@ struct ConnectionSetupView: View {
                         Text("Leave a path empty to find it automatically.")
                     }
                 }
-                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
+                .connectionSetupListRowSurface(usesGroupedSurfaces: showsEditableServerFields)
             } else if showsSessionFields {
                 Section {
                     if case .newWorkspace = mode {
@@ -2686,11 +2671,11 @@ struct ConnectionSetupView: View {
                 } footer: {
                     Text(sessionSectionFooter)
                 }
-                .connectionSetupListRowSurface(usesLibraryChrome: showsEditableServerFields)
+                .connectionSetupListRowSurface(usesGroupedSurfaces: showsEditableServerFields)
             }
         })
         .disabled(isActionInProgress)
-        .connectionSetupChrome(usesLibraryChrome: showsEditableServerFields)
+        .connectionSetupChrome(usesGroupedSurfaces: showsEditableServerFields)
         .onAppear {
             if opensAdvanced {
                 isAdvancedExpanded = true
@@ -3618,14 +3603,14 @@ struct ConnectionSetupView: View {
 
     private func privateKeyActionDivider() -> some View {
         Rectangle()
-            .fill(LibraryHomePalette.separator)
+            .fill(Color(uiColor: .separator))
             .frame(height: 1)
             .padding(.leading, 34)
     }
 
     private func privateKeySectionDivider() -> some View {
         Rectangle()
-            .fill(LibraryHomePalette.separator)
+            .fill(Color(uiColor: .separator))
             .frame(height: 1)
     }
 
@@ -3784,9 +3769,9 @@ private struct ConnectionServerSummaryRow: View {
         HStack(spacing: 12) {
             Image(systemName: "server.rack")
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(LibraryHomePalette.rowIconForeground)
+                .foregroundStyle(Color(uiColor: .secondaryLabel))
                 .frame(width: 30, height: 30)
-                .background(LibraryHomePalette.rowIconSurface, in: RoundedRectangle(cornerRadius: 7))
+                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 7))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(draft.displayName)
