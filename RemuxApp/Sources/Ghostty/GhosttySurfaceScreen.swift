@@ -1405,7 +1405,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
 
         withAnimation(.easeOut(duration: 0.16)) {
-            guard composer.addPhotoSelections(items) else {
+            guard composer.addPhotoSelections(items, preparing: attachmentTransferServiceFactory()) else {
                 presentAttachmentNotice("Couldn’t add the photos.")
                 return
             }
@@ -1423,7 +1423,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
             Task {
                 do {
-                    let didAdd = try await composer.addSecurityScopedFiles(urls)
+                    let didAdd = try await composer.addSecurityScopedFiles(
+                        urls,
+                        preparing: attachmentTransferServiceFactory()
+                    )
                     await MainActor.run {
                         guard didAdd else {
                             presentAttachmentNotice("Couldn’t add the file.")
@@ -1459,7 +1462,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 return false
             }
             withAnimation(.easeOut(duration: 0.16)) {
-                composer.addPastedImage(request)
+                composer.addPastedImage(request, preparing: attachmentTransferServiceFactory())
                 attachmentNotice = nil
             }
             return true
@@ -1475,7 +1478,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func stagePastedFile(_ url: URL) {
         withAnimation(.easeOut(duration: 0.16)) {
-            composer.addPastedFile(url)
+            composer.addPastedFile(url, preparing: attachmentTransferServiceFactory())
             attachmentNotice = nil
         }
     }
