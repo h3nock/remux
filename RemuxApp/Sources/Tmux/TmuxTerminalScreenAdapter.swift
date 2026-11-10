@@ -935,6 +935,12 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 if window.zoomed {
                     ownedZoomWindowIDs.insert(windowID)
                     completedOwnershipWindowIDs.insert(windowID)
+                    // The zoom made the pane wider, and tmux re-wrapped it. A window that isn't the
+                    // current one is not refreshed until it is selected, so its preview and its first
+                    // moment on screen would show the old wrapping.
+                    if windowID != topology.activeWindowID, let paneID = window.activePaneID {
+                        controller?.requestRefreshPane(paneID: paneID)
+                    }
                 }
             } else {
                 completedOwnershipWindowIDs.insert(windowID)
