@@ -2935,10 +2935,10 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(keyboardButton.label, "Show keyboard controls")
     }
 
-    /// With the keyboard up in tab 1, a swipe to tab 2 and the Sessions sheet's Agents, then a banner for the
-    /// agent in tab 1: the tap closes the sheet and opens tab 1 with the keyboard up, and the first tap on Tabs
-    /// opens Tabs.
-    func testLiveHerdrBannerOverAgentsBringsTheKeyboardBackWhenConfigured() throws {
+    /// With the keyboard up in tab 1, a swipe to tab 2 and the Sessions sheet, then a banner for the agent in
+    /// tab 1: the tap closes the sheet and opens tab 1 with the keyboard up, and the first tap on Tabs opens
+    /// Tabs.
+    func testLiveHerdrBannerOverSessionsBringsTheKeyboardBackWhenConfigured() throws {
         let configuration = try launchLiveHerdrApp(requiringSteps: true)
         let keyboardButton = app.buttons["terminal.keyboard"].firstMatch
         let tabs = app.buttons["terminal.windows"].firstMatch
@@ -2954,14 +2954,13 @@ final class RemuxAppUITests: XCTestCase {
 
         openSessionSwitcherFromTerminal()
         XCTAssertTrue(sessionsSheet.waitForExistence(timeout: 5))
-        app.buttons["Agents"].firstMatch.tap()
         _ = try performLiveHerdrStep("prompt-1", in: configuration)
-        XCTAssertTrue(banner.waitForExistence(timeout: 90), "No banner over Agents for the agent in tab 1.")
+        XCTAssertTrue(banner.waitForExistence(timeout: 90), "No banner over Sessions for the agent in tab 1.")
         banner.tap()
         XCTAssertTrue(sessionsSheet.waitForNonExistence(timeout: 5), "The tap didn't close the Sessions sheet.")
         XCTAssertTrue(waitForLabel(of: tabs, "Tab 1 of 3", timeout: 15), "The banner didn't open tab 1.")
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "keyboard back with the banner's tab"))
-        captureLiveHerdrStep("k3-banner-over-agents", in: configuration)
+        captureLiveHerdrStep("k3-banner-over-sessions", in: configuration)
 
         tabs.tap()
         let close = app.buttons["terminal.windows.close"].firstMatch
@@ -3060,41 +3059,48 @@ final class RemuxAppUITests: XCTestCase {
     /// Herdr's agents on a live server whose session has the fixture's three-pane tab (workspace `remux`),
     /// with agent `claude` working in it, and a second tab, `build`, whose two panes each have an agent: one
     /// blocked, and one working that finishes when the test asks (`finish`). Panes adds the agent's state to
-    /// its tile, Tabs shows the tab's agent, and Sessions the session's most urgent one. The Agents list has
-    /// every agent, the most urgent first, with Blocked and Done filters; the finished agent's row opens its
+    /// its tile, Tabs shows the tab's agent, and Sessions the session's most urgent one. The fixture also has
+    /// a tab `docs` with two idle agents and a tab `api` whose agent works until the test asks for it to be
+    /// blocked (`block`). The terminal's Home button says an agent out of sight is blocked. Home shows the
+    /// first three agents, the most urgent first, each with the title its program set, and a row that says
+    /// what all six are doing. That row opens the Agents page: a section for each state, which folds and keeps
+    /// its count; the agent that gets blocked goes to the top of Blocked; the finished agent's row opens its
     /// pane, where it counts as seen.
     func testLiveHerdrAgentsWhenConfigured() throws {
         let configuration = try launchLiveHerdrApp(requiringSteps: true)
         let banner = app.descendants(matching: .any)["herdr.notification.banner"].firstMatch
         let panes = app.buttons.matching(identifier: "terminal.panes").firstMatch
         let sessionsSheet = app.otherElements["terminal.sessions.sheet"]
-        let agentRows = app.descendants(matching: .any).matching(identifier: "terminal.agents.agent")
         func element(_ identifierPrefix: String, labelContaining text: String) -> XCUIElement {
             app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", identifierPrefix, text))
                 .firstMatch
         }
-        func agentRow(_ label: String) -> XCUIElement {
-            agentRows.matching(NSPredicate(format: "label == %@", label)).firstMatch
+        func labels(_ rows: XCUIElementQuery) -> [String] {
+            rows.allElementsBoundByIndex.map { $0.label }
         }
-        func waitForAgentRows(_ labels: [String]) -> Bool {
-            let deadline = Date().addingTimeInterval(10)
+        func wait(for rows: XCUIElementQuery, toShow labels: [String]) -> Bool {
+            let deadline = Date().addingTimeInterval(15)
             while Date() < deadline {
-                if agentRows.allElementsBoundByIndex.map({ $0.label }).sorted() == labels.sorted() { return true }
+                if rows.allElementsBoundByIndex.map({ $0.label }) == labels { return true }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
             }
             return false
         }
-        func showAgents() {
-            openSessionSwitcherFromTerminal()
-            XCTAssertTrue(sessionsSheet.waitForExistence(timeout: 5))
-            let agents = app.segmentedControls["terminal.sessions.mode"].buttons["Agents"]
-            XCTAssertTrue(agents.waitForExistence(timeout: 5), "No Agents switch while a Herdr session is open.")
-            agents.tap()
+        func waitForValue(of element: XCUIElement, _ value: String, timeout: TimeInterval) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if element.exists, element.value as? String == value { return true }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            }
+            return false
         }
-        let working = "claude, remux › 1, working"
-        let blocked = "claude, remux › build, blocked"
-        let done = "claude, remux › build, done"
+        let blocked = "Run eval sweep 3 on both GPUs, blocked, remux › build"
+        let done = "data | Deduplicate training shards, done, remux › build"
+        let fixing = "Fixing tests, working, remux › 1"
+        let review = "Review SSH pool sharing across every session the phone has open"
+        let changelog = "site | Write the changelog, idle, remux › docs"
+        let untitled = "claude, idle, remux › docs"
 
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
@@ -3135,41 +3141,63 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["terminal.sessions.close"].tap()
         XCTAssertTrue(sessionsSheet.waitForNonExistence(timeout: 5))
 
-        showAgents()
-        XCTAssertTrue(waitForAgentRows([working, blocked, done]), "Agents didn't list every agent.")
-        XCTAssertEqual(
-            agentRows.allElementsBoundByIndex.map { $0.label },
-            [blocked, done, working],
-            "Agents didn't list the most urgent first."
+        // In the terminal, the Home button says an agent out of sight is waiting.
+        let home = app.buttons["terminal.home"]
+        XCTAssertTrue(
+            waitForValue(of: home, "An agent is blocked", timeout: 10),
+            "The Home button didn't show that an agent out of sight is blocked."
         )
-        captureLiveHerdrStep("a4-agents", in: configuration)
-        app.buttons["terminal.agents.filter.blocked"].tap()
-        XCTAssertTrue(waitForAgentRows([blocked]), "Blocked didn't show only the blocked agent.")
-        captureLiveHerdrStep("a5-agents-blocked", in: configuration)
-        app.buttons["terminal.agents.filter.done"].tap()
-        XCTAssertTrue(waitForAgentRows([done]), "Done didn't show only the finished agent.")
-        captureLiveHerdrStep("a6-agents-done", in: configuration)
-        app.buttons["terminal.agents.filter.all"].tap()
-        XCTAssertTrue(waitForAgentRows([working, blocked, done]))
-        XCTAssertEqual(
-            agentRows.allElementsBoundByIndex.map { $0.label },
-            [blocked, done, working],
-            "All didn't start again with the most urgent first after Done."
-        )
-        app.buttons["terminal.agents.filter.working"].tap()
-        XCTAssertTrue(waitForAgentRows([working]), "Working didn't show only the working agent.")
-        captureLiveHerdrStep("a6b-agents-working", in: configuration)
-        app.buttons["terminal.agents.filter.idle"].tap()
-        XCTAssertTrue(waitForAgentRows([]), "Idle showed an agent while none is idle.")
-        XCTAssertTrue(app.staticTexts["No Agents Idle"].waitForExistence(timeout: 5))
-        captureLiveHerdrStep("a6c-agents-idle", in: configuration)
-        app.buttons["terminal.agents.filter.all"].tap()
-        XCTAssertTrue(waitForAgentRows([working, blocked, done]))
+        captureLiveHerdrStep("a4-home-button", in: configuration)
 
-        agentRow(done).tap()
-        XCTAssertTrue(sessionsSheet.waitForNonExistence(timeout: 5), "The row didn't close the Sessions sheet.")
+        // Home shows the list's first three agents, each saying its state, and a row for all of them.
+        home.tap()
+        let homeRows = app.descendants(matching: .any).matching(identifier: "library.agents.agent")
+        XCTAssertTrue(
+            wait(for: homeRows, toShow: [blocked, done, "\(review), working, remux › api"]),
+            "Home didn't show the first three agents, the most urgent first: \(labels(homeRows))"
+        )
+        let all = app.buttons["library.agents.all"]
+        XCTAssertTrue(all.waitForExistence(timeout: 5), "Home didn't offer the whole list with six agents.")
+        XCTAssertEqual(all.value as? String, "1 blocked · 1 done · 2 working · 2 idle")
+        captureLiveHerdrStep("a5-home", in: configuration)
+
+        // The Agents page has a section for each state that has agents.
+        all.tap()
+        let rows = app.descendants(matching: .any).matching(identifier: "agents.agent")
+        XCTAssertTrue(
+            wait(for: rows, toShow: [blocked, done, "\(review), working, remux › api", fixing, untitled, changelog]),
+            "The Agents page didn't list every agent by state: \(labels(rows))"
+        )
+        for (section, count) in [("blocked", "1 agent"), ("done", "1 agent"), ("working", "2 agents"), ("idle", "2 agents")] {
+            XCTAssertEqual(app.buttons["agents.section.\(section)"].value as? String, count, "The \(section) section's count.")
+        }
+        captureLiveHerdrStep("a6-agents", in: configuration)
+
+        // A section folds under its header and keeps its count; a tap anywhere on the header does it, its
+        // empty middle included.
+        app.buttons["agents.section.idle"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(
+            wait(for: rows, toShow: [blocked, done, "\(review), working, remux › api", fixing]),
+            "Folding Idle didn't hide its agents: \(labels(rows))"
+        )
+        XCTAssertEqual(app.buttons["agents.section.idle"].value as? String, "2 agents")
+        captureLiveHerdrStep("a7-agents-idle-folded", in: configuration)
+
+        // An agent that changes state while the page is open goes to the top of its new section.
+        try requestLiveHerdrStep("block", in: configuration)
+        XCTAssertTrue(
+            wait(for: rows, toShow: ["\(review), blocked, remux › api", blocked, done, fixing]),
+            "The agent that got blocked didn't move to the top of Blocked: \(labels(rows))"
+        )
+        XCTAssertEqual(app.buttons["agents.section.blocked"].value as? String, "2 agents")
+        XCTAssertEqual(app.buttons["agents.section.working"].value as? String, "1 agent")
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        captureLiveHerdrStep("a8-agents-after-block", in: configuration)
+
+        // A row opens its agent's pane, where the finished agent counts as seen.
+        rows.matching(NSPredicate(format: "label == %@", done)).firstMatch.tap()
         XCTAssertTrue(waitForLabel(of: panes, "Panes, 2 panes", timeout: 10), "The row didn't go to the agent's tab.")
-        captureLiveHerdrStep("a7-opened-agent", in: configuration)
+        captureLiveHerdrStep("a9-opened-agent", in: configuration)
         openPanesSheet()
         XCTAssertTrue(
             element("terminal.pane.tile.", labelContaining: "blocked").waitForExistence(timeout: 10),
@@ -3179,24 +3207,87 @@ final class RemuxAppUITests: XCTestCase {
             element("terminal.pane.tile.", labelContaining: "idle").waitForExistence(timeout: 10),
             "The agent whose pane is on screen didn't count as seen."
         )
-        captureLiveHerdrStep("a8-panes-agent-tab", in: configuration)
         app.buttons["terminal.panes.close"].tap()
-
-        showAgents()
         XCTAssertTrue(
-            waitForAgentRows([working, blocked, "claude, remux › build, idle"]),
-            "The agent that finished wasn't seen once its pane was on screen."
+            waitForValue(of: home, "An agent is blocked", timeout: 10),
+            "The Home button didn't keep showing the agent blocked in another tab."
         )
-        XCTAssertEqual(
-            agentRows.allElementsBoundByIndex.map { $0.label },
-            [blocked, working, "claude, remux › build, idle"],
-            "Agents didn't put the seen agent after the working one."
+
+        // The Home button goes to Home, where the seen agent no longer shows as done.
+        home.tap()
+        XCTAssertTrue(
+            wait(for: homeRows, toShow: ["\(review), blocked, remux › api", blocked, fixing]),
+            "Home didn't drop the seen agent from the first three: \(labels(homeRows))"
         )
-        captureLiveHerdrStep("a9-agents-after-seen", in: configuration)
-        app.buttons["terminal.agents.filter.idle"].tap()
-        XCTAssertTrue(waitForAgentRows(["claude, remux › build, idle"]), "Idle didn't show only the idle agent.")
-        captureLiveHerdrStep("a9b-agents-idle", in: configuration)
-        app.buttons["terminal.sessions.close"].tap()
+        XCTAssertEqual(all.value as? String, "2 blocked · 1 working · 3 idle")
+        captureLiveHerdrStep("a10-home-after-seen", in: configuration)
+    }
+
+    /// The agents of a session whose connection drops and comes back. While it is down every agent keeps its
+    /// section and its place, by its last known state, and its row says the session is reconnecting; the Home
+    /// button keeps its dot. A row tapped meanwhile opens the session, which goes to the agent's tab once it has
+    /// reconnected. The harness cuts the connection (`drop`) and lets the server answer again (`restore`).
+    func testLiveHerdrAgentsWhileReconnectingWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        func settle(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+        let panes = app.buttons.matching(identifier: "terminal.panes").firstMatch
+        let home = app.buttons["terminal.home"]
+        let rows = app.descendants(matching: .any).matching(identifier: "agents.agent")
+        func labels() -> [String] { rows.allElementsBoundByIndex.map { $0.label } }
+        func counts() -> [String] {
+            ["blocked", "working", "idle"].map { app.buttons["agents.section.\($0)"].value as? String ?? "none" }
+        }
+        func wait(for expected: [String]) -> Bool {
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                if labels() == expected { return true }
+                settle(0.2)
+            }
+            return false
+        }
+
+        home.tap()
+        let all = app.buttons["library.agents.all"]
+        XCTAssertTrue(all.waitForExistence(timeout: 10))
+        all.tap()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        settle(1)
+        let connected = labels()
+        XCTAssertEqual(connected.count, 6)
+        XCTAssertEqual(counts(), ["1 agent", "3 agents", "2 agents"])
+        captureLiveHerdrStep("r1-agents-connected", in: configuration)
+
+        try requestLiveHerdrStep("drop", in: configuration)
+        XCTAssertTrue(
+            wait(for: connected.map { "\($0), Reconnecting" }),
+            "The agents didn't keep their places while their session reconnects: \(labels())"
+        )
+        XCTAssertEqual(counts(), ["1 agent", "3 agents", "2 agents"], "The sections changed while reconnecting.")
+        settle(1)
+        captureLiveHerdrStep("r2-agents-reconnecting", in: configuration)
+
+        // Home's rows say so too.
+        app.navigationBars["Agents"].buttons.firstMatch.tap()
+        let homeRows = app.descendants(matching: .any).matching(identifier: "library.agents.agent")
+        XCTAssertTrue(homeRows.firstMatch.waitForExistence(timeout: 10))
+        settle(1)
+        let homeLabels = homeRows.allElementsBoundByIndex.map { $0.label }
+        XCTAssertEqual(homeLabels, Array(connected.prefix(3)).map { "\($0), Reconnecting" })
+        captureLiveHerdrStep("r2-home-reconnecting", in: configuration)
+
+        // The blocked agent's row opens its session, which is still reconnecting.
+        homeRows.firstMatch.tap()
+        XCTAssertTrue(home.waitForExistence(timeout: 10), "The row didn't show the session.")
+        settle(1)
+        captureLiveHerdrStep("r3-opened-while-reconnecting", in: configuration)
+        try requestLiveHerdrStep("restore", in: configuration)
+        XCTAssertTrue(
+            waitForLabel(of: panes, "Panes, 2 panes", timeout: 90),
+            "The session didn't go to the agent's tab once it reconnected."
+        )
+        captureLiveHerdrStep("r4-reconnected-at-the-agent", in: configuration)
     }
 
     /// Herdr's workspaces on a live server, each showing its most urgent agent: the fixture's `remux`, with

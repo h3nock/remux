@@ -166,11 +166,6 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         case newSession
     }
 
-    private enum Mode: Hashable {
-        case sessions
-        case agents
-    }
-
     @Environment(\.dismiss) private var dismiss
 
     let projection: SessionSwitcherProjection
@@ -195,17 +190,13 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     let herdrWorkspaceCloseConfirmation: (String, SavedWorkspace.ID) -> HerdrCloseConfirmation?
     let onCloseHerdrWorkspace: (HerdrCloseConfirmation, SavedWorkspace.ID) -> Void
     let herdrScreen: (SavedWorkspace.ID) -> HerdrTerminalScreenAdapter?
-    /// An open Herdr session's agents, which the sheet follows as they change.
+    /// An open Herdr session's agents, which its row follows as they change.
     let herdrAgents: (SavedWorkspace.ID) -> HerdrAgentPresentation?
-    /// Opens a Herdr session at an agent's pane: the session, the pane and the server boot its id is from.
-    let onOpenHerdrAgent: (SavedWorkspace.ID, String, String?) -> Void
 
     @State private var path: [Route] = []
     @State private var showsAllRecentSessions = false
     /// Herdr sessions opened or closed by hand; otherwise only the session on screen lists its workspaces.
     @State private var herdrDisclosures: [SavedWorkspace.ID: Bool] = [:]
-    @State private var mode = Mode.sessions
-    @State private var agentFilter = SessionAgentsFilter.all
     @State private var renamePrompt: TerminalRenamePrompt?
     @State private var renameName = ""
     @State private var workspaceClose: (session: SavedWorkspace.ID, confirmation: HerdrCloseConfirmation)?
@@ -260,39 +251,8 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         .accessibilityIdentifier("terminal.sessions.sheet")
     }
 
-    /// Agents are listed only for Herdr sessions, so the switch to them shows while one is open.
-    private var showsAgentsSwitch: Bool {
-        projection.activeSessions.contains { $0.backend == .herdr }
-    }
-
     private var sheetContent: some View {
-        VStack(spacing: 0) {
-            if showsAgentsSwitch {
-                Picker("Show", selection: $mode) {
-                    Text("Sessions").tag(Mode.sessions)
-                    Text("Agents").tag(Mode.agents)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 4)
-                .accessibilityIdentifier("terminal.sessions.mode")
-            }
-
-            if showsAgentsSwitch, mode == .agents {
-                SessionAgentsList(
-                    projection: SessionAgentsProjection(
-                        activeSessions: projection.activeSessions,
-                        agents: herdrAgents
-                    ),
-                    filter: $agentFilter,
-                    onOpen: openAgent
-                )
-            } else {
-                sessionList
-            }
-        }
+        sessionList
         .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -308,12 +268,6 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                 .accessibilityIdentifier("terminal.sessions.close")
             }
         }
-    }
-
-    private func openAgent(_ session: SessionAgentsProjection.Session, _ agent: HerdrAgentPresentation.Agent) {
-        Haptic.selection()
-        onOpenHerdrAgent(session.id, agent.paneID, session.bootID)
-        dismiss()
     }
 
     private var sessionList: some View {

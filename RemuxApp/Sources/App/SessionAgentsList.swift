@@ -1,67 +1,108 @@
 import SwiftUI
 
-/// Which agents the Agents list shows, by Herdr's names for its agent filters (`client/shell/overlays.rs`).
-/// An agent whose state isn't known yet reads as idle, so Idle includes it.
-enum SessionAgentsFilter: CaseIterable, Hashable {
-    case all
-    case blocked
-    case working
-    case idle
-    case done
-
-    var title: String {
-        switch self {
-        case .all: "All"
-        case .blocked: "Blocked"
-        case .working: "Working"
-        case .idle: "Idle"
-        case .done: "Done"
-        }
-    }
-
-    func includes(_ status: TerminalAgentStatus) -> Bool {
-        switch self {
-        case .all: true
-        case .blocked: status == .blocked
-        case .working: status == .working
-        case .idle: status == .idle || status == .unknown
-        case .done: status == .done
-        }
-    }
-}
-
-/// Every agent of the open Herdr sessions in one list, the most urgent first, as Herdr's client lists the
-/// agents of all its machines when its agent list is sorted by priority (`client/shell/aggregate_navigation.rs`
-/// `sort_aggregate_rows`): the agents of connected sessions before the others, then blocked, done, working
-/// and idle (`client/shell.rs` `status_priority`), then the newest state change first.
+/// Every agent of the open Herdr sessions in one list, grouped by what each needs from the user: blocked, done,
+/// working, idle, in Herdr's order of urgency (`client/shell.rs` `status_priority`), the newest state change
+/// first in each group. An agent whose state isn't known yet reads as idle. An agent whose session isn't
+/// connected keeps the group and the place of its last known state: its session's status already says the
+/// link is down, and a list that regrouped on every reconnect would move every row twice. Its row is dimmed.
 struct SessionAgentsProjection: Equatable {
     struct Session: Equatable {
         let id: SavedWorkspace.ID
-        /// The server, then the session unless it is Herdr's default one, as the banner names them.
-        let title: String
+        let serverName: String
+        /// Nil for Herdr's default session, which a row doesn't name, as the banner doesn't.
+        let sessionName: String?
         let runtimeState: TerminalRuntimeState
         /// The server boot the agents' pane ids belong to.
         let bootID: String?
 
-        /// Not connected, so its agents' states may be out of date; Herdr's list dims them.
+        /// Not connected, so its agents' states may be out of date.
         var isStale: Bool {
             runtimeState != .connected
         }
     }
 
+    /// A group of the list: a state.
+    enum Group: Hashable {
+        case blocked
+        case done
+        case working
+        case idle
+
+        init(_ status: TerminalAgentStatus) {
+            self = switch status {
+            case .blocked: .blocked
+            case .done: .done
+            case .working: .working
+            case .idle, .unknown: .idle
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .blocked: "Blocked"
+            case .done: "Done"
+            case .working: "Working"
+            case .idle: "Idle"
+            }
+        }
+
+        var status: TerminalAgentStatus {
+            switch self {
+            case .blocked: .blocked
+            case .done: .done
+            case .working: .working
+            case .idle: .idle
+            }
+        }
+
+        fileprivate var rank: Int {
+            switch self {
+            case .blocked: 0
+            case .done: 1
+            case .working: 2
+            case .idle: 3
+            }
+        }
+    }
+
     struct Entry: Identifiable, Equatable {
+        /// A row is its agent in one group: when the agent changes group, the list takes the row out where it
+        /// was and puts a new one in where it belongs, so the row fades between the two places. Sliding the
+        /// same row there draws it across every row between them.
         struct ID: Hashable {
             let session: SavedWorkspace.ID
             let pane: String
+            let group: Group
         }
 
         let session: Session
         let agent: HerdrAgentPresentation.Agent
+        /// The title the agent's program sets for itself, word for word, when it sets one.
+        let title: String?
+        let group: Group
 
-        var id: ID { ID(session: session.id, pane: agent.paneID) }
+        var id: ID { ID(session: session.id, pane: agent.paneID, group: group) }
+
+        /// What the row leads with: what the agent is working on, in its program's words, else its name.
+        var heading: String { title ?? agent.name }
+
+        /// The name the user gave the agent, unless the heading or the tab already says it.
+        var givenName: String? { agent.givenName == heading ? nil : agent.givenName }
     }
 
+    struct Section: Identifiable, Equatable {
+        let group: Group
+        let entries: [Entry]
+
+        var id: Group { group }
+    }
+
+    /// How many agents Home shows before the row that opens the whole list.
+    static let homeEntryCount = 3
+
+    /// Every agent, in the list's order.
     let entries: [Entry]
+    let sections: [Section]
     /// The agents are from more than one session, so each row names its session.
     let namesSessions: Bool
 
@@ -76,23 +117,23 @@ struct SessionAgentsProjection: Equatable {
             let isDefault = item.sessionName == HerdrNotificationBannerContent.defaultSessionName
             let session = Session(
                 id: item.id,
-                title: isDefault ? item.serverName : "\(item.serverName) · \(item.sessionName)",
+                serverName: item.serverName,
+                sessionName: isDefault ? nil : item.sessionName,
                 runtimeState: item.runtimeState,
                 bootID: presentation.bootID
             )
             for agent in presentation.agents {
-                ranked.append((Entry(session: session, agent: agent), presentation.recency[agent.paneID]))
+                let group = Group(agent.state.status)
+                let entry = Entry(session: session, agent: agent, title: presentation.titles[agent.paneID], group: group)
+                ranked.append((entry, presentation.recency[agent.paneID]))
             }
         }
         // Agents that tie stay in the Sessions list's order, each session's in Herdr's.
         let order = ranked.indices.sorted { leftIndex, rightIndex in
             let left = ranked[leftIndex]
             let right = ranked[rightIndex]
-            if left.entry.session.isStale != right.entry.session.isStale {
-                return !left.entry.session.isStale
-            }
-            if left.entry.agent.state.status != right.entry.agent.state.status {
-                return left.entry.agent.state.status > right.entry.agent.state.status
+            if left.entry.group != right.entry.group {
+                return left.entry.group.rank < right.entry.group.rank
             }
             switch (left.recency, right.recency) {
             case let (left?, right?) where left != right:
@@ -106,177 +147,284 @@ struct SessionAgentsProjection: Equatable {
             }
         }
         entries = order.map { ranked[$0].entry }
+        var sections: [Section] = []
+        for entry in entries {
+            if let last = sections.last, last.group == entry.group {
+                sections[sections.count - 1] = Section(group: entry.group, entries: last.entries + [entry])
+            } else {
+                sections.append(Section(group: entry.group, entries: [entry]))
+            }
+        }
+        self.sections = sections
         namesSessions = Set(entries.map(\.session.id)).count > 1
     }
 
-    func count(_ filter: SessionAgentsFilter) -> Int {
-        entries.count { filter.includes($0.agent.state.status) }
+    /// The first agents of the list, which Home shows.
+    var homeEntries: [Entry] {
+        Array(entries.prefix(Self.homeEntryCount))
     }
 
-    /// The agents `filter` shows, the most urgent first.
-    func entries(_ filter: SessionAgentsFilter) -> [Entry] {
-        entries.filter { filter.includes($0.agent.state.status) }
+    /// Whether the list has agents Home doesn't show, so Home ends with the row that opens it.
+    var hasMoreThanHomeShows: Bool {
+        entries.count > Self.homeEntryCount
     }
 
-    /// The rows an open list showed, with the filter they were shown for.
-    struct HeldOrder: Equatable {
-        let filter: SessionAgentsFilter
-        let ids: [Entry.ID]
+    /// What all the agents are doing, group by group in the list's order: "2 blocked · 5 working · 17 idle".
+    /// The whole line comes first, then the same with one more group left off its end each time, for a row
+    /// too narrow for the whole.
+    var summaries: [String] {
+        let parts = sections.map { section in
+            "\(section.entries.count) \(section.group.status.word)"
+        }
+        return parts.indices.reversed().map { parts[...$0].joined(separator: " · ") }
     }
 
-    /// The agents `filter` shows. Those `held` showed for the same filter come first, in that order, so rows
-    /// stay where they are while the list is open; then any others, the most urgent first. A held order from
-    /// another filter doesn't count: a new filter starts from the most urgent.
-    func entries(_ filter: SessionAgentsFilter, held: HeldOrder?) -> [Entry] {
-        let shown = entries(filter)
-        guard let held, held.filter == filter else { return shown }
-        let position = Dictionary(held.ids.enumerated().map { ($1, $0) }) { first, _ in first }
-        let kept = shown
-            .compactMap { entry in position[entry.id].map { (entry, $0) } }
-            .sorted { $0.1 < $1.1 }
-            .map(\.0)
-        return kept + shown.filter { position[$0.id] == nil }
+    /// Where an agent is, from the whole line to ever shorter ones, for a row to show the longest that fits.
+    /// The order never changes, the general before the specific: the machine, the session, the workspace and
+    /// the tab, then the name the user gave the agent. A line too long loses whole names, never letters: first
+    /// the session, then the workspace, which leaves "…" before the tab so the tab still reads as a tab, then
+    /// the given name, then the machine. The last name of the place always stays.
+    static func placeLines(
+        machine: String?,
+        session: String?,
+        workspace: String?,
+        tab: String?,
+        givenName: String?
+    ) -> [String] {
+        func line(machine: String?, session: String?, workspace: String?, givenName: String?) -> String {
+            let place: String? = switch (workspace, tab) {
+            case let (workspace?, tab?): "\(workspace) › \(tab)"
+            case let (nil, tab?): tab
+            case let (workspace, nil): workspace
+            }
+            return [machine, session, place, givenName].compactMap { $0 }.joined(separator: " · ")
+        }
+        // Without a tab the workspace is the place's last name, so it stays.
+        let elided = tab == nil ? workspace : workspace.map { _ in "…" }
+        var lines: [String] = []
+        for next in [
+            line(machine: machine, session: session, workspace: workspace, givenName: givenName),
+            line(machine: machine, session: nil, workspace: workspace, givenName: givenName),
+            line(machine: machine, session: nil, workspace: elided, givenName: givenName),
+            line(machine: machine, session: nil, workspace: elided, givenName: nil),
+            line(machine: nil, session: nil, workspace: elided, givenName: nil),
+        ] where lines.last != next && !next.isEmpty {
+            lines.append(next)
+        }
+        return lines
     }
 }
 
-/// The Sessions sheet's Agents list: filters for every agent and for each state, in a row that scrolls
-/// sideways when it doesn't fit, then the agents, the most urgent first. A row opens the agent's pane.
+extension SessionAgentsProjection.Entry {
+    /// Where the agent is, the longest line first. The machine and the session are named when the list has
+    /// more than one session's agents.
+    func placeLines(namesSession: Bool) -> [String] {
+        SessionAgentsProjection.placeLines(
+            machine: namesSession ? session.serverName : nil,
+            session: namesSession ? session.sessionName : nil,
+            workspace: agent.workspaceName,
+            tab: agent.tabName,
+            givenName: givenName
+        )
+    }
+}
+
+/// Lets one touch open one agent. A row that fades into a new place as a finger lifts can report the tap twice,
+/// once for each place (seen on iOS 26.4), and each would open a pane.
+struct AgentOpenGate {
+    private var last: ContinuousClock.Instant?
+
+    /// Whether an open asked for at `now` goes ahead: not within half a second of the one before.
+    mutating func admits(at now: ContinuousClock.Instant = .now) -> Bool {
+        if let last, now - last < .milliseconds(500) { return false }
+        last = now
+        return true
+    }
+}
+
+/// The Agents page: a section for each group that has agents, each of which folds away under its header and
+/// keeps its count. A row opens the agent's pane.
 ///
-/// The list opens, and each filter starts, with the most urgent first. Meanwhile states change in place and
-/// rows keep their places, so a row doesn't move under a finger: the rows shown are held for the filter, so
-/// an agent that appears, or comes back to the filter, is added after the rest and keeps its place from then
-/// on. Herdr's client sorts again at once.
+/// The list follows the agents as they change. A row whose agent changes state leaves its section and appears
+/// at the top of its new one, and the rows between make room, in the list's own animation.
 struct SessionAgentsList: View {
     let projection: SessionAgentsProjection
-    @Binding var filter: SessionAgentsFilter
     let onOpen: (SessionAgentsProjection.Session, HerdrAgentPresentation.Agent) -> Void
 
-    @State private var held: SessionAgentsProjection.HeldOrder?
+    /// The groups folded by hand, for as long as the page is open.
+    @State private var folded: Set<SessionAgentsProjection.Group> = []
+    @State private var gate = AgentOpenGate()
 
     var body: some View {
-        let entries = projection.entries(filter, held: held)
-        VStack(spacing: 0) {
-            filterBar
-            List {
-                ForEach(entries) { entry in
-                    Button {
-                        onOpen(entry.session, entry.agent)
-                    } label: {
-                        SessionAgentRow(
-                            agent: entry.agent,
-                            session: entry.session,
-                            namesSession: projection.namesSessions
-                        )
+        List {
+            ForEach(projection.sections) { section in
+                Section {
+                    if !folded.contains(section.group) {
+                        ForEach(section.entries) { entry in
+                            Button {
+                                guard gate.admits() else { return }
+                                Haptic.selection()
+                                onOpen(entry.session, entry.agent)
+                            } label: {
+                                SessionAgentRow(entry: entry, namesSession: projection.namesSessions, showsState: false)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("agents.agent")
+                            .libraryHomeListRowSurface()
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .sessionSwitcherListRow(accessibilityIdentifier: "terminal.agents.agent")
+                } header: {
+                    header(section)
                 }
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .overlay {
-                if entries.isEmpty {
-                    emptyResults
+        }
+        .listStyle(.insetGrouped)
+        .libraryHomeGroupedScrollBackground()
+        .animation(.default, value: projection.entries.map(\.id))
+        .overlay {
+            if projection.entries.isEmpty {
+                ContentUnavailableView {
+                    Label("No Agents", systemImage: "terminal")
+                } description: {
+                    Text("Agents in your open Herdr sessions appear here.")
                 }
             }
-            .accessibilityIdentifier("terminal.agents.list")
         }
-        .onChange(of: SessionAgentsProjection.HeldOrder(filter: filter, ids: entries.map(\.id)), initial: true) { _, shown in
-            held = shown
-        }
+        .navigationTitle("Agents")
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("agents.list")
     }
 
-    private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            filterChips
+    private func header(_ section: SessionAgentsProjection.Section) -> some View {
+        let isFolded = folded.contains(section.group)
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(section.group.status.color)
+                .frame(width: 8, height: 8)
+            Text(section.group.title)
+            Text("\(section.entries.count)")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(isFolded ? 0 : 90))
         }
-        .contentMargins(.horizontal, 16, for: .scrollContent)
-        .padding(.vertical, 8)
+        .font(.subheadline.weight(.semibold))
+        .textCase(nil)
+        .frame(maxWidth: .infinity, minHeight: 32)
+        // The whole header folds its section, not only its words: a button in a list's header takes touches
+        // only where its label draws something, so the header itself takes the tap.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Haptic.selection()
+            withAnimation(.snappy) {
+                if isFolded { folded.remove(section.group) } else { folded.insert(section.group) }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(section.group.title)
+        .accessibilityValue(section.entries.count == 1 ? "1 agent" : "\(section.entries.count) agents")
+        .accessibilityHint(isFolded ? "Shows its agents" : "Hides its agents")
+        .accessibilityIdentifier("agents.section.\(section.group.title.lowercased())")
     }
+}
 
-    private var filterChips: some View {
-        HStack(spacing: 8) {
-            ForEach(SessionAgentsFilter.allCases, id: \.self) { option in
-                let isSelected = option == filter
-                let count = projection.count(option)
-                Button {
-                    Haptic.selection()
-                    filter = option
-                } label: {
-                    Text("\(option.title) \(count)")
-                        .font(.system(size: 13, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(isSelected ? RemuxAccent.onFill : TerminalSelectionSheetPalette.primary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            isSelected ? RemuxAccent.fill : TerminalSelectionSheetPalette.controlFill,
-                            in: Capsule()
-                        )
-                        .contentShape(Capsule())
+/// Home's Agents section: the list's first agents, each saying its state, since Home has no header to say it,
+/// and, when the list has more, a last row that says what all the agents are doing and opens the list.
+struct SessionAgentsHomeRows: View {
+    let projection: SessionAgentsProjection
+    let onOpen: (SessionAgentsProjection.Session, HerdrAgentPresentation.Agent) -> Void
+    let onShowAll: () -> Void
+
+    @State private var gate = AgentOpenGate()
+
+    var body: some View {
+        ForEach(projection.homeEntries) { entry in
+            Button {
+                guard gate.admits() else { return }
+                onOpen(entry.session, entry.agent)
+            } label: {
+                SessionAgentRow(entry: entry, namesSession: projection.namesSessions, showsState: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("library.agents.agent")
+            .libraryHomeListRowSurface()
+        }
+
+        if projection.hasMoreThanHomeShows {
+            Button(action: onShowAll) {
+                HStack(spacing: 8) {
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(projection.summaries, id: \.self) { summary in
+                            Text(summary).lineLimit(1)
+                        }
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(option.title)
-                .accessibilityValue(count == 1 ? "1 agent" : "\(count) agents")
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .accessibilityIdentifier("terminal.agents.filter.\(option.title.lowercased())")
+                .contentShape(Rectangle())
             }
-        }
-    }
-
-    private var emptyResults: some View {
-        let title = switch filter {
-        case .all: "No Agents"
-        case .blocked: "No Agents Blocked"
-        case .working: "No Agents Working"
-        case .idle: "No Agents Idle"
-        case .done: "No Agents Done"
-        }
-        return ContentUnavailableView {
-            Label(title, systemImage: "terminal")
-        } description: {
-            if filter == .all {
-                Text("Agents in your open Herdr sessions appear here.")
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("All agents")
+            .accessibilityValue(projection.summaries.first ?? "")
+            .accessibilityIdentifier("library.agents.all")
+            .libraryHomeListRowSurface()
         }
     }
 }
 
-/// One agent: its dot, its name over where it is, and its state. Where it is starts with its session
-/// when the list has more than one session's agents, as Herdr's list of all its machines' agents names each
-/// agent's machine.
+/// One agent: its program's mark, what it is working on in its program's words, and where it is. In the list
+/// its section says its state. On Home (`showsState`) the mark carries the state's dot, as a tab's does in the
+/// Tabs sheet, and the state's word comes first on the second line, in its colour when the agent is waiting
+/// for the user. While the agent's session isn't connected the row says so in words and its mark is dimmed;
+/// the rest stays at full strength, since the row still opens the agent.
 private struct SessionAgentRow: View {
-    let agent: HerdrAgentPresentation.Agent
-    let session: SessionAgentsProjection.Session
+    let entry: SessionAgentsProjection.Entry
     let namesSession: Bool
+    let showsState: Bool
 
     var body: some View {
         HStack(spacing: 12) {
-            TerminalAgentDot(status: agent.state.status, size: 10, isStale: session.isStale)
+            TerminalProgramStack(programs: [entry.agent.program], paneCount: 1, dot: showsState ? status : nil)
+                .frame(width: TerminalProgramStack.tile.width, alignment: .leading)
+                .opacity(entry.session.isStale ? 0.55 : 1)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(agent.name)
+                Text(entry.heading)
                     .font(.headline)
-                    .foregroundStyle(TerminalSelectionSheetPalette.primary)
-                    .lineLimit(1)
+                    .lineLimit(showsState ? 1 : 2)
 
-                if !location.isEmpty {
-                    Text(location)
-                        .font(.footnote)
-                        .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                let lines = entry.placeLines(namesSession: namesSession)
+                if showsState || entry.session.isStale || !lines.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(lines.isEmpty ? [""] : lines, id: \.self) { line in
+                            secondLine(place: line).lineLimit(1)
+                        }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
             }
 
             Spacer(minLength: 8)
 
-            Text(agent.state.word)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(session.isStale ? TerminalAgentStatus.unknown.color : agent.state.status.color)
-                .lineLimit(1)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
-        .frame(minHeight: 52)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
@@ -284,15 +432,38 @@ private struct SessionAgentRow: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    private var location: String {
-        [namesSession ? session.title : "", agent.place].filter { !$0.isEmpty }.joined(separator: " · ")
+    private var status: TerminalAgentStatus {
+        entry.agent.state.status
+    }
+
+    /// The line under the heading starts with one word, then says where the agent is. While the agent's session
+    /// isn't connected the word is the session's status, in the app's word for it, so opening the agent then is
+    /// no surprise. It stands in for the state's word, which Home shows otherwise: the state is the last one
+    /// known, the dot still shows it, and two words would leave a tab's name about ten characters.
+    private func secondLine(place: String) -> Text {
+        var parts: [Text] = []
+        if entry.session.isStale {
+            let label = TerminalRuntimeStatusPresentation.projection(for: entry.session.runtimeState).label
+            parts.append(Text(label).fontWeight(.medium))
+        } else if showsState {
+            let waits = status == .blocked || status == .done
+            parts.append(
+                Text(entry.agent.state.word)
+                    .fontWeight(.medium)
+                    .foregroundStyle(waits ? AnyShapeStyle(status.color) : AnyShapeStyle(.secondary))
+            )
+        }
+        if !place.isEmpty {
+            parts.append(Text(place))
+        }
+        return parts.dropFirst().reduce(parts.first ?? Text("")) { $0 + Text(" · ") + $1 }
     }
 
     private var accessibilityLabel: String {
-        var parts = [agent.name, namesSession ? session.title : "", agent.place, agent.state.word]
-            .filter { !$0.isEmpty }
-        if session.isStale {
-            parts.append(TerminalRuntimeStatusPresentation.projection(for: session.runtimeState).label)
+        var parts = [entry.heading, entry.agent.state.word]
+        parts += entry.placeLines(namesSession: namesSession).prefix(1)
+        if entry.session.isStale {
+            parts.append(TerminalRuntimeStatusPresentation.projection(for: entry.session.runtimeState).label)
         }
         return parts.joined(separator: ", ")
     }

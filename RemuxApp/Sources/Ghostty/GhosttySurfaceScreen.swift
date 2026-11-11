@@ -108,6 +108,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onRestartSession: () -> Void
     private let onShowSessions: () -> Void
     private let onShowLibrary: () -> Void
+    /// What the Home button says of the agents waiting out of sight, read when the toolbar is drawn.
+    private let waitingAgentStatus: () -> TerminalAgentStatus?
     private let onUpdateCredentials: () -> Void
     private let onEditServer: () -> Void
     private let onTrustHostKey: () -> Void
@@ -130,6 +132,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onRestartSession: @escaping () -> Void,
         onShowSessions: @escaping () -> Void,
         onShowLibrary: @escaping () -> Void,
+        waitingAgentStatus: @escaping () -> TerminalAgentStatus? = { nil },
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
         onTrustHostKey: @escaping () -> Void
@@ -147,6 +150,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.onRestartSession = onRestartSession
         self.onShowSessions = onShowSessions
         self.onShowLibrary = onShowLibrary
+        self.waitingAgentStatus = waitingAgentStatus
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
         self.onTrustHostKey = onTrustHostKey
@@ -482,6 +486,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     isComposerPresented: isActiveComposerPresented,
                                     onShowSessions: onShowSessions,
                                     onShowLibrary: onShowLibrary,
+                                    waitingAgentStatus: waitingAgentStatus,
                                     onShowWindows: {
                                         showWindows()
                                     },

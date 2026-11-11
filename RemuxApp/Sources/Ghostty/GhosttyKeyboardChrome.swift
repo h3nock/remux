@@ -97,6 +97,9 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isComposerPresented: Bool
     let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
+    /// The state of the agents waiting out of sight, which the Home button's dot shows. Read as the toolbar
+    /// is drawn, so the dot follows both the agents and the tab on screen.
+    var waitingAgentStatus: () -> TerminalAgentStatus? = { nil }
     let onShowWindows: () -> Void
     let onShowPanes: () -> Void
     let onOpenComposer: () -> Void
@@ -216,12 +219,15 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var inputControls: some View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
+                let waiting = waitingAgentStatus()
                 GhosttyKeyboardChromeDockButton(
                     systemName: "house",
                     badge: nil,
+                    dot: waiting,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: "Home",
+                    accessibilityValue: waiting.map { "An agent is \($0.word)" },
                     accessibilityHint: "Open the Remux library.",
                     accessibilityIdentifier: "terminal.home",
                     isActive: false,
@@ -376,11 +382,20 @@ struct GhosttyKeyboardChromeNavigation: Equatable {
 }
 
 private struct GhosttyKeyboardChromeDockButton: View {
+    /// The dot is the size of the agent dot on a tab's tile, in the place of a button's count.
+    private static let dotDiameter: CGFloat = 7
+    private static let dotBox: CGFloat = 12.5
+    /// What is cut from the symbol around the dot, so the two don't touch.
+    private static let dotClearance: CGFloat = 1.5
+
     let systemName: String
     let badge: String?
+    /// An agent's state, shown as its dot where a count would be.
+    var dot: TerminalAgentStatus?
     let width: CGFloat
     let height: CGFloat
     let accessibilityLabel: String
+    var accessibilityValue: String?
     let accessibilityHint: String?
     let accessibilityIdentifier: String
     let isActive: Bool
@@ -390,13 +405,30 @@ private struct GhosttyKeyboardChromeDockButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Image(systemName: systemName)
-                    .font(.system(size: 16.5, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .contentTransition(.symbolEffect(.replace))
+                ZStack {
+                    Image(systemName: systemName)
+                        .font(.system(size: 16.5, weight: .semibold))
+                        .symbolRenderingMode(.monochrome)
+                        .contentTransition(.symbolEffect(.replace))
+
+                    if dot != nil {
+                        Circle()
+                            .frame(
+                                width: Self.dotDiameter + 2 * Self.dotClearance,
+                                height: Self.dotDiameter + 2 * Self.dotClearance
+                            )
+                            .dockCorner(box: Self.dotBox)
+                            .blendMode(.destinationOut)
+                    }
+                }
+                .compositingGroup()
 
                 if let badge {
                     dockBadge(badge)
+                }
+                if let dot {
+                    TerminalAgentDot(status: dot, size: Self.dotDiameter)
+                        .dockCorner(box: Self.dotBox)
                 }
             }
         }
@@ -408,6 +440,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
         ))
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue ?? "")
         .accessibilityHint(accessibilityHint ?? "")
         .accessibilityIdentifier(accessibilityIdentifier)
     }
@@ -423,6 +456,17 @@ private struct GhosttyKeyboardChromeDockButton: View {
             .frame(minWidth: 12.5, minHeight: 12.5)
             .padding(.horizontal, horizontalPadding)
             .background(RemuxAccent.fill.opacity(0.88), in: Capsule())
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(.top, 4)
+            .padding(.trailing, 4)
+    }
+}
+
+private extension View {
+    /// Centres the view where a dock button's count sits: in a box of `box` points, 4 points in from the
+    /// button's top and trailing edges.
+    func dockCorner(box: CGFloat) -> some View {
+        frame(width: box, height: box)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(.top, 4)
             .padding(.trailing, 4)
