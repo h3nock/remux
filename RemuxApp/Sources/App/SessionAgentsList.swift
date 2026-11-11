@@ -386,7 +386,8 @@ struct SessionAgentsHomeRows: View {
 /// One agent: its program's mark, what it is working on in its program's words, and where it is. In the list
 /// its section says its state. On Home (`showsState`) the mark carries the state's dot, as a tab's does in the
 /// Tabs sheet, and the state's word comes first on the second line, in its colour when the agent is waiting
-/// for the user.
+/// for the user. While the agent's session isn't connected the row says so in words and its mark is dimmed;
+/// the rest stays at full strength, since the row still opens the agent.
 private struct SessionAgentRow: View {
     let entry: SessionAgentsProjection.Entry
     let namesSession: Bool
@@ -404,7 +405,7 @@ private struct SessionAgentRow: View {
                     .lineLimit(showsState ? 1 : 2)
 
                 let lines = entry.placeLines(namesSession: namesSession)
-                if showsState || !lines.isEmpty {
+                if showsState || entry.session.isStale || !lines.isEmpty {
                     ViewThatFits(in: .horizontal) {
                         ForEach(lines.isEmpty ? [""] : lines, id: \.self) { line in
                             secondLine(place: line).lineLimit(1)
@@ -435,13 +436,26 @@ private struct SessionAgentRow: View {
         entry.agent.state.status
     }
 
+    /// The line under the heading: on Home the state's word, then the session's status while it isn't
+    /// connected, in the app's word for it, so opening the agent then is no surprise, then where the agent is.
     private func secondLine(place: String) -> Text {
-        guard showsState else { return Text(place) }
-        let waits = status == .blocked || status == .done
-        let word = Text(entry.agent.state.word)
-            .fontWeight(.medium)
-            .foregroundStyle(waits ? AnyShapeStyle(status.color) : AnyShapeStyle(.secondary))
-        return place.isEmpty ? word : word + Text(" · \(place)")
+        var parts: [Text] = []
+        if showsState {
+            let waits = status == .blocked || status == .done
+            parts.append(
+                Text(entry.agent.state.word)
+                    .fontWeight(.medium)
+                    .foregroundStyle(waits ? AnyShapeStyle(status.color) : AnyShapeStyle(.secondary))
+            )
+        }
+        if entry.session.isStale {
+            let label = TerminalRuntimeStatusPresentation.projection(for: entry.session.runtimeState).label
+            parts.append(Text(label).fontWeight(.medium))
+        }
+        if !place.isEmpty {
+            parts.append(Text(place))
+        }
+        return parts.dropFirst().reduce(parts.first ?? Text("")) { $0 + Text(" · ") + $1 }
     }
 
     private var accessibilityLabel: String {
