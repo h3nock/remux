@@ -315,33 +315,34 @@ struct SessionAgentsList: View {
 
     private func header(_ section: SessionAgentsProjection.Section) -> some View {
         let isFolded = folded.contains(section.group)
-        return Button {
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(section.group.status?.color ?? TerminalAgentStatus.unknown.color)
+                .frame(width: 8, height: 8)
+            Text(section.group.title)
+            Text("\(section.entries.count)")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(isFolded ? 0 : 90))
+        }
+        .font(.subheadline.weight(.semibold))
+        .textCase(nil)
+        .frame(maxWidth: .infinity, minHeight: 32)
+        // The whole header folds its section, not only its words: a button in a list's header takes touches
+        // only where its label draws something, so the header itself takes the tap.
+        .contentShape(Rectangle())
+        .onTapGesture {
             Haptic.selection()
             withAnimation(.snappy) {
                 if isFolded { folded.remove(section.group) } else { folded.insert(section.group) }
             }
-        } label: {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(section.group.status?.color ?? TerminalAgentStatus.unknown.color)
-                    .frame(width: 8, height: 8)
-                    .accessibilityHidden(true)
-                Text(section.group.title)
-                Text("\(section.entries.count)")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isFolded ? 0 : 90))
-                    .accessibilityHidden(true)
-            }
-            .font(.subheadline.weight(.semibold))
-            .textCase(nil)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(section.group.title)
         .accessibilityValue(section.entries.count == 1 ? "1 agent" : "\(section.entries.count) agents")
         .accessibilityHint(isFolded ? "Shows its agents" : "Hides its agents")
