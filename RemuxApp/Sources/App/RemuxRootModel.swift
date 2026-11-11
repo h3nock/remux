@@ -1808,11 +1808,10 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// What the terminal's Home button says of the open Herdr sessions' agents: blocked while one that isn't on
-    /// screen needs the user, else done while one has finished, else nothing. Sessions that aren't connected
-    /// don't count, since their agents' states may be out of date.
+    /// screen needs the user, else done while one has finished, else nothing. A session that isn't connected
+    /// counts by its agents' last known states, as the agents' list shows them.
     var waitingAgentStatus: TerminalAgentStatus? {
         activeSessions.lazy
-            .filter { $0.runtimeState == .connected }
             .compactMap { session -> TerminalAgentStatus? in
                 guard let model = self.herdrModel(of: session.id) else { return nil }
                 let tabOnScreen = model.notificationState.flatMap { $0.isShown ? $0.focusedTabID : nil }

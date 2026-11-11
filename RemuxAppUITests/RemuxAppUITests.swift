@@ -3187,6 +3187,64 @@ final class RemuxAppUITests: XCTestCase {
         captureLiveHerdrStep("a10-home-after-seen", in: configuration)
     }
 
+    /// The agents of a session whose connection drops and comes back. While it is down every agent keeps its
+    /// section and its place, by its last known state, and its row says the session is reconnecting; the Home
+    /// button keeps its dot. A row tapped meanwhile opens the session, which goes to the agent's tab once it has
+    /// reconnected. The harness cuts the connection (`drop`) and lets the server answer again (`restore`).
+    func testLiveHerdrAgentsWhileReconnectingWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp(requiringSteps: true)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        func settle(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+        let panes = app.buttons.matching(identifier: "terminal.panes").firstMatch
+        let home = app.buttons["terminal.home"]
+        let rows = app.descendants(matching: .any).matching(identifier: "agents.agent")
+        func labels() -> [String] { rows.allElementsBoundByIndex.map { $0.label } }
+        func counts() -> [String] {
+            ["blocked", "working", "idle"].map { app.buttons["agents.section.\($0)"].value as? String ?? "none" }
+        }
+        func wait(for expected: [String]) -> Bool {
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                if labels() == expected { return true }
+                settle(0.2)
+            }
+            return false
+        }
+
+        home.tap()
+        let all = app.buttons["library.agents.all"]
+        XCTAssertTrue(all.waitForExistence(timeout: 10))
+        all.tap()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        settle(1)
+        let connected = labels()
+        XCTAssertEqual(connected.count, 6)
+        XCTAssertEqual(counts(), ["1 agent", "3 agents", "2 agents"])
+        captureLiveHerdrStep("r1-agents-connected", in: configuration)
+
+        try requestLiveHerdrStep("drop", in: configuration)
+        XCTAssertTrue(
+            wait(for: connected.map { "\($0), Reconnecting" }),
+            "The agents didn't keep their places while their session reconnects: \(labels())"
+        )
+        XCTAssertEqual(counts(), ["1 agent", "3 agents", "2 agents"], "The sections changed while reconnecting.")
+        settle(1)
+        captureLiveHerdrStep("r2-agents-reconnecting", in: configuration)
+
+        // The blocked agent's row opens its session, which is still reconnecting.
+        rows.firstMatch.tap()
+        XCTAssertTrue(home.waitForExistence(timeout: 10), "The row didn't show the session.")
+        settle(1)
+        captureLiveHerdrStep("r3-opened-while-reconnecting", in: configuration)
+        try requestLiveHerdrStep("restore", in: configuration)
+        XCTAssertTrue(
+            waitForLabel(of: panes, "Panes, 2 panes", timeout: 90),
+            "The session didn't go to the agent's tab once it reconnected."
+        )
+        captureLiveHerdrStep("r4-reconnected-at-the-agent", in: configuration)
+    }
+
     /// Herdr's workspaces on a live server, each showing its most urgent agent: the fixture's `remux`, with
     /// agent `claude` working, then `api`, whose agent works and finishes when the test asks (`finish`),
     /// `web`, with none, `notes`, whose agent is idle, and `infra`, whose agent is blocked. Sessions shows

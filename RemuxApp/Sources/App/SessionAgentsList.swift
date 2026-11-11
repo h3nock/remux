@@ -2,9 +2,9 @@ import SwiftUI
 
 /// Every agent of the open Herdr sessions in one list, grouped by what each needs from the user: blocked, done,
 /// working, idle, in Herdr's order of urgency (`client/shell.rs` `status_priority`), the newest state change
-/// first in each group. An agent whose state isn't known yet reads as idle. The agents of sessions that aren't
-/// connected come last, grouped under their session's status, since their states may be out of date; Herdr's
-/// list dims them (`client/shell/aggregate_navigation.rs` `sort_aggregate_rows`).
+/// first in each group. An agent whose state isn't known yet reads as idle. An agent whose session isn't
+/// connected keeps the group and the place of its last known state: its session's status already says the
+/// link is down, and a list that regrouped on every reconnect would move every row twice. Its row is dimmed.
 struct SessionAgentsProjection: Equatable {
     struct Session: Equatable {
         let id: SavedWorkspace.ID
@@ -21,13 +21,12 @@ struct SessionAgentsProjection: Equatable {
         }
     }
 
-    /// A group of the list: a state, or the status of sessions that aren't connected.
+    /// A group of the list: a state.
     enum Group: Hashable {
         case blocked
         case done
         case working
         case idle
-        case notConnected(String)
 
         init(_ status: TerminalAgentStatus) {
             self = switch status {
@@ -44,18 +43,15 @@ struct SessionAgentsProjection: Equatable {
             case .done: "Done"
             case .working: "Working"
             case .idle: "Idle"
-            case .notConnected(let status): status
             }
         }
 
-        /// The state the group stands for; nil for sessions that aren't connected.
-        var status: TerminalAgentStatus? {
+        var status: TerminalAgentStatus {
             switch self {
             case .blocked: .blocked
             case .done: .done
             case .working: .working
             case .idle: .idle
-            case .notConnected: nil
             }
         }
 
@@ -65,7 +61,6 @@ struct SessionAgentsProjection: Equatable {
             case .done: 1
             case .working: 2
             case .idle: 3
-            case .notConnected: 4
             }
         }
     }
@@ -117,8 +112,6 @@ struct SessionAgentsProjection: Equatable {
         agents: (SavedWorkspace.ID) -> HerdrAgentPresentation?
     ) {
         var ranked: [(entry: Entry, recency: HerdrAgentRecency?)] = []
-        // Sessions that aren't connected group by status, in the Sessions list's order.
-        var statuses: [String] = []
         for item in activeSessions {
             guard let presentation = agents(item.id) else { continue }
             let isDefault = item.sessionName == HerdrNotificationBannerContent.defaultSessionName
@@ -129,29 +122,18 @@ struct SessionAgentsProjection: Equatable {
                 runtimeState: item.runtimeState,
                 bootID: presentation.bootID
             )
-            let status = TerminalRuntimeStatusPresentation.projection(for: item.runtimeState).label
-            if session.isStale, !presentation.agents.isEmpty, !statuses.contains(status) {
-                statuses.append(status)
-            }
             for agent in presentation.agents {
-                let group = session.isStale ? Group.notConnected(status) : Group(agent.state.status)
+                let group = Group(agent.state.status)
                 let entry = Entry(session: session, agent: agent, title: presentation.titles[agent.paneID], group: group)
                 ranked.append((entry, presentation.recency[agent.paneID]))
             }
-        }
-        func place(_ group: Group) -> Int {
-            guard case .notConnected(let status) = group else { return group.rank }
-            return group.rank + (statuses.firstIndex(of: status) ?? 0)
         }
         // Agents that tie stay in the Sessions list's order, each session's in Herdr's.
         let order = ranked.indices.sorted { leftIndex, rightIndex in
             let left = ranked[leftIndex]
             let right = ranked[rightIndex]
             if left.entry.group != right.entry.group {
-                return place(left.entry.group) < place(right.entry.group)
-            }
-            if left.entry.session.isStale, left.entry.agent.state.status != right.entry.agent.state.status {
-                return left.entry.agent.state.status > right.entry.agent.state.status
+                return left.entry.group.rank < right.entry.group.rank
             }
             switch (left.recency, right.recency) {
             case let (left?, right?) where left != right:
@@ -192,7 +174,7 @@ struct SessionAgentsProjection: Equatable {
     /// too narrow for the whole.
     var summaries: [String] {
         let parts = sections.map { section in
-            "\(section.entries.count) \(section.group.status?.word ?? section.group.title.lowercased())"
+            "\(section.entries.count) \(section.group.status.word)"
         }
         return parts.indices.reversed().map { parts[...$0].joined(separator: " · ") }
     }
@@ -317,7 +299,7 @@ struct SessionAgentsList: View {
         let isFolded = folded.contains(section.group)
         return HStack(spacing: 6) {
             Circle()
-                .fill(section.group.status?.color ?? TerminalAgentStatus.unknown.color)
+                .fill(section.group.status.color)
                 .frame(width: 8, height: 8)
             Text(section.group.title)
             Text("\(section.entries.count)")
@@ -412,7 +394,7 @@ private struct SessionAgentRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            TerminalProgramStack(programs: [entry.agent.program], paneCount: 1, dot: showsState ? shownStatus : nil)
+            TerminalProgramStack(programs: [entry.agent.program], paneCount: 1, dot: showsState ? status : nil)
                 .frame(width: TerminalProgramStack.tile.width, alignment: .leading)
                 .opacity(entry.session.isStale ? 0.55 : 1)
 
@@ -449,17 +431,16 @@ private struct SessionAgentRow: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    /// The state Home's row shows: the agent's, or unknown while its session isn't connected.
-    private var shownStatus: TerminalAgentStatus {
-        entry.session.isStale ? .unknown : entry.agent.state.status
+    private var status: TerminalAgentStatus {
+        entry.agent.state.status
     }
 
     private func secondLine(place: String) -> Text {
         guard showsState else { return Text(place) }
-        let waits = shownStatus == .blocked || shownStatus == .done
+        let waits = status == .blocked || status == .done
         let word = Text(entry.agent.state.word)
             .fontWeight(.medium)
-            .foregroundStyle(waits ? AnyShapeStyle(shownStatus.color) : AnyShapeStyle(.secondary))
+            .foregroundStyle(waits ? AnyShapeStyle(status.color) : AnyShapeStyle(.secondary))
         return place.isEmpty ? word : word + Text(" · \(place)")
     }
 

@@ -463,11 +463,12 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         entries.map(\.agent.paneID)
     }
 
-    /// The Agents list has every agent of the open Herdr sessions in one list, as Herdr's client lists all its
-    /// machines' agents by priority: connected sessions' agents first, then blocked, done, working, idle, and
-    /// those whose state isn't known yet. Each session is named by its server and, unless it is Herdr's
-    /// default session, its name.
-    func testTheAgentsListPutsTheMostUrgentFirstAndDisconnectedSessionsLast() throws {
+    /// The Agents list has every agent of the open Herdr sessions in one list, by priority: blocked, done,
+    /// working, idle, and those whose state isn't known yet with the idle ones. An agent whose session isn't
+    /// connected keeps the place of its last known state (the user's decision of 11 November 2026; Herdr's
+    /// client lists such agents last). Each session is named by its server and, unless it is Herdr's default
+    /// session, its name.
+    func testTheAgentsListPutsTheMostUrgentFirstWhateverTheConnection() throws {
         let tmux = item(.tmux, "main", on: "mac-mini")
         let devbox = item(.herdr, "default", on: "devbox")
         let quiet = item(.herdr, "notes", on: "devbox")
@@ -486,14 +487,16 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         )
         XCTAssertEqual(
             projection.entries.map(\.session.id),
-            [devbox.id, laptop.id, devbox.id, devbox.id, laptop.id, training.id]
+            [devbox.id, training.id, laptop.id, devbox.id, devbox.id, laptop.id]
         )
-        XCTAssertEqual(panes(projection.entries), ["w1:p3", "w1:p1", "w1:p1", "w1:p2", "w1:p2", "w1:p1"])
+        XCTAssertEqual(panes(projection.entries), ["w1:p3", "w1:p1", "w1:p1", "w1:p1", "w1:p2", "w1:p2"])
         XCTAssertEqual(projection.entries.first?.session.serverName, "devbox")
         XCTAssertNil(projection.entries.first?.session.sessionName, "Herdr's default session isn't named.")
-        XCTAssertEqual(projection.entries.last?.session.serverName, "gpu-box")
-        XCTAssertEqual(projection.entries.last?.session.sessionName, "train")
-        XCTAssertEqual(projection.entries.last?.session.isStale, true)
+        let reconnecting = try XCTUnwrap(projection.entries.first { $0.session.id == training.id })
+        XCTAssertEqual(reconnecting.session.serverName, "gpu-box")
+        XCTAssertEqual(reconnecting.session.sessionName, "train")
+        XCTAssertTrue(reconnecting.session.isStale)
+        XCTAssertEqual(reconnecting.group, .blocked)
         XCTAssertEqual(projection.entries.first?.session.bootID, "boot")
         XCTAssertTrue(projection.namesSessions)
     }
@@ -548,8 +551,8 @@ final class SessionSwitcherProjectionTests: XCTestCase {
 
     /// The list has a section for each state that has agents, in the order of how much each needs the user:
     /// Blocked, Done, Working, Idle. An agent whose state isn't known yet is in Idle. A state without agents
-    /// has no section. The agents of a session that isn't connected are in a last section named by that
-    /// session's status, whatever their states.
+    /// has no section. The agents of a session that isn't connected stay in the sections of their last known
+    /// states, so the sections are only ever about the agents.
     func testTheListHasASectionForEachStateThatHasAgents() throws {
         let devbox = item(.herdr, "default", on: "devbox")
         let training = item(.herdr, "train", on: "gpu-box", .reconnecting(.transportLoss))
@@ -558,13 +561,15 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             training.id: try agents([("w1:p1", .working), ("w1:p2", .blocked)]),
         ]
         let projection = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
-        XCTAssertEqual(projection.sections.map(\.group), [.blocked, .working, .idle, .notConnected("Reconnecting")])
-        XCTAssertEqual(projection.sections.map(\.group.title), ["Blocked", "Working", "Idle", "Reconnecting"])
+        XCTAssertEqual(projection.sections.map(\.group), [.blocked, .working, .idle])
+        XCTAssertEqual(projection.sections.map(\.group.title), ["Blocked", "Working", "Idle"])
         XCTAssertEqual(projection.sections.map { panes($0.entries) }, [
-            ["w1:p3"], ["w1:p1"], ["w1:p2", "w1:p4"], ["w1:p2", "w1:p1"],
+            ["w1:p3", "w1:p2"], ["w1:p1", "w1:p1"], ["w1:p2", "w1:p4"],
+        ])
+        XCTAssertEqual(projection.sections.map { $0.entries.map(\.session.isStale) }, [
+            [false, true], [false, true], [false, false],
         ])
         XCTAssertEqual(projection.entries, projection.sections.flatMap(\.entries))
-        XCTAssertEqual(projection.sections.last?.group.status, nil)
     }
 
     /// A row is its agent in one section. When the agent changes state the row in its old section goes and a
@@ -603,14 +608,14 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             training.id: try agents([("w1:p1", .blocked)]),
         ]
         let projection = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
-        XCTAssertEqual(panes(projection.homeEntries), ["w1:p3", "w1:p5", "w1:p2"])
+        XCTAssertEqual(panes(projection.homeEntries), ["w1:p3", "w1:p1", "w1:p5"])
+        XCTAssertEqual(projection.homeEntries.map(\.session.id), [devbox.id, training.id, devbox.id])
         XCTAssertTrue(projection.hasMoreThanHomeShows)
         XCTAssertEqual(projection.summaries, [
-            "1 blocked · 1 done · 1 working · 2 idle · 1 reconnecting",
-            "1 blocked · 1 done · 1 working · 2 idle",
-            "1 blocked · 1 done · 1 working",
-            "1 blocked · 1 done",
-            "1 blocked",
+            "2 blocked · 1 done · 1 working · 2 idle",
+            "2 blocked · 1 done · 1 working",
+            "2 blocked · 1 done",
+            "2 blocked",
         ])
 
         let few = [devbox.id: try self.agents([("w1:p1", .idle), ("w1:p2", .working), ("w1:p3", .idle)])]
