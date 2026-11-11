@@ -436,21 +436,22 @@ private struct SessionAgentRow: View {
         entry.agent.state.status
     }
 
-    /// The line under the heading: on Home the state's word, then the session's status while it isn't
-    /// connected, in the app's word for it, so opening the agent then is no surprise, then where the agent is.
+    /// The line under the heading starts with one word, then says where the agent is. While the agent's session
+    /// isn't connected the word is the session's status, in the app's word for it, so opening the agent then is
+    /// no surprise. It stands in for the state's word, which Home shows otherwise: the state is the last one
+    /// known, the dot still shows it, and two words would leave a tab's name about ten characters.
     private func secondLine(place: String) -> Text {
         var parts: [Text] = []
-        if showsState {
+        if entry.session.isStale {
+            let label = TerminalRuntimeStatusPresentation.projection(for: entry.session.runtimeState).label
+            parts.append(Text(label).fontWeight(.medium))
+        } else if showsState {
             let waits = status == .blocked || status == .done
             parts.append(
                 Text(entry.agent.state.word)
                     .fontWeight(.medium)
                     .foregroundStyle(waits ? AnyShapeStyle(status.color) : AnyShapeStyle(.secondary))
             )
-        }
-        if entry.session.isStale {
-            let label = TerminalRuntimeStatusPresentation.projection(for: entry.session.runtimeState).label
-            parts.append(Text(label).fontWeight(.medium))
         }
         if !place.isEmpty {
             parts.append(Text(place))

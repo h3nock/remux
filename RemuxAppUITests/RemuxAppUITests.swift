@@ -3232,8 +3232,17 @@ final class RemuxAppUITests: XCTestCase {
         settle(1)
         captureLiveHerdrStep("r2-agents-reconnecting", in: configuration)
 
+        // Home's rows say so too.
+        app.navigationBars["Agents"].buttons.firstMatch.tap()
+        let homeRows = app.descendants(matching: .any).matching(identifier: "library.agents.agent")
+        XCTAssertTrue(homeRows.firstMatch.waitForExistence(timeout: 10))
+        settle(1)
+        let homeLabels = homeRows.allElementsBoundByIndex.map { $0.label }
+        XCTAssertEqual(homeLabels, Array(connected.prefix(3)).map { "\($0), Reconnecting" })
+        captureLiveHerdrStep("r2-home-reconnecting", in: configuration)
+
         // The blocked agent's row opens its session, which is still reconnecting.
-        rows.firstMatch.tap()
+        homeRows.firstMatch.tap()
         XCTAssertTrue(home.waitForExistence(timeout: 10), "The row didn't show the session.")
         settle(1)
         captureLiveHerdrStep("r3-opened-while-reconnecting", in: configuration)
