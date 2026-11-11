@@ -192,6 +192,41 @@ final class HerdrAgentsShownTests: XCTestCase {
         XCTAssertEqual(try places(webTabLabelled: true), ["api › auth", "web › dev"])
     }
 
+    /// An agent carries its program, for its mark, the names of its workspace and tab, and the name the user
+    /// gave it unless its tab already says it. The title its program sets is kept by pane, word for word, apart
+    /// from the agents themselves: a title that changes tells only the views that show titles.
+    func testAnAgentCarriesItsProgramItsPlaceAndTheNameItWasGiven() throws {
+        func shown(name: String? = nil, title: String? = nil, stripped: String? = nil) throws -> HerdrAgentPresentation {
+            let agents = HerdrAgentPresentation()
+            agents.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [HerdrServerScript.snapshotAgent(
+                "w1:p1", name: name, title: title, terminalTitleStripped: stripped, agent: "claude-code", tab: "t2"
+            )]), completions: nil)
+            return agents
+        }
+
+        let titled = try shown(name: "fixer", title: "ignored", stripped: "remux | Fix [tests] (2/3)")
+        let agent = try XCTUnwrap(titled.agents.first)
+        XCTAssertEqual(titled.titles, ["w1:p1": "remux | Fix [tests] (2/3)"])
+        XCTAssertEqual(agent.program, .agent("claude"))
+        XCTAssertEqual(agent.workspaceName, "api")
+        XCTAssertEqual(agent.tabName, "auth")
+        XCTAssertEqual(agent.givenName, "fixer")
+        XCTAssertEqual(agent.place, "api › auth")
+
+        XCTAssertEqual(try shown(name: "fixer", title: "Fix tests").titles, ["w1:p1": "Fix tests"])
+        XCTAssertEqual(try shown(name: "fixer").titles, [:])
+        XCTAssertNil(try shown(name: "auth").agents.first?.givenName, "The tab already says the name.")
+        XCTAssertNil(try shown(name: "  ").agents.first?.givenName)
+        XCTAssertNil(try shown().agents.first?.givenName)
+
+        let before = titled.agents
+        XCTAssertFalse(titled.project(try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [HerdrServerScript.snapshotAgent(
+            "w1:p1", name: "fixer", terminalTitleStripped: "remux | Fix [tests] (3/3)", agent: "claude-code", tab: "t2"
+        )]), completions: nil), "A new title alone is not a change the dots show.")
+        XCTAssertEqual(titled.titles, ["w1:p1": "remux | Fix [tests] (3/3)"])
+        XCTAssertEqual(titled.agents, before)
+    }
+
     /// An agent's state is in Herdr's words, unless the agent's own labels give the state a word, as
     /// Herdr's client words it.
     func testAnAgentsStateIsInHerdrsWordsUnlessItsLabelsGiveOne() throws {
