@@ -145,6 +145,17 @@ final class HerdrAgentPresentation {
         agents.lazy.map(\.state.status).max()
     }
 
+    /// The most urgent state among the agents waiting for the user out of sight: blocked, else done, else none.
+    /// `tabOnScreen` is the tab the user is looking at, whose agents don't count, as they get no banner
+    /// (`HerdrNotificationPolicy`).
+    func waitingStatus(tabOnScreen: String?) -> TerminalAgentStatus? {
+        agents.lazy
+            .filter { $0.tabID != tabOnScreen }
+            .map(\.state.status)
+            .filter { $0 == .blocked || $0 == .done }
+            .max()
+    }
+
     /// Only a change is set, so views reading the agents are told only then.
     private func update() -> Bool {
         let next = reported.map { agent, workspace, tab in

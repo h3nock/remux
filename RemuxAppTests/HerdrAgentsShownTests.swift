@@ -227,6 +227,24 @@ final class HerdrAgentsShownTests: XCTestCase {
         XCTAssertEqual(titled.agents, before)
     }
 
+    /// The terminal's Home button shows the most urgent agent waiting out of sight: blocked before done, and
+    /// nothing for working or idle agents. An agent in the tab on screen doesn't count, as it gets no banner.
+    func testTheHomeButtonShowsTheMostUrgentAgentWaitingOutOfSight() throws {
+        let agents = try HerdrSnapshotJSON.presentation([
+            ("w1:p1", .working), ("w1:p2", .done), ("w1:p3", .idle),
+        ])
+        XCTAssertEqual(agents.waitingStatus(tabOnScreen: nil), .done)
+        XCTAssertNil(agents.waitingStatus(tabOnScreen: "t1"), "Every agent is in the tab on screen.")
+
+        let two = HerdrAgentPresentation()
+        two.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [
+            agent("w1:p1", tab: "t1", status: .blocked), agent("w1:p2", tab: "t2", status: .working),
+        ]), completions: nil)
+        XCTAssertEqual(two.waitingStatus(tabOnScreen: "t2"), .blocked)
+        XCTAssertNil(two.waitingStatus(tabOnScreen: "t1"))
+        XCTAssertNil(try HerdrSnapshotJSON.presentation([("w1:p1", .working), ("w1:p2", .idle)]).waitingStatus(tabOnScreen: nil))
+    }
+
     /// An agent's state is in Herdr's words, unless the agent's own labels give the state a word, as
     /// Herdr's client words it.
     func testAnAgentsStateIsInHerdrsWordsUnlessItsLabelsGiveOne() throws {

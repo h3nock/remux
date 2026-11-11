@@ -684,7 +684,8 @@ private struct RemuxWorkspaceShell: View {
                         // The terminal gives up the keyboard once Home replaces it, as the screen decides;
                         // a resign here as well would be taken back while the terminal is still on screen.
                         Task { await model.showLibrary() }
-                    }
+                    },
+                    waitingAgentStatus: { model.waitingAgentStatus }
                 )
                 .id(entry.instanceID)
                 .opacity(isVisible ? 1 : 0)
@@ -926,6 +927,7 @@ private struct ActiveTerminalSessionView: View {
     let onTrustHostKey: () -> Void
     let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
+    let waitingAgentStatus: () -> TerminalAgentStatus?
 
     @StateObject private var previewSession: TerminalPreviewSession
 
@@ -942,7 +944,8 @@ private struct ActiveTerminalSessionView: View {
         onEditServer: @escaping () -> Void,
         onTrustHostKey: @escaping () -> Void,
         onShowSessions: @escaping () -> Void,
-        onShowLibrary: @escaping () -> Void
+        onShowLibrary: @escaping () -> Void,
+        waitingAgentStatus: @escaping () -> TerminalAgentStatus?
     ) {
         self.entry = entry
         self.isSelected = isSelected
@@ -957,6 +960,7 @@ private struct ActiveTerminalSessionView: View {
         self.onTrustHostKey = onTrustHostKey
         self.onShowSessions = onShowSessions
         self.onShowLibrary = onShowLibrary
+        self.waitingAgentStatus = waitingAgentStatus
         _previewSession = StateObject(
             wrappedValue: TerminalPreviewSession(
                 client: entry.terminalPreviewClientFactory(),
@@ -999,6 +1003,7 @@ private struct ActiveTerminalSessionView: View {
             onRestartSession: onRestartSession,
             onShowSessions: onShowSessions,
             onShowLibrary: onShowLibrary,
+            waitingAgentStatus: waitingAgentStatus,
             onUpdateCredentials: onUpdateCredentials,
             onEditServer: onEditServer,
             onTrustHostKey: onTrustHostKey
