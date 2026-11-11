@@ -189,7 +189,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(
             policy.windowIDsNeedingChange(
                 in: staleUnzoomedTopology,
-                includingMatchingWindows: true
+                afterSettingChange: true
             ),
             [1]
         )
@@ -198,7 +198,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(
             policy.windowIDsNeedingChange(
                 in: staleUnzoomedTopology,
-                includingMatchingWindows: true
+                zoomingWindowIDs: [1],
+                afterSettingChange: true
             ),
             [1]
         )
