@@ -93,6 +93,9 @@ struct TmuxZoomCommands: Sendable {
         let readsBack: Bool
         /// The line claims the zoom it may create for this owner.
         let claims: Bool
+        /// Whether the window is zoomed once tmux has run the line; nil for a
+        /// line that leaves its zoom as it is.
+        let endsZoomed: Bool?
     }
 
     enum SplitForm: Sendable {
@@ -110,39 +113,51 @@ struct TmuxZoomCommands: Sendable {
         return group(
             windowID,
             claiming: true,
-            ["resize-pane -t \(target)", "resize-pane -Z -t \(target)"]
+            ["resize-pane -t \(target)", "resize-pane -Z -t \(target)"],
+            endsZoomed: true
         )
     }
 
     func ensureUnzoomed(windowID: TmuxWindowID) -> Group {
-        group(windowID, ["resize-pane -t @\(windowID.rawValue)"], forgetting: true)
+        group(windowID, ["resize-pane -t @\(windowID.rawValue)"], forgetting: true, endsZoomed: false)
     }
 
     /// Asks tmux to drop this owner's mark if its zoom is gone; nil without an
     /// owner, which keeps no marks.
     func forgetAndReadback(windowID: TmuxWindowID) -> Group? {
         guard owner != nil else { return nil }
-        return group(windowID, [], forgetting: true)
+        return group(windowID, [], forgetting: true, endsZoomed: nil)
     }
 
     func split(_ splitCommand: String, windowID: TmuxWindowID, form: SplitForm) -> Group {
         let rezoom = ["resize-pane -t @\(windowID.rawValue)", "resize-pane -Z -t @\(windowID.rawValue)"]
         switch form {
         case .keepingZoom:
-            return Group(windowID: windowID, commands: [splitCommand] + rezoom, readsBack: false, claims: false)
+            return Group(
+                windowID: windowID,
+                commands: [splitCommand] + rezoom,
+                readsBack: false,
+                claims: false,
+                endsZoomed: true
+            )
         case .creatingZoom:
-            return group(windowID, leading: [splitCommand], claiming: true, rezoom)
+            return group(windowID, leading: [splitCommand], claiming: true, rezoom, endsZoomed: true)
         }
     }
 
     /// Closes a pane of a zoomed window and zooms the pane tmux makes active,
     /// if any is left; with one left the zoom is gone and its mark forgotten.
-    func closePaneOfZoomedWindow(paneID: TmuxPaneID, windowID: TmuxWindowID) -> Group {
+    func closePaneOfZoomedWindow(
+        paneID: TmuxPaneID,
+        windowID: TmuxWindowID,
+        leavesSeveralPanes: Bool
+    ) -> Group {
         group(
             windowID,
             leading: ["kill-pane -t %\(paneID.rawValue)"],
             ["resize-pane -t @\(windowID.rawValue)", "resize-pane -Z -t @\(windowID.rawValue)"],
-            forgetting: true
+            forgetting: true,
+            endsZoomed: leavesSeveralPanes
         )
     }
 
@@ -151,10 +166,17 @@ struct TmuxZoomCommands: Sendable {
         leading: [String] = [],
         claiming: Bool = false,
         _ commands: [String],
-        forgetting: Bool = false
+        forgetting: Bool = false,
+        endsZoomed: Bool?
     ) -> Group {
         guard let owner else {
-            return Group(windowID: windowID, commands: leading + commands, readsBack: false, claims: false)
+            return Group(
+                windowID: windowID,
+                commands: leading + commands,
+                readsBack: false,
+                claims: false,
+                endsZoomed: endsZoomed
+            )
         }
         return Group(
             windowID: windowID,
@@ -164,7 +186,8 @@ struct TmuxZoomCommands: Sendable {
                 + (forgetting ? [owner.forgetCommand(windowID: windowID)] : [])
                 + [owner.readbackCommand(windowID: windowID)],
             readsBack: true,
-            claims: claiming
+            claims: claiming,
+            endsZoomed: endsZoomed
         )
     }
 }

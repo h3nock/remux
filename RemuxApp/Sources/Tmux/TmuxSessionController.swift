@@ -207,6 +207,9 @@ final class TmuxSessionController: @unchecked Sendable {
         let lastToken: UInt64
         /// A line still unanswered for the window may have claimed its zoom.
         let mayClaim: Bool
+        /// Whether the window is zoomed once tmux has run every line sent for
+        /// it, if one of them sets its zoom.
+        let endsZoomed: Bool?
     }
 
     let queue: DispatchQueue
@@ -1008,7 +1011,7 @@ final class TmuxSessionController: @unchecked Sendable {
         splitting paneID: TmuxPaneID,
         of window: WindowInfo
     ) -> TmuxZoomCommands.SplitForm? {
-        if window.zoomed { return .keepingZoom }
+        if zoomAfterSentLines(of: window) { return .keepingZoom }
         let splitsOnlyPane = topology?.panes.contains {
             $0.windowID == window.id && $0.id != paneID
         } == false
@@ -1283,7 +1286,7 @@ final class TmuxSessionController: @unchecked Sendable {
         }
         _ = admitActiveViewportClaimIfNeeded()
 
-        guard window.zoomed else {
+        guard zoomAfterSentLines(of: window) else {
             submitCommandOnWriter(
                 command: "kill-pane -t %\(paneID.rawValue)",
                 request: .closePane,
@@ -1294,8 +1297,13 @@ final class TmuxSessionController: @unchecked Sendable {
         // tmux unzooms a window to close one of its panes, so the line zooms
         // it again. Only the kill is the user's request: if it closes the
         // window, what follows has nothing to act on and fails unseen.
+        let paneCount = topology.panes.lazy.filter { $0.windowID == window.id }.count
         guard admitZoomGroup(
-            zoomCommands.closePaneOfZoomedWindow(paneID: paneID, windowID: window.id),
+            zoomCommands.closePaneOfZoomedWindow(
+                paneID: paneID,
+                windowID: window.id,
+                leavesSeveralPanes: paneCount > 2
+            ),
             request: .closePane,
             completion: { index in
                 index == 0 ? .action(.closePane, topologyRevisionAtSubmission: topologyRevision) : nil
@@ -1653,11 +1661,20 @@ final class TmuxSessionController: @unchecked Sendable {
             (command, index == readbackIndex ? .zoomReadback(group.windowID) : completion(index))
         }
         guard let lastToken = admitCommandGroupOnWriter(members, request: request) else { return false }
+        let earlier = zoomsInFlight[group.windowID]
         zoomsInFlight[group.windowID] = ZoomInFlight(
             lastToken: lastToken,
-            mayClaim: group.claims || zoomsInFlight[group.windowID]?.mayClaim == true
+            mayClaim: group.claims || earlier?.mayClaim == true,
+            endsZoomed: group.endsZoomed ?? earlier?.endsZoomed
         )
         return true
+    }
+
+    /// The zoom a window has once tmux has run what was already sent for it:
+    /// a split or close decided from the topology alone would undo a zoom
+    /// tmux runs first.
+    private func zoomAfterSentLines(of window: WindowInfo) -> Bool {
+        zoomsInFlight[window.id]?.endsZoomed ?? window.zoomed
     }
 
     /// Admits one command line, with what each member's reply completes;

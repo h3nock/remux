@@ -83,7 +83,7 @@ final class TmuxZoomOwnershipTests: XCTestCase {
             ["split-window -h -t %0", "resize-pane -t @0", "resize-pane -Z -t @0"]
         )
         XCTAssertEqual(
-            commands.closePaneOfZoomedWindow(paneID: 1, windowID: 0).commands,
+            commands.closePaneOfZoomedWindow(paneID: 1, windowID: 0, leavesSeveralPanes: true).commands,
             ["kill-pane -t %1", "resize-pane -t @0", "resize-pane -Z -t @0"]
         )
     }
@@ -565,6 +565,131 @@ final class TmuxZoomOwnershipTests: XCTestCase {
         await t.tearDown()
     }
 
+    // MARK: Splits and closes while a zoom line is unanswered
+
+    func testClosingAPaneWhileTheDefaultsZoomIsUnansweredKeepsTheWindowZoomed() async throws {
+        for version in Self.versions {
+            let t = try await ZoomTranscript.attach(
+                version: version,
+                zoomsByDefault: true,
+                windows: Self.window(0, active: true, pane: 0, layout: Self.three(0, 1, 2))
+            )
+            XCTAssertEqual(Self.zoomLines(t.sent()), [Self.ensureZoomed(0), Self.marksQuery], version)
+
+            // The topology shows the window unzoomed; tmux zooms it first.
+            t.controller.requestClosePane(paneID: 1)
+            await t.settle()
+            XCTAssertEqual(Self.zoomLines(t.sent()), [Self.closeOfZoomedWindow(1, in: 0)], version)
+
+            await t.answer { command in
+                command == Self.readback(0) || command == Self.marksQuery
+                    ? .ok("@0 1 \(Self.ownerID)\n")
+                    : .ok("")
+            }
+            await t.receive(Self.layoutChange(0, Self.split(0, 2), zoomedOn: 0))
+            XCTAssertEqual(Self.zoomLines(t.sent()), [], version)
+            t.adapter.releaseZoomOwnership()
+            await t.settle()
+            XCTAssertEqual(Self.zoomLines(t.sent()), [Self.ensureUnzoomed(0)], version)
+            await t.tearDown()
+        }
+    }
+
+    func testSplittingWhileTheDefaultsZoomIsUnansweredZoomsTheNewPane() async throws {
+        for version in Self.versions {
+            let t = try await ZoomTranscript.attach(
+                version: version,
+                zoomsByDefault: true,
+                windows: Self.window(0, active: true, pane: 0, layout: Self.split(0, 1))
+            )
+            XCTAssertEqual(Self.zoomLines(t.sent()), [Self.ensureZoomed(0), Self.marksQuery], version)
+
+            t.controller.requestSplit(paneID: 0, direction: .right)
+            await t.settle()
+            XCTAssertEqual(
+                Self.zoomLines(t.sent()),
+                ["split-window -h -t %0 ; resize-pane -t @0 ; resize-pane -Z -t @0"],
+                version
+            )
+
+            await t.answer { command in
+                command == Self.readback(0) || command == Self.marksQuery
+                    ? .ok("@0 1 \(Self.ownerID)\n")
+                    : .ok("")
+            }
+            await t.receive(Self.layoutChange(0, Self.three(0, 3, 1), zoomedOn: 3))
+            XCTAssertEqual(Self.zoomLines(t.sent()), [], version)
+            t.adapter.releaseZoomOwnership()
+            await t.settle()
+            XCTAssertEqual(Self.zoomLines(t.sent()), [Self.ensureUnzoomed(0)], version)
+            await t.tearDown()
+        }
+    }
+
+    func testAnUnansweredUnzoomMakesTheNextSplitAndClosePlain() async throws {
+        for version in Self.versions {
+            for closes in [true, false] {
+                let t = try await ZoomTranscript.attach(
+                    version: version,
+                    zoomsByDefault: true,
+                    windows: Self.window(0, active: true, pane: 0, layout: Self.three(0, 1, 2), zoomed: true)
+                )
+                XCTAssertEqual(Self.zoomLines(t.sent()), [Self.marksQuery], version)
+                await t.answer()
+                t.adapter.setZoomMultipaneWindowsByDefault(false)
+                await t.settle()
+                XCTAssertEqual(Self.zoomLines(t.sent()), [Self.ensureUnzoomed(0)], version)
+
+                // The topology still shows the window zoomed; tmux unzooms it first.
+                if closes {
+                    t.controller.requestClosePane(paneID: 1)
+                } else {
+                    t.controller.requestSplit(paneID: 0, direction: .right)
+                }
+                await t.settle()
+                XCTAssertEqual(
+                    Self.zoomLines(t.sent()),
+                    [closes ? "kill-pane -t %1" : "split-window -h -t %0"],
+                    version
+                )
+                await t.tearDown()
+            }
+        }
+    }
+
+    func testAForgetInFlightLeavesTheSplitAndCloseToTheTopology() async throws {
+        for version in Self.versions {
+            for rezoomed in [false, true] {
+                for closes in [true, false] {
+                    let label = "\(version), rezoomed: \(rezoomed), closes: \(closes)"
+                    let t = try await Self.attachWithOwnedHiddenZoom(version: version)
+                    await t.receive(Self.layoutChange(1, Self.split(1, 2)))
+                    XCTAssertEqual(Self.zoomLines(t.sent()), [Self.forgetAndReadback(1)], label)
+                    if rezoomed {
+                        // Another client zooms the window again while the forget is unanswered.
+                        await t.receive(Self.layoutChange(1, Self.split(1, 2), zoomedOn: 1))
+                        XCTAssertEqual(Self.zoomLines(t.sent()), [], label)
+                    }
+
+                    if closes {
+                        t.controller.requestClosePane(paneID: 2)
+                    } else {
+                        t.controller.requestSplit(paneID: 1, direction: .right)
+                    }
+                    await t.settle()
+                    let expected = switch (closes, rezoomed) {
+                    case (true, true): Self.closeOfZoomedWindow(2, in: 1)
+                    case (true, false): "kill-pane -t %2"
+                    case (false, true): "split-window -h -t %1 ; resize-pane -t @1 ; resize-pane -Z -t @1"
+                    case (false, false): "split-window -h -t %1"
+                    }
+                    XCTAssertEqual(Self.zoomLines(t.sent()), [expected], label)
+                    await t.tearDown()
+                }
+            }
+        }
+    }
+
     // MARK: Case 10: the user zooms the focused pane
 
     func testTheUsersZoomOnAndOff() async throws {
@@ -778,6 +903,11 @@ final class TmuxZoomOwnershipTests: XCTestCase {
 
     private static func forgetAndReadback(_ window: Int) -> String {
         "\(forget(window)) ; \(readback(window))"
+    }
+
+    private static func closeOfZoomedWindow(_ pane: Int, in window: Int) -> String {
+        "kill-pane -t %\(pane) ; resize-pane -t @\(window) ; resize-pane -Z -t @\(window) ; "
+            + "\(forget(window)) ; \(readback(window))"
     }
 
     /// Answers each window's readback with `lines`, every other command with
