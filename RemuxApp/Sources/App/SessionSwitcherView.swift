@@ -430,12 +430,16 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         .buttonStyle(.plain)
         .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.active-session")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
+            // Red, but not a destructive action: the session keeps running on its server, and a destructive
+            // action has the list take the swiped row out by itself, one row, while a Herdr session leaves
+            // with its workspaces' rows as well and the list then stops the app over the count.
+            Button {
                 Haptic.warning()
                 onDisconnectSession(session.id)
             } label: {
                 Label("Disconnect", systemImage: "bolt.slash")
             }
+            .tint(.red)
             .accessibilityIdentifier("terminal.sessions.disconnect")
         }
         .accessibilityAction(named: Text("Disconnect from Remux")) {

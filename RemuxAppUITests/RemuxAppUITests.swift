@@ -2655,6 +2655,42 @@ final class RemuxAppUITests: XCTestCase {
         infra.tap()
     }
 
+    /// Disconnecting a Herdr session from its row in the Sessions sheet while the row lists the session's
+    /// workspaces takes all of those rows away at once. The app stays up, and with no other session open it
+    /// shows Home, which offers the session again.
+    func testLiveHerdrDisconnectFromSessionsWithWorkspacesShownWhenConfigured() throws {
+        let configuration = try launchLiveHerdrApp()
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+
+        openSessionSwitcherFromTerminal()
+        let sessionsSheet = app.otherElements["terminal.sessions.sheet"]
+        XCTAssertTrue(sessionsSheet.waitForExistence(timeout: 5))
+        let activeRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.active-session").firstMatch
+        XCTAssertTrue(activeRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(identifier: "terminal.sessions.herdr-workspace").firstMatch.waitForExistence(timeout: 10),
+            "The session's row didn't list its workspaces."
+        )
+
+        activeRow.swipeLeft()
+        let disconnect = app.buttons["terminal.sessions.disconnect"]
+        XCTAssertTrue(disconnect.waitForExistence(timeout: 5))
+        captureLiveHerdrStep("disconnect-offered", in: configuration)
+        disconnect.tap()
+
+        XCTAssertTrue(sessionsSheet.waitForNonExistence(timeout: 10), "Sessions stayed open with no session left.")
+        XCTAssertTrue(
+            app.descendants(matching: .any)["library.list"].waitForExistence(timeout: 10),
+            "Home didn't show after the only session was disconnected."
+        )
+        XCTAssertEqual(app.state, .runningForeground, "The app stopped when the session was disconnected.")
+        XCTAssertFalse(app.buttons["library.active-session.show"].exists, "Home still lists the session as open.")
+        captureLiveHerdrStep("disconnected-home", in: configuration)
+    }
+
     /// The session `locked` that Herdr can't reach, on the tabs test's server, saved as the server's latest
     /// session: the server row's Resume Latest is disabled, as the session's own row is, and doesn't open it,
     /// and its swipe actions leave out Resume.
