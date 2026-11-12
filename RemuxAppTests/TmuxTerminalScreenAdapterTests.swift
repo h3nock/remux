@@ -713,10 +713,11 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(adapter.sendPasteToFocusedSurface("one\ntwo"), .accepted)
         await drain(session.controller)
         XCTAssertEqual(written.takeCommands(namingPane: 0), [
-            "send-keys -X -t %0 cancel",
+            "copy-mode -q -t %0",
             "set-buffer -b BUFFER -- \"one\\012two\"",
-            "list-panes -t %0",
             "paste-buffer -p -b BUFFER -t %0",
+            "paste-buffer -p -b BUFFER -t %1",
+            "delete-buffer -b BUFFER",
         ])
 
         // The composer captured the first pane. The focus moves to the second between the
@@ -729,10 +730,11 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(written.takeCommands(namingPane: 0), [
-            "send-keys -X -t %0 cancel",
+            "copy-mode -q -t %0",
             "set-buffer -b BUFFER -- \"three\\012four\"",
-            "list-panes -t %0",
             "paste-buffer -p -b BUFFER -t %0",
+            "paste-buffer -p -b BUFFER -t %1",
+            "delete-buffer -b BUFFER",
         ])
 
         _ = adapter.focusPane(secondSurfaceID)
@@ -836,9 +838,9 @@ private final class PasteWriteRecorder: @unchecked Sendable {
             .split(separator: "\n")
             .filter { $0.contains("-t %\(pane)") || $0.contains("-buffer -b ") }
             .map { line in
-                line.hasPrefix("list-panes -t %\(pane) -F '#{pane_id} #{==:")
-                    ? "list-panes -t %\(pane)"
-                    : String(line.replacing(#/remux-paste-[0-9a-f]{16}-[0-9]+/#, with: "BUFFER"))
+                // tmux is asked to check each pane before it pastes into it; what is kept is the paste.
+                let command = line.firstMatch(of: #/ '(paste-buffer [^']*)' /#).map { $0.output.1 } ?? line
+                return String(command.replacing(#/remux-paste-[0-9a-f]{16}/#, with: "BUFFER"))
             }
     }
 }

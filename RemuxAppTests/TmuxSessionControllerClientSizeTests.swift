@@ -1253,7 +1253,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     }
 
     /// A paste goes through a tmux buffer of this client's own. tmux answers every command of it,
-    /// and only the paste's own reply completes it: tmux has then written the text to the pane.
+    /// and only the paste's own reply completes it: tmux has then run the paste.
     func testPasteGoesThroughATmuxBufferAndCompletesWithThePaste() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
@@ -1267,46 +1267,35 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             completion: { completions.append($0) }
         ))
         await drain(harness.controller)
-        var commands = harness.recorder.takeStrings().joined().split(separator: "\n").map(String.init)
+        let commands = harness.recorder.takeStrings().joined().split(separator: "\n").map(String.init)
         XCTAssertEqual(commands.count, 4)
         let buffer = try XCTUnwrap(commands.dropFirst().first?.split(separator: " ").dropFirst(2).first.map(String.init))
         XCTAssertTrue(buffer.hasPrefix("remux-paste-"), buffer)
-        // The harness's tmux is 3.1, which can only cancel copy mode.
-        XCTAssertEqual(commands.removeFirst(), "send-keys -X -t %0 cancel")
-        XCTAssertEqual(commands.removeFirst(), "set-buffer -b \(buffer) -- \"paste \\042\\044HOME\\042\\012🙂\"")
-        XCTAssertTrue(commands.removeFirst().hasPrefix("list-panes -t %0 -F '#{pane_id} #{==:#{pane_id},%0} "))
-        XCTAssertEqual(commands, ["paste-buffer -p -b \(buffer) -t %0"])
+        XCTAssertEqual(commands[0], "copy-mode -q -t %0")
+        XCTAssertEqual(commands[1], "set-buffer -b \(buffer) -- \"paste \\042\\044HOME\\042\\012🙂\"")
+        XCTAssertTrue(commands[2].contains(" 'paste-buffer -p -b \(buffer) -t %0' "), commands[2])
+        XCTAssertEqual(commands[3], "delete-buffer -b \(buffer)")
 
-        // The pane was in no mode, which tmux 3.1 answers with an error; the buffer is set.
+        // Leaving the mode and setting the buffer are answered first.
         var commandNumber = harness.nextCommandNumber
-        harness.controller.pump(Data((
-            errorBlock(commandNumber: &commandNumber, body: "not in a mode")
-                + responseBlock(commandNumber: &commandNumber)
-        ).utf8))
+        harness.controller.pump(Data(responseBlocks(count: 2, commandNumber: &commandNumber).utf8))
         await drain(harness.controller)
         XCTAssertEqual(completions.results, [])
-        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
-
-        // The query: pane 0 is synchronized, and tmux would copy its input to pane 3, not to pane 4.
-        harness.controller.pump(Data(
-            responseBlock(commandNumber: &commandNumber, body: "%0 1 1 1\n%3 0 1 1\n%4 0 0 1\n").utf8
-        ))
-        await drain(harness.controller)
-        XCTAssertEqual(completions.results, [], "the query's reply is not the paste's")
-        XCTAssertEqual(harness.recorder.takeStrings().joined(), "paste-buffer -p -b \(buffer) -t %3\ndelete-buffer -b \(buffer)\n")
 
         harness.controller.pump(Data(responseBlock(commandNumber: &commandNumber).utf8))
         await drain(harness.controller)
         XCTAssertEqual(completions.results, [true])
 
-        harness.controller.pump(Data(responseBlocks(count: 2, commandNumber: &commandNumber).utf8))
+        // Deleting the buffer completes nothing more.
+        harness.controller.pump(Data(responseBlock(commandNumber: &commandNumber).utf8))
         await drain(harness.controller)
         XCTAssertEqual(completions.results, [true])
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
     }
 
-    /// The pane can be gone by the time tmux runs the paste. The paste fails, the failure is
-    /// reported once, and what tmux answers next still belongs to the next command.
-    func testPasteIntoAPaneTmuxNoLongerHasFailsOnce() async throws {
+    /// When tmux refuses a paste, the paste fails, the failure is reported once, and what tmux
+    /// answers next still belongs to the next command.
+    func testPasteTmuxRefusesFailsOnce() async throws {
         let failures = RequestFailureRecorder()
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
@@ -1334,20 +1323,16 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         _ = harness.recorder.takeStrings()
 
-        // tmux refuses each command that names the pane: leaving the mode, the query, the paste.
+        // Leaving the mode, setting the buffer, the paste (refused), deleting the buffer, the input.
         var commandNumber = harness.nextCommandNumber
-        let gone = "can't find pane: %0"
         harness.controller.pump(Data((
-            errorBlock(commandNumber: &commandNumber, body: gone)
-                + responseBlock(commandNumber: &commandNumber)
-                + errorBlock(commandNumber: &commandNumber, body: gone)
-                + errorBlock(commandNumber: &commandNumber, body: gone)
+            responseBlocks(count: 2, commandNumber: &commandNumber)
+                + errorBlock(commandNumber: &commandNumber, body: "refused")
                 + responseBlocks(count: 2, commandNumber: &commandNumber)
         ).utf8))
         await fulfillment(of: [tracked], timeout: 1)
 
         XCTAssertEqual(completions.results, [false])
-        XCTAssertTrue(harness.recorder.takeStrings().joined().hasPrefix("delete-buffer -b remux-paste-"))
         try await waitUntil("the failed paste was not reported") {
             await failures.requests() == [.sendInput]
         }
