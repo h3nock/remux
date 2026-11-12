@@ -495,13 +495,29 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         if let preflight = preflightFocusedInput() { return preflight }
-        return focusedManagedSurface?.sendPaste(text) ?? .noFocusedSurface
+        return sendPaste(text, toPane: activeManagedPaneID)
     }
 
     func sendPaste(_ text: String, to surfaceID: UUID) -> FocusedTerminalInputSubmissionResult {
         guard isTransportWritable else { return .transportUnavailable }
-        guard let managed = managedSurface(for: surfaceID) else { return .noFocusedSurface }
-        return managed.sendPaste(text)
+        return sendPaste(text, toPane: identities.paneID(for: surfaceID))
+    }
+
+    /// tmux does the pasting, since it knows whether the pane's program asked
+    /// for bracketed paste. Like typing, a paste returns the pane's viewport
+    /// to the bottom.
+    private func sendPaste(
+        _ text: String,
+        toPane paneID: TmuxPaneID?
+    ) -> FocusedTerminalInputSubmissionResult {
+        guard let paneID, let controller, let managed = managedSurfacesByPaneID[paneID] else {
+            return .noFocusedSurface
+        }
+        guard !text.isEmpty else { return .empty }
+        guard managed.rendererIsAvailable else { return .surfaceRejected }
+        _ = controller.sendPaste(paneID: paneID, text) { _ in }
+        managed.scrollViewportToBottom()
+        return .accepted
     }
 
     func sendPasteAwaitingCommandCompletion(_ text: String, to surfaceID: UUID) async -> Bool {

@@ -1002,7 +1002,7 @@ final class TmuxZoomOwnershipTests: XCTestCase {
 
     /// One line of the client's pane-state scan for a 44-row pane at the prompt.
     private static func paneState(_ id: Int, width: Int) -> String {
-        "%\(id);\(width);44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/tmp\n"
+        "%\(id);\(width);44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;0;0;43;8,16;zsh;/tmp\n"
     }
 
     private static func policyTopology(zoomed: Bool) -> TmuxSessionController.TopologySnapshot {

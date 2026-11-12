@@ -5,8 +5,9 @@ extension TmuxSessionController.RetainedPaneTerminal: RetainedGhosttyTerminal {}
 
 /// One tmux pane's renderer and input path. The renderer owns the retained
 /// pane terminal and its native lifetime; this type adds what is tmux's: the
-/// controller fence and input writes, including writes awaited until tmux
-/// answers the send-keys command that carries them.
+/// controller fence, input writes, including writes awaited until tmux
+/// answers the send-keys command that carries them, and pastes, which tmux
+/// writes to the pane itself.
 @MainActor
 final class TmuxPaneSurface: TerminalPaneInputSink {
     let paneID: TmuxPaneID
@@ -77,31 +78,20 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
     }
 
     func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool {
-        guard !text.isEmpty else { return false }
-        return await performInputAwaitingCommandCompletion(transport: .literal) {
-            $0.sendPaste(text)
+        await withCheckedContinuation { continuation in
+            if !binding.sendPaste(text, completion: { continuation.resume(returning: $0) }) {
+                continuation.resume(returning: false)
+            }
         }
     }
 
     func sendKeyEventAwaitingCommandCompletion(
         _ event: GhosttySurfaceKeyEvent
     ) async -> Bool {
-        await performInputAwaitingCommandCompletion(transport: .exact) {
-            $0.sendKeyEvent(event)
-        }
-    }
-
-    private func performInputAwaitingCommandCompletion(
-        transport: RendererBinding.TrackedWriteTransport,
-        _ operation: (GhosttyKitControlSurface) -> Bool
-    ) async -> Bool {
         guard let control = renderer.inputControlSurface else { return false }
         return await withCheckedContinuation { continuation in
-            binding.performTrackedWrite(
-                transport: transport,
-                completion: { continuation.resume(returning: $0) }
-            ) {
-                operation(control)
+            binding.performTrackedWrite(completion: { continuation.resume(returning: $0) }) {
+                control.sendKeyEvent(event)
             }
         }
     }
@@ -110,19 +100,9 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
 /// The controller fence and input writer for one tmux pane's renderers.
 @MainActor
 private final class RendererBinding: TerminalPaneRendererFence {
-    enum TrackedWriteTransport {
-        case exact
-        case literal
-    }
-
-    private struct TrackedWrite {
-        let transport: TrackedWriteTransport
-        let completion: @Sendable (Bool) -> Void
-    }
-
     private let controller: TmuxSessionController
     private let paneID: TmuxPaneID
-    private var trackedWrite: TrackedWrite?
+    private var trackedWriteCompletion: (@Sendable (Bool) -> Void)?
 
     init(controller: TmuxSessionController, paneID: TmuxPaneID) {
         self.controller = controller
@@ -149,32 +129,33 @@ private final class RendererBinding: TerminalPaneRendererFence {
     /// tracked write armed by `performTrackedWrite` receives exactly the bytes
     /// its operation encodes.
     func write(_ data: Data) -> Bool {
-        guard let trackedWrite else {
+        guard let completion = trackedWriteCompletion else {
             return controller.sendInput(paneID: paneID, data)
         }
-        self.trackedWrite = nil
-        let admitted = switch trackedWrite.transport {
-        case .exact:
-            controller.sendTrackedInput(paneID: paneID, data, completion: trackedWrite.completion)
-        case .literal:
-            controller.sendTrackedLiteralInput(paneID: paneID, data, completion: trackedWrite.completion)
-        }
+        trackedWriteCompletion = nil
+        let admitted = controller.sendTrackedInput(paneID: paneID, data, completion: completion)
         if !admitted {
-            trackedWrite.completion(false)
+            completion(false)
         }
         return admitted
     }
 
     func performTrackedWrite(
-        transport: TrackedWriteTransport,
         completion: @escaping @Sendable (Bool) -> Void,
         _ operation: () -> Bool
     ) {
-        precondition(trackedWrite == nil)
-        trackedWrite = TrackedWrite(transport: transport, completion: completion)
+        precondition(trackedWriteCompletion == nil)
+        trackedWriteCompletion = completion
         _ = operation()
-        guard trackedWrite != nil else { return }
-        trackedWrite = nil
+        guard trackedWriteCompletion != nil else { return }
+        trackedWriteCompletion = nil
         completion(false)
+    }
+
+    /// A paste doesn't pass through the pane's terminal: tmux knows whether
+    /// the pane's program asked for bracketed paste, and the terminal here
+    /// knows only what the program has said since this client attached.
+    func sendPaste(_ text: String, completion: @escaping @Sendable (Bool) -> Void) -> Bool {
+        controller.sendPaste(paneID: paneID, text, completion: completion)
     }
 }

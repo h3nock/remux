@@ -861,77 +861,70 @@ final class TmuxSessionController: @unchecked Sendable {
         _ bytes: Data,
         completion: @escaping @Sendable (Bool) -> Void
     ) -> Bool {
-        sendTrackedInput(
-            paneID: paneID,
-            bytes,
-            transport: .exact,
-            completion: completion
-        )
-    }
-
-    func sendTrackedLiteralInput(
-        paneID: TmuxPaneID,
-        _ bytes: Data,
-        completion: @escaping @Sendable (Bool) -> Void
-    ) -> Bool {
-        sendTrackedInput(
-            paneID: paneID,
-            bytes,
-            transport: .literal,
-            completion: completion
-        )
-    }
-
-    private enum TrackedInputTransport {
-        case exact
-        case literal
-    }
-
-    private func sendTrackedInput(
-        paneID: TmuxPaneID,
-        _ bytes: Data,
-        transport: TrackedInputTransport,
-        completion: @escaping @Sendable (Bool) -> Void
-    ) -> Bool {
         guard !bytes.isEmpty else { return false }
         queue.async { [self, bytes] in
-            guard let client, outboundSink != nil, !shuttingDown else {
-                reportRequestFailure(.sendInput)
-                completion(false)
-                return
-            }
-            _ = admitActiveViewportClaimIfNeeded()
-            var token: UInt64 = 0
-            let result = bytes.withUnsafeBytes { buffer in
-                let pointer = buffer.bindMemory(to: UInt8.self).baseAddress
-                return switch transport {
-                case .exact:
+            admitTrackedInputOnWriter(completion: completion) { client, token in
+                bytes.withUnsafeBytes { buffer in
                     ghostty_tmux_client_send_pane_input_tracked(
                         client,
                         paneID.rawValue,
-                        pointer,
+                        buffer.bindMemory(to: UInt8.self).baseAddress,
                         buffer.count,
-                        &token
-                    )
-                case .literal:
-                    ghostty_tmux_client_send_pane_literal_input_tracked(
-                        client,
-                        paneID.rawValue,
-                        pointer,
-                        buffer.count,
-                        &token
+                        token
                     )
                 }
             }
-            guard result == GHOSTTY_TMUX_RESULT_OK else {
-                reportImmediateFailure(result, request: .sendInput)
-                completion(false)
-                return
-            }
-            requestsByToken[token] = .trackedInput(completion)
-            _ = drainOutbound()
         }
         return true
+    }
+
+    /// Pastes text into a pane the way tmux pastes a buffer: tmux, which
+    /// knows the pane's modes, wraps it in a bracketed paste when the pane's
+    /// program asked for one. Completes once tmux has written the text to
+    /// the pane (or the session can no longer do so).
+    func sendPaste(
+        paneID: TmuxPaneID,
+        _ text: String,
+        completion: @escaping @Sendable (Bool) -> Void
+    ) -> Bool {
+        guard !text.isEmpty else { return false }
+        queue.async { [self] in
+            admitTrackedInputOnWriter(completion: completion) { client, token in
+                var text = text
+                return text.withUTF8 { buffer in
+                    ghostty_tmux_client_paste_pane(
+                        client,
+                        paneID.rawValue,
+                        buffer.baseAddress,
+                        buffer.count,
+                        token
+                    )
+                }
+            }
+        }
+        return true
+    }
+
+    private func admitTrackedInputOnWriter(
+        completion: @escaping @Sendable (Bool) -> Void,
+        _ admit: (ghostty_tmux_client_t, UnsafeMutablePointer<UInt64>) -> ghostty_tmux_result_e
+    ) {
+        preconditionOnWriterQueue()
+        guard let client, outboundSink != nil, !shuttingDown else {
+            reportRequestFailure(.sendInput)
+            completion(false)
+            return
+        }
+        _ = admitActiveViewportClaimIfNeeded()
+        var token: UInt64 = 0
+        let result = admit(client, &token)
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            reportImmediateFailure(result, request: .sendInput)
+            completion(false)
+            return
+        }
+        requestsByToken[token] = .trackedInput(completion)
+        _ = drainOutbound()
     }
 
     func setClientSize(

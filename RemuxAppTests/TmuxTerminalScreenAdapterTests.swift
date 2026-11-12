@@ -655,6 +655,112 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
+    /// A clipboard paste and the composer's paste each reach tmux as a paste through a buffer, for
+    /// the pane they were sent to. The app adds no bracket and converts no line end: tmux, which
+    /// knows what the pane's program asked for, does both. The composer's paste and its Enter go to
+    /// the pane the composer captured, though the focus moves between them.
+    func testPastesReachTmuxAsBufferPastesForTheirPane() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = TmuxTerminalSession(
+            app: runtime.appHandleForTesting,
+            transport: DeterministicTmuxControlTransport(chunks: []),
+            baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
+            paneViewTheme: { .remuxDark }
+        )
+        let written = PasteWriteRecorder()
+        session.controller.setOutboundSink { written.append($0) }
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _, _ in },
+            viewportStabilityHandler: { _ in }
+        )
+        let measurement = try XCTUnwrap(runtime.measureTmuxViewportLayout(
+            size: CGSize(width: 390, height: 600), scale: UIScreen.main.scale
+        ))
+        session.updateViewportMeasurement(measurement)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.controller.start(initialSize: .init(cols: 83, rows: 44)) {
+                continuation.resume(with: $0)
+            }
+        }
+        session.controller.pump(Data("%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n".utf8))
+        await drain(session.controller)
+        let layout = "607b,83x44,0,0[83x22,0,0,0,83x21,0,23,1]"
+        session.controller.pump(Data((
+            "%begin 2 2 1\n3.1\n%end 2 2 1\n%begin 3 3 1\n%end 3 3 1\n"
+            + "%begin 4 4 1\n$42 @0 1 %0 83 44 \(layout) \(layout) test\n%end 4 4 1\n"
+        ).utf8))
+        await drain(session.controller)
+        let hydration = (5...13).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
+        session.controller.pump(Data(hydration.utf8))
+        for _ in 0..<3 { await drain(session.controller) }
+        let firstPane = try XCTUnwrap(session.surfacesByPaneID[0])
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        viewController.view.addSubview(firstPane.renderer.view)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        for _ in 0..<100 where firstPane.renderer.presentation != .ready {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(adapter.terminalInteractionProjection.isInputAvailable)
+        await drain(session.controller)
+        _ = written.takeCommands(namingPane: 0)
+
+        XCTAssertEqual(adapter.sendPasteToFocusedSurface(""), .empty)
+        XCTAssertEqual(adapter.sendPasteToFocusedSurface("one\ntwo"), .accepted)
+        await drain(session.controller)
+        XCTAssertEqual(written.takeCommands(namingPane: 0), [
+            "copy-mode -q -t %0",
+            "set-buffer -b BUFFER -- \"one\\012two\"",
+            "paste-buffer -p -b BUFFER -t %0",
+            "paste-buffer -p -b BUFFER -t %1",
+            "delete-buffer -b BUFFER",
+        ])
+
+        // The composer captured the first pane. The focus moves to the second between the
+        // composer's paste and its Enter; both still go to the first.
+        let panes = adapter.terminalScreenPresentationProjection.viewport.panes
+        let firstSurfaceID = try XCTUnwrap(panes.first(where: { adapter.tmuxPaneID(for: $0.id) == 0 })?.id)
+        let secondSurfaceID = try XCTUnwrap(panes.first(where: { adapter.tmuxPaneID(for: $0.id) == 1 })?.id)
+        let composed = Task { await adapter.sendPasteAwaitingCommandCompletion("three\nfour", to: firstSurfaceID) }
+        for _ in 0..<100 where !written.hasCommands(namingPane: 0) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(written.takeCommands(namingPane: 0), [
+            "copy-mode -q -t %0",
+            "set-buffer -b BUFFER -- \"three\\012four\"",
+            "paste-buffer -p -b BUFFER -t %0",
+            "paste-buffer -p -b BUFFER -t %1",
+            "delete-buffer -b BUFFER",
+        ])
+
+        _ = adapter.focusPane(secondSurfaceID)
+        await drain(session.controller)
+        XCTAssertEqual(adapter.tmuxPaneID(for: try XCTUnwrap(
+            adapter.terminalScreenPresentationProjection.readiness.selectedActiveLeafID
+        )), 1)
+        _ = written.takeCommands(namingPane: 0)
+        let entered = Task {
+            await adapter.sendKeyEventAwaitingCommandCompletion(
+                GhosttySurfaceKeyEvent(action: .press, keyCode: .enter),
+                to: firstSurfaceID
+            )
+        }
+        for _ in 0..<100 where !written.hasCommands(namingPane: 0) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(written.takeCommands(namingPane: 0), ["send-keys -H -t %0 0d"])
+
+        adapter.invalidate()
+        await session.shutdown()
+        let delivered = await (composed.value, entered.value)
+        XCTAssertFalse(delivered.0, "the session ended before tmux answered the paste")
+        XCTAssertFalse(delivered.1, "the session ended before tmux answered the Enter")
+    }
+
     func testSelectedPaneFailureOverridesCommandFailureWithoutAnotherSelectionInheritingIt() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
@@ -703,5 +809,38 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
                 DispatchQueue.main.async { continuation.resume() }
             }
         }
+    }
+}
+
+/// The commands the controller wrote for one pane or through a paste buffer, with this client's own
+/// buffer name replaced by `BUFFER` and a paste's query cut down to its command and target.
+private final class PasteWriteRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var written = Data()
+
+    func append(_ data: Data) {
+        lock.withLock { written.append(data) }
+    }
+
+    func hasCommands(namingPane pane: Int) -> Bool {
+        lock.withLock { !Self.commands(in: written, namingPane: pane).isEmpty }
+    }
+
+    func takeCommands(namingPane pane: Int) -> [String] {
+        lock.withLock {
+            defer { written.removeAll() }
+            return Self.commands(in: written, namingPane: pane)
+        }
+    }
+
+    private static func commands(in written: Data, namingPane pane: Int) -> [String] {
+        String(decoding: written, as: UTF8.self)
+            .split(separator: "\n")
+            .filter { $0.contains("-t %\(pane)") || $0.contains("-buffer -b ") }
+            .map { line in
+                // tmux is asked to check each pane before it pastes into it; what is kept is the paste.
+                let command = line.firstMatch(of: #/ '(paste-buffer [^']*)' /#).map { $0.output.1 } ?? line
+                return String(command.replacing(#/remux-paste-[0-9a-f]{16}/#, with: "BUFFER"))
+            }
     }
 }
