@@ -1252,37 +1252,121 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await fulfillment(of: [completed], timeout: 1)
     }
 
-    func testTrackedLiteralInputUsesOneEscapedTmuxArgument() async throws {
+    /// A paste goes through a tmux buffer of this client's own. tmux answers every command of it,
+    /// and only the paste's own reply completes it: tmux has then written the text to the pane.
+    func testPasteGoesThroughATmuxBufferAndCompletesWithThePaste() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
             expectedPaneCount: 1
         )
-        let completed = expectation(description: "tracked literal input completed")
-        let payload = "\u{1B}[200~paste \"$HOME\"\n🙂\u{1B}[201~"
+        let completions = PasteCompletionRecorder()
 
-        XCTAssertTrue(harness.controller.sendTrackedLiteralInput(
+        XCTAssertTrue(harness.controller.sendPaste(
             paneID: 0,
-            Data(payload.utf8),
+            "paste \"$HOME\"\n🙂",
+            completion: { completions.append($0) }
+        ))
+        await drain(harness.controller)
+        var commands = harness.recorder.takeStrings().joined().split(separator: "\n").map(String.init)
+        XCTAssertEqual(commands.count, 4)
+        let buffer = try XCTUnwrap(commands.dropFirst().first?.split(separator: " ").dropFirst(2).first.map(String.init))
+        XCTAssertTrue(buffer.hasPrefix("remux-paste-"), buffer)
+        // The harness's tmux is 3.1, which can only cancel copy mode.
+        XCTAssertEqual(commands.removeFirst(), "send-keys -X -t %0 cancel")
+        XCTAssertEqual(commands.removeFirst(), "set-buffer -b \(buffer) -- \"paste \\042\\044HOME\\042\\012🙂\"")
+        XCTAssertTrue(commands.removeFirst().hasPrefix("list-panes -t %0 -F '#{pane_id} #{==:#{pane_id},%0} "))
+        XCTAssertEqual(commands, ["paste-buffer -p -b \(buffer) -t %0"])
+
+        // The pane was in no mode, which tmux 3.1 answers with an error; the buffer is set.
+        var commandNumber = harness.nextCommandNumber
+        harness.controller.pump(Data((
+            errorBlock(commandNumber: &commandNumber, body: "not in a mode")
+                + responseBlock(commandNumber: &commandNumber)
+        ).utf8))
+        await drain(harness.controller)
+        XCTAssertEqual(completions.results, [])
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
+
+        // The query: pane 0 is synchronized, and tmux would copy its input to pane 3, not to pane 4.
+        harness.controller.pump(Data(
+            responseBlock(commandNumber: &commandNumber, body: "%0 1 1 1\n%3 0 1 1\n%4 0 0 1\n").utf8
+        ))
+        await drain(harness.controller)
+        XCTAssertEqual(completions.results, [], "the query's reply is not the paste's")
+        XCTAssertEqual(harness.recorder.takeStrings().joined(), "paste-buffer -p -b \(buffer) -t %3\ndelete-buffer -b \(buffer)\n")
+
+        harness.controller.pump(Data(responseBlock(commandNumber: &commandNumber).utf8))
+        await drain(harness.controller)
+        XCTAssertEqual(completions.results, [true])
+
+        harness.controller.pump(Data(responseBlocks(count: 2, commandNumber: &commandNumber).utf8))
+        await drain(harness.controller)
+        XCTAssertEqual(completions.results, [true])
+    }
+
+    /// The pane can be gone by the time tmux runs the paste. The paste fails, the failure is
+    /// reported once, and what tmux answers next still belongs to the next command.
+    func testPasteIntoAPaneTmuxNoLongerHasFailsOnce() async throws {
+        let failures = RequestFailureRecorder()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: .init(onRequestFailed: { request in
+                Task { await failures.append(request) }
+            })
+        )
+        let completions = PasteCompletionRecorder()
+
+        XCTAssertTrue(harness.controller.sendPaste(
+            paneID: 0,
+            "text",
+            completion: { completions.append($0) }
+        ))
+        let tracked = expectation(description: "the input after the paste completed")
+        XCTAssertTrue(harness.controller.sendTrackedInput(
+            paneID: 0,
+            Data([0x0D]),
             completion: { succeeded in
                 XCTAssertTrue(succeeded)
-                completed.fulfill()
+                tracked.fulfill()
             }
         ))
         await drain(harness.controller)
-        XCTAssertEqual(
-            harness.recorder.takeStrings(),
-            [
-                "send-keys -l -t %0 -- \"\\033[200\\176paste \\042\\044HOME"
-                    + "\\042\\012🙂\\033[201\\176\"\n"
-            ]
+        _ = harness.recorder.takeStrings()
+
+        // tmux refuses each command that names the pane: leaving the mode, the query, the paste.
+        var commandNumber = harness.nextCommandNumber
+        let gone = "can't find pane: %0"
+        harness.controller.pump(Data((
+            errorBlock(commandNumber: &commandNumber, body: gone)
+                + responseBlock(commandNumber: &commandNumber)
+                + errorBlock(commandNumber: &commandNumber, body: gone)
+                + errorBlock(commandNumber: &commandNumber, body: gone)
+                + responseBlocks(count: 2, commandNumber: &commandNumber)
+        ).utf8))
+        await fulfillment(of: [tracked], timeout: 1)
+
+        XCTAssertEqual(completions.results, [false])
+        XCTAssertTrue(harness.recorder.takeStrings().joined().hasPrefix("delete-buffer -b remux-paste-"))
+        try await waitUntil("the failed paste was not reported") {
+            await failures.requests() == [.sendInput]
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        let reported = await failures.requests()
+        XCTAssertEqual(reported, [.sendInput], "one failed paste is one failure")
+    }
+
+    func testAnEmptyPasteSendsNothing() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
         )
 
-        let commandNumber = harness.nextCommandNumber
-        harness.controller.pump(Data(
-            ("%begin \(commandNumber) \(commandNumber) 1\n"
-                + "%end \(commandNumber) \(commandNumber) 1\n").utf8
-        ))
-        await fulfillment(of: [completed], timeout: 1)
+        XCTAssertFalse(harness.controller.sendPaste(paneID: 0, "", completion: { _ in
+            XCTFail("an empty paste has nothing to complete")
+        }))
+        await drain(harness.controller)
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
     }
 
     // MARK: Render holds
@@ -1507,7 +1591,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             + "#{cursor_blinking};#{alternate_on};#{alternate_saved_x};#{alternate_saved_y};"
             + "#{insert_flag};#{wrap_flag};#{keypad_flag};#{keypad_cursor_flag};#{origin_flag};"
             + "#{mouse_all_flag};#{mouse_button_flag};#{mouse_standard_flag};#{mouse_utf8_flag};"
-            + "#{mouse_sgr_flag};#{focus_flag};#{bracketed_paste};#{history_size};"
+            + "#{mouse_sgr_flag};#{history_size};"
             + "#{scroll_region_upper};#{scroll_region_lower};#{pane_tabs};"
             + "#{pane_current_command};#{pane_current_path}'"
             + " ; capture-pane -p -e -N -q -S -2000 -E -1 -t %\(paneID)"
@@ -1743,6 +1827,19 @@ private actor RequestFailureRecorder {
 
     func requests() -> [TmuxSessionController.Request] {
         recordedRequests
+    }
+}
+
+private final class PasteCompletionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [Bool] = []
+
+    func append(_ succeeded: Bool) {
+        lock.withLock { recorded.append(succeeded) }
+    }
+
+    var results: [Bool] {
+        lock.withLock { recorded }
     }
 }
 

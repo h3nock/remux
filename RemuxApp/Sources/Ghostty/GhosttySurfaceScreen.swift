@@ -1797,15 +1797,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {
-        guard let surface = model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID) else {
-            return
-        }
-        surface.refreshInteractionState()
-        guard surface.scrollRoute == .viewport else { return }
-        _ = surface.scrollToPosition(
-            row: surface.scrollState.maxRow,
-            cellOffset: 0
-        )
+        model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID)?.scrollViewportToBottom()
     }
 
     private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent) -> Bool {
