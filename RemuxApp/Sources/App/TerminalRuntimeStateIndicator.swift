@@ -27,20 +27,9 @@ struct TerminalRuntimeStateIndicator: View {
         case .reconnecting:
             .orange
         case .connected:
-            Color(uiColor: .remuxConnectedStatus)
+            .green
         case .disconnected:
             .red
-        }
-    }
-}
-
-private extension UIColor {
-    static let remuxConnectedStatus = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.43, green: 0.89, blue: 0.66, alpha: 1.0)
-        default:
-            .systemGreen
         }
     }
 }

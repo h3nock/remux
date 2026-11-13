@@ -654,13 +654,7 @@ private extension View {
 }
 
 enum GhosttyPhoneChromePalette {
-    static let screenBackground = Color(red: 0.18, green: 0.20, blue: 0.24)
-    static let tray = screenBackground
     static let dock = Color(red: 0.15, green: 0.16, blue: 0.20)
-    static let groupSurface = Color(red: 0.14, green: 0.15, blue: 0.19)
-    static let pill = Color(red: 0.23, green: 0.25, blue: 0.30)
-    static let keySurface = Color(red: 0.22, green: 0.24, blue: 0.30)
-    static let keySurfacePressed = Color(red: 0.30, green: 0.32, blue: 0.39)
     static let keySurfaceActivePressedOverlay = Color.black.opacity(0.12)
     static let chromeControlPressedOverlay = Color.white.opacity(0.10)
     static let chromeForeground = Color.primary.opacity(0.84)
@@ -672,13 +666,6 @@ enum GhosttyPhoneChromePalette {
     static let toolbarStroke = Color.primary.opacity(0.12)
     static let toolbarShadow = Color.black.opacity(0.18)
     static let toolbarButtonPressedFill = Color.primary.opacity(0.08)
-
-    static let uiBackground = UIColor(
-        red: 0.18,
-        green: 0.20,
-        blue: 0.24,
-        alpha: 1.0
-    )
 }
 
 extension View {
