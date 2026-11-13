@@ -19,7 +19,6 @@ enum RemuxAccent {
     /// Text and glyphs drawn on `fill`.
     static let onFill = Color.white
 
-    static let toolbarButtonActiveFill = fill.opacity(0.16)
     static let selectedFill = fill.opacity(0.18)
     static let selectedStroke = fill.opacity(0.76)
 
