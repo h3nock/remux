@@ -256,16 +256,18 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         )
     }
 
+    /// The icon shows what a tap does, using iOS's own hide-keyboard symbol while the keyboard is up. The active fill
+    /// stays with armed keys such as Control, so an open keyboard doesn't light the toolbar.
     private var keyboardToggleButton: some View {
         GhosttyKeyboardChromeDockButton(
-            systemName: "keyboard",
+            systemName: keyboardMode == .hidden ? "keyboard" : "keyboard.chevron.compact.down",
             badge: nil,
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
             accessibilityHint: nil,
             accessibilityIdentifier: "terminal.keyboard",
-            isActive: keyboardMode != .hidden,
+            isActive: false,
             isEnabled: isEnabled,
             action: onToggleKeyboard
         )
