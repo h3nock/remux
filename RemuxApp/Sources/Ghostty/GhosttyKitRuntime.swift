@@ -200,8 +200,25 @@ final class GhosttyKitSurfaceView: UIView {
         layer.contentsScale = scale
         for sublayer in layer.sublayers ?? [] {
             sublayer.frame = bounds
+            // Core Animation stores bounds at float precision. Ghostty Metal truncates
+            // bounds * contentsScale, so round the representation upward when needed
+            // to preserve the requested integer pixel extent (e.g. 1984 pixels at 3x).
+            sublayer.bounds.size = CGSize(
+                width: Self.rendererPointExtent(points: bounds.width, scale: scale),
+                height: Self.rendererPointExtent(points: bounds.height, scale: scale)
+            )
             sublayer.contentsScale = scale
         }
+    }
+
+    static func rendererPointExtent(points: CGFloat, scale: CGFloat) -> CGFloat {
+        guard points.isFinite, scale.isFinite, points > 0, scale > 0 else { return points }
+        let pixels = (points * scale).rounded()
+        var extent = Float(pixels / scale)
+        if Double(extent) * Double(scale) < Double(pixels) {
+            extent = extent.nextUp
+        }
+        return CGFloat(extent)
     }
 
     func applyTerminalTheme(_ theme: TerminalTheme) {

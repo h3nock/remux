@@ -390,6 +390,10 @@ final class TmuxScreenModel: ObservableObject {
         guard reportTracker.shouldReport(state: state, source: source) else {
             return
         }
+        if case .disconnected(let reason) = state {
+            // Categories only: never log terminal output, host details, or credentials.
+            NSLog("Remux terminal disconnected: category=%@ source=%@", reason.kind.traceLabel, String(describing: source))
+        }
         onRuntimeStateChange(TerminalRuntimeStateUpdate(
             workspaceID: target.workspace.id,
             instanceID: sessionInstanceID,
