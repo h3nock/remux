@@ -117,20 +117,20 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
-    func testAStillThatFitsWithSeeThroughPixelsIsSentAsItIs() throws {
+    func testAStillThatFitsWithSeeThroughPixelsKeepsItsPixels() throws {
         // One pixel at half opacity is enough; the rest is solid noise, whose JPEG would be smaller.
         let url = try write(
             try makeNoisyImage(width: 400, height: 300, translucentPixel: (x: 200, y: 150)),
             as: .png,
             name: "nearly-solid.png"
         )
-        let original = try Data(contentsOf: url)
-        XCTAssertLessThan(try jpegRewriteByteCount(of: url), original.count)
+        let originalPixels = try storedPixels(at: url)
+        XCTAssertLessThan(try jpegRewriteByteCount(of: url), try Data(contentsOf: url).count)
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
         XCTAssertEqual(prepared, .init(url: url, contentType: .png))
-        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
 
     func testAStillThatFitsInAnotherFormatIsRewrittenAsJPEG() throws {
@@ -158,36 +158,38 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 1)
     }
 
-    func testAStillThatFitsIsSentAsItIsWhenItsJPEGIsLarger() throws {
+    func testAStillThatFitsKeepsItsPixelsWhenItsJPEGIsLarger() throws {
         let url = try write(
             try makeNoisyImage(width: 400, height: 300),
             as: .jpeg,
             name: "small.jpg",
             properties: [kCGImageDestinationLossyCompressionQuality: 0.3]
         )
-        let original = try Data(contentsOf: url)
-        XCTAssertGreaterThan(try jpegRewriteByteCount(of: url), original.count)
+        let originalPixels = try storedPixels(at: url)
+        XCTAssertGreaterThan(try jpegRewriteByteCount(of: url), try Data(contentsOf: url).count)
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .jpeg))
-        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertEqual(prepared.contentType, .jpeg)
+        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
 
-    func testAStillThatFitsIsSentAsItIsWhenItsJPEGIsTheSameSize() throws {
+    func testAStillIsComparedWithItsJPEGAsItWouldBeSent() throws {
         let url = try write(try makeCheckerboard(width: 400, height: 300), as: .png, name: "pattern.png")
-        // Bytes after a PNG's end change nothing in the picture, so they make the file as large as its JPEG.
+        // Bytes after a PNG's end change nothing in the picture and are not sent; here they make the file larger
+        // than its JPEG.
         let jpegByteCount = try jpegRewriteByteCount(of: url)
         var original = try Data(contentsOf: url)
         XCTAssertLessThan(original.count, jpegByteCount)
-        original.append(Data(count: jpegByteCount - original.count))
+        original.append(Data(count: jpegByteCount - original.count + 1))
         try original.write(to: url)
-        XCTAssertEqual(try jpegRewriteByteCount(of: url), original.count)
+        let originalPixels = try storedPixels(at: url)
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
         XCTAssertEqual(prepared, .init(url: url, contentType: .png))
-        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertLessThan(try Data(contentsOf: prepared.url).count, jpegByteCount)
+        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
 
     func testARotationTagAloneDoesNotRewriteAPicture() throws {
@@ -197,49 +199,51 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
             name: "sideways.jpg",
             properties: [kCGImageDestinationLossyCompressionQuality: 0.3, kCGImagePropertyOrientation: 6]
         )
-        let original = try Data(contentsOf: url)
+        let originalPixels = try storedPixels(at: url)
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .jpeg))
-        XCTAssertEqual(try Data(contentsOf: url), original)
-        XCTAssertEqual(try imageFacts(at: url).orientation, 6)
+        XCTAssertEqual(prepared.contentType, .jpeg)
+        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
+        XCTAssertEqual(try imageFacts(at: prepared.url).orientation, 6)
     }
 
     // MARK: - Location
 
-    func testAKeptJPEGIsSentWithoutItsLocationAndWithItsPixelsAndRotationTag() throws {
+    func testAKeptJPEGCarriesItsPixelsAndRotationTagAndNothingElse() throws {
         let url = try write(
             try makeNoisyImage(width: 400, height: 300),
             as: .jpeg,
             name: "located.jpg",
-            properties: [
+            properties: Self.everythingAPhotoRecords.merging([
                 kCGImageDestinationLossyCompressionQuality: 0.3,
-                kCGImagePropertyOrientation: 6,
-                kCGImagePropertyGPSDictionary: Self.location
-            ]
+                kCGImagePropertyOrientation: 6
+            ]) { _, new in new }
         )
         let originalPixels = try storedPixels(at: url)
         XCTAssertTrue(try imageFacts(at: url).hasLocation)
+        XCTAssertTrue(try imageFacts(at: url).hasPlaceOrComment)
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
         let facts = try imageFacts(at: prepared.url)
         XCTAssertEqual(prepared.contentType, .jpeg)
         XCTAssertFalse(facts.hasLocation)
+        XCTAssertFalse(facts.hasPlaceOrComment)
         XCTAssertEqual(facts.orientation, 6)
         XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
 
-    func testAKeptPNGIsSentWithoutItsLocationAndWithItsPixelsAndRotationTag() throws {
+    func testAKeptPNGCarriesItsPixelsAndRotationTagAndNothingElse() throws {
         let url = try write(
             try makeCheckerboard(width: 400, height: 300),
             as: .png,
             name: "located.png",
-            properties: [kCGImagePropertyOrientation: 6, kCGImagePropertyGPSDictionary: Self.location]
+            properties: Self.everythingAPhotoRecords.merging([kCGImagePropertyOrientation: 6]) { _, new in new }
         )
         let originalPixels = try storedPixels(at: url)
         XCTAssertTrue(try imageFacts(at: url).hasLocation)
+        XCTAssertTrue(try imageFacts(at: url).hasPlaceOrComment)
         XCTAssertLessThan(try Data(contentsOf: url).count, try jpegRewriteByteCount(of: url))
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
@@ -247,6 +251,7 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         let facts = try imageFacts(at: prepared.url)
         XCTAssertEqual(prepared.contentType, .png)
         XCTAssertFalse(facts.hasLocation)
+        XCTAssertFalse(facts.hasPlaceOrComment)
         XCTAssertEqual(facts.orientation, 6)
         XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
@@ -325,6 +330,18 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// A GPS position, a place name and a comment, as a photo editor might record them.
+    private static var everythingAPhotoRecords: [CFString: Any] {
+        [
+            kCGImagePropertyGPSDictionary: location,
+            kCGImagePropertyIPTCDictionary: [
+                kCGImagePropertyIPTCCity: "Paris",
+                kCGImagePropertyIPTCCountryPrimaryLocationName: "France"
+            ],
+            kCGImagePropertyExifDictionary: [kCGImagePropertyExifUserComment: "taken at home"]
+        ]
+    }
+
     private static var location: [CFString: Any] {
         [
             kCGImagePropertyGPSLatitude: 9.03,
@@ -340,6 +357,8 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         let height: Int
         let orientation: Int
         let hasLocation: Bool
+        /// A place name or a comment, written apart from the GPS position.
+        let hasPlaceOrComment: Bool
         let hasAlphaChannel: Bool
     }
 
@@ -503,6 +522,8 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
             height: try XCTUnwrap(properties[kCGImagePropertyPixelHeight] as? Int),
             orientation: properties[kCGImagePropertyOrientation] as? Int ?? 1,
             hasLocation: properties[kCGImagePropertyGPSDictionary] != nil,
+            hasPlaceOrComment: properties[kCGImagePropertyIPTCDictionary] != nil
+                || (properties[kCGImagePropertyExifDictionary] as? [CFString: Any])?[kCGImagePropertyExifUserComment] != nil,
             hasAlphaChannel: properties[kCGImagePropertyHasAlpha] as? Bool ?? false
         )
     }
