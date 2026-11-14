@@ -1046,6 +1046,8 @@ final class RemuxAppUITests: XCTestCase {
 
         let chips = app.buttons.matching(NSPredicate(format: "label == %@", "Preview Pasted image"))
         XCTAssertTrue(waitForCount(of: chips, toBe: 2, timeout: 10))
+        // Compared after the viewer closes; what typing put there is not this test's concern.
+        let draft = field.value as? String
         let secondChip = chips.element(boundBy: 1)
         XCTAssertTrue(waitUntil(secondChip, isEnabled: true, timeout: 10))
         secondChip.tap()
@@ -1098,7 +1100,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(solidPictureInView(), .red, "Remove takes out the picture in view and shows the other.")
         app.buttons["terminal.attachments.preview.close"].firstMatch.tap()
         XCTAssertTrue(waitForCount(of: chips, toBe: 1, timeout: 5))
-        XCTAssertEqual(field.value as? String, "draft")
+        XCTAssertEqual(field.value as? String, draft, "The viewer leaves the draft as it was.")
     }
 
     private enum SolidPicture: Equatable {
