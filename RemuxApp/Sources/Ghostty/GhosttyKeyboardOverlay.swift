@@ -70,9 +70,4 @@ final class GhosttyKeyboardOverlayPresenter {
         controller?.view.removeFromSuperview()
         controller = nil
     }
-
-    // What it shows takes touches across the whole screen, so it never outlives its owner.
-    isolated deinit {
-        dismiss()
-    }
 }
