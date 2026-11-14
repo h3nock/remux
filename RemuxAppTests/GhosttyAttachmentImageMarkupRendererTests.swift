@@ -21,18 +21,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         )
     }
 
-    func testAspectFitRectCentersImageWithinContainer() {
-        let rect = GhosttyAttachmentImageMarkupRenderer.aspectFitRect(
-            imageSize: CGSize(width: 400, height: 200),
-            containerSize: CGSize(width: 100, height: 100)
-        )
-
-        XCTAssertEqual(rect.origin.x, 0, accuracy: 0.001)
-        XCTAssertEqual(rect.origin.y, 25, accuracy: 0.001)
-        XCTAssertEqual(rect.width, 100, accuracy: 0.001)
-        XCTAssertEqual(rect.height, 50, accuracy: 0.001)
-    }
-
     func testDocumentSizeCapsLargeImagesPreservingAspectRatio() {
         let size = GhosttyAttachmentImageMarkupRenderer.documentSize(
             for: CGSize(width: 4_032, height: 3_024)

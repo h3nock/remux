@@ -26,16 +26,14 @@ enum GhosttyAttachmentPreviewStyle {
 
 extension View {
     @ViewBuilder
-    func ghosttyAttachmentPreviewContentSurface(
-        fill: Color = GhosttyAttachmentPreviewStyle.contentFill
-    ) -> some View {
+    func ghosttyAttachmentPreviewContentSurface() -> some View {
         let shape = RoundedRectangle(
             cornerRadius: GhosttyAttachmentPreviewStyle.contentCornerRadius,
             style: .continuous
         )
 
         self
-            .background(fill, in: shape)
+            .background(GhosttyAttachmentPreviewStyle.contentFill, in: shape)
             .clipShape(shape)
             .overlay {
                 shape.strokeBorder(GhosttyAttachmentPreviewStyle.contentStroke, lineWidth: 1)

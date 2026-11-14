@@ -12,7 +12,6 @@ struct GhosttyAttachmentImageMarkupEditor: View {
 
     @State private var phase: LoadPhase = .loading
     @State private var drawing = PKDrawing()
-    @State private var toolPickerVisibilityRequest = UUID()
     @State private var isRendering = false
     @State private var isConfirmingDiscard = false
     @State private var saveFailureMessage: String?
@@ -140,8 +139,7 @@ struct GhosttyAttachmentImageMarkupEditor: View {
                 image: image,
                 documentSize: GhosttyAttachmentImageMarkupRenderer.documentSize(for: image.size),
                 drawing: $drawing,
-                undo: undo,
-                toolPickerVisibilityRequest: toolPickerVisibilityRequest
+                undo: undo
             )
             .accessibilityLabel("Markup canvas")
             .accessibilityIdentifier("terminal.attachments.markup.canvas")
@@ -274,27 +272,6 @@ enum GhosttyAttachmentImageMarkupRenderer {
         return "\(stem.isEmpty ? "image" : stem)-annotated.\(contentType.preferredFilenameExtension ?? "jpeg")"
     }
 
-    static func aspectFitRect(imageSize: CGSize, containerSize: CGSize) -> CGRect {
-        guard imageSize.width > 0,
-              imageSize.height > 0,
-              containerSize.width > 0,
-              containerSize.height > 0 else {
-            return .zero
-        }
-
-        let scale = min(
-            containerSize.width / imageSize.width,
-            containerSize.height / imageSize.height
-        )
-        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        return CGRect(
-            x: (containerSize.width - size.width) / 2,
-            y: (containerSize.height - size.height) / 2,
-            width: size.width,
-            height: size.height
-        )
-    }
-
     static func documentSize(for imageSize: CGSize) -> CGSize {
         guard imageSize.width > 0, imageSize.height > 0 else {
             return .zero
@@ -377,9 +354,9 @@ enum GhosttyAttachmentImageMarkupRenderer {
 private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
     let image: UIImage
     let documentSize: CGSize
+    /// Follows the canvas: every change to the drawing, undo and redo included, starts in PencilKit.
     @Binding var drawing: PKDrawing
     let undo: GhosttyAttachmentMarkupUndo
-    let toolPickerVisibilityRequest: UUID
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -396,22 +373,13 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
         surfaceView.onWindowAttachmentChanged = { [weak coordinator = context.coordinator] canvasView in
             coordinator?.canvasWindowAttachmentDidChange(canvasView)
         }
-        context.coordinator.attachToolPicker(
-            to: surfaceView.canvasView,
-            visibilityRequest: toolPickerVisibilityRequest
-        )
+        context.coordinator.attachToolPicker(to: surfaceView.canvasView)
         return surfaceView
     }
 
     func updateUIView(_ surfaceView: GhosttyAttachmentMarkupSurfaceView, context: Context) {
         surfaceView.configure(image: image, documentSize: documentSize)
-        if surfaceView.canvasView.drawing != drawing {
-            surfaceView.canvasView.drawing = drawing
-        }
-        context.coordinator.updateToolPicker(
-            for: surfaceView.canvasView,
-            visibilityRequest: toolPickerVisibilityRequest
-        )
+        context.coordinator.updateToolPicker(for: surfaceView.canvasView)
     }
 
     static func dismantleUIView(_ uiView: GhosttyAttachmentMarkupSurfaceView, coordinator: Coordinator) {
@@ -424,7 +392,6 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
         @Binding private var drawing: PKDrawing
         private let undo: GhosttyAttachmentMarkupUndo
         private let toolPicker: PKToolPicker
-        private var requestedVisibilityRequest: UUID?
         private weak var surfaceView: GhosttyAttachmentMarkupSurfaceView?
 
         init(drawing: Binding<PKDrawing>, undo: GhosttyAttachmentMarkupUndo, documentSize: CGSize) {
@@ -470,24 +437,19 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
             surfaceView?.centerDocument()
         }
 
-        func attachToolPicker(
-            to canvasView: PKCanvasView,
-            visibilityRequest: UUID
-        ) {
+        func attachToolPicker(to canvasView: PKCanvasView) {
             toolPicker.addObserver(canvasView)
-            requestToolPickerVisibility(for: canvasView, visibilityRequest: visibilityRequest)
+            showToolPicker(for: canvasView)
         }
 
-        func updateToolPicker(
-            for canvasView: PKCanvasView,
-            visibilityRequest: UUID
-        ) {
-            requestToolPickerVisibility(for: canvasView, visibilityRequest: visibilityRequest)
+        /// Brings the palette back whenever the canvas has let go of the keyboard focus it needs to show it.
+        func updateToolPicker(for canvasView: PKCanvasView) {
+            guard !canvasView.isFirstResponder else { return }
+            showToolPicker(for: canvasView)
         }
 
         func canvasWindowAttachmentDidChange(_ canvasView: PKCanvasView) {
-            guard canvasView.window != nil else { return }
-            showToolPickerIfReady(for: canvasView)
+            showToolPicker(for: canvasView)
         }
 
         func detachToolPicker(from canvasView: PKCanvasView) {
@@ -495,26 +457,8 @@ private struct GhosttyAttachmentMarkupCanvas: UIViewRepresentable {
             toolPicker.removeObserver(canvasView)
         }
 
-        private func requestToolPickerVisibility(
-            for canvasView: PKCanvasView,
-            visibilityRequest: UUID
-        ) {
-            let isNewRequest = requestedVisibilityRequest != visibilityRequest
-            requestedVisibilityRequest = visibilityRequest
-
-            guard isNewRequest || !canvasView.isFirstResponder else {
-                return
-            }
-
-            showToolPickerIfReady(for: canvasView)
-        }
-
-        private func showToolPickerIfReady(for canvasView: PKCanvasView) {
-            guard requestedVisibilityRequest != nil,
-                  canvasView.window != nil else {
-                return
-            }
-
+        private func showToolPicker(for canvasView: PKCanvasView) {
+            guard canvasView.window != nil else { return }
             canvasView.becomeFirstResponder()
             toolPicker.setVisible(true, forFirstResponder: canvasView)
         }
