@@ -808,8 +808,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyComposeBar(
                 composer: composer,
                 canSubmit: isTerminalInputAvailable,
-                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
-                    && inputCoordinator.keyboardOwner == .composer,
+                wantsKeyboardFocus: GhosttyComposerResponderFocusPolicy(
+                    keyboardMode: inputCoordinator.keyboardMode,
+                    keyboardOwner: inputCoordinator.keyboardOwner,
+                    isTransientInputOwnerPresented: isTransientInputOwnerPresented
+                ).wantsFirstResponder,
                 isSoftwareKeyboardVisible: inputCoordinator.keyboardMode == .system
                     && inputCoordinator.keyboardOwner == .composer
                     && softwareKeyboardOverlapHeight > 0,
