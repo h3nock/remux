@@ -98,7 +98,8 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
         return id
     }
 
-    private func paneID(for surfaceID: UUID) -> String? {
+    /// The Herdr pane a listed pane's surface shows; nil for a popup's surface.
+    func paneID(for surfaceID: UUID) -> String? {
         guard let paneID = paneIDsBySurfaceID[surfaceID],
               listedPanes.contains(where: { $0.paneID == paneID })
         else { return nil }
@@ -520,8 +521,9 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     /// Herdr's frames don't say where lines wrap, so the pane's terminal cuts a link the pane wraps at the
-    /// row's edge. A link or word reaching that edge needs backend completion. Only a result whose
-    /// boundaries are known is eligible for Open; an OSC 8 destination is already complete.
+    /// row's edge. A link or word reaching that edge needs backend completion: Herdr finds a web link across
+    /// the wrapped rows, and says of other text whether its line goes on past the edge. Only a result whose
+    /// boundaries are known is eligible for Open or Preview; an OSC 8 destination is already complete.
     func completeLinkSelection(
         in surfaceID: UUID,
         at point: CGPoint,
@@ -546,15 +548,20 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         let control = surface.controlSurface
         guard let pressed = surface.historyCell(at: point)
         else { return false }
-        guard let link = await model.resolveLink(at: pressed, inPane: paneID), !Task.isCancelled,
+        guard let completion = await model.completion(of: selection, at: pressed, inPane: paneID), !Task.isCancelled,
               managedSurface(for: surfaceID) === surface, surface.controlSurface === control,
               // A selection changed meanwhile is the user's.
               surface.historySelection == selection
         else { return false }
-        // Keep Herdr's wider visible selection for Copy even if its URL continues off screen.
-        if link.selection == selection { return link.isComplete }
-        guard case .snapshot(let snapshot) = surface.select(link.selection) else { return false }
-        return snapshot.isActive && link.isComplete
+        switch completion {
+        case .text(let isWhole):
+            return isWhole
+        case .link(let link):
+            // Keep Herdr's wider visible selection for Copy even if its URL continues off screen.
+            if link.selection == selection { return link.isComplete }
+            guard case .snapshot(let snapshot) = surface.select(link.selection) else { return false }
+            return snapshot.isActive && link.isComplete
+        }
     }
 
     // MARK: Topology actions
@@ -735,10 +742,7 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     var topLevelNoun: GhosttyTopLevelNoun { .tab }
 
     /// Herdr's Tabs sheet lists its tabs as rows, with no previews.
-    func makePanePreviewSession(
-        leafIDs: [UUID],
-        pixelBudget: GhosttyPanePreviewSession.PixelBudget
-    ) -> GhosttyPanePreviewSession? {
+    func makePanePreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession? {
         nil
     }
 

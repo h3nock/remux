@@ -549,6 +549,16 @@ final class HerdrSelectionTests: XCTestCase {
             let completion = Task { await session.adapter.completeLinkSelection(in: session.surfaceID, at: press, selected: .link) }
             let request = try await session.nextRequest(HerdrScreenModel.paneLinkResolveMethod, as: SentResolve.self)
             await session.bridge.serve(HerdrConnectionTests.reply(id: request.id, json: reply))
+            // No web link there: the cells across the row's edge say the line goes on.
+            let edge = try await session.nextSelectionRead()
+            XCTAssertEqual(
+                edge.params,
+                SentRead(paneID: "w1:p1", anchor: .init(row: 39, col: 19), cursor: .init(row: 40, col: 0), contentRevision: 2)
+            )
+            await session.bridge.serve(HerdrConnectionTests.reply(
+                id: edge.id,
+                json: #"{"type":"pane_selection","pane_id":"w1:p1","text":"co"}"#
+            ))
             let grew = await completion.value
             XCTAssertFalse(grew, reply)
             XCTAssertEqual(surface.historySelection, selection, reply)
@@ -602,6 +612,108 @@ final class HerdrSelectionTests: XCTestCase {
         _ = await copy.value
     }
 
+    /// Herdr finds only web links, so a path long-pressed where it may go on past a row edge is whole when
+    /// Herdr's text across that edge has a line break, or a blank, there: at the start of its line, as `ls`
+    /// prints it, or ending at the row's last column on a line that breaks there.
+    func testAPathReachingARowEdgeIsWholeWhereItsLineStops() async throws {
+        var session = try await shownSession(scroll: (1, 40, 3), lines: Self.pathLines, width: 20)
+        let surface = try session.surface()
+
+        let start = session.point(row: 1, column: 3)
+        let atStart = try XCTUnwrap(session.longPress(at: start))
+        XCTAssertEqual(surface.historySelection, GhosttyHistorySelection(start: cell(40, 0), end: cell(40, 14)))
+        let startCompletion = Task {
+            await session.adapter.completeLinkSelection(in: session.surfaceID, at: start, selected: atStart)
+        }
+        let startResolve = try await session.nextRequest(HerdrScreenModel.paneLinkResolveMethod, as: SentResolve.self)
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: startResolve.id,
+            json: #"{"type":"pane_link_resolved","regions":[]}"#
+        ))
+        let before = try await session.nextSelectionRead()
+        XCTAssertEqual(
+            before.params,
+            SentRead(paneID: "w1:p1", anchor: .init(row: 39, col: 19), cursor: .init(row: 40, col: 0), contentRevision: 2)
+        )
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: before.id,
+            json: #"{"type":"pane_selection","pane_id":"w1:p1","text":"\nn"}"#
+        ))
+        let startWhole = await startCompletion.value
+        XCTAssertTrue(startWhole, "a path at the start of its line")
+
+        let end = session.point(row: 0, column: 8)
+        let atEnd = try XCTUnwrap(session.longPress(at: end))
+        XCTAssertEqual(surface.historySelection, GhosttyHistorySelection(start: cell(39, 4), end: cell(39, 19)))
+        let endCompletion = Task {
+            await session.adapter.completeLinkSelection(in: session.surfaceID, at: end, selected: atEnd)
+        }
+        let endResolve = try await session.nextRequest(HerdrScreenModel.paneLinkResolveMethod, as: SentResolve.self)
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: endResolve.id,
+            json: #"{"type":"pane_link_resolved","regions":[]}"#
+        ))
+        let after = try await session.nextSelectionRead()
+        XCTAssertEqual(
+            after.params,
+            SentRead(paneID: "w1:p1", anchor: .init(row: 39, col: 19), cursor: .init(row: 40, col: 0), contentRevision: 2)
+        )
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: after.id,
+            json: #"{"type":"pane_selection","pane_id":"w1:p1","text":"t\nn"}"#
+        ))
+        let endWhole = await endCompletion.value
+        XCTAssertTrue(endWhole, "a path ending at the row's last column on a line that breaks there")
+    }
+
+    /// The later row of a path the pane wraps starts at the row's first column, and Herdr's text across the
+    /// edge goes on without a break: the selection is only part of the path, so it isn't whole.
+    func testAWrappedPathsLaterRowIsNotWhole() async throws {
+        var session = try await shownSession(scroll: (1, 40, 3), lines: Self.wrappedPathLines, width: 20)
+        let surface = try session.surface()
+        let press = session.point(row: 1, column: 2)
+        let selected = try XCTUnwrap(session.longPress(at: press))
+        XCTAssertEqual(surface.historySelection?.start, cell(40, 0))
+        let completion = Task {
+            await session.adapter.completeLinkSelection(in: session.surfaceID, at: press, selected: selected)
+        }
+        let resolve = try await session.nextRequest(HerdrScreenModel.paneLinkResolveMethod, as: SentResolve.self)
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: resolve.id,
+            json: #"{"type":"pane_link_resolved","regions":[]}"#
+        ))
+        let before = try await session.nextSelectionRead()
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: before.id,
+            json: #"{"type":"pane_selection","pane_id":"w1:p1","text":"cc"}"#
+        ))
+        let whole = await completion.value
+        XCTAssertFalse(whole)
+        XCTAssertEqual(surface.historySelection?.start, cell(40, 0), "the selection changed")
+    }
+
+    /// What Herdr's text for the two cells across a row edge says: a line break or a blank stops the line;
+    /// anything else, including a wide character that moved to the next row, goes on.
+    func testTheTextAcrossARowEdgeSaysWhetherTheLineGoesOn() {
+        let cells = GhosttyHistorySelection(start: cell(39, 19), end: cell(40, 0))
+        let start = HerdrRowEdgeRead(side: .start, cells: cells)
+        XCTAssertFalse(start.lineGoesOn("\nn"))
+        XCTAssertFalse(start.lineGoesOn("c\nn"))
+        XCTAssertFalse(start.lineGoesOn(" n"))
+        XCTAssertTrue(start.lineGoesOn("cn"))
+        XCTAssertTrue(start.lineGoesOn("界"))
+        let end = HerdrRowEdgeRead(side: .end, cells: cells)
+        XCTAssertFalse(end.lineGoesOn("t\nn"))
+        XCTAssertFalse(end.lineGoesOn("t\n"))
+        XCTAssertFalse(end.lineGoesOn("t"))
+        XCTAssertFalse(end.lineGoesOn("t "))
+        XCTAssertTrue(end.lineGoesOn("tn"))
+        // A selection one column short of the edge reads the row's last column too.
+        XCTAssertFalse(end.lineGoesOn("t n"))
+        XCTAssertTrue(end.lineGoesOn("txn"))
+        XCTAssertTrue(end.lineGoesOn("t界"))
+    }
+
     // MARK: - Support
 
     private func cell(_ row: UInt64, _ column: UInt16) -> GhosttyTerminalCell {
@@ -618,10 +730,12 @@ final class HerdrSelectionTests: XCTestCase {
         let paneID: String
         let anchor: Point
         let cursor: Point
+        var contentRevision: UInt64?
 
         private enum CodingKeys: String, CodingKey {
             case paneID = "pane_id"
             case anchor, cursor
+            case contentRevision = "content_revision"
         }
     }
 
@@ -652,6 +766,21 @@ final class HerdrSelectionTests: XCTestCase {
         "see http://example.c",
         "om/path and more    ",
         "x http://a.b/c y    ",
+    ]
+
+    /// A path ending at the 20-column pane's last column on a line that breaks there, one at the start of
+    /// the next line, as `ls` prints it, and a last row.
+    private static let pathLines = [
+        "see dir/sub/file.txt",
+        "notes/readme.md     ",
+        "x                   ",
+    ]
+
+    /// A path the 20-column pane wraps from its first row into its second.
+    private static let wrappedPathLines = [
+        "cat /tmp/aaaa/bbbb/c",
+        "c/file.md and more  ",
+        "x                   ",
     ]
 
     private func isActive(_ outcome: GhosttyLocalSelectionOutcome) -> Bool {

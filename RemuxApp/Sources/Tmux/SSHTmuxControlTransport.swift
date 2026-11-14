@@ -13,7 +13,6 @@ struct SSHTmuxControlConfiguration: Sendable {
     let authenticationTimeout: TimeAmount?
     let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
     let controlNoResponseTimeout: TimeAmount
-    let sftpOperationTimeout: TimeAmount
     let tmuxExecutable: String
     let sessionName: String
     let sessionOpening: SessionOpening
@@ -30,7 +29,6 @@ struct SSHTmuxControlConfiguration: Sendable {
         authenticationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
         controlNoResponseTimeout: TimeAmount = .seconds(15),
-        sftpOperationTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",
         sessionName: String,
         sessionOpening: SessionOpening = .attach,
@@ -46,7 +44,6 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.authenticationTimeout = authenticationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
         self.controlNoResponseTimeout = controlNoResponseTimeout
-        self.sftpOperationTimeout = sftpOperationTimeout
         self.tmuxExecutable = tmuxExecutable
         self.sessionName = sessionName
         self.sessionOpening = sessionOpening
@@ -167,6 +164,8 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
     case closed
     case stalePreparedConnection
     case controlSessionNoResponse(TimeAmount)
+    /// A channel open on the connection got no answer, so the connection was closed as dead.
+    case connectionUnresponsive
 
     var description: String {
         switch self {
@@ -190,6 +189,8 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
             return "stalePreparedConnection"
         case .controlSessionNoResponse(let timeout):
             return "tmux control session produced no output within \(timeout)"
+        case .connectionUnresponsive:
+            return "connectionUnresponsive"
         }
     }
 
@@ -209,6 +210,8 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
             return "The prepared SSH root reservation is no longer valid."
         case .controlSessionNoResponse(let timeout):
             return "The remote tmux control session produced no output within \(timeout)."
+        case .connectionUnresponsive:
+            return "The server stopped answering."
         }
     }
 
@@ -232,21 +235,16 @@ private extension TmuxControlTransportCloseDisposition {
     }
 }
 
-actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking,
-    TmuxControlTransportSFTPProviding, TmuxControlTransportLiveForwardProviding {
+actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking {
     nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
-    nonisolated let sessionSFTPClientProvider: RemuxSessionCitadelSFTPClientProvider
-    nonisolated let sessionLiveForwardProvider: RemuxSessionLiveForwardProvider
 
     private let configuration: SSHTmuxControlConfiguration
     private let inboundStream: SSHTmuxControlInboundStream
     private let sshRootService: RemuxSSHRootService?
-    private let sessionSFTPScope: RemuxSessionSFTPChildScope
 
     private var pendingWrites: [Data] = []
     private var preparedRoot: RemuxSSHPreparedRoot?
     private var connection: SSHTmuxControlConnection?
-    private var sessionSFTPDrainTask: Task<RemuxSFTPChildDrain, Never>?
     private var hasStarted = false
     private var isClosed = false
 
@@ -256,16 +254,6 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
     ) {
         self.configuration = configuration
         self.sshRootService = sshRootService
-        let sessionSFTPScope = RemuxSessionSFTPChildScope()
-        self.sessionSFTPScope = sessionSFTPScope
-        self.sessionSFTPClientProvider = RemuxSessionCitadelSFTPClientProvider(
-            scope: sessionSFTPScope,
-            hostDescription: "\(configuration.host):\(configuration.port)",
-            operationTimeout: configuration.sftpOperationTimeout
-        )
-        self.sessionLiveForwardProvider = RemuxSessionLiveForwardProvider(
-            scope: sessionSFTPScope
-        )
         let inboundStream = SSHTmuxControlInboundStream()
         self.inboundStream = inboundStream
         self.receivedBytes = inboundStream.receivedBytes
@@ -327,40 +315,14 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             )
             startedConnection = establishedConnection
             guard !isClosed else { throw SSHTmuxControlTransportError.closed }
-            try await sessionSFTPScope.activate(
-                rootChannel: claimedConnection.sshRoot.rootChannel,
-                invalidateRootForReuse: {
-                    await claimedConnection.invalidateForReuse()
-                }
-            )
-            await sessionLiveForwardProvider.activate(
-                openerFactory: { [sshRoot = claimedConnection.sshRoot] target in
-                    .directTCPIP(
-                        sshRoot: sshRoot,
-                        target: target,
-                        originatorAddress: Self.liveForwardOriginatorAddress
-                    )
-                }
-            )
-            guard !isClosed else { throw SSHTmuxControlTransportError.closed }
             connection = establishedConnection
             startedConnection = nil
         } catch {
-            let transportError: any Error
-            if Self.startWasInterruptedByClose(
-                error,
-                transportWasClosed: isClosed
-            ) {
-                transportError = SSHTmuxControlTransportError.closed
-            } else {
-                transportError = translateSSHRootError(error)
-            }
+            let transportError = translateSSHRootError(error)
             self.preparedRoot = nil
             self.connection = nil
-            let childDrain = await drainSessionSFTPChildren()
             await startedConnection?.close(
-                disposition: closeDispositionAfterStartFailure(transportError),
-                childDrain: childDrain
+                disposition: closeDispositionAfterStartFailure(transportError)
             )
             throw transportError
         }
@@ -377,11 +339,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             }
         } catch {
             connection = nil
-            let childDrain = await drainSessionSFTPChildren()
-            await establishedConnection.close(
-                disposition: .invalidated,
-                childDrain: childDrain
-            )
+            await establishedConnection.close(disposition: .invalidated)
             throw error
         }
         startupTrace.event(
@@ -436,12 +394,8 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         connection = nil
         preparedRoot = nil
         isClosed = true
-        let childDrain = await drainSessionSFTPChildren()
         if let activeConnection {
-            await activeConnection.close(
-                disposition: disposition,
-                childDrain: childDrain
-            )
+            await activeConnection.close(disposition: disposition)
         }
         if let pendingPreparedRoot {
             Task {
@@ -449,34 +403,6 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             }
         }
         inboundStream.finish(nil)
-    }
-
-    private func drainSessionSFTPChildren() async -> RemuxSFTPChildDrain {
-        if let sessionSFTPDrainTask {
-            return await sessionSFTPDrainTask.value
-        }
-
-        let scope = sessionSFTPScope
-        let task = Task { await scope.close() }
-        sessionSFTPDrainTask = task
-        return await task.value
-    }
-
-    // The SSH wire format requires an IP-literal originator; the real
-    // originator is always this device's loopback browser connection.
-    private static let liveForwardOriginatorAddress = try! SocketAddress(
-        ipAddress: "127.0.0.1",
-        port: 0
-    )
-
-    nonisolated static func startWasInterruptedByClose(
-        _ error: any Error,
-        transportWasClosed: Bool
-    ) -> Bool {
-        guard transportWasClosed,
-              let sftpError = error as? RemuxSFTPClientError
-        else { return false }
-        return sftpError == .sessionUnavailable
     }
 
     private func closeDispositionAfterStartFailure(_ error: any Error) -> TmuxControlTransportCloseDisposition {
@@ -500,6 +426,8 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             return SSHTmuxControlTransportError.closed
         case .stalePreparedRoot:
             return SSHTmuxControlTransportError.stalePreparedConnection
+        case .channelOpenTimedOut:
+            return SSHTmuxControlTransportError.connectionUnresponsive
         }
     }
 
@@ -684,17 +612,8 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
         )
     }
 
-    func close(
-        disposition: TmuxControlTransportCloseDisposition,
-        childDrain: RemuxSFTPChildDrain
-    ) async {
-        let rootDisposition: RemuxSSHRootLeaseDisposition
-        if childDrain == .dirty {
-            rootDisposition = .invalidated
-        } else {
-            rootDisposition = disposition.sshRootLeaseDisposition
-        }
-        await execConnection.close(disposition: rootDisposition)
+    func close(disposition: TmuxControlTransportCloseDisposition) async {
+        await execConnection.close(disposition: disposition.sshRootLeaseDisposition)
     }
 }
 

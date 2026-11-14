@@ -1352,6 +1352,19 @@ final class HerdrLiveConnectionTests: XCTestCase {
         try await checkWrappedPlainLinkSelectsWhole(version: "0.9.5")
     }
 
+    /// Herdr finds only web links, so a path long-pressed at the start of its line, as `ls` prints it, is
+    /// whole because Herdr's text across the row edge has the line break there; a path the pane wraps is
+    /// whole on neither of its rows, since its line goes on across the edge.
+    @MainActor
+    func testAPathIsWholeOnlyWhereItsLineStopsOnHerdr093() async throws {
+        try await checkAPathIsWholeOnlyWhereItsLineStops(version: "0.9.3")
+    }
+
+    @MainActor
+    func testAPathIsWholeOnlyWhereItsLineStopsOnHerdr095() async throws {
+        try await checkAPathIsWholeOnlyWhereItsLineStops(version: "0.9.5")
+    }
+
     /// Scrolled wholly off screen and back, a selection is still there, drawn at its line, and copies it.
     @MainActor
     func testASelectionScrolledOffScreenStaysOnHerdr093() async throws {
@@ -1529,6 +1542,32 @@ final class HerdrLiveConnectionTests: XCTestCase {
             )
             let copied = await adapter.selectedText(in: pane.id)
             XCTAssertEqual(copied, url, "Herdr \(version), row \(pressed)")
+        }
+    }
+
+    @MainActor
+    private func checkAPathIsWholeOnlyWhereItsLineStops(version: String) async throws {
+        let session = try await openShownSession(version: version, through: { $0 })
+        let pane = try selectionPane(of: session)
+        let width = Int(pane.area.width)
+        let token = UUID().uuidString.prefix(8).lowercased()
+        let short = "notes/\(token).md"
+        let long = "/tmp/\(token)/" + String(repeating: "p", count: width)
+        XCTAssertEqual(session.model.sendText("clear; printf '%s\\n' \(short) \(long)\r"), .accepted)
+        let row = try await waitForWrappedRows(of: long, in: session, pane: pane)
+        let adapter = session.model.terminalScreenAdapter
+
+        let shortPress = cellPoint(row: row - 1, column: 2, in: session)
+        let shortSelected = try XCTUnwrap(longPress(pane, at: shortPress))
+        XCTAssertEqual(pane.surface.controlSurface.readSelection(), short)
+        let shortWhole = await adapter.completeLinkSelection(in: pane.id, at: shortPress, selected: shortSelected)
+        XCTAssertTrue(shortWhole, "Herdr \(version): a path at the start of its line")
+
+        for pressed in [row, row + 1] {
+            let press = cellPoint(row: pressed, column: 2, in: session)
+            let selected = try XCTUnwrap(longPress(pane, at: press), "row \(pressed)")
+            let whole = await adapter.completeLinkSelection(in: pane.id, at: press, selected: selected)
+            XCTAssertFalse(whole, "Herdr \(version): row \(pressed) of a wrapped path")
         }
     }
 

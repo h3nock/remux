@@ -3,59 +3,6 @@ import CoreGraphics
 import Foundation
 import GhosttyKit
 
-struct TmuxMultipaneZoomDefaultPolicy {
-    var isEnabled = false
-    private var resolvedWindowIDs: Set<TmuxWindowID> = []
-
-    init(isEnabled: Bool = false) {
-        self.isEnabled = isEnabled
-    }
-
-    mutating func setEnabled(_ enabled: Bool) -> Bool {
-        guard enabled != isEnabled else { return false }
-        isEnabled = enabled
-        resolvedWindowIDs.removeAll(keepingCapacity: true)
-        return true
-    }
-
-    mutating func windowIDsNeedingChange(
-        in topology: TmuxSessionController.TopologySnapshot,
-        includingMatchingWindows: Bool = false
-    ) -> [TmuxWindowID] {
-        var targets: [TmuxWindowID] = []
-
-        for window in topology.windows {
-            var paneCount = 0
-            for pane in topology.panes where pane.windowID == window.id {
-                paneCount += 1
-                if paneCount == 2 { break }
-            }
-            guard paneCount == 2 else {
-                resolvedWindowIDs.remove(window.id)
-                continue
-            }
-            guard !resolvedWindowIDs.contains(window.id),
-                  window.activePaneID != nil
-            else { continue }
-
-            resolvedWindowIDs.insert(window.id)
-            if includingMatchingWindows || window.zoomed != isEnabled {
-                targets.append(window.id)
-            }
-        }
-        return targets
-    }
-
-    mutating func recordWindowChoice(_ windowID: TmuxWindowID) {
-        resolvedWindowIDs.insert(windowID)
-    }
-
-    mutating func reset() {
-        resolvedWindowIDs.removeAll(keepingCapacity: false)
-    }
-}
-
-
 /// Presents a `TmuxTerminalSession` through the `GhosttyTerminalScreenModeling`
 /// boundary so `GhosttySurfaceScreen` renders it.
 ///
@@ -83,11 +30,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var viewportStabilityHandler: ((Bool) -> Void)?
     private var latestViewportMeasurement: GhosttyTerminalViewportMeasurement?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
-    private var ownedZoomWindowIDs: Set<TmuxWindowID> = []
-    private var pendingZoomOwnershipWindowIDs: Set<TmuxWindowID> = []
-    private var pendingOwnedZoomPreservation: (windowID: TmuxWindowID, paneID: TmuxPaneID)?
-    private var didAdoptZoomMarks = false
-    private var multipaneZoomDefault = TmuxMultipaneZoomDefaultPolicy()
 
     private lazy var commandFailure = GhosttyTerminalNotice { [weak self] in
         self?.objectWillChange.send()
@@ -105,7 +47,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     ) {
         self.session = session
         self.controller = session.controller
-        multipaneZoomDefault.isEnabled = zoomMultipaneWindowsByDefault
+        setZoomMultipaneWindowsByDefault(zoomMultipaneWindowsByDefault)
         self.initialViewportHandler = initialViewportHandler
         self.viewportStabilityHandler = viewportStabilityHandler
 
@@ -116,15 +58,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             .sink { [weak self] topology in
                 guard let self, let session = self.session else { return }
                 self.latestTopology = topology
-                if let topology {
-                    self.reconcileZoomOwnership(with: topology)
-                    self.applyMultipaneZoomDefaultIfNeeded(to: topology)
-                    self.adoptZoomMarksOnce()
-                } else {
-                    self.ownedZoomWindowIDs.removeAll()
-                    self.pendingZoomOwnershipWindowIDs.removeAll()
-                    self.pendingOwnedZoomPreservation = nil
-                }
                 self.rebuildTopologySnapshot()
                 self.reconcileManagedSurfaces(
                     sessionSurfaces: session.surfacesByPaneID,
@@ -155,21 +88,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 if request == .selectPane {
                     self?.cancelPendingPaneFocus()
                 }
-                if request == .zoomPane {
-                    self?.pendingZoomOwnershipWindowIDs.removeAll()
-                }
-                if request == .closePane,
-                   let self,
-                   let preservation = pendingOwnedZoomPreservation {
-                    pendingOwnedZoomPreservation = nil
-                    if latestTopology?.windows.first(where: {
-                        $0.id == preservation.windowID
-                    })?.zoomed
-                        != true {
-                        ownedZoomWindowIDs.remove(preservation.windowID)
-                        controller?.requestForgetZoomMarks(windowIDs: [preservation.windowID])
-                    }
-                }
                 self?.presentCommandFailure(for: request)
             }
             .store(in: &subscriptions)
@@ -185,11 +103,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         subscriptions.removeAll()
         managedSurfacesByPaneID.removeAll()
         activeManagedSurface = nil
-        ownedZoomWindowIDs.removeAll()
-        pendingZoomOwnershipWindowIDs.removeAll()
-        pendingOwnedZoomPreservation = nil
-        didAdoptZoomMarks = false
-        multipaneZoomDefault.reset()
         activeManagedPaneID = nil
         pendingFocusedPaneID = nil
         session = nil
@@ -541,32 +454,19 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         viewportStabilityHandler?(stable)
     }
 
-    func makePanePreviewSession(
-        leafIDs: [UUID],
-        pixelBudget: GhosttyPanePreviewSession.PixelBudget
-    ) -> GhosttyPanePreviewSession? {
+    func makePanePreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession? {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
-            pixelBudget: pixelBudget,
             client: GhosttyPanePreviewSession.PreviewClient(
                 capture: { [weak self] leafID, budget in
                     guard let self,
                           let session = self.session,
-                          let paneID = self.identities.paneID(for: leafID),
-                          let pane = self.latestTopology?.panes.first(where: { $0.id == paneID })
-                    else { return nil }
-                    return await session.capturePickerPreview(
-                        paneID: paneID,
-                        columns: pane.width,
-                        rows: pane.height,
-                        budget: budget
-                    )
-                },
-                cancelCapture: { [weak self] leafID in
-                    guard let self,
                           let paneID = self.identities.paneID(for: leafID)
-                    else { return }
-                    self.session?.cancelPickerPreview(paneID: paneID)
+                    else { return nil }
+                    return await session.capturePickerPreview(paneID: paneID, budget: budget)
+                },
+                cancelCapture: { [weak self] _ in
+                    self?.session?.cancelPickerPreview()
                 }
             )
         )
@@ -595,13 +495,29 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         if let preflight = preflightFocusedInput() { return preflight }
-        return focusedManagedSurface?.sendPaste(text) ?? .noFocusedSurface
+        return sendPaste(text, toPane: activeManagedPaneID)
     }
 
     func sendPaste(_ text: String, to surfaceID: UUID) -> FocusedTerminalInputSubmissionResult {
         guard isTransportWritable else { return .transportUnavailable }
-        guard let managed = managedSurface(for: surfaceID) else { return .noFocusedSurface }
-        return managed.sendPaste(text)
+        return sendPaste(text, toPane: identities.paneID(for: surfaceID))
+    }
+
+    /// tmux does the pasting, since it knows whether the pane's program asked
+    /// for bracketed paste. Like typing, a paste returns the pane's viewport
+    /// to the bottom.
+    private func sendPaste(
+        _ text: String,
+        toPane paneID: TmuxPaneID?
+    ) -> FocusedTerminalInputSubmissionResult {
+        guard let paneID, let controller, let managed = managedSurfacesByPaneID[paneID] else {
+            return .noFocusedSurface
+        }
+        guard !text.isEmpty else { return .empty }
+        guard managed.rendererIsAvailable else { return .surfaceRejected }
+        _ = controller.sendPaste(paneID: paneID, text) { _ in }
+        managed.scrollViewportToBottom()
+        return .accepted
     }
 
     func sendPasteAwaitingCommandCompletion(_ text: String, to surfaceID: UUID) async -> Bool {
@@ -805,34 +721,13 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     ) -> GhosttyTerminalActionOutcome {
         guard let controller,
               let activeManagedPaneID,
-              let topology = latestTopology,
-              let pane = topology.panes.first(where: { $0.id == activeManagedPaneID }),
-              let window = topology.windows.first(where: { $0.id == pane.windowID })
+              latestTopology?.panes.contains(where: { $0.id == activeManagedPaneID }) == true
         else {
             return .missingTarget(.focusedPane)
         }
-        let hasSibling = topology.panes.contains {
-            $0.windowID == window.id && $0.id != pane.id
-        }
-        let appliesDefaultZoom = !hasSibling
-            && !window.zoomed
-            && multipaneZoomDefault.isEnabled
-        let onZoomCreated: (@Sendable () -> Void)?
-        if appliesDefaultZoom {
-            let windowID = window.id
-            onZoomCreated = { [weak self] in
-                DispatchQueue.main.async {
-                    self?.pendingZoomOwnershipWindowIDs.insert(windowID)
-                }
-            }
-        } else {
-            onZoomCreated = nil
-        }
         controller.requestSplit(
             paneID: activeManagedPaneID,
-            direction: TmuxSessionController.SplitDirection(actionDirection: direction),
-            zoom: window.zoomed || appliesDefaultZoom,
-            onZoomCreated: onZoomCreated
+            direction: TmuxSessionController.SplitDirection(actionDirection: direction)
         )
         return .queued
     }
@@ -846,143 +741,23 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         else {
             return .missingTarget(.focusedPane)
         }
-        multipaneZoomDefault.recordWindowChoice(activeWindowID)
-        controller.requestSetPaneZoomed(
-            paneID: activeManagedPaneID,
-            zoomed: zoomed,
-            onZoomSubmitted: { [weak self] windowID in
-                DispatchQueue.main.async {
-                    self?.pendingZoomOwnershipWindowIDs.insert(windowID)
-                }
-            }
-        )
+        controller.requestSetPaneZoomed(paneID: activeManagedPaneID, zoomed: zoomed)
         return .queued
     }
 
     func setZoomMultipaneWindowsByDefault(_ enabled: Bool) {
-        guard multipaneZoomDefault.setEnabled(enabled), let latestTopology else { return }
-        applyMultipaneZoomDefaultIfNeeded(
-            to: latestTopology,
-            includingMatchingWindows: true
-        )
-    }
-
-    private func applyMultipaneZoomDefaultIfNeeded(
-        to topology: TmuxSessionController.TopologySnapshot,
-        includingMatchingWindows: Bool = false
-    ) {
-        let windowIDs = multipaneZoomDefault.windowIDsNeedingChange(
-            in: topology,
-            includingMatchingWindows: includingMatchingWindows
-        )
-        guard !windowIDs.isEmpty else { return }
-        controller?.requestSetWindowsZoomed(
-            windowIDs: windowIDs,
-            zoomed: multipaneZoomDefault.isEnabled,
-            onZoomSubmitted: { [weak self] windowIDs in
-                DispatchQueue.main.async {
-                    self?.pendingZoomOwnershipWindowIDs.formUnion(windowIDs)
-                }
-            }
-        )
+        controller?.setZoomMultipaneWindowsByDefault(enabled)
     }
 
     /// The session is ending: undo the zooms Remux made. A runtime replaced by
     /// a new attempt skips this; the new attempt adopts them from their marks.
     func releaseZoomOwnership() {
-        var releasedWindowIDs = ownedZoomWindowIDs
-        releasedWindowIDs.formUnion(pendingZoomOwnershipWindowIDs)
-        guard !releasedWindowIDs.isEmpty else { return }
-        controller?.requestReleaseZoom(
-            windowIDs: releasedWindowIDs.sorted { $0.rawValue < $1.rawValue }
-        )
-    }
-
-    /// Takes back the zooms this owner made on an earlier attachment (a
-    /// reconnect, a replaced runtime, or an app restart), and forgets marks
-    /// whose zoom is already gone.
-    private func adoptZoomMarksOnce() {
-        guard !didAdoptZoomMarks, let controller else { return }
-        didAdoptZoomMarks = true
-        controller.requestZoomMarks { [weak self] marks in
-            DispatchQueue.main.async {
-                self?.adoptZoomMarks(marks)
-            }
-        }
-    }
-
-    private func adoptZoomMarks(_ marks: [TmuxZoomMark]) {
-        let adoption = TmuxZoomMarkAdoption(
-            marks: marks,
-            zoomedWindowIDs: Set(latestTopology?.windows.filter(\.zoomed).map(\.id) ?? []),
-            zoomingWindowIDs: pendingZoomOwnershipWindowIDs.union(ownedZoomWindowIDs)
-        )
-        ownedZoomWindowIDs.formUnion(adoption.adoptedWindowIDs)
-        if !adoption.forgottenWindowIDs.isEmpty {
-            controller?.requestForgetZoomMarks(windowIDs: adoption.forgottenWindowIDs)
-        }
-    }
-
-    private func reconcileZoomOwnership(
-        with topology: TmuxSessionController.TopologySnapshot
-    ) {
-        if let preservation = pendingOwnedZoomPreservation {
-            if let window = topology.windows.first(where: {
-                $0.id == preservation.windowID
-            }) {
-                let paneWasRemoved = !topology.panes.contains(where: {
-                    $0.id == preservation.paneID
-                })
-                if paneWasRemoved, window.zoomed {
-                    self.pendingOwnedZoomPreservation = nil
-                }
-            } else {
-                self.pendingOwnedZoomPreservation = nil
-                ownedZoomWindowIDs.remove(preservation.windowID)
-            }
-        }
-
-        var completedOwnershipWindowIDs: Set<TmuxWindowID> = []
-        for windowID in pendingZoomOwnershipWindowIDs {
-            if let window = topology.windows.first(where: { $0.id == windowID }) {
-                if window.zoomed {
-                    ownedZoomWindowIDs.insert(windowID)
-                    completedOwnershipWindowIDs.insert(windowID)
-                }
-            } else {
-                completedOwnershipWindowIDs.insert(windowID)
-            }
-        }
-        pendingZoomOwnershipWindowIDs.subtract(completedOwnershipWindowIDs)
-
-        let preservedWindowID = pendingOwnedZoomPreservation?.windowID
-        let unzoomedWindowIDs = ownedZoomWindowIDs.filter { windowID in
-            windowID != preservedWindowID
-                && topology.windows.first(where: { $0.id == windowID })?.zoomed == false
-        }
-        ownedZoomWindowIDs = ownedZoomWindowIDs.filter { windowID in
-            windowID == preservedWindowID
-                || topology.windows.first(where: { $0.id == windowID })?.zoomed == true
-        }
-        // The zoom Remux made is gone; a later zoom on these windows is not its own.
-        if !unzoomedWindowIDs.isEmpty {
-            controller?.requestForgetZoomMarks(
-                windowIDs: unzoomedWindowIDs.sorted { $0.rawValue < $1.rawValue }
-            )
-        }
+        controller?.requestReleaseZoom()
     }
 
     func closePane(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let paneID = identities.paneID(for: id), let controller else {
             return .missingTarget(.pane(id))
-        }
-        if let topology = latestTopology,
-           let pane = topology.panes.first(where: { $0.id == paneID }),
-           let window = topology.windows.first(where: { $0.id == pane.windowID }),
-           window.zoomed,
-           topology.panes.lazy.filter({ $0.windowID == window.id }).count > 2,
-           ownedZoomWindowIDs.contains(window.id) {
-            pendingOwnedZoomPreservation = (window.id, paneID)
         }
         controller.requestClosePane(paneID: paneID)
         return .queued

@@ -146,13 +146,6 @@ final class GhosttyManagedSurface {
         return .accepted
     }
 
-    @discardableResult
-    func sendPaste(_ text: String) -> FocusedTerminalInputSubmissionResult {
-        guard !text.isEmpty else { return .empty }
-        guard rendererIsAvailable else { return .surfaceRejected }
-        return controlSurface.sendPaste(text) ? .accepted : .surfaceRejected
-    }
-
     func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool {
         guard !text.isEmpty, rendererIsAvailable, let inputSink else { return false }
         return await inputSink.sendPasteAwaitingCommandCompletion(text)
@@ -418,6 +411,13 @@ final class GhosttyManagedSurface {
         onScrollStateChange?()
         onLocalSelectionGeometryChange?()
         return scrollState
+    }
+
+    /// Returns a pane whose scrolling moves its own viewport to its newest row.
+    func scrollViewportToBottom() {
+        refreshInteractionState()
+        guard scrollRoute == .viewport else { return }
+        scrollToPosition(row: scrollState.maxRow, cellOffset: 0)
     }
 
     func notifyLocalSelectionGeometryChanged() {

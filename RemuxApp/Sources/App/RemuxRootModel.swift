@@ -113,11 +113,25 @@ enum TerminalRuntime {
         }
     }
 
-    /// Previews read files and forward ports through the tmux transport's SSH connection.
-    var terminalPreviewClient: TerminalPreviewClient? {
-        switch self {
-        case .tmux(let model): model.terminalPreviewClient
-        case .herdr: nil
+    /// Where a preview's file is on the server: an absolute path as printed, a relative one in the current
+    /// directory of the pane it was printed in, which tmux reports when asked and Herdr sends as it changes.
+    func terminalPreviewPathResolver(
+        for candidate: TerminalPreviewCandidate,
+        from surfaceID: UUID
+    ) -> TerminalPreviewSession.PathResolver {
+        switch candidate.target {
+        case .localhost:
+            // Live targets carry their destination; the session never invokes this resolver for them.
+            return { "" }
+        case .file(.absolute(let remotePath)):
+            return { remotePath }
+        case .file(.relative(let path)):
+            let relativePath = TerminalPreviewPath.relative(path)
+            let currentDirectory = switch self {
+            case .tmux(let model): model.paneCurrentDirectory(from: surfaceID)
+            case .herdr(let model): model.paneCurrentDirectory(from: surfaceID)
+            }
+            return { try relativePath.resolved(relativeTo: try await currentDirectory()) }
         }
     }
 
@@ -160,11 +174,13 @@ struct ActiveTerminalScreenEntry: Identifiable {
     let presentation: GhosttySurfaceScreenPresentation
     let runtime: TerminalRuntime
     let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
+    let terminalPreviewClientFactory: @Sendable () -> TerminalPreviewClient?
 
     init(
         session: ActiveTerminalSession,
         runtime: TerminalRuntime,
-        attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService
+        attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
+        terminalPreviewClientFactory: @escaping @Sendable () -> TerminalPreviewClient?
     ) {
         self.id = session.id
         self.instanceID = session.instanceID
@@ -181,6 +197,7 @@ struct ActiveTerminalScreenEntry: Identifiable {
         )
         self.runtime = runtime
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
+        self.terminalPreviewClientFactory = terminalPreviewClientFactory
     }
 }
 
@@ -465,6 +482,8 @@ final class RemuxRootModel: ObservableObject {
         var validation: TmuxConnectionDraftValidation
         var submissionIssue: SubmissionIssue?
         let mode: SetupMode
+        /// The draft as the setup began.
+        let initialDraft: TmuxConnectionDraft
 
         init(
             draft: TmuxConnectionDraft,
@@ -476,7 +495,11 @@ final class RemuxRootModel: ObservableObject {
             self.validation = validation
             self.submissionIssue = submissionIssue
             self.mode = mode
+            self.initialDraft = draft
         }
+
+        /// Whether closing the setup would throw away something entered since it began.
+        var hasChanges: Bool { draft != initialDraft }
     }
 
     enum State: Equatable {
@@ -510,12 +533,15 @@ final class RemuxRootModel: ObservableObject {
     var activeTerminalScreenEntries: [ActiveTerminalScreenEntry] {
         activeSessions.map { session in
             let runtime = terminalRuntime(for: session)
-            let attachmentTarget = runtime.target
+            let serverTarget = runtime.target
             return ActiveTerminalScreenEntry(
                 session: session,
                 runtime: runtime,
-                attachmentTransferServiceFactory: { [dependencies, attachmentTarget] in
-                    dependencies.makeAttachmentTransferService(for: attachmentTarget)
+                attachmentTransferServiceFactory: { [dependencies, serverTarget] in
+                    dependencies.makeAttachmentTransferService(for: serverTarget)
+                },
+                terminalPreviewClientFactory: { [dependencies, serverTarget] in
+                    dependencies.makeTerminalPreviewClient(for: serverTarget)
                 }
             )
         }
@@ -527,6 +553,9 @@ final class RemuxRootModel: ObservableObject {
     private let terminalScreenModelFactory: TerminalScreenModelFactory
     private var terminalRuntimes: [TerminalRuntimeAttemptKey: TerminalRuntime] = [:]
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
+    /// Set on going to the background, cleared by the connection check on return.
+    private var hasBeenInBackground = false
+    private let networkPathObserver: any RemuxNetworkPathObserving
     private var currentSetupID: UUID?
     private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
@@ -536,11 +565,18 @@ final class RemuxRootModel: ObservableObject {
     private var pendingServerOrder: [SavedServer.ID]?
     private var isSavingServerOrder = false
 
+    /// `makeNetworkPathObserver` gets what to run when the path changes and is usable; by default the device's.
     init(
         dependencies: RemuxAppDependencies,
-        terminalScreenModelFactory: TerminalScreenModelFactory? = nil
+        terminalScreenModelFactory: TerminalScreenModelFactory? = nil,
+        makeNetworkPathObserver: (
+            @escaping @Sendable () -> Void
+        ) -> any RemuxNetworkPathObserving = { RemuxNetworkPathObserver(onUsablePathChange: $0) }
     ) {
         self.dependencies = dependencies
+        self.networkPathObserver = makeNetworkPathObserver {
+            Task { await dependencies.checkSSHConnections(reason: "network") }
+        }
         self.preparedTransportCoordinator = RemuxPreparedTransportCoordinator { target in
             dependencies.makeTransport(for: target)
         }
@@ -1771,6 +1807,19 @@ final class RemuxRootModel: ObservableObject {
         herdrModel(of: workspaceID)?.agents
     }
 
+    /// What the terminal's Home button says of the open Herdr sessions' agents: blocked while one that isn't on
+    /// screen needs the user, else done while one has finished, else nothing. A session that isn't connected
+    /// counts by its agents' last known states, as the agents' list shows them.
+    var waitingAgentStatus: TerminalAgentStatus? {
+        activeSessions.lazy
+            .compactMap { session -> TerminalAgentStatus? in
+                guard let model = self.herdrModel(of: session.id) else { return nil }
+                let tabOnScreen = model.notificationState.flatMap { $0.isShown ? $0.focusedTabID : nil }
+                return model.agents.waitingStatus(tabOnScreen: tabOnScreen)
+            }
+            .max()
+    }
+
     private func herdrModel(of workspaceID: SavedWorkspace.ID) -> HerdrScreenModel? {
         guard let session = RemuxActiveSessionCollection.session(workspaceID, in: activeSessions),
               case .herdr(let model)? = terminalRuntimes[TerminalRuntimeAttemptKey(session: session)]
@@ -1879,7 +1928,16 @@ final class RemuxRootModel: ObservableObject {
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
         currentAppLifecyclePhase = phase
         if phase == .background {
+            hasBeenInBackground = true
             cancelAllSessionRefreshes()
+        }
+        // A connection can die silently while the app is suspended (the network changed, a router dropped it), and
+        // a tmux session would otherwise find out only when TCP gives up, minutes later. Offline, the check waits
+        // for the network to come back (the path observer runs it then).
+        if phase == .active, hasBeenInBackground, networkPathObserver.isUsable {
+            hasBeenInBackground = false
+            let dependencies = dependencies
+            Task { await dependencies.checkSSHConnections(reason: "foreground") }
         }
         // Going to the background cancels discovery, leaving a server's first check undone; it resumes on return.
         if phase == .active {

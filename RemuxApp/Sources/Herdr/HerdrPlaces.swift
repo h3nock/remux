@@ -261,10 +261,16 @@ extension HerdrSnapshot {
             ?? "terminal"
     }
 
+    /// The directory of the pane's foreground program, as tmux's current path is, else of its shell; nil when
+    /// Herdr gave neither.
+    func currentDirectory(ofPane paneID: String) -> String? {
+        let pane = panes.first { $0.paneID == paneID }
+        return [pane?.foregroundCWD, pane?.cwd].lazy.compactMap { $0 }.first { !$0.isEmpty }
+    }
+
     /// What runs in the pane: its agent, by kind, else a terminal.
     func program(ofPane paneID: String) -> TerminalProgram {
-        guard let agent = agents.first(where: { $0.paneID == paneID }) else { return .terminal }
-        return .agent(agent.kind ?? agent.listName)
+        agents.first { $0.paneID == paneID }?.program ?? .terminal
     }
 
     /// The description Herdr supplies: an agent's title, or a plain pane's name or folder.

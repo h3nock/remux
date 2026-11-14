@@ -2378,7 +2378,7 @@ actor HerdrTerminalEngine {
                     paneID: paneID,
                     innerRect: surface.panes.first { $0.paneID == paneID }?.innerRect,
                     name: Self.name(ofPane: paneID, in: snapshot),
-                    path: Self.path(ofPane: paneID, in: snapshot)
+                    path: snapshot.currentDirectory(ofPane: paneID) ?? ""
                 )
             },
             borders: borders,
@@ -2417,12 +2417,6 @@ actor HerdrTerminalEngine {
             return paneName
         }
         return "\(paneName) · \(index + 1)"
-    }
-
-    /// The directory of the pane's foreground program, as tmux's current path is, else of its shell.
-    private static func path(ofPane paneID: String, in snapshot: HerdrSnapshot) -> String {
-        let pane = snapshot.panes.first { $0.paneID == paneID }
-        return [pane?.foregroundCWD, pane?.cwd].lazy.compactMap { $0 }.first { !$0.isEmpty } ?? ""
     }
 
     private func wake(_ painting: inout Painting, target: HerdrTerminalTarget) {

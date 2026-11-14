@@ -166,13 +166,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         case newSession
     }
 
-    private enum Mode: Hashable {
-        case sessions
-        case agents
-    }
-
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
     let projection: SessionSwitcherProjection
     let servers: [SavedServer]
@@ -196,17 +190,13 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     let herdrWorkspaceCloseConfirmation: (String, SavedWorkspace.ID) -> HerdrCloseConfirmation?
     let onCloseHerdrWorkspace: (HerdrCloseConfirmation, SavedWorkspace.ID) -> Void
     let herdrScreen: (SavedWorkspace.ID) -> HerdrTerminalScreenAdapter?
-    /// An open Herdr session's agents, which the sheet follows as they change.
+    /// An open Herdr session's agents, which its row follows as they change.
     let herdrAgents: (SavedWorkspace.ID) -> HerdrAgentPresentation?
-    /// Opens a Herdr session at an agent's pane: the session, the pane and the server boot its id is from.
-    let onOpenHerdrAgent: (SavedWorkspace.ID, String, String?) -> Void
 
     @State private var path: [Route] = []
     @State private var showsAllRecentSessions = false
     /// Herdr sessions opened or closed by hand; otherwise only the session on screen lists its workspaces.
     @State private var herdrDisclosures: [SavedWorkspace.ID: Bool] = [:]
-    @State private var mode = Mode.sessions
-    @State private var agentFilter = SessionAgentsFilter.all
     @State private var renamePrompt: TerminalRenamePrompt?
     @State private var renameName = ""
     @State private var workspaceClose: (session: SavedWorkspace.ID, confirmation: HerdrCloseConfirmation)?
@@ -261,39 +251,8 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         .accessibilityIdentifier("terminal.sessions.sheet")
     }
 
-    /// Agents are listed only for Herdr sessions, so the switch to them shows while one is open.
-    private var showsAgentsSwitch: Bool {
-        projection.activeSessions.contains { $0.backend == .herdr }
-    }
-
     private var sheetContent: some View {
-        VStack(spacing: 0) {
-            if showsAgentsSwitch {
-                Picker("Show", selection: $mode) {
-                    Text("Sessions").tag(Mode.sessions)
-                    Text("Agents").tag(Mode.agents)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 4)
-                .accessibilityIdentifier("terminal.sessions.mode")
-            }
-
-            if showsAgentsSwitch, mode == .agents {
-                SessionAgentsList(
-                    projection: SessionAgentsProjection(
-                        activeSessions: projection.activeSessions,
-                        agents: herdrAgents
-                    ),
-                    filter: $agentFilter,
-                    onOpen: openAgent
-                )
-            } else {
-                sessionList
-            }
-        }
+        sessionList
         .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -309,12 +268,6 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                 .accessibilityIdentifier("terminal.sessions.close")
             }
         }
-    }
-
-    private func openAgent(_ session: SessionAgentsProjection.Session, _ agent: HerdrAgentPresentation.Agent) {
-        Haptic.selection()
-        onOpenHerdrAgent(session.id, agent.paneID, session.bootID)
-        dismiss()
     }
 
     private var sessionList: some View {
@@ -471,19 +424,22 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
             ActiveSessionSwitcherRow(
                 session: session,
                 disclosure: disclosure,
-                agentStatus: herdrAgents(session.id)?.status,
-                chromeStyle: chromeStyle
+                agentStatus: herdrAgents(session.id)?.status
             )
         }
         .buttonStyle(.plain)
         .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.active-session")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
+            // Red, but not a destructive action: the session keeps running on its server, and a destructive
+            // action has the list take the swiped row out by itself, one row, while a Herdr session leaves
+            // with its workspaces' rows as well and the list then stops the app over the count.
+            Button {
                 Haptic.warning()
                 onDisconnectSession(session.id)
             } label: {
                 Label("Disconnect", systemImage: "bolt.slash")
             }
+            .tint(.red)
             .accessibilityIdentifier("terminal.sessions.disconnect")
         }
         .accessibilityAction(named: Text("Disconnect from Remux")) {
@@ -509,8 +465,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                 workspace: workspace,
                 isCurrent: isCurrent,
                 agentStatus: agentStatus,
-                isStale: isStale,
-                chromeStyle: chromeStyle
+                isStale: isStale
             )
         }
         .buttonStyle(.plain)
@@ -573,7 +528,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         } label: {
             Label("New Workspace", systemImage: "plus")
                 .font(.body)
-                .foregroundStyle(chromeStyle.accent)
+                .foregroundStyle(RemuxAccent.fill)
                 .padding(.leading, HerdrWorkspaceSwitcherRow.leadingInset)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
@@ -771,7 +726,6 @@ private struct ActiveSessionSwitcherRow: View {
     let disclosure: Bool?
     /// The session's most urgent agent, for a session that reports agents.
     let agentStatus: TerminalAgentStatus?
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     var body: some View {
         HStack(spacing: 12) {
@@ -813,7 +767,7 @@ private struct ActiveSessionSwitcherRow: View {
             if session.showsCheckmark(disclosure: disclosure) {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(chromeStyle.accent)
+                    .foregroundStyle(RemuxAccent.fill)
                     .accessibilityHidden(true)
             }
 
@@ -855,7 +809,6 @@ private struct HerdrWorkspaceSwitcherRow: View {
     let agentStatus: TerminalAgentStatus?
     /// The session isn't connected, so the agents' state may be out of date.
     let isStale: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     private var tabCount: String {
         workspace.tabs.count == 1 ? "1 tab" : "\(workspace.tabs.count) tabs"
@@ -891,7 +844,7 @@ private struct HerdrWorkspaceSwitcherRow: View {
             if isCurrent {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(chromeStyle.accent)
+                    .foregroundStyle(RemuxAccent.fill)
                     .accessibilityHidden(true)
             }
         }

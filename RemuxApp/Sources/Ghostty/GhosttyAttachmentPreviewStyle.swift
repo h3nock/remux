@@ -22,15 +22,13 @@ struct GhosttyAttachmentPreviewCloseButtonStyle: ButtonStyle {
 
 struct GhosttyAttachmentPreviewChipButtonStyle: ButtonStyle {
     let isSelected: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(isSelected ? chromeStyle.accent : GhosttySheetPalette.primary)
+            .foregroundStyle(isSelected ? RemuxAccent.fill : GhosttySheetPalette.primary)
             .ghosttyAttachmentPreviewChipSurface(
                 isSelected: isSelected,
-                isPressed: configuration.isPressed,
-                chromeStyle: chromeStyle
+                isPressed: configuration.isPressed
             )
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -80,16 +78,14 @@ extension View {
 
     func ghosttyAttachmentPreviewChipSurface(
         isSelected: Bool,
-        isPressed: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
+        isPressed: Bool
     ) -> some View {
         let shape = Capsule()
         let fill = attachmentPreviewChipFill(
             isSelected: isSelected,
-            isPressed: isPressed,
-            chromeStyle: chromeStyle
+            isPressed: isPressed
         )
-        let stroke = isSelected ? GhosttySheetPalette.selectedStroke(chromeStyle) : GhosttyAttachmentPreviewStyle.controlStroke
+        let stroke = isSelected ? GhosttySheetPalette.selectedStroke : GhosttyAttachmentPreviewStyle.controlStroke
 
         return self
             .background(fill, in: shape)
@@ -101,11 +97,10 @@ extension View {
 
     private func attachmentPreviewChipFill(
         isSelected: Bool,
-        isPressed: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
+        isPressed: Bool
     ) -> Color {
         if isSelected {
-            return chromeStyle.selectedFill
+            return RemuxAccent.selectedFill
         }
 
         return isPressed

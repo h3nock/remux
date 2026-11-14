@@ -6,12 +6,27 @@ enum RemuxAppPalette {
     static let rowSurface = Color(uiColor: .remuxAppRowSurface)
     static let separator = Color(uiColor: .remuxAppSeparator)
     static let sectionHeader = Color(uiColor: .remuxAppSectionHeader)
-    static let controlAccent = Color(uiColor: .remuxAppControlAccent)
     static let rowIconForeground = Color(uiColor: .remuxAppRowIconForeground)
     static let rowIconSurface = Color(uiColor: .remuxAppRowIconSurface)
 }
 
 typealias LibraryHomePalette = RemuxAppPalette
+
+/// The app's accent, the same in every terminal theme: a theme sets only the terminal's colours and whether
+/// the chrome around it is light or dark.
+enum RemuxAccent {
+    static let fill = Color.accentColor
+    /// Text and glyphs drawn on `fill`.
+    static let onFill = Color.white
+
+    static let toolbarButtonActiveFill = fill.opacity(0.16)
+    static let selectedFill = fill.opacity(0.18)
+    static let selectedStroke = fill.opacity(0.76)
+
+    /// `fill` for UIKit: the app's named accent colour, or the system blue `Color.accentColor` is without one.
+    static let uiFill = UIColor(named: "AccentColor") ?? .systemBlue
+    static let uiOnFill = UIColor.white
+}
 
 extension View {
     func remuxAppListRowSurface() -> some View {
@@ -76,15 +91,6 @@ private extension UIColor {
             UIColor(red: 0.72, green: 0.74, blue: 0.80, alpha: 1.0)
         default:
             .secondaryLabel
-        }
-    }
-
-    static let remuxAppControlAccent = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.39, green: 0.64, blue: 1.0, alpha: 1.0)
-        default:
-            .systemBlue
         }
     }
 

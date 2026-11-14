@@ -509,6 +509,60 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertEqual(panes.map(\.currentCommand), ["terminal"])
     }
 
+    /// A preview finds a relative path in the current directory of the pane it was printed in, as tmux's
+    /// does: the pane's foreground program's, else its shell's, from Herdr's newest snapshot, which follows
+    /// a `cd`. A pane Herdr gave no directory has none to resolve in; an absolute path needs none.
+    func testAPreviewResolvesARelativePathInItsPanesCurrentDirectory() async throws {
+        let harness = await makeHarness()
+        let bridge = try await harness.bridge()
+        func panes(programDirectory: String) -> [String] {
+            [
+                HerdrServerScript.snapshotPane("w1:p1", cwd: "/repo", foregroundCWD: programDirectory),
+                HerdrServerScript.snapshotPane("w1:p2", cwd: "/home/me"),
+                HerdrServerScript.snapshotPane("w1:p3"),
+            ]
+        }
+        await bridge.serve(
+            try HerdrServerScript.welcome()
+                + HerdrServerScript.snapshot(revision: 1, panes: panes(programDirectory: "/repo/src"))
+        )
+        await bridge.serve(HerdrServerScript.surface(
+            projection: 1,
+            revision: 1,
+            lines: ["a b c"],
+            panes: (0..<3).map { .init(id: "w1:p\($0 + 1)", x: UInt16($0 * 2), width: 1, height: 1, focused: $0 == 0) }
+        ))
+        harness.setScreenSize()
+        let adapter = harness.model.terminalScreenAdapter
+        try await harness.waitUntil("the panes weren't laid out") {
+            adapter.terminalScreenPresentationProjection.viewport.panes.count == 3
+        }
+        let surfaces = adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id)
+        let runtime = TerminalRuntime.herdr(harness.model)
+        func resolve(_ selection: String, in surface: UUID) async throws -> String {
+            let candidate = try XCTUnwrap(TerminalPreviewCandidate(selection: selection))
+            return try await runtime.terminalPreviewPathResolver(for: candidate, from: surface)()
+        }
+
+        let inProgram = try await resolve("docs/notes.md", in: surfaces[0])
+        XCTAssertEqual(inProgram, "/repo/src/docs/notes.md")
+        let inShell = try await resolve("../notes.md", in: surfaces[1])
+        XCTAssertEqual(inShell, "/home/notes.md")
+        let absolute = try await resolve("/etc/notes.md", in: surfaces[2])
+        XCTAssertEqual(absolute, "/etc/notes.md")
+        do {
+            _ = try await resolve("notes.md", in: surfaces[2])
+            XCTFail("a pane without a directory has none to resolve in")
+        } catch let error as TerminalPreviewPathError {
+            XCTAssertEqual(error, .invalidCurrentDirectory)
+        }
+
+        await bridge.serve(HerdrServerScript.snapshot(revision: 2, panes: panes(programDirectory: "/repo/lib")))
+        try await harness.waitUntil("the directory after the cd wasn't used") {
+            (try? await resolve("docs/notes.md", in: surfaces[0])) == "/repo/lib/docs/notes.md"
+        }
+    }
+
     /// A frame left behind by a lost connection shows no live cursor: the focused pane is unfocused
     /// while the session reconnects, as Herdr's client hides its cursor while its session is offline,
     /// and focused again once the new connection is open.

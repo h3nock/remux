@@ -15,7 +15,7 @@ final class GhosttySurfaceScreenResizeTests: XCTestCase {
         let target = SessionTarget(server: server, workspace: workspace,
             sshAuth: .password(username: server.username, password: "test",
                 identityID: server.identityID, displayLabel: server.displayName))
-        let transport = DeterministicTmuxControlTransport(chunks: [Self.attachedSession])
+        let transport = ResizeTestTmuxTransport()
         var updates: [TerminalRuntimeStateUpdate] = []
         let model = TmuxScreenModel(target: target, sessionInstanceID: UUID(),
             transportFactory: { _ in transport }, onRuntimeStateChange: { updates.append($0) })
@@ -110,17 +110,54 @@ final class GhosttySurfaceScreenResizeTests: XCTestCase {
 
     private struct TestTimeout: Error {}
 
-    /// A single hydrated pane; the deterministic transport keeps its channel open during resizing.
-    private static var attachedSession: Data {
-        let pane = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/home/test\n"
-        let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
-        let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
-            + "%begin 2 2 1\n3.1\n%end 2 2 1\n"
-            + "%begin 3 3 1\n%end 3 3 1\n"
-            + "%begin 4 4 1\n\(window)%end 4 4 1\n"
-            + "%begin 5 5 1\n\(pane)%end 5 5 1\n"
-            + (6...9).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
-        return Data(transcript.utf8)
+}
+
+/// Answers commands as they arrive, so additional startup queries cannot shift the pane's reply.
+private actor ResizeTestTmuxTransport: TmuxControlTransport {
+    nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
+    private let continuation: AsyncThrowingStream<Data, Error>.Continuation
+    private var partialLine = ""
+    private var nextCommand = 2
+
+    init() {
+        (receivedBytes, continuation) = AsyncThrowingStream.makeStream()
+    }
+
+    func start(initialViewport: TmuxControlViewport?) async throws {
+        continuation.yield(Data("%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n".utf8))
+    }
+
+    func send(_ data: Data) async throws {
+        if TmuxControlClientExit.isRequested(in: data) {
+            continuation.finish()
+            return
+        }
+        partialLine += String(decoding: data, as: UTF8.self)
+        while let newline = partialLine.firstIndex(of: "\n") {
+            let line = String(partialLine[..<newline])
+            partialLine = String(partialLine[partialLine.index(after: newline)...])
+            for command in line.components(separatedBy: " ; ") {
+                let number = nextCommand
+                nextCommand += 1
+                let body: String
+                if command.contains("#{version}") {
+                    body = "3.1\n"
+                } else if command.hasPrefix("list-windows"), command.contains("#{session_id}") {
+                    body = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
+                } else if command.hasPrefix("list-panes"), command.contains("#{cursor_flag}") {
+                    body = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;0;0;43;8,16;zsh;/home/test\n"
+                } else if command.hasPrefix("list-panes") {
+                    body = "%0;83;44;0;0;0;0;b7dd,83x44,0,0,0;\n"
+                } else {
+                    body = ""
+                }
+                continuation.yield(Data("%begin \(number) \(number) 1\n\(body)%end \(number) \(number) 1\n".utf8))
+            }
+        }
+    }
+
+    func close(disposition: TmuxControlTransportCloseDisposition) async {
+        continuation.finish()
     }
 }
 

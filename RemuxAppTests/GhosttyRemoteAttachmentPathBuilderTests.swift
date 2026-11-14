@@ -647,21 +647,18 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
         let service = GhosttyAttachmentSFTPTransferService(client: client)
 
         let result = try await service.transfer(job, progress: { _ in })
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
+        let realPathRequests = await client.realPathRequests
 
         let remoteDirectory = ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         let temporaryPath = "\(remoteDirectory)/.report.txt.part"
         let finalPath = "\(remoteDirectory)/report.txt"
         XCTAssertEqual(events, [
-            .ensureDirectory(".cache"),
-            .ensureDirectory(".cache/remux"),
-            .ensureDirectory(".cache/remux/attachments"),
-            .ensureDirectory(".cache/remux/attachments/11111111-2222-3333-4444-555555555555"),
-            .ensureDirectory(remoteDirectory),
+            .makeDirectory(remoteDirectory),
             .upload(localPath: localURL.path, remotePath: temporaryPath),
             .rename(temporaryPath: temporaryPath, finalPath: finalPath),
-            .realPath(finalPath),
         ])
+        XCTAssertEqual(realPathRequests, [remoteDirectory])
         XCTAssertEqual(result, GhosttyAttachmentTransferResult(
             transferID: transferID,
             items: [
@@ -703,21 +700,18 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
         let service = GhosttyAttachmentSFTPTransferService(client: client)
 
         let result = try await service.transfer(job, progress: { _ in })
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
+        let realPathRequests = await client.realPathRequests
 
         let remoteDirectory = ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         let temporaryPath = "\(remoteDirectory)/.report.pdf.part"
         let finalPath = "\(remoteDirectory)/report.pdf"
         XCTAssertEqual(events, [
-            .ensureDirectory(".cache"),
-            .ensureDirectory(".cache/remux"),
-            .ensureDirectory(".cache/remux/attachments"),
-            .ensureDirectory(".cache/remux/attachments/11111111-2222-3333-4444-555555555555"),
-            .ensureDirectory(remoteDirectory),
+            .makeDirectory(remoteDirectory),
             .upload(localPath: localURL.path, remotePath: temporaryPath),
             .rename(temporaryPath: temporaryPath, finalPath: finalPath),
-            .realPath(finalPath),
         ])
+        XCTAssertEqual(realPathRequests, [remoteDirectory])
         XCTAssertEqual(result.items, [
             .remoteFile(
                 sourceID: sourceID,
@@ -924,11 +918,14 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
 
         let result = try await service.transfer(job, progress: { _ in })
         let leaseCount = await provider.leaseCount
-        let events = await client.events
+        let uploadTurnCount = await provider.uploadTurnCount
+        let events = await client.eventsWithoutRealPaths
+        let realPathRequests = await client.realPathRequests
 
         XCTAssertEqual(leaseCount, 1)
+        XCTAssertEqual(uploadTurnCount, 1)
         XCTAssertEqual(result.items.count, 1)
-        XCTAssertEqual(Array(events.suffix(3)), [
+        XCTAssertEqual(Array(events.suffix(2)), [
             .upload(
                 localPath: localURL.path,
                 remotePath: ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.report.txt.part"
@@ -937,7 +934,9 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
                 temporaryPath: ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.report.txt.part",
                 finalPath: ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/report.txt"
             ),
-            .realPath(".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/report.txt"),
+        ])
+        XCTAssertEqual(realPathRequests, [
+            ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         ])
     }
 
@@ -954,7 +953,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
         )
 
         let result = try await provider.withClient { client in
-            try await client.ensureDirectoryExists(atPath: ".cache")
+            _ = try await client.makeDirectory(atPath: ".cache/remux/new")
             return "ok"
         }
         let closeCount = await leaseState.closeCount
@@ -962,7 +961,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
 
         XCTAssertEqual(result, "ok")
         XCTAssertEqual(closeCount, 1)
-        XCTAssertEqual(events, [.ensureDirectory(".cache")])
+        XCTAssertEqual(events, [.makeDirectory(".cache/remux/new")])
     }
 
     func testShortLivedProviderClosesLeaseAfterOperationFailure() async {
@@ -1075,7 +1074,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
         XCTAssertEqual(events, [])
     }
 
-    func testFallsBackToResolvedUploadPathWhenRemoteFinalPathResolutionFails() async throws {
+    func testFallsBackToBuiltTerminalPathsWhenTheDirectoryDoesNotResolve() async throws {
         let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
         let workspaceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let transferID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
@@ -1116,13 +1115,10 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
             ]
         ))
 
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
+        let realPathRequests = await client.realPathRequests
         XCTAssertEqual(events, [
-            .ensureDirectory(".cache"),
-            .ensureDirectory(".cache/remux"),
-            .ensureDirectory(".cache/remux/attachments"),
-            .ensureDirectory(".cache/remux/attachments/11111111-2222-3333-4444-555555555555"),
-            .ensureDirectory(".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            .makeDirectory(remoteDirectory),
             .upload(
                 localPath: localURL.path,
                 remotePath: temporaryPath
@@ -1131,8 +1127,8 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
                 temporaryPath: temporaryPath,
                 finalPath: finalPath
             ),
-            .realPath(finalPath),
         ])
+        XCTAssertEqual(realPathRequests, [remoteDirectory])
     }
 
     func testMapsCancellationBeforeRemoteOperations() async throws {
@@ -1196,7 +1192,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
         XCTAssertEqual(events.last, .remove(
             ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.upload-failure.txt.part"
         ))
@@ -1228,7 +1224,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
         XCTAssertEqual(events.last, .remove(
             ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.cleanup-failure.txt.part"
         ))
@@ -1258,7 +1254,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
         XCTAssertEqual(events.last, .upload(
             localPath: localURL.path,
             remotePath: ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.timeout.txt.part"
@@ -1298,7 +1294,7 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        let events = await client.events
+        let events = await client.eventsWithoutRealPaths
         XCTAssertEqual(Array(events.suffix(3)), [
             .upload(
                 localPath: localURL.path,
@@ -1310,6 +1306,175 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
             ),
             .remove(".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.rename-failure.txt.part"),
         ])
+    }
+
+    func testMakesAnExistingTransferDirectoryWithOneMkdirAndOneStat() async throws {
+        let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
+        let job = singleFileJob(localURL)
+        let directory = Self.transferDirectory
+        let client = FakeGhosttyAttachmentSFTPClient(
+            directories: FakeGhosttyAttachmentSFTPClient.workspaceDirectories.union([directory])
+        )
+
+        _ = try await GhosttyAttachmentSFTPTransferService(client: client).transfer(job, progress: { _ in })
+
+        let events = await client.eventsWithoutRealPaths
+        XCTAssertEqual(Array(events.prefix(2)), [.makeDirectory(directory), .itemExists(directory)])
+        XCTAssertEqual(events.count, 4, "then the upload and the rename")
+    }
+
+    func testCreatesMissingParentsOnlyAfterTheServerSaysOneIsMissing() async throws {
+        let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
+        let job = singleFileJob(localURL)
+        let workspace = ".cache/remux/attachments/11111111-2222-3333-4444-555555555555"
+        let client = FakeGhosttyAttachmentSFTPClient(directories: [".cache"])
+
+        _ = try await GhosttyAttachmentSFTPTransferService(client: client).transfer(job, progress: { _ in })
+
+        let events = await client.eventsWithoutRealPaths
+        XCTAssertEqual(Array(events.prefix(7)), [
+            .makeDirectory(Self.transferDirectory),
+            .makeDirectory(workspace),
+            .makeDirectory(".cache/remux/attachments"),
+            .makeDirectory(".cache/remux"),
+            .makeDirectory(".cache/remux/attachments"),
+            .makeDirectory(workspace),
+            .makeDirectory(Self.transferDirectory),
+        ])
+        let directories = await client.directories
+        XCTAssertTrue(directories.contains(Self.transferDirectory))
+    }
+
+    func testRefusedDirectoryThatDoesNotExistFailsBeforeUploading() async throws {
+        let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
+        let job = singleFileJob(localURL)
+        let client = FakeGhosttyAttachmentSFTPClient(refusedDirectories: [Self.transferDirectory])
+
+        do {
+            _ = try await GhosttyAttachmentSFTPTransferService(client: client).transfer(job, progress: { _ in })
+            XCTFail("Expected transfer to throw")
+        } catch let error as GhosttyAttachmentTransferError {
+            XCTAssertEqual(error, .remoteDirectoryCreationFailed(Self.transferDirectory))
+        }
+
+        let events = await client.events
+        XCTAssertEqual(events, [.makeDirectory(Self.transferDirectory), .itemExists(Self.transferDirectory)])
+    }
+
+    func testRefusedParentFailsWithTheParentsPath() async throws {
+        let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
+        let job = singleFileJob(localURL)
+        let client = FakeGhosttyAttachmentSFTPClient(
+            directories: [".cache", ".cache/remux"],
+            refusedDirectories: [".cache/remux/attachments"]
+        )
+
+        do {
+            _ = try await GhosttyAttachmentSFTPTransferService(client: client).transfer(job, progress: { _ in })
+            XCTFail("Expected transfer to throw")
+        } catch let error as GhosttyAttachmentTransferError {
+            XCTAssertEqual(error, .remoteDirectoryCreationFailed(".cache/remux/attachments"))
+        }
+
+        let events = await client.events
+        XCTAssertFalse(events.contains { if case .upload = $0 { return true } else { return false } })
+    }
+
+    func testDirectoryTimeoutStopsTheTransfer() async throws {
+        let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
+        let client = FakeGhosttyAttachmentSFTPClient(failure: .makeDirectoryTimeout)
+
+        do {
+            _ = try await GhosttyAttachmentSFTPTransferService(client: client)
+                .transfer(singleFileJob(localURL), progress: { _ in })
+            XCTFail("Expected transfer to throw")
+        } catch let error as GhosttyAttachmentTransferError {
+            XCTAssertEqual(error, .remoteOperationTimedOut)
+        }
+
+        let events = await client.events
+        XCTAssertEqual(events, [.makeDirectory(Self.transferDirectory)])
+    }
+
+    func testBuildsEveryFilesTerminalPathFromTheDirectorysRealPath() async throws {
+        let firstURL = try makeTemporaryFile(named: "first.txt", contents: "abcd")
+        let secondURL = try makeTemporaryFile(named: "second.png", contents: "abcdefgh")
+        let job = GhosttyAttachmentTransferJob(
+            workspaceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            transferID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            sources: [
+                GhosttyAttachmentTransferSource(title: "First", payload: .file(firstURL, filename: "first.txt")),
+                GhosttyAttachmentTransferSource(title: "Note", payload: .text("see")),
+                GhosttyAttachmentTransferSource(title: "Second", payload: .file(secondURL, filename: "second.png")),
+            ]
+        )
+        let client = FakeGhosttyAttachmentSFTPClient()
+
+        let result = try await GhosttyAttachmentSFTPTransferService(client: client).transfer(job, progress: { _ in })
+
+        let realPathRequests = await client.realPathRequests
+        XCTAssertEqual(realPathRequests, [Self.transferDirectory], "one real path for the whole job")
+        let terminalPaths = result.items.compactMap { item -> String? in
+            guard case .remoteFile(_, let path) = item else { return nil }
+            return path.terminalPath
+        }
+        XCTAssertEqual(terminalPaths, [
+            "/Users/remux/\(Self.transferDirectory)/first.txt",
+            "/Users/remux/\(Self.transferDirectory)/second.png",
+        ])
+        XCTAssertEqual(
+            GhosttyAttachmentTerminalInsertionFormatter.insertionText(for: result),
+            "/Users/remux/\(Self.transferDirectory)/first.txt see /Users/remux/\(Self.transferDirectory)/second.png"
+        )
+    }
+
+    func testResolvesTheDirectoryWhileTheFirstFileUploads() async throws {
+        let localURL = try makeTemporaryFile(named: "report.txt", contents: "hello")
+        let client = FakeGhosttyAttachmentSFTPClient()
+        let service = GhosttyAttachmentSFTPTransferService(client: client)
+        let realPathBeforeUpload = LockedFlag()
+
+        _ = try await service.transfer(singleFileJob(localURL)) { progress in
+            // The first file's first report comes just before its upload starts, so a real path asked for only
+            // after the uploads would never arrive here.
+            guard progress.completedUploadCount == 0, progress.currentUploadedBytes == 0 else { return }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while await client.realPathRequests.isEmpty, ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+            let requests = await client.realPathRequests
+            realPathBeforeUpload.set(!requests.isEmpty)
+        }
+
+        XCTAssertTrue(realPathBeforeUpload.value)
+    }
+
+    func testProviderBackedServicePreparesThroughItsProvider() async {
+        let provider = FakeGhosttyAttachmentSFTPClientProvider(client: FakeGhosttyAttachmentSFTPClient())
+        let service = GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
+
+        await service.prepare()
+
+        let prepareCount = await provider.prepareCount
+        let leaseCount = await provider.leaseCount
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertEqual(leaseCount, 0)
+    }
+
+    private static let transferDirectory =
+        ".cache/remux/attachments/11111111-2222-3333-4444-555555555555/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    private func singleFileJob(_ localURL: URL) -> GhosttyAttachmentTransferJob {
+        GhosttyAttachmentTransferJob(
+            workspaceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            transferID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            sources: [
+                GhosttyAttachmentTransferSource(
+                    title: localURL.lastPathComponent,
+                    payload: .file(localURL, filename: localURL.lastPathComponent)
+                ),
+            ]
+        )
     }
 
     private func makeTemporaryFile(named filename: String, contents: String) throws -> URL {
@@ -1329,6 +1494,19 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
         }
         try data.write(to: url)
         return url
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSet = false
+
+    var value: Bool {
+        lock.withLock { isSet }
+    }
+
+    func set(_ newValue: Bool) {
+        lock.withLock { isSet = newValue }
     }
 }
 
@@ -1382,6 +1560,8 @@ private actor FakeGhosttyAttachmentTransferService: GhosttyAttachmentTransferSer
         self.result = result
     }
 
+    func prepare() {}
+
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
         progress: @escaping GhosttyAttachmentTransferProgressHandler
@@ -1393,7 +1573,7 @@ private actor FakeGhosttyAttachmentTransferService: GhosttyAttachmentTransferSer
 
 private enum FakeGhosttyAttachmentSFTPFailure: Error, Equatable, Sendable {
     case realPath
-    case ensureDirectory
+    case makeDirectoryTimeout
     case upload
     case rename
     case remove
@@ -1422,20 +1602,54 @@ private actor FakeGhosttyAttachmentSFTPLeaseState {
     }
 }
 
+/// The server's directories answer a mkdir as OpenSSH's do: no such file when the parent is missing, a generic
+/// failure when the directory already exists or is in `refusedDirectories`.
 private actor FakeGhosttyAttachmentSFTPClient: RemuxSFTPUploadClient {
     enum Event: Equatable, Sendable {
         case realPath(String)
-        case ensureDirectory(String)
+        case makeDirectory(String)
+        case itemExists(String)
         case upload(localPath: String, remotePath: String)
         case rename(temporaryPath: String, finalPath: String)
         case remove(String)
     }
 
+    /// Every directory up to the tests' usual workspace, so a send makes only its own directory.
+    static let workspaceDirectories: Set<String> = [
+        ".cache",
+        ".cache/remux",
+        ".cache/remux/attachments",
+        ".cache/remux/attachments/11111111-2222-3333-4444-555555555555",
+    ]
+
     private let failure: FakeGhosttyAttachmentSFTPFailure?
+    private let refusedDirectories: Set<String>
+    private(set) var directories: Set<String>
     private(set) var events: [Event] = []
 
-    init(failure: FakeGhosttyAttachmentSFTPFailure? = nil) {
+    init(
+        failure: FakeGhosttyAttachmentSFTPFailure? = nil,
+        directories: Set<String> = workspaceDirectories,
+        refusedDirectories: Set<String> = []
+    ) {
         self.failure = failure
+        self.directories = directories
+        self.refusedDirectories = refusedDirectories
+    }
+
+    /// The events without real-path requests, which go out alongside the uploads.
+    var eventsWithoutRealPaths: [Event] {
+        events.filter {
+            if case .realPath = $0 { return false }
+            return true
+        }
+    }
+
+    var realPathRequests: [String] {
+        events.compactMap {
+            if case .realPath(let path) = $0 { return path }
+            return nil
+        }
     }
 
     func realPath(atPath path: String) async throws -> String {
@@ -1449,11 +1663,25 @@ private actor FakeGhosttyAttachmentSFTPClient: RemuxSFTPUploadClient {
         return "/Users/remux/\(path)"
     }
 
-    func ensureDirectoryExists(atPath path: String) async throws {
-        events.append(.ensureDirectory(path))
-        if failure == .ensureDirectory {
-            throw FakeGhosttyAttachmentSFTPFailure.ensureDirectory
+    func makeDirectory(atPath path: String) async throws -> RemuxSFTPMakeDirectoryResult {
+        events.append(.makeDirectory(path))
+        if failure == .makeDirectoryTimeout {
+            throw RemuxSFTPClientError.operationTimedOut
         }
+        if refusedDirectories.contains(path) || directories.contains(path) {
+            return .refused
+        }
+        let parent = (path as NSString).deletingLastPathComponent
+        if !parent.isEmpty, parent != "/", !directories.contains(parent) {
+            return .parentMissing
+        }
+        directories.insert(path)
+        return .created
+    }
+
+    func itemExists(atPath path: String) async throws -> Bool {
+        events.append(.itemExists(path))
+        return directories.contains(path)
     }
 
     func uploadFile(
@@ -1491,9 +1719,11 @@ private actor FakeGhosttyAttachmentSFTPClient: RemuxSFTPUploadClient {
     }
 }
 
-private actor FakeGhosttyAttachmentSFTPClientProvider: RemuxSFTPClientProvider {
+private actor FakeGhosttyAttachmentSFTPClientProvider: RemuxSFTPUploadClientProvider {
     private let client: FakeGhosttyAttachmentSFTPClient
     private(set) var leaseCount = 0
+    private(set) var uploadTurnCount = 0
+    private(set) var prepareCount = 0
 
     init(client: FakeGhosttyAttachmentSFTPClient) {
         self.client = client
@@ -1504,5 +1734,16 @@ private actor FakeGhosttyAttachmentSFTPClientProvider: RemuxSFTPClientProvider {
     ) async throws -> ReturnValue {
         leaseCount += 1
         return try await operation(client)
+    }
+
+    func withUploadTurn<ReturnValue: Sendable>(
+        _ upload: @Sendable (FakeGhosttyAttachmentSFTPClient) async throws -> ReturnValue
+    ) async throws -> ReturnValue {
+        uploadTurnCount += 1
+        return try await withClient(upload)
+    }
+
+    func prepare() {
+        prepareCount += 1
     }
 }

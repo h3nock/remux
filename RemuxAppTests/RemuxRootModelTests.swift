@@ -1,6 +1,7 @@
 import CryptoKit
 import GhosttyKit
 import Combine
+import NIOConcurrencyHelpers
 import SwiftUI
 import UIKit
 import XCTest
@@ -676,6 +677,49 @@ final class RemuxRootModelTests: XCTestCase {
         await tmuxDiscoverer.resumeFirst(with: [])
     }
 
+    /// A connection can die without a word while the app is suspended; returning to the app checks every connection
+    /// once, and an activation without a trip to the background (a notification pulled down) doesn't.
+    func testReturningFromTheBackgroundChecksConnectionsOnce() async throws {
+        let reasons = NIOLockedValueBox<[String]>([])
+        let harness = makeHarness(sshConnectionChecker: { reason, _ in
+            reasons.withLockedValue { $0.append(reason) }
+        })
+        await harness.model.load()
+
+        harness.model.handleAppLifecyclePhase(.inactive)
+        harness.model.handleAppLifecyclePhase(.active)
+        harness.model.handleAppLifecyclePhase(.background)
+        harness.model.handleAppLifecyclePhase(.inactive)
+        harness.model.handleAppLifecyclePhase(.active)
+        harness.model.handleAppLifecyclePhase(.active)
+
+        let checked = await waitUntil { reasons.withLockedValue { $0 } == ["foreground"] }
+        XCTAssertTrue(checked, "checks: \(reasons.withLockedValue { $0 })")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(reasons.withLockedValue { $0 }, ["foreground"])
+    }
+
+    /// Offline, a check would end connections that might survive the outage, so returning to the app waits for the
+    /// network; the network coming back (a usable path change) runs the check.
+    func testReturningOfflineChecksConnectionsWhenTheNetworkComesBack() async throws {
+        let reasons = NIOLockedValueBox<[String]>([])
+        let networkPath = TestNetworkPath(isUsable: false)
+        let harness = makeHarness(
+            sshConnectionChecker: { reason, _ in reasons.withLockedValue { $0.append(reason) } },
+            networkPath: networkPath
+        )
+        await harness.model.load()
+
+        harness.model.handleAppLifecyclePhase(.background)
+        harness.model.handleAppLifecyclePhase(.active)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(reasons.withLockedValue { $0 }, [])
+
+        networkPath.becomeUsable()
+        let checked = await waitUntil { reasons.withLockedValue { $0 } == ["network"] }
+        XCTAssertTrue(checked, "checks: \(reasons.withLockedValue { $0 })")
+    }
+
     func testCancelledCurrentTmuxRefreshReturnsToIdleAndCanRetry() async throws {
         let pair = makePasswordBackedServer()
         let discoverer = RecordingTmuxSessionDiscoverer(
@@ -987,6 +1031,18 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(recordedTargets, [expectedTarget])
         XCTAssertEqual(recordedCredentials, [.privateKey(expectedTarget.privateKey)])
         XCTAssertEqual(harness.model.state, stateBefore)
+    }
+
+    func testSetupHasChangesOnlyWhileTheDraftDiffersFromItsStart() {
+        let harness = makeHarness()
+        harness.model.beginNewServer()
+        XCTAssertEqual(harness.model.connectionSetup?.hasChanges, false)
+
+        harness.model.updateDraft { $0.displayName = "studio" }
+        XCTAssertEqual(harness.model.connectionSetup?.hasChanges, true)
+
+        harness.model.updateDraft { $0.displayName = "" }
+        XCTAssertEqual(harness.model.connectionSetup?.hasChanges, false)
     }
 
     func testTrustSetupHostKeyStoresChallengeForDraftServerID() throws {
@@ -4545,6 +4601,8 @@ final class RemuxRootModelTests: XCTestCase {
             TrustedHostStore,
             RemuxSSHRootService
         ) async -> Void)? = nil,
+        sshConnectionChecker: (@Sendable (String, RemuxSSHRootService) async -> Void)? = nil,
+        networkPath: TestNetworkPath = TestNetworkPath(),
         attachmentTransferServiceFactory: (@Sendable (
             SessionTarget,
             TrustedHostStore,
@@ -4610,6 +4668,7 @@ final class RemuxRootModelTests: XCTestCase {
             publicKeyInstaller: resolvedPublicKeyInstaller,
             transportFactory: resolvedTransportFactory,
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
+            sshConnectionChecker: sshConnectionChecker ?? { _, _ in },
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
             tmuxSessionDiscoverer: { target, trustedHostStore, sshRootService in
                 SessionListing(
@@ -4634,7 +4693,11 @@ final class RemuxRootModelTests: XCTestCase {
         return RemuxRootModelHarness(
             model: RemuxRootModel(
                 dependencies: dependencies,
-                terminalScreenModelFactory: resolvedTerminalScreenModelFactory
+                terminalScreenModelFactory: resolvedTerminalScreenModelFactory,
+                makeNetworkPathObserver: { onUsablePathChange in
+                    networkPath.attach(onUsablePathChange)
+                    return networkPath
+                }
             ),
             profileRepository: profileRepository,
             settingsRepository: settingsRepository,
@@ -5628,6 +5691,8 @@ private final class RecordingAttachmentTransferServiceFactory: @unchecked Sendab
 }
 
 private struct FailingGhosttyAttachmentTransferService: GhosttyAttachmentTransferService {
+    func prepare() async {}
+
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
         progress: @escaping GhosttyAttachmentTransferProgressHandler
@@ -6088,5 +6153,32 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
     func resumeSuspendedLoad() {
         suspendedLoadContinuation?.resume()
         suspendedLoadContinuation = nil
+    }
+}
+
+/// A network path the test controls: usable or not, and a usable change on demand.
+final class TestNetworkPath: RemuxNetworkPathObserving, @unchecked Sendable {
+    private let lock = NSLock()
+    private var usable: Bool
+    private var onUsablePathChange: (@Sendable () -> Void)?
+
+    init(isUsable: Bool = true) {
+        usable = isUsable
+    }
+
+    var isUsable: Bool {
+        lock.withLock { usable }
+    }
+
+    func attach(_ onUsablePathChange: @escaping @Sendable () -> Void) {
+        lock.withLock { self.onUsablePathChange = onUsablePathChange }
+    }
+
+    func becomeUsable() {
+        let onUsablePathChange = lock.withLock { () -> (@Sendable () -> Void)? in
+            usable = true
+            return self.onUsablePathChange
+        }
+        onUsablePathChange?()
     }
 }

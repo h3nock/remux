@@ -176,7 +176,8 @@ final class HerdrBridgeTests: XCTestCase {
                 server: saved,
                 workspace: SavedWorkspace(serverID: id, sessionName: "pool"),
                 sshAuth: .password(username: "remux", password: "pool", identityID: id, displayLabel: "pool")
-            )
+            ),
+            purpose: .interactive
         )
         let configuration = RemuxSSHRootConfiguration(
             host: "127.0.0.1",

@@ -152,7 +152,7 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         _ = fixture.freeSurface()
 
         let image = try await Task.detached {
-            try frame.image(maxWidth: 160, maxHeight: 120)
+            try frame.image()
         }.value
         XCTAssertEqual(frame.bytes, originalBytes)
         XCTAssertGreaterThan(image.width, 0)
@@ -203,51 +203,6 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         XCTAssertEqual(frame.height, 30)
         XCTAssertEqual(frame.bytesPerRow, 160)
         XCTAssertEqual(frame.bytes.count, 4_800)
-    }
-
-    func testPreviewSourceRectCentersOnCursorAndClampsToFrameEdges() throws {
-        XCTAssertEqual(
-            GhosttyIOSurfaceFrame.sourceRect(
-                width: 1_000,
-                height: 800,
-                centeredOn: CGRect(x: 495, y: 395, width: 10, height: 10),
-                maxWidth: 400,
-                maxHeight: 300
-            ),
-            CGRect(x: 300, y: 250, width: 400, height: 300)
-        )
-        XCTAssertEqual(
-            GhosttyIOSurfaceFrame.sourceRect(
-                width: 1_000,
-                height: 800,
-                centeredOn: CGRect(x: 0, y: 0, width: 10, height: 10),
-                maxWidth: 400,
-                maxHeight: 300
-            ),
-            CGRect(x: 0, y: 0, width: 400, height: 300)
-        )
-        XCTAssertEqual(
-            GhosttyIOSurfaceFrame.sourceRect(
-                width: 1_000,
-                height: 800,
-                centeredOn: CGRect(x: 990, y: 790, width: 10, height: 10),
-                maxWidth: 400,
-                maxHeight: 300
-            ),
-            CGRect(x: 600, y: 500, width: 400, height: 300)
-        )
-    }
-
-    func testPreviewSourceRectRejectsCursorOutsideFrame() {
-        XCTAssertNil(
-            GhosttyIOSurfaceFrame.sourceRect(
-                width: 100,
-                height: 80,
-                centeredOn: CGRect(x: 120, y: 10, width: 8, height: 16),
-                maxWidth: 40,
-                maxHeight: 30
-            )
-        )
     }
 
     func testLiveConfigUpdatePreservesSurfaceAndTerminalOSCBackgroundOverride() async throws {

@@ -27,7 +27,8 @@ struct RemuxSFTPFileMetadata: Equatable, Sendable {
     let modificationDate: Date?
 }
 
-final class RemuxSFTPReadableFile {
+/// An open remote file's reads. Reads may run at once: each names its own offset.
+final class RemuxSFTPReadableFile: Sendable {
     static let maximumChunkLength = 4 * 1024 * 1024
 
     private let readChunkHandler: @Sendable (UInt64, UInt32) async throws -> Data
@@ -57,17 +58,34 @@ final class RemuxSFTPReadableFile {
 protocol RemuxSFTPReadOnlyClient: Sendable {
     func metadata(atPath path: String) async throws -> RemuxSFTPFileMetadata
 
+    /// Opens the file at `path` for reading, runs `operation` on it with its metadata, and closes it. The metadata
+    /// is `knownMetadata` when given; otherwise it is asked for together with the open, so both take one round trip.
     func withFile<ReturnValue: Sendable>(
         atPath path: String,
-        _ operation: @Sendable (RemuxSFTPReadableFile) async throws -> ReturnValue
+        knownMetadata: RemuxSFTPFileMetadata?,
+        _ operation: @Sendable (RemuxSFTPReadableFile, RemuxSFTPFileMetadata) async throws -> ReturnValue
     ) async throws -> ReturnValue
 }
 
 typealias RemuxSFTPFileUploadProgressHandler = @Sendable (Int64) async -> Void
 
+/// How the server answered one mkdir.
+enum RemuxSFTPMakeDirectoryResult: Equatable, Sendable {
+    case created
+    /// No such file: a parent directory is missing.
+    case parentMissing
+    /// Any other refusal. OpenSSH answers a mkdir of a directory that already exists this way, with a generic
+    /// failure, so only a stat tells the two apart.
+    case refused
+}
+
 protocol RemuxSFTPUploadClient: Sendable {
+    /// One mkdir.
+    func makeDirectory(atPath path: String) async throws -> RemuxSFTPMakeDirectoryResult
+    /// Whether anything exists at `path`: one stat.
+    func itemExists(atPath path: String) async throws -> Bool
     func realPath(atPath path: String) async throws -> String
-    func ensureDirectoryExists(atPath path: String) async throws
+    /// Progress is the bytes the server has acknowledged.
     func uploadFile(
         from localURL: URL,
         to remotePath: String,
@@ -83,6 +101,18 @@ protocol RemuxSFTPClientProvider: Sendable {
     func withClient<ReturnValue: Sendable>(
         _ operation: @Sendable (Client) async throws -> ReturnValue
     ) async throws -> ReturnValue
+}
+
+/// SFTP for sending files to one server.
+protocol RemuxSFTPUploadClientProvider: RemuxSFTPClientProvider where Client: RemuxSFTPUploadClient {
+    /// Runs `upload` once the server's earlier uploads have finished: one at a time, in the order they began, so
+    /// the first one sent arrives first instead of sharing the link with the next. Other operations don't wait.
+    func withUploadTurn<ReturnValue: Sendable>(
+        _ upload: @Sendable (Client) async throws -> ReturnValue
+    ) async throws -> ReturnValue
+
+    /// Opens what a send needs (the server connection and its SFTP session) ahead of the send. Best effort.
+    func prepare() async
 }
 
 struct RemuxSFTPClientLease<Client: Sendable>: Sendable {
@@ -104,7 +134,7 @@ struct RemuxSFTPClientLease<Client: Sendable>: Sendable {
 
 actor RemuxSFTPLeaseTeardown {
     private let closeChild: @Sendable () async throws -> Void
-    private let releaseRoot: (@Sendable (RemuxSSHRootLeaseDisposition) async -> Void)?
+    private let releaseRoot: @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
     private var invalidationError: RemuxSFTPClientError?
     private var childCloseTask: Task<Result<Void, Error>, Never>?
     private var rootReleaseTask: Task<Void, Never>?
@@ -118,17 +148,14 @@ actor RemuxSFTPLeaseTeardown {
         self.releaseRoot = releaseRoot
     }
 
-    init(
-        closeBorrowedChild: @escaping @Sendable () async throws -> Void
-    ) {
-        self.closeChild = closeBorrowedChild
-        self.releaseRoot = nil
-    }
-
     func checkActive() throws {
         if let invalidationError {
             throw invalidationError
         }
+    }
+
+    var isInvalidated: Bool {
+        invalidationError != nil
     }
 
     func invalidate(
@@ -139,44 +166,30 @@ actor RemuxSFTPLeaseTeardown {
         }
         let childCloseTask = childCloseTaskIfNeeded()
         observeBestEffortCloseIfNeeded(childCloseTask)
-        if let rootReleaseTask = rootReleaseTaskIfNeeded(disposition: .invalidated) {
-            await rootReleaseTask.value
-        }
+        await rootReleaseTaskIfNeeded(disposition: .invalidated).value
     }
 
     func close() async throws {
         if invalidationError != nil {
-            if let task = rootReleaseTaskIfNeeded(disposition: .invalidated) {
-                await task.value
-            }
+            await rootReleaseTaskIfNeeded(disposition: .invalidated).value
             return
         }
 
         let childCloseResult = await childCloseTaskIfNeeded().value
         isBestEffortCloseObserved = true
         if invalidationError != nil {
-            if let task = rootReleaseTaskIfNeeded(disposition: .invalidated) {
-                await task.value
-            }
+            await rootReleaseTaskIfNeeded(disposition: .invalidated).value
             return
         }
 
         switch childCloseResult {
         case .success:
-            if let task = rootReleaseTaskIfNeeded(disposition: .reusable) {
-                await task.value
-            }
+            await rootReleaseTaskIfNeeded(disposition: .reusable).value
         case .failure(let error):
             invalidationError = .operationTimedOut
-            if let task = rootReleaseTaskIfNeeded(disposition: .invalidated) {
-                await task.value
-            }
+            await rootReleaseTaskIfNeeded(disposition: .invalidated).value
             throw error
         }
-    }
-
-    func childCloseResult() async -> Result<Void, Error> {
-        await childCloseTaskIfNeeded().value
     }
 
     private func childCloseTaskIfNeeded() -> Task<Result<Void, Error>, Never> {
@@ -215,12 +228,12 @@ actor RemuxSFTPLeaseTeardown {
 
     private func rootReleaseTaskIfNeeded(
         disposition: RemuxSSHRootLeaseDisposition
-    ) -> Task<Void, Never>? {
+    ) -> Task<Void, Never> {
         if let rootReleaseTask {
             return rootReleaseTask
         }
 
-        guard let releaseRoot else { return nil }
+        let releaseRoot = releaseRoot
         let task = Task {
             await releaseRoot(disposition)
         }
@@ -270,162 +283,22 @@ struct RemuxShortLivedSFTPClientProvider<Client: Sendable>: RemuxSFTPClientProvi
     }
 }
 
-final class RemuxSFTPTimeoutGate<Value: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Value, Error>?
-    private var pendingResult: Result<Value, Error>?
-    private var tasks: [Task<Void, Never>] = []
-    private var isFinished = false
-
-    func install(_ continuation: CheckedContinuation<Value, Error>) {
-        let pendingResult: Result<Value, Error>?
-        lock.lock()
-        if isFinished {
-            pendingResult = self.pendingResult
-        } else {
-            self.continuation = continuation
-            pendingResult = nil
-        }
-        lock.unlock()
-
-        if let pendingResult {
-            continuation.resume(with: pendingResult)
-        }
-    }
-
-    func setTasks(_ tasks: [Task<Void, Never>]) {
-        let tasksToCancel: [Task<Void, Never>]
-        lock.lock()
-        if isFinished {
-            tasksToCancel = tasks
-        } else {
-            self.tasks = tasks
-            tasksToCancel = []
-        }
-        lock.unlock()
-
-        for task in tasksToCancel {
-            task.cancel()
-        }
-    }
-
-    @discardableResult
-    func succeed(_ value: Value) -> Bool {
-        finish(.success(value))
-    }
-
-    @discardableResult
-    func fail(_ error: Error) -> Bool {
-        finish(.failure(error))
-    }
-
-    func cancel() {
-        _ = fail(CancellationError())
-    }
-
-    func beginTimeout() -> Bool {
-        let tasksToCancel: [Task<Void, Never>]
-
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return false
-        }
-
-        isFinished = true
-        tasksToCancel = tasks
-        tasks.removeAll()
-        lock.unlock()
-
-        for task in tasksToCancel {
-            task.cancel()
-        }
-        return true
-    }
-
-    func finishTimeout() {
-        let result = Result<Value, Error>.failure(
-            RemuxSFTPClientError.operationTimedOut
-        )
-        let continuation: CheckedContinuation<Value, Error>?
-
-        lock.lock()
-        pendingResult = result
-        continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
-
-        continuation?.resume(with: result)
-    }
-
-    @discardableResult
-    private func finish(_ result: Result<Value, Error>) -> Bool {
-        let continuation: CheckedContinuation<Value, Error>?
-        let tasksToCancel: [Task<Void, Never>]
-
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return false
-        }
-
-        isFinished = true
-        pendingResult = result
-        continuation = self.continuation
-        self.continuation = nil
-        tasksToCancel = tasks
-        tasks.removeAll()
-        lock.unlock()
-
-        for task in tasksToCancel {
-            task.cancel()
-        }
-
-        continuation?.resume(with: result)
-        return true
-    }
-}
-
+/// SFTP operations against a deadline, failing with `RemuxSFTPClientError.operationTimedOut`.
 enum RemuxSFTPTimeout {
     static func run<Value: Sendable>(
         timeout: TimeAmount,
+        extendWhile isMakingProgress: (@Sendable (_ windowStart: NIODeadline) -> Bool)? = nil,
         operation: @escaping @Sendable () async throws -> Value,
         onTimeout: @escaping @Sendable () async -> Void = {},
         cleanupLateSuccess: @escaping @Sendable (Value) async -> Void = { _ in }
     ) async throws -> Value {
-        let gate = RemuxSFTPTimeoutGate<Value>()
-        let timeoutNanos = UInt64(clamping: timeout.nanoseconds)
-
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                gate.install(continuation)
-                let operationTask = Task {
-                    do {
-                        let value = try await operation()
-                        if !gate.succeed(value) {
-                            await cleanupLateSuccess(value)
-                        }
-                    } catch {
-                        _ = gate.fail(error)
-                    }
-                }
-                let timeoutTask = Task {
-                    do {
-                        try await Task.sleep(nanoseconds: timeoutNanos)
-                        if gate.beginTimeout() {
-                            await onTimeout()
-                            gate.finishTimeout()
-                        }
-                    } catch is CancellationError {
-                        return
-                    } catch {
-                        _ = gate.fail(error)
-                    }
-                }
-                gate.setTasks([operationTask, timeoutTask])
-            }
-        } onCancel: {
-            gate.cancel()
-        }
+        try await RemuxOperationTimeout.run(
+            timeout: timeout,
+            timeoutError: RemuxSFTPClientError.operationTimedOut,
+            extendWhile: isMakingProgress,
+            operation: operation,
+            onTimeout: onTimeout,
+            cleanupLateSuccess: cleanupLateSuccess
+        )
     }
 }
