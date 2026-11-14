@@ -1845,6 +1845,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "beginTransition": "\(projection.shouldBeginViewportTransition)",
             ]
         )
+        // UIKit also posts these with the keyboard where it already rests, for one many times a second while a menu
+        // is open. Such a notification changes nothing; acting on it would redraw the screen, and with a menu open
+        // the redraw makes UIKit post again.
+        if projection.isVisible,
+           projection.overlapHeight == softwareKeyboardOverlapHeight,
+           !terminalViewportCoordinator.isKeyboardTransitionActive,
+           !isAwaitingSystemKeyboardPresentation {
+            var updatedCoordinator = inputCoordinator
+            updatedCoordinator.updateSoftwareKeyboardVisibility(
+                true,
+                isInputCovered: isTerminalInputCovered || isFindPresented || isReadingAfterFind
+            )
+            if updatedCoordinator == inputCoordinator {
+                GhosttyRuntimeTrace.perf("kbd.visibility unchanged overlap=\(projection.overlapHeight)")
+                return
+            }
+        }
         GhosttyRuntimeTrace.perf(
             "kbd.visibility visible=\(projection.isVisible) overlap=\(projection.overlapHeight) duration_ms=\(String(format: "%.3f", projection.animationDuration * 1000)) fallback_ms=\(String(format: "%.3f", projection.fallbackDelay * 1000)) beginTransition=\(projection.shouldBeginViewportTransition) awaitingSystem=\(isAwaitingSystemKeyboardPresentation) frame=\(Int(frameEnd.origin.x)),\(Int(frameEnd.origin.y)),\(Int(frameEnd.width)),\(Int(frameEnd.height))"
         )
