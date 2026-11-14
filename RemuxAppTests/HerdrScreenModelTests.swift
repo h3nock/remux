@@ -5396,8 +5396,8 @@ final class HerdrScreenModelTests: XCTestCase {
         try await assertNoPaneFocus(session.bridge, from: index, "a scroll over the pane tapped focused it again")
     }
 
-    /// A second tap before Herdr answered the first takes the keys at once.
-    func testKeysAfterASecondQuickTapGoToTheSecondPane() async throws {
+    /// Picks accepted before the operation runner resumes use the newest destination for focus and keys.
+    func testQueuedPicksUseTheNewestPaneForFocusAndKeys() async throws {
         let harness = await makeHarness()
         let session = try await shownTab(harness, panes: Self.threePanes)
         var index = session.next
@@ -5407,9 +5407,30 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertEqual(adapter.focusPane(ids[1]), .queued)
         XCTAssertEqual(adapter.focusPane(ids[2]), .queued)
         XCTAssertEqual(adapter.sendInputToFocusedSurface("y"), .accepted)
-        // The first focus is in flight; the second waits for its answer, and the key goes meanwhile.
+        let focus = try await nextWrite(session.bridge, from: &index, paneFocus)
+        XCTAssertEqual(focus.paneID, "w1:p3")
+        let typedY = try await nextWrite(session.bridge, from: &index, paneInput)
+        XCTAssertEqual(typedY, frame("w1:p3", [typed("y")]))
+        try await showFocus(of: "w1:p3", answering: focus.id, in: session.bridge, of: harness, revision: 2)
+        try await harness.waitUntil("Herdr didn't show the newest pick") {
+            harness.model.focusedPaneID == "w1:p3" && harness.model.stateTraceLabel == "shown"
+        }
+    }
+
+    /// A second tap before Herdr answered the first takes the keys at once.
+    func testKeysAfterASecondQuickTapGoToTheSecondPane() async throws {
+        let harness = await makeHarness()
+        let session = try await shownTab(harness, panes: Self.threePanes)
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+        let ids = adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id)
+
+        XCTAssertEqual(adapter.focusPane(ids[1]), .queued)
         let first = try await nextWrite(session.bridge, from: &index, paneFocus)
         XCTAssertEqual(first.paneID, "w1:p2")
+        XCTAssertEqual(adapter.focusPane(ids[2]), .queued)
+        XCTAssertEqual(adapter.sendInputToFocusedSurface("y"), .accepted)
+        // The first focus is in flight; the second waits for its answer, and the key goes meanwhile.
         let typedY = try await nextWrite(session.bridge, from: &index, paneInput)
         XCTAssertEqual(typedY, frame("w1:p3", [typed("y")]))
 
@@ -6783,10 +6804,18 @@ extension HerdrScreenModelTests {
         XCTAssertTrue(harness.model.reveal(.tab("t2"), bootID: "boot"))
         let first = try await nextWrite(session.bridge, from: &index, command)
         XCTAssertEqual(first.params, ["tab_id": "t2"])
+        let reads = await session.bridge.reads
         XCTAssertTrue(harness.model.reveal(.tab("t3"), bootID: "boot"))
         XCTAssertTrue(harness.model.create(.tab(workspaceID: "w1"), bootID: "boot"))
-        await session.bridge.serve(HerdrConnectionTests.reply(id: first.id, json: #"{"type":"ok"}"#))
-        await session.bridge.serve(Self.twoWorkspaces(revision: 3, focusedTab: "t2", focusedPane: "w1:p3"))
+        let reply = HerdrConnectionTests.reply(id: first.id, json: #"{"type":"ok"}"#)
+        let snapshot = Self.twoWorkspaces(revision: 3, focusedTab: "t2", focusedPane: "w1:p3")
+        // Free the engine's command lane while the newer picks still wait on the main actor.
+        let answer = Task.detached {
+            await session.bridge.serve(reply)
+            await session.bridge.serve(snapshot)
+        }
+        XCTAssertTrue(Self.holdMainActor { await session.bridge.reads >= reads + 2 })
+        await answer.value
         let created = try await nextWrite(session.bridge, from: &index, command)
         XCTAssertEqual(created.method, "tab.create")
         await session.bridge.serve(HerdrConnectionTests.reply(

@@ -1897,6 +1897,8 @@ final class HerdrScreenModel {
                 if let delivered { delivered.resume(returning: false) } else { inputFailed(attemptID) }
             }
         case .move(let destination, let fromAnotherTab, let ask):
+            // A newer pick can be queued before this operation reaches the engine.
+            guard ask == attempt.moveAsks else { return }
             reconcileShellGeometry(forNavigation: true)
             guard let geometry else { return moveTaken(ask, by: nil, on: attempt) }
             let request = await feed.start(
