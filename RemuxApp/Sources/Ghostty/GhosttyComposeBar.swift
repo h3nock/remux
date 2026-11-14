@@ -1086,6 +1086,14 @@ private final class GhosttyComposerUITextView: UITextView {
         onAttachedToWindow?()
     }
 
+    /// A text view offers Paste for text alone; the composer also takes a copied picture as an attachment.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), isEditable, onPasteAttachment != nil, UIPasteboard.general.hasImages {
+            return true
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
     override func paste(_ sender: Any?) {
         if onPasteAttachment?() == true {
             return
