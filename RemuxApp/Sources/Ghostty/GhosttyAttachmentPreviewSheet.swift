@@ -104,19 +104,16 @@ struct GhosttyAttachmentPreviewSheet: View {
         }
     }
 
+    /// Opens on the selected attachment, also when it comes back after markup: a paging scroll view bound to the
+    /// selection opened on the first one instead, while the toolbar acted on the selected one.
     private var pager: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 0) {
-                ForEach(attachments) { attachment in
-                    page(attachment)
-                        .containerRelativeFrame(.horizontal)
-                }
+        TabView(selection: $selectedAttachmentID) {
+            ForEach(attachments) { attachment in
+                page(attachment)
+                    .tag(Optional(attachment.id))
             }
-            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $selectedAttachmentID)
-        .scrollIndicators(.hidden)
+        .tabViewStyle(.page(indexDisplayMode: .never))
         .accessibilityIdentifier("terminal.attachments.preview.pager")
     }
 
@@ -194,9 +191,10 @@ struct GhosttyAttachmentPreviewSheet: View {
             }
             .scrollIndicators(.hidden)
             .defaultScrollAnchor(.center, for: .alignment)
-            .onChange(of: selectedAttachmentID) { _, id in
+            // It opens on the selected attachment, then follows the selection.
+            .onChange(of: selectedAttachmentID, initial: true) { previous, id in
                 guard let id else { return }
-                withAnimation(.snappy) {
+                withAnimation(previous == id ? nil : .snappy) {
                     proxy.scrollTo(id, anchor: .center)
                 }
             }

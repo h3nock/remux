@@ -1029,6 +1029,158 @@ final class RemuxAppUITests: XCTestCase {
         return false
     }
 
+    /// The viewer acts on the attachment it shows: opening a chip shows that attachment, markup keeps it in view, and
+    /// Remove takes out the one in view. The picture on screen is read from a screenshot, since the selection alone
+    /// can name one attachment while another is shown.
+    func testAttachmentViewerActsOnTheAttachmentItShows() {
+        launchSeededSimulatorTerminal()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        app.buttons["terminal.composer.toggle"].tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("draft")
+        pasteSolidPicture(.red, into: field)
+        pasteSolidPicture(.blue, into: field)
+
+        let chips = app.buttons.matching(NSPredicate(format: "label == %@", "Preview Pasted image"))
+        XCTAssertTrue(waitForCount(of: chips, toBe: 2, timeout: 10))
+        let secondChip = chips.element(boundBy: 1)
+        XCTAssertTrue(waitUntil(secondChip, isEnabled: true, timeout: 10))
+        secondChip.tap()
+        let markup = app.buttons["terminal.attachments.preview.markup-selected"]
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Opening the second chip shows the second picture.")
+
+        let pager = app.descendants(matching: .any)["terminal.attachments.preview.pager"].firstMatch
+        pager.swipeRight()
+        XCTAssertTrue(waitForSolidPicture(.red, timeout: 3), "Swiping right shows the first picture.")
+        pager.swipeLeft()
+        XCTAssertTrue(waitForSolidPicture(.blue, timeout: 3), "Swiping left shows the second picture again.")
+
+        markup.tap()
+        let cancel = app.buttons["terminal.attachments.markup.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Cancelling markup keeps the same picture in view.")
+
+        // A stroke away from the middle, saved.
+        let canvas = app.descendants(matching: .any)["terminal.attachments.markup.canvas"]
+        let undo = app.buttons["terminal.attachments.markup.undo"]
+        let done = app.buttons["terminal.attachments.markup.done"]
+        markup.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        drawStroke(on: canvas)
+        XCTAssertTrue(waitUntil(undo, isEnabled: true, timeout: 3), "A stroke can be undone.")
+        attachScreenshot(named: "attachment-markup-palette")
+        done.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Saving markup keeps the same picture in view.")
+
+        // Undo reaches only this markup's strokes: not the one saved before, nor the draft typed before it.
+        markup.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        drawStroke(on: canvas)
+        XCTAssertTrue(waitUntil(undo, isEnabled: true, timeout: 3))
+        undo.tap()
+        XCTAssertTrue(
+            waitUntil(undo, isEnabled: false, timeout: 3),
+            "With its one stroke undone, markup has nothing left to undo."
+        )
+        done.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue)
+
+        app.buttons["terminal.attachments.preview.remove"].tap()
+        XCTAssertTrue(waitForCount(of: app.buttons.matching(identifier: "terminal.attachments.preview.thumbnail"), toBe: 0, timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .red, "Remove takes out the picture in view and shows the other.")
+        app.buttons["terminal.attachments.preview.close"].firstMatch.tap()
+        XCTAssertTrue(waitForCount(of: chips, toBe: 1, timeout: 5))
+        XCTAssertEqual(field.value as? String, "draft")
+    }
+
+    private enum SolidPicture: Equatable {
+        case red, blue
+
+        var color: UIColor {
+            switch self {
+            case .red: UIColor(red: 1, green: 0, blue: 0, alpha: 1)
+            case .blue: UIColor(red: 0, green: 0, blue: 1, alpha: 1)
+            }
+        }
+    }
+
+    /// Pastes a solid picture with the field's own Paste, as a person would.
+    private func pasteSolidPicture(_ picture: SolidPicture, into field: XCUIElement) {
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 400, height: 300)).pngData { context in
+            picture.color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
+        }
+        UIPasteboard.general.setData(png, forPasteboardType: "public.png")
+        field.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+    }
+
+    /// Which solid picture fills the middle of the screen, or nil for anything else.
+    private func solidPictureInView() -> SolidPicture? {
+        let screenshot = XCUIScreen.main.screenshot().image
+        guard let image = screenshot.cgImage else { return nil }
+        let center = CGRect(x: image.width / 2, y: image.height / 2, width: 1, height: 1)
+        guard let pixel = image.cropping(to: center) else { return nil }
+        var rgba = [UInt8](repeating: 0, count: 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
+        let (red, blue) = (Int(rgba[0]), Int(rgba[2]))
+        if red > 180, blue < 80 { return .red }
+        if blue > 180, red < 80 { return .blue }
+        return nil
+    }
+
+    /// A short stroke on the left of the picture, which fills the width of the screen in the middle of it, clear of
+    /// the middle the picture checks read.
+    private func drawStroke(on canvas: XCUIElement) {
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.42))
+            .press(forDuration: 0.1, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.46)))
+    }
+
+    private func waitUntil(_ element: XCUIElement, isEnabled: Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, element.isEnabled == isEnabled { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return element.exists && element.isEnabled == isEnabled
+    }
+
+    private func waitForSolidPicture(_ picture: SolidPicture, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if solidPictureInView() == picture { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return solidPictureInView() == picture
+    }
+
+    private func waitForCount(of query: XCUIElementQuery, toBe count: Int, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if query.count == count { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return query.count == count
+    }
+
     func testCanKeepMultipleSimulatorSessionsActive() {
         launchSeededSimulatorTerminal(attachesTmux: false)
         openHomeFromTerminal()
