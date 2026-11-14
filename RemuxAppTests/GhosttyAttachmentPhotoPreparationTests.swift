@@ -89,6 +89,19 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
+    func testAnImageSequenceIsSentAsItIs() throws {
+        let url = try writeAnimation(frames: [
+            try makeImage(width: 2_400, height: 100),
+            try makeImage(width: 2_400, height: 100)
+        ], name: "moving.heics", type: .heics)
+        let original = try Data(contentsOf: url)
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
+
+        XCTAssertEqual(prepared, .init(url: url, contentType: .heics))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
     // MARK: - Fits the limit
 
     func testAnAnimationThatFitsIsSentAsItIsEvenWhenAJPEGWouldBeSmaller() throws {
@@ -451,10 +464,10 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         return url
     }
 
-    private func writeAnimation(frames: [CGImage], name: String) throws -> URL {
+    private func writeAnimation(frames: [CGImage], name: String, type: UTType = .gif) throws -> URL {
         let url = directory.appendingPathComponent(name)
         let destination = try XCTUnwrap(
-            CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, frames.count, nil)
+            CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, frames.count, nil)
         )
         for frame in frames {
             CGImageDestinationAddImage(destination, frame, nil)

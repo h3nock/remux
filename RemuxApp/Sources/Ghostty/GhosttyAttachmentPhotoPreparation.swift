@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 /// How a picture from the camera, the Photos picker or a paste, or one marked up, is sent to a remote session, and the
 /// making of one that is sent that way.
 ///
-/// - A picture with more than one frame, an animated GIF, PNG or WebP, is sent exactly as it is: at any size, and with
-///   any location it records, since it can't be written again without losing its frames.
+/// - A picture with more than one frame, an animated GIF, PNG or WebP or a HEICS sequence, is sent exactly as it is: at
+///   any size, and with any location it records, since it can't be written again without losing its frames.
 /// - A still larger than `maxPixelDimension` is shrunk to it and rewritten.
 /// - A still that fits is rewritten when it is in none of `keptTypes`. In one of them, it is kept when it really has
 ///   see-through pixels; a solid one is kept unless its rewrite is smaller. A rotation tag alone never forces a
@@ -301,10 +301,10 @@ enum GhosttyAttachmentPhotoPreparation {
         return PreparedPhoto(url: outputURL, contentType: picture.contentType)
     }
 
-    /// More than one frame in a format whose frames make an animation. In other formats, such as HEIC, further
-    /// pictures are not frames, and the primary one is the picture.
+    /// More than one frame in a format whose frames make an animation, an image sequence (HEICS) among them. In
+    /// other formats, such as HEIC, further pictures are not frames, and the primary one is the picture.
     private static func isAnimated(_ source: CGImageSource, type: UTType) -> Bool {
-        CGImageSourceGetCount(source) > 1 && [UTType.gif, .png, .webP].contains { type.conforms(to: $0) }
+        CGImageSourceGetCount(source) > 1 && [UTType.gif, .png, .webP, .heics].contains { type.conforms(to: $0) }
     }
 
     /// The formats a still that fits can be sent in as it is; one in any other, such as HEIC or TIFF, is rewritten.
