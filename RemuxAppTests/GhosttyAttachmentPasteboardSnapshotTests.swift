@@ -86,6 +86,21 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
     }
 
     @MainActor
+    func testAPictureAfterTextOnTheClipboardIsPasted() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makePNGData(width: 40, height: 30)
+        pasteboard.items = [
+            [UTType.utf8PlainText.identifier: "a caption"],
+            [UTType.png.identifier: picture]
+        ]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.contentType, .png)
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
     func testAPastedPhotoIsSentTheWayAPickedPhotoIs() async throws {
         let pasteboard = UIPasteboard.withUniqueName()
         // Points; the renderer multiplies by the screen's scale, so this is larger than the limit on every simulator.
