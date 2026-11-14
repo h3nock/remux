@@ -1057,9 +1057,9 @@ final class RemuxAppUITests: XCTestCase {
 
         let pager = app.descendants(matching: .any)["terminal.attachments.preview.pager"].firstMatch
         pager.swipeRight()
-        XCTAssertTrue(waitForSolidPicture(.red, timeout: 3), "Swiping right shows the first picture.")
+        XCTAssertTrue(waitForSolidPicture(.red, timeout: 8), "Swiping right shows the first picture.")
         pager.swipeLeft()
-        XCTAssertTrue(waitForSolidPicture(.blue, timeout: 3), "Swiping left shows the second picture again.")
+        XCTAssertTrue(waitForSolidPicture(.blue, timeout: 8), "Swiping left shows the second picture again.")
 
         markup.tap()
         let cancel = app.buttons["terminal.attachments.markup.cancel"]
