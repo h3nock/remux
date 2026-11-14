@@ -44,13 +44,16 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
     }
 
     /// The picture on `pasteboard`, read now. Call it from the paste itself.
+    ///
+    /// A representation that can hold an animation is taken first, so an animated GIF offered along with a still PNG
+    /// of its first frame keeps its frames; otherwise the item's own order is followed, which puts its original first.
     @MainActor
     static func currentImage(_ pasteboard: UIPasteboard = .general) -> PastedImage? {
-        let pictureTypes = imagePasteboardTypes
-            + pasteboard.types.filter { UTType($0)?.conforms(to: .image) == true }
-        for type in pictureTypes {
-            if let data = pasteboard.data(forPasteboardType: type), !data.isEmpty {
-                return PastedImage(data: data, contentType: UTType(type))
+        let pictureTypes = pasteboard.types.compactMap(UTType.init).filter { $0.conforms(to: .image) }
+        let canHoldAnimation = { (type: UTType) in [UTType.gif, .webP, .heics].contains { type.conforms(to: $0) } }
+        for type in pictureTypes.filter(canHoldAnimation) + pictureTypes.filter({ !canHoldAnimation($0) }) {
+            if let data = pasteboard.data(forPasteboardType: type.identifier), !data.isEmpty {
+                return PastedImage(data: data, contentType: type)
             }
         }
         return nil
@@ -150,14 +153,5 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         return .pasteboardImage(fileURL: prepared.url, previewData: previewData)
     }
 
-    private static var imagePasteboardTypes: [String] {
-        [
-            UTType.png.identifier,
-            UTType.jpeg.identifier,
-            UTType.tiff.identifier,
-            "public.heic",
-            "public.image"
-        ]
-    }
 
 }

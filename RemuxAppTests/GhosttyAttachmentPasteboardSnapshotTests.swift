@@ -71,6 +71,21 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
     }
 
     @MainActor
+    func testAnAnimationOfferedWithAStillOfItsFirstFrameIsPastedAsTheAnimation() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let animation = try makeGIFData(frameCount: 2)
+        pasteboard.items = [[
+            UTType.png.identifier: try makePNGData(width: 40, height: 30),
+            UTType.gif.identifier: animation
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.contentType, .gif)
+        XCTAssertEqual(image.data, animation)
+    }
+
+    @MainActor
     func testAPastedPhotoIsSentTheWayAPickedPhotoIs() async throws {
         let pasteboard = UIPasteboard.withUniqueName()
         // Points; the renderer multiplies by the screen's scale, so this is larger than the limit on every simulator.
@@ -209,6 +224,29 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
             UIColor.systemBlue.setFill()
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         }
+    }
+
+    private func makePNGData(width: Int, height: Int) throws -> Data {
+        UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).pngData { context in
+            UIColor.systemRed.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    private func makeGIFData(frameCount: Int) throws -> Data {
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithData(data as CFMutableData, UTType.gif.identifier as CFString, frameCount, nil)
+        )
+        for index in 0..<frameCount {
+            let frame = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30)).image { context in
+                UIColor(hue: CGFloat(index) / CGFloat(frameCount), saturation: 1, brightness: 1, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+            }
+            CGImageDestinationAddImage(destination, try XCTUnwrap(frame.cgImage), nil)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
     }
 
     private func imagePixelSize(_ data: Data) -> CGSize? {
