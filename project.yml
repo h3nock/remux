@@ -58,6 +58,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: Remux uses the camera so you can attach a photo you take.
         NSMicrophoneUsageDescription: Remux uses the microphone so you can dictate messages.
         NSSpeechRecognitionUsageDescription: Remux uses on-device speech recognition to turn your dictation into text.
         UILaunchScreen: {}

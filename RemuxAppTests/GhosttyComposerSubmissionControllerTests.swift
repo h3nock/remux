@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import Remux
 
@@ -327,6 +328,29 @@ final class GhosttyComposerModelStatusMessageTests: XCTestCase {
 }
 
 @MainActor
+final class GhosttyComposerPhotoNamingTests: XCTestCase {
+    func testARemovedPhotosNumberIsNotGivenToTheNextPhoto() throws {
+        let composer = GhosttyComposerModel()
+        let service = FailingComposerAttachmentTransferService()
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { _ in }
+
+        composer.addCapturedPhoto(photo, preparing: service)
+        composer.addCapturedPhoto(photo, preparing: service)
+        XCTAssertEqual(composer.attachments.map(\.title), ["Photo 1", "Photo 2"])
+
+        composer.removeAttachment(try XCTUnwrap(composer.attachments.last).id)
+        composer.addCapturedPhoto(photo, preparing: service)
+        XCTAssertEqual(composer.attachments.map(\.title), ["Photo 1", "Photo 3"])
+
+        for attachment in composer.attachments {
+            composer.removeAttachment(attachment.id)
+        }
+        composer.addCapturedPhoto(photo, preparing: service)
+        XCTAssertEqual(composer.attachments.map(\.title), ["Photo"], "A draft with no photo left starts again.")
+    }
+}
+
+@MainActor
 final class GhosttyComposerAttachmentPrepareTests: XCTestCase {
     func testAddingAPastedFilePreparesTheDestinationsTransfer() async throws {
         let composer = GhosttyComposerModel()
@@ -348,6 +372,36 @@ final class GhosttyComposerAttachmentPrepareTests: XCTestCase {
 
         XCTAssertTrue(didAdd)
         try await waitForPrepareCount(1, of: service)
+    }
+
+    func testAddingACapturedPhotoStagesItAsAPhotoAndPreparesTheTransfer() async throws {
+        let composer = GhosttyComposerModel()
+        let service = PrepareRecordingAttachmentTransferService()
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+        }
+
+        composer.addCapturedPhoto(image, preparing: service)
+
+        XCTAssertEqual(composer.attachments.map(\.preparationState), [.preparing])
+        try await waitForPrepareCount(1, of: service)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while composer.attachments.first?.preparationState == .preparing, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let attachment = try XCTUnwrap(composer.attachments.first)
+        addTeardownBlock {
+            GhosttyAttachmentStagingStore.cleanup([attachment])
+        }
+        XCTAssertEqual(attachment.preparationState, .ready)
+        XCTAssertEqual(attachment.kind, .photo)
+        XCTAssertNotNil(attachment.previewPayload)
+        guard case .file(let url) = attachment.payload else {
+            return XCTFail("A captured photo is staged as a file.")
+        }
+        XCTAssertEqual(url.pathExtension, "jpeg")
+        XCTAssertEqual(try Data(contentsOf: url).prefix(2), Data([0xFF, 0xD8]))
     }
 
     func testAddingNothingPreparesNothing() async throws {

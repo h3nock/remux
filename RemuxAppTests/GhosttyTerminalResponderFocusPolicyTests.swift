@@ -5,6 +5,15 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
     func testAttachmentModalPresentationsBecomeTransientInputOwners() {
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: true,
+                isPhotosPickerPresented: false,
+                isFileImporterPresented: false,
+                isPreviewPresented: false
+            ).isTransientInputOwnerPresented
+        )
+        XCTAssertTrue(
+            GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: false,
                 isPhotosPickerPresented: true,
                 isFileImporterPresented: false,
                 isPreviewPresented: false
@@ -12,6 +21,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: false,
                 isPhotosPickerPresented: false,
                 isFileImporterPresented: true,
                 isPreviewPresented: false
@@ -19,6 +29,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: false,
                 isPhotosPickerPresented: false,
                 isFileImporterPresented: false,
                 isPreviewPresented: true

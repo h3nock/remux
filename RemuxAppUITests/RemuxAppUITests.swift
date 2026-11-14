@@ -913,20 +913,16 @@ final class RemuxAppUITests: XCTestCase {
             "The editor must keep its full width as text wraps."
         )
 
-        let photosButton = app.buttons["terminal.composer.attachments.photos"]
-        let filesButton = app.buttons["terminal.composer.attachments.files"]
+        let attachmentButton = app.buttons["terminal.composer.attachments"]
         let closeButton = app.buttons["terminal.composer.toggle"]
         let micButton = app.buttons["terminal.composer.mic"]
         let sendButton = app.buttons["terminal.composer.send"]
-        XCTAssertEqual(photosButton.label, "Attach photos")
-        XCTAssertEqual(filesButton.label, "Attach files")
-        XCTAssertLessThanOrEqual(composerField.frame.maxY, photosButton.frame.minY)
-        XCTAssertEqual(photosButton.frame.midY, filesButton.frame.midY, accuracy: 1)
-        XCTAssertEqual(photosButton.frame.midY, closeButton.frame.midY, accuracy: 1)
-        XCTAssertEqual(photosButton.frame.midY, micButton.frame.midY, accuracy: 1)
+        XCTAssertEqual(attachmentButton.label, "Add attachment")
+        XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
+        XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
+        XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
         XCTAssertEqual(micButton.frame.midY, sendButton.frame.midY, accuracy: 1)
-        XCTAssertLessThanOrEqual(photosButton.frame.maxX, filesButton.frame.minX)
-        XCTAssertLessThanOrEqual(filesButton.frame.maxX, closeButton.frame.minX)
+        XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, closeButton.frame.minX)
         XCTAssertLessThan(closeButton.frame.maxX, micButton.frame.minX)
         attachScreenshot(named: "composer-multiline-width-stable")
 
@@ -934,6 +930,103 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(keyboard.exists)
         XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 1))
         attachScreenshot(named: "composer-multiline-keyboard-stable")
+    }
+
+    func testComposerAttachmentMenuOpensWithKeyboardUpAndKeepsIt() {
+        launchSeededSimulatorTerminal()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        composerField.tap()
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 3))
+
+        let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let photosRow = app.buttons["terminal.composer.attachments.photos"]
+        let filesRow = app.buttons["terminal.composer.attachments.files"]
+        let keyboard = app.keyboards.firstMatch
+        let composerBounds = app.descendants(matching: .any)["terminal.composer.bounds"].firstMatch
+
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        XCTAssertEqual(photosRow.label, "Photos")
+        XCTAssertEqual(filesRow.label, "Files")
+        XCTAssertLessThan(photosRow.frame.maxY, filesRow.frame.maxY)
+        XCTAssertTrue(keyboard.exists, "Opening the menu must leave the keyboard up.")
+        attachScreenshot(named: "composer-attachment-menu-keyboard-up")
+
+        // On iOS 26 and 27 the app's own menu hangs below the composer over the keyboard, and a touch on the keys
+        // closes it and types nothing. On other versions the + opens Apple's standard menu.
+        if Self.showsTheAppsOwnAttachmentMenu {
+            XCTAssertEqual(
+                filesRow.frame.minX,
+                composerBounds.frame.minX,
+                accuracy: 1,
+                "The menu starts at the composer's left edge."
+            )
+            XCTAssertGreaterThan(
+                filesRow.frame.maxY,
+                composerBounds.frame.maxY,
+                "The menu hangs below the composer."
+            )
+            keyboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+            XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+            XCTAssertTrue(
+                app.staticTexts["terminal.composer.placeholder"].exists,
+                "The key under the touch must not type."
+            )
+            XCTAssertTrue(keyboard.exists)
+            attachmentButton.tap()
+            XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        }
+
+        // A tap or a drag on the terminal closes it too.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).tap()
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(keyboard.exists)
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        let terminalDrag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        terminalDrag.press(forDuration: 0.05, thenDragTo: terminalDrag.withOffset(CGVector(dx: 0, dy: 120)))
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2), "A drag outside the menu closes it.")
+        XCTAssertTrue(keyboard.exists)
+
+        // Photos opens the picker; cancelling it gives the keyboard back to the composer.
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        photosRow.tap()
+        let cancelPicker = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelPicker.waitForExistence(timeout: 10))
+        cancelPicker.tap()
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
+        XCTAssertFalse(photosRow.exists)
+
+        // With the keyboard down the menu is drawn in the composer, above the bottom of the screen, and a tap on the
+        // terminal closes it without bringing the keyboard back.
+        let handle = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
+        let dragStart = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 14)))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "attachment menu, keyboard down"))
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        XCTAssertLessThanOrEqual(filesRow.frame.maxY, app.frame.maxY, "The menu fits above the bottom of the screen.")
+        if Self.showsTheAppsOwnAttachmentMenu {
+            XCTAssertEqual(filesRow.frame.minX, composerBounds.frame.minX, accuracy: 1)
+        }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).tap()
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+        XCTAssertFalse(isSoftwareKeyboardOnScreen(keyboard), "Closing the menu leaves the keyboard down.")
+    }
+
+    /// The iOS versions on which the app draws its own attachment menu (`GhosttyKeyboardWindowTracker.isSupported`).
+    private static var showsTheAppsOwnAttachmentMenu: Bool {
+        if #available(iOS 28.0, *) { return false }
+        if #available(iOS 26.0, *) { return true }
+        return false
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {

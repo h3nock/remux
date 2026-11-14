@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import SwiftUI
 import UIKit
@@ -16,12 +17,14 @@ struct GhosttySurfaceScreenPresentation: Equatable {
 }
 
 struct GhosttyAttachmentInputOwnerProjection: Equatable {
+    let isCameraPresented: Bool
     let isPhotosPickerPresented: Bool
     let isFileImporterPresented: Bool
     let isPreviewPresented: Bool
 
     var isTransientInputOwnerPresented: Bool {
-        isPhotosPickerPresented
+        isCameraPresented
+            || isPhotosPickerPresented
             || isFileImporterPresented
             || isPreviewPresented
     }
@@ -93,6 +96,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
+    @State private var isAttachmentCameraPresented = false
     @State private var isAttachmentPhotosPickerPresented = false
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
@@ -651,6 +655,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
             }
+            .fullScreenCover(isPresented: $isAttachmentCameraPresented) {
+                GhosttyAttachmentCameraPicker(onFinish: handleAttachmentCameraCapture)
+                    .ignoresSafeArea()
+            }
             .photosPicker(
                 isPresented: $isAttachmentPhotosPickerPresented,
                 selection: $attachmentPhotoSelections,
@@ -763,6 +771,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var isAttachmentInputOwnerPresented: Bool {
         GhosttyAttachmentInputOwnerProjection(
+            isCameraPresented: isAttachmentCameraPresented,
             isPhotosPickerPresented: isAttachmentPhotosPickerPresented,
             isFileImporterPresented: isAttachmentFileImporterPresented,
             isPreviewPresented: attachmentPreviewRequest != nil
@@ -812,6 +821,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
                 onDismissKeyboard: dismissComposerKeyboard,
                 onClose: closeComposer,
+                onTakePhoto: attachmentCameraAction,
                 onChoosePhotos: openAttachmentPhotosPicker,
                 onChooseFiles: openAttachmentFilePicker,
                 onOpenAttachment: showPendingAttachmentPreview,
@@ -1394,6 +1404,32 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func retryPendingAttachment(_ attachmentID: GhosttyPendingAttachment.ID) {
         composer.retryAttachment(attachmentID)
+    }
+
+    private var attachmentCameraAction: (() -> Void)? {
+        guard GhosttyAttachmentCameraPicker.isCameraAvailable else { return nil }
+        return openAttachmentCamera
+    }
+
+    private func openAttachmentCamera() {
+        Task { @MainActor in
+            // Asked here so a refusal gets an explanation; the camera would otherwise open on a black screen.
+            guard await AVCaptureDevice.requestAccess(for: .video) else {
+                presentAttachmentNotice("Camera access is off. Turn it on in Settings.")
+                return
+            }
+            isAttachmentCameraPresented = true
+        }
+    }
+
+    private func handleAttachmentCameraCapture(_ image: UIImage?) {
+        isAttachmentCameraPresented = false
+        guard let image else { return }
+
+        withAnimation(.easeOut(duration: 0.16)) {
+            composer.addCapturedPhoto(image, preparing: attachmentTransferServiceFactory())
+            attachmentNotice = nil
+        }
     }
 
     private func openAttachmentPhotosPicker() {

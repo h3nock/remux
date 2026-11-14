@@ -56,6 +56,7 @@ final class GhosttyComposerModel: ObservableObject {
 
     private enum AttachmentPreparationSource {
         case photo(PhotosPickerItem)
+        case capturedPhoto(UIImage)
         case pastedFile(URL)
         case pastedImage(GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest)
     }
@@ -67,6 +68,7 @@ final class GhosttyComposerModel: ObservableObject {
     }
 
     private static var pasteSettlementDelay: Duration { .milliseconds(150) }
+    private nonisolated static let capturedPhotoContentType = UTType.jpeg
 
     @Published var isPresented = false
     @Published var draft = "" {
@@ -193,6 +195,18 @@ final class GhosttyComposerModel: ObservableObject {
             beginAttachmentPreparation(attachment.id, from: .photo(item))
         }
         return true
+    }
+
+    /// A photo just taken with the camera. It joins the draft as a photo like one picked from the library.
+    func addCapturedPhoto(
+        _ image: UIImage,
+        preparing transferService: any GhosttyAttachmentTransferService
+    ) {
+        guard let attachment = appendPhotoPlaceholders(contentTypes: [[Self.capturedPhotoContentType]]).first else {
+            return
+        }
+        prepareTransfer(transferService)
+        beginAttachmentPreparation(attachment.id, from: .capturedPhoto(image))
     }
 
     private func appendPhotoPlaceholders(contentTypes: [[UTType]]) -> [GhosttyPendingAttachment] {
@@ -460,6 +474,23 @@ final class GhosttyComposerModel: ObservableObject {
                         GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
                         throw error
                     }
+                }
+            case .capturedPhoto(let image):
+                // The camera's JPEG is already made the way a picture is sent.
+                await preparePhotoAttachment(attachmentID: attachmentID, attemptID: attemptID) {
+                    let stagedURL = try await Task.detached(priority: .userInitiated) {
+                        try GhosttyAttachmentStagingStore.stageDataSynchronously(
+                            GhosttyAttachmentPhotoPreparation.jpegDataSynchronously(forCapturedPhoto: image),
+                            filename: GhosttyAttachmentStagingStore.imageFilename(
+                                title: "Photo",
+                                contentTypes: [Self.capturedPhotoContentType]
+                            )
+                        )
+                    }.value
+                    return GhosttyAttachmentPhotoPreparation.PreparedPhoto(
+                        url: stagedURL,
+                        contentType: Self.capturedPhotoContentType
+                    )
                 }
             case .pastedFile(let url):
                 await preparePastedFileAttachment(
