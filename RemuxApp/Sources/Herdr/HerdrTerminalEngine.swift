@@ -162,9 +162,10 @@ enum HerdrEngineUpdate: Sendable {
     case activated(request: UInt64, connection: UInt64)
     /// View request `request` didn't complete within its time.
     case timedOut(request: UInt64, connection: UInt64)
-    /// Herdr answered the step of the current view request `request` that takes the session to its
-    /// place, a focus or a creation: why it failed, or nil when it worked, and for a creation the pane Herdr
-    /// made. Reported only while `request` is current, in order with its other events.
+    /// Herdr answered the step of view request `request` that takes the session to its place, a focus, a
+    /// creation or a close: why it failed, or nil when it worked, and for a creation the pane Herdr made.
+    /// Reported while `request` is current, in order with its other events, and for a creation or close
+    /// also once a newer request replaced it, since the user asked for it.
     case answered(request: UInt64, step: HerdrCommandLane.Step, failure: HerdrCommandError?, made: String?, connection: UInt64)
     /// Herdr answered a zoom Remux sent, of a request's step or not: the tab's layout, for the pane
     /// sheet's map, or why it failed or didn't go. `reportsFailure` for the zoom button's, whose
@@ -833,14 +834,19 @@ actor HerdrTerminalEngine {
     }
 
     /// The view changes of the commands Herdr hasn't answered, in the order it applies them: the command in
-    /// flight unless a snapshot since it went shows its effect, and the current request's steps not yet sent,
+    /// flight unless a snapshot since it went shows its effect, and the steps not yet sent that still go,
     /// which take the session where the user goes.
     private var changesToCome: [ViewChange] {
         var changes = lane.inFlight.flatMap(inFlightChange).map { [$0] } ?? []
-        if let request, request.inProgress, !request.overtaken {
-            changes += lane.steps.compactMap(ViewChange.init(sent:))
-        }
+        changes += lane.steps.filter { stillGoes($0.step, of: $0.request) }.compactMap { ViewChange(sent: $0.step) }
         return changes
+    }
+
+    /// Whether a step in the lane still goes: one of the current request while it is in progress and not
+    /// overtaken, and a creation or close of a request it replaced, which the user asked for.
+    private func stillGoes(_ step: HerdrCommandLane.Step, of id: UInt64) -> Bool {
+        guard let request else { return false }
+        return id == request.id ? request.inProgress && !request.overtaken : step.changesSession
     }
 
     /// The change the command in flight makes, unless a snapshot that came while it was in flight shows its
@@ -1216,11 +1222,12 @@ actor HerdrTerminalEngine {
     }
 
     /// Starts the view request for `view`: it becomes current in this turn, the frames are held for it
-    /// from here on, its steps replace those the previous request hadn't sent, and it has `deadline` to
-    /// complete. Herdr sends no frames to a hidden session, so every frame after a show answers it or a
-    /// later request. A move with nothing to do starts nothing: one to the place the request in progress
-    /// already goes to or, with none, to where Herdr has the session, asked from that tab; or one asked
-    /// before any show. A creation is a move to what it makes.
+    /// from here on, its steps replace those the previous request hadn't sent, after any creation or close
+    /// among them (`HerdrCommandLane`), and it has `deadline` to complete. Herdr sends no frames to a
+    /// hidden session, so every frame after a show answers it or a later request. A move with nothing to
+    /// do starts nothing: one to the place the request in progress already goes to or, with none, to where
+    /// Herdr has the session, asked from that tab; or one asked before any show. A creation is a move to
+    /// what it makes.
     ///
     /// Returns the request that takes the session where `view` asks: the one it starts or, for a move to
     /// where the request in progress already goes, that one; nil when none does, as for a hide or a move to
@@ -1751,7 +1758,7 @@ actor HerdrTerminalEngine {
             let params: any Encodable & Sendable
             switch next {
             case .step(let id, let step):
-                guard let request, request.id == id, request.inProgress, !request.overtaken else {
+                guard let request, stillGoes(step, of: id) else {
                     lane.removeNext()
                     continue
                 }
@@ -1889,8 +1896,8 @@ actor HerdrTerminalEngine {
 
     /// What Herdr's answer, or a command's failure, does. A zoom's answer records Remux's zoom and the tab's
     /// layout whichever request asked, since Herdr applied it, and a step's answer holds the lane until a
-    /// snapshot shows where it took the session; a step of a request a newer one replaced changes nothing
-    /// else.
+    /// snapshot shows where it took the session. A creation's or close's answer is reported whichever request
+    /// it belongs to, as the user asked for it; a step of a request a newer one replaced changes nothing else.
     private func finish(_ inFlight: HerdrCommandLane.InFlight, with result: Result<HerdrCommandReply, HerdrCommandError>) {
         switch inFlight.item {
         case .step(let id, let step):
@@ -1904,14 +1911,19 @@ actor HerdrTerminalEngine {
                 unsettled = held
                 unshown.append(held)
             }
-            guard var request, request.id == id, request.inProgress else { return }
+            var made: String?
+            if case .made(let pane, _)? = effect?.target { made = pane }
+            guard var request, request.id == id, request.inProgress else {
+                guard step.changesSession else { return }
+                let failure: HerdrCommandError? = if case .failure(let failure) = result { failure } else { nil }
+                continuation.yield(.answered(request: id, step: step, failure: failure, made: made, connection: connection))
+                return
+            }
             switch (step, result) {
             case (.zoomReached, _):
                 break
             case (.zoom, .success), (.create, .success), (.close, .success):
                 if !step.isZoom {
-                    var made: String?
-                    if case .made(let pane, _)? = effect?.target { made = pane }
                     continuation.yield(.answered(request: id, step: step, failure: nil, made: made, connection: connection))
                 }
                 if let effect {
@@ -2044,7 +2056,7 @@ actor HerdrTerminalEngine {
         else { return }
         request.overtaken = true
         self.request = request
-        lane.dropSteps()
+        lane.dropSteps(of: request.id)
     }
 
     /// The screen's size changed while a request is in progress: only a frame at the new size completes

@@ -6829,6 +6829,64 @@ extension HerdrScreenModelTests {
         }
     }
 
+    /// New Tab asked just before a pick, while Herdr hasn't answered an earlier focus, isn't dropped for the
+    /// pick, as Herdr's client never drops one: Herdr makes the tab, then the pick goes from there.
+    func testANewTabAskedJustBeforeAPickStillGoesFirst() async throws {
+        let harness = await makeHarness()
+        let session = try await shownWorkspaces(harness, zoomingOnShow: false)
+        var index = session.next
+
+        XCTAssertTrue(harness.model.reveal(.tab("t2"), bootID: "boot"))
+        let first = try await nextWrite(session.bridge, from: &index, command)
+        XCTAssertEqual(first.params, ["tab_id": "t2"])
+        XCTAssertTrue(harness.model.create(.tab(workspaceID: "w1"), bootID: "boot"))
+        XCTAssertTrue(harness.model.reveal(.tab("t3"), bootID: "boot"))
+        try await Task.sleep(for: .milliseconds(100))
+        await session.bridge.serve(HerdrConnectionTests.reply(id: first.id, json: #"{"type":"ok"}"#))
+        await session.bridge.serve(Self.twoWorkspaces(revision: 3, focusedTab: "t2", focusedPane: "w1:p3"))
+        let created = try await nextWrite(session.bridge, from: &index, command)
+        XCTAssertEqual(created.method, "tab.create", "New Tab was dropped for the pick after it")
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: created.id,
+            json: #"{"type":"tab_created","tab":{"tab_id":"t5"},"root_pane":{"pane_id":"w1:p9"}}"#
+        ))
+        await session.bridge.serve(HerdrServerScript.snapshot(
+            revision: 4,
+            workspaces: [
+                .init(id: "w1", label: "alpha", tabs: [("t1", ["w1:p1", "w1:p2"]), ("t2", ["w1:p3", "w1:p4"]), ("t5", ["w1:p9"])]),
+                .init(id: "w2", label: "beta", tabs: [("t3", ["w2:p5"]), ("t4", ["w2:p6", "w2:p7"])], activeTab: "t4"),
+            ],
+            focusedTab: "t5",
+            focusedPane: "w1:p9"
+        ))
+        let pick = try await nextWrite(session.bridge, from: &index, command)
+        XCTAssertEqual(pick.method, "tab.focus")
+        XCTAssertEqual(pick.params, ["tab_id": "t3"])
+    }
+
+    /// A close of the tab on screen that a pick follows while Herdr still has it gets Herdr's answer all the
+    /// same: Herdr's question about its worktree group reaches the user, and the pick goes after it.
+    func testHerdrsQuestionAboutACloseReachesTheUserThoughAPickFollowedIt() async throws {
+        let harness = await makeHarness()
+        let session = try await shownWorkspaces(harness, zoomingOnShow: false)
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+
+        XCTAssertTrue(harness.model.ask(.close(.tab("t1"), group: false), bootID: "boot"))
+        let close = try await nextWrite(session.bridge, from: &index, command)
+        XCTAssertEqual(close.method, "tab.close")
+        XCTAssertTrue(harness.model.reveal(.tab("t2"), bootID: "boot"))
+        try await Task.sleep(for: .milliseconds(100))
+        await session.bridge.serve(HerdrConnectionTests.reply(
+            id: close.id,
+            error: ("confirmation_required", "closing this tab closes the worktree group")
+        ))
+        try await harness.waitUntil("Herdr's question didn't reach the user") { adapter.askedCloseConfirmation != nil }
+        XCTAssertEqual(harness.model.askedCloseConfirmation?.request, .close(.workspace("w1"), group: false))
+        let pick = try await nextWrite(session.bridge, from: &index, command)
+        XCTAssertEqual(pick.params, ["tab_id": "t2"])
+    }
+
     /// The Panes sheet's split sends Herdr's client's `pane.split` of the focused pane in the workspace on
     /// screen, without taking Remux's zoom off first, since the split stays on the tab. Herdr focuses the
     /// pane it made and unzooms the tab; the setting zooms the new pane.
