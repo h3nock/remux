@@ -929,6 +929,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> GhosttyComposerUITextView {
         let textView = GhosttyComposerUITextView()
         textView.delegate = context.coordinator
+        textView.allowsUserEdits = allowsUserEdits
         textView.onPasteAttachment = onPasteAttachment
         textView.backgroundColor = .clear
         textView.font = .preferredFont(forTextStyle: .body)
@@ -955,6 +956,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     func updateUIView(_ textView: GhosttyComposerUITextView, context: Context) {
         context.coordinator.parent = self
         textView.tintColor = caretColor
+        textView.allowsUserEdits = allowsUserEdits
         textView.onPasteAttachment = onPasteAttachment
         textView.onAttachedToWindow = onResponderAttached
         responderHandoff.register(textView, as: .composer)
@@ -1076,7 +1078,10 @@ private struct GhosttyComposeBarPerfMarker: View {
 }
 #endif
 
-private final class GhosttyComposerUITextView: UITextView {
+final class GhosttyComposerUITextView: UITextView {
+    /// False while a send is in flight. The field then takes no pasted attachment either: the send clears the draft it
+    /// took, which would drop one added meanwhile.
+    var allowsUserEdits = true
     var onPasteAttachment: (() -> Bool)?
     var onAttachedToWindow: (() -> Void)?
 
@@ -1088,14 +1093,15 @@ private final class GhosttyComposerUITextView: UITextView {
 
     /// A text view offers Paste for text alone; the composer also takes a copied picture as an attachment.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(paste(_:)), isEditable, onPasteAttachment != nil, UIPasteboard.general.hasImages {
+        if action == #selector(paste(_:)), isEditable, allowsUserEdits, onPasteAttachment != nil,
+           UIPasteboard.general.hasImages {
             return true
         }
         return super.canPerformAction(action, withSender: sender)
     }
 
     override func paste(_ sender: Any?) {
-        if onPasteAttachment?() == true {
+        if allowsUserEdits, onPasteAttachment?() == true {
             return
         }
         super.paste(sender)
