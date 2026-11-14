@@ -2555,6 +2555,47 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertEqual([zoom.paneID, zoom.mode], ["w1:p1", "on"])
     }
 
+    /// Returning from an unzoomed tab can evict the zoomed tab's map. A
+    /// completed earlier query must not suppress a new query for the same panes.
+    func testReturningToAZoomedTabCanRecoverItsPaneMapAgain() async throws {
+        let harness = await makeHarness()
+        let session = try await shownTab(harness, zoomed: true, secondTab: ["w1:p3"])
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+        let firstTab = try topLevel(harness)
+        adapter.refreshPaneMetadata(inTopLevel: firstTab)
+        let firstQuery = try await nextWrite(session.bridge, from: &index, paneZoom)
+        await session.bridge.serve(HerdrServerScript.zoomReply(
+            id: firstQuery.id, changed: false, zoomed: true, panes: Self.places(2)))
+        try await waitForMap(harness)
+
+        let panes = Self.tabPanes(["w1:p1", "w1:p2"])
+            + [HerdrServerScript.snapshotPane("w1:p3", tab: "t2")]
+        await session.bridge.serve(HerdrServerScript.snapshot(
+            revision: 2, focusedTab: "t2", otherTabs: ["t1"], zoomedOtherTabs: ["t1"],
+            focusedPane: "w1:p3", panes: panes))
+        await session.bridge.serve(try harness.shownSurface(projection: 2, revision: 1,
+            lines: ["single"], panes: [Self.secondTabZoomed]))
+        try await harness.waitUntil("the single-pane tab wasn't shown") { self.drawnPanes(harness) == ["w1:p3"] }
+
+        await session.bridge.serve(HerdrServerScript.snapshot(
+            revision: 3, zoomed: true, otherTabs: ["t2"], panes: panes))
+        await session.bridge.serve(try harness.shownSurface(projection: 3, revision: 1,
+            lines: ["split"], panes: [Self.zoomedPane]))
+        try await harness.waitUntil("the zoomed tab wasn't shown again") { self.drawnPanes(harness) == ["w1:p1"] }
+        XCTAssertEqual(adapter.paneSelectionSheetRenderProjection(topLevelID: firstTab).paneCount, 2)
+        let asked = index
+        try await harness.waitUntil("returning to the tab didn't request its missing map") {
+            adapter.refreshPaneMetadata(inTopLevel: firstTab)
+            return await session.bridge.writtenCount > asked
+        }
+        let query = try await nextWrite(session.bridge, from: &index, paneZoom)
+        XCTAssertEqual([query.paneID, query.mode], ["w1:p1", "on"])
+        await session.bridge.serve(HerdrServerScript.zoomReply(
+            id: query.id, changed: false, zoomed: true, panes: Self.places(2)))
+        try await waitForMap(harness)
+    }
+
     /// A failed answer leaves the map as it was, and the same missing panes aren't asked for again.
     func testAFailedMapAnswerLeavesTheMapAndIsNotAskedAgain() async throws {
         let harness = await makeHarness()

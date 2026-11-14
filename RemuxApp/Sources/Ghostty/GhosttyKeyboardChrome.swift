@@ -109,6 +109,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
     let composerContent: () -> ComposerContent
     var allowsTerminalKeys = true
+    var showsNavigationControls = true
 
     var body: some View {
         selectorRow
@@ -139,7 +140,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var standardSelectorRow: some View {
         HStack(spacing: isCompact ? 6 : 10) {
             terminalKeyControls
-            navigationControls
+            if showsNavigationControls { navigationControls }
             inputControls
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -219,21 +220,23 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var inputControls: some View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
-                let waiting = waitingAgentStatus()
-                GhosttyKeyboardChromeDockButton(
-                    systemName: "house",
-                    badge: nil,
-                    dot: waiting,
-                    width: dockButtonWidth,
-                    height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    accessibilityLabel: "Home",
-                    accessibilityValue: waiting.map { "An agent is \($0.word)" },
-                    accessibilityHint: "Open the Remux library.",
-                    accessibilityIdentifier: "terminal.home",
-                    isActive: false,
-                    isEnabled: !isInteractionLocked,
-                    action: onShowLibrary
-                )
+                if showsNavigationControls {
+                    let waiting = waitingAgentStatus()
+                    GhosttyKeyboardChromeDockButton(
+                        systemName: "house",
+                        badge: nil,
+                        dot: waiting,
+                        width: dockButtonWidth,
+                        height: GhosttyKeyboardChromeSizing.dockButtonHeight,
+                        accessibilityLabel: "Home",
+                        accessibilityValue: waiting.map { "An agent is \($0.word)" },
+                        accessibilityHint: "Open the Remux library.",
+                        accessibilityIdentifier: "terminal.home",
+                        isActive: false,
+                        isEnabled: !isInteractionLocked,
+                        action: onShowLibrary
+                    )
+                }
 
                 composerButton
                 keyboardToggleButton
@@ -338,29 +341,40 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         )
     }
 
-    private var windowAccessibilityLabel: String {
+    private var status: GhosttyKeyboardChromeStatus {
+        GhosttyKeyboardChromeStatus(topLevelNoun: topLevelNoun,
+            selectedWindowIndex: selectedWindowIndex, windowCount: windowCount, paneCount: paneCount)
+    }
+
+    private var windowAccessibilityLabel: String { status.windowAccessibilityLabel }
+    private var windowBadge: String? { status.windowBadge }
+    private var paneBadge: String? { status.paneBadge }
+    private var paneAccessibilityLabel: String { status.paneAccessibilityLabel }
+
+}
+
+/// Shared status for horizontal toolbar and vertical rail controls.
+struct GhosttyKeyboardChromeStatus {
+    let topLevelNoun: GhosttyTopLevelNoun
+    let selectedWindowIndex: Int?
+    let windowCount: Int
+    let paneCount: Int
+
+    private var windowNumber: Int {
+        min(max((selectedWindowIndex ?? 0) + 1, 1), max(windowCount, 1))
+    }
+
+    var windowAccessibilityLabel: String {
         guard windowCount > 0 else { return topLevelNoun.plural }
-        return "\(topLevelNoun.singular) \(displayIndex(selectedWindowIndex, count: windowCount)) of \(windowCount)"
+        return "\(topLevelNoun.singular) \(windowNumber) of \(windowCount)"
     }
 
-    private var windowBadge: String? {
-        guard windowCount > 1 else { return nil }
-        return "\(displayIndex(selectedWindowIndex, count: windowCount))"
-    }
+    var windowBadge: String? { windowCount > 1 ? "\(windowNumber)" : nil }
+    var paneBadge: String? { paneCount > 1 ? (paneCount < 100 ? "\(paneCount)" : "99+") : nil }
 
-
-    private var paneBadge: String? {
-        guard paneCount > 1 else { return nil }
-        return paneCount < 100 ? "\(paneCount)" : "99+"
-    }
-
-    private var paneAccessibilityLabel: String {
+    var paneAccessibilityLabel: String {
         guard paneCount > 0 else { return "Panes" }
         return "Panes, \(paneCount) \(paneCount == 1 ? "pane" : "panes")"
-    }
-
-    private func displayIndex(_ index: Int?, count: Int) -> Int {
-        min(max((index ?? 0) + 1, 1), max(count, 1))
     }
 }
 
@@ -383,7 +397,7 @@ struct GhosttyKeyboardChromeNavigation: Equatable {
     }
 }
 
-private struct GhosttyKeyboardChromeDockButton: View {
+struct GhosttyKeyboardChromeDockButton: View {
     /// The dot is the size of the agent dot on a tab's tile, in the place of a button's count.
     private static let dotDiameter: CGFloat = 7
     private static let dotBox: CGFloat = 12.5
@@ -402,10 +416,14 @@ private struct GhosttyKeyboardChromeDockButton: View {
     let accessibilityIdentifier: String
     let isActive: Bool
     let isEnabled: Bool
+    var hapticsOnActivation = false
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if hapticsOnActivation { Haptic.chromeControlPress() }
+            action()
+        } label: {
             ZStack {
                 ZStack {
                     Image(systemName: systemName)
@@ -438,7 +456,8 @@ private struct GhosttyKeyboardChromeDockButton: View {
             isActive: isActive,
             isEnabled: isEnabled,
             width: width,
-            height: height
+            height: height,
+            hapticsOnPress: !hapticsOnActivation
         ))
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
@@ -475,7 +494,7 @@ private extension View {
     }
 }
 
-private struct GhosttyKeyboardKeyButton: View {
+struct GhosttyKeyboardKeyButton: View {
     let title: String
     let accessibilityLabel: String
     let accessibilityHint: String?
@@ -487,6 +506,9 @@ private struct GhosttyKeyboardKeyButton: View {
     var isActive = false
     let isEnabled: Bool
     var onLongPress: (() -> Void)?
+    // A scroll can start on a key. In scrollable chrome, defer feedback until
+    // the tap is recognized rather than vibrating on the initial touch.
+    var hapticsOnActivation = false
     let action: () -> Bool
 
     @State private var isPressed = false
@@ -521,6 +543,7 @@ private struct GhosttyKeyboardKeyButton: View {
             .onTapGesture {
                 guard isEnabled else { return }
                 isPressed = false
+                if hapticsOnActivation { Haptic.keyboardPress() }
                 _ = action()
             }
             .onLongPressGesture(
@@ -528,7 +551,7 @@ private struct GhosttyKeyboardKeyButton: View {
                 maximumDistance: 18,
                 pressing: { pressing in
                     guard isEnabled else { return }
-                    if pressing, !isPressed {
+                    if pressing, !isPressed, !hapticsOnActivation {
                         Haptic.keyboardPress()
                     }
                     isPressed = pressing
@@ -570,12 +593,13 @@ private struct GhosttyChromeDockButtonStyle: ButtonStyle {
     let isEnabled: Bool
     let width: CGFloat
     let height: CGFloat
+    let hapticsOnPress: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         GhosttyChromePressBody(
             isPressed: configuration.isPressed,
             isEnabled: isEnabled,
-            onPressDown: { Haptic.chromeControlPress() }
+            onPressDown: { if hapticsOnPress { Haptic.chromeControlPress() } }
         ) {
             configuration.label
                 .foregroundStyle(isActive ? RemuxAccent.fill : GhosttyPhoneChromePalette.chromeForeground)

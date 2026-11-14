@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import UIKit
 
 enum GhosttyKeyboardViewportTransitionTarget: Equatable {
     case shown
@@ -408,4 +409,30 @@ enum GhosttyKeyboardViewportTransitionTiming {
     static let maximumFallbackDelay: TimeInterval = 1.0
     static let defaultFallbackDelay: TimeInterval = 1.0
     static let systemPresentationFallbackDelay: TimeInterval = 2.0
+}
+
+@MainActor
+enum GhosttyKeyboardWindowGeometry {
+    static func dockedOverlapHeight(
+        layoutFrame: CGRect,
+        windowBounds: CGRect,
+        bottomSafeAreaInset: CGFloat
+    ) -> CGFloat {
+        let overlap = GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
+            frameEnd: layoutFrame, screenBounds: windowBounds
+        )
+        // With no docked keyboard, UIKit's guide occupies the bottom safe area.
+        guard overlap > max(bottomSafeAreaInset, 0) else { return 0 }
+        return GhosttyViewportSizing.normalizedHeight(overlap)
+    }
+
+    static func frameEnd(notification: Notification, window: UIWindow, coordinateSpace: any UICoordinateSpace) -> CGRect {
+        // A hide notification describes the end state even if its reported frame
+        // still overlaps the window during a display transition.
+        guard notification.name != UIResponder.keyboardWillHideNotification,
+              let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else {
+            return CGRect(x: window.bounds.minX, y: window.bounds.maxY, width: window.bounds.width, height: 0)
+        }
+        return window.convert(frame, from: coordinateSpace)
+    }
 }

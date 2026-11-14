@@ -62,6 +62,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("terminal.preservesVerticalSafeAreas") private var preservesVerticalSafeAreas = true
     @ObservedObject private var model: Model
     private let composer: GhosttyComposerModel
     private let presentation: GhosttySurfaceScreenPresentation
@@ -81,6 +83,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     /// screen.
     @State private var shownWindowGroupID: UUID?
     @State private var bottomChromeReservation = GhosttyBottomChromeReservation()
+    @State private var verticalNavigationEdge: HorizontalEdge?
+    @State private var keyboardWindowContext = GhosttyKeyboardWindowContext()
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
@@ -210,6 +214,24 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
 #endif
         GeometryReader { screenProxy in
+            let containerSize = keyboardWindowContext.window?.bounds.size ?? screenProxy.size
+            let usesDuoRail = UIDevice.current.userInterfaceIdiom == .phone && verticalNavigationEdge != nil
+            let isInnerPortrait = UIDevice.current.userInterfaceIdiom == .phone
+                && horizontalSizeClass == .regular && containerSize.height >= containerSize.width
+            let terminalTopSpacing = GhosttyTerminalSafeAreaPolicy.additionalTopSpacing(
+                preservesSafeAreas: preservesVerticalSafeAreas,
+                hasVerticalControls: usesDuoRail,
+                isCompact: horizontalSizeClass == .compact,
+                isLandscape: containerSize.width > containerSize.height,
+                topInset: screenProxy.safeAreaInsets.top,
+                bottomInset: keyboardWindowContext.window?.safeAreaInsets.bottom ?? 0
+            )
+            let terminalSafeAreaEdges = GhosttyTerminalSafeAreaPolicy.ignoredEdges(
+                preservesSafeAreas: preservesVerticalSafeAreas,
+                hasVerticalControls: usesDuoRail,
+                isCompact: horizontalSizeClass == .compact,
+                isLandscape: containerSize.width > containerSize.height
+            )
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
                 screenSize: screenProxy.size
@@ -217,12 +239,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
                 + 4
                 + chrome.bottomPadding
-            let bottomChromeHeight = bottomChromeReservation.layoutHeight(
+            let bottomChromeHeight = verticalNavigationEdge != nil && !isActiveComposerPresented && !isFindPresented ? 0 : bottomChromeReservation.layoutHeight(
                 fallback: bottomChromeFallbackHeight
             )
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
             let interactionProjection = screenProjection.interaction
+            let chromeStatus = GhosttyKeyboardChromeStatus(
+                topLevelNoun: model.topLevelNoun, selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                windowCount: interactionProjection.windowCount, paneCount: interactionProjection.paneCount)
+            let chromeNavigation = GhosttyKeyboardChromeNavigation(
+                isEnabled: interactionProjection.isInputAvailable && !composer.isSubmitting,
+                isHeldByPopup: screenProjection.viewport.popup != nil,
+                windowCount: interactionProjection.windowCount, paneCount: interactionProjection.paneCount)
+
             let terminalResponderFocusPolicy = GhosttyTerminalResponderFocusPolicy(
                 isSelected: isSelected,
                 keyboardMode: inputCoordinator.keyboardMode,
@@ -234,7 +264,50 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 topLevelID: selectionSheet?.paneTopLevelIDForTopologyValidation
             )
 
-            ZStack {
+            let bottomControls = Group {
+                if isFindPresented {
+                    TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
+                        presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
+                        onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
+                        .frame(height: 46)
+                } else {
+                    GhosttyKeyboardChrome(
+                        keyboardMode: renderedKeyboardMode,
+                        isEnabled: interactionProjection.isInputAvailable,
+                        isInteractionLocked: composer.isSubmitting,
+                        isCompact: chrome.isCompact,
+                        isControlArmed: terminalInputController.isControlArmed,
+                        toolbarKeys: presentation.toolbarKeys,
+                        topLevelNoun: model.topLevelNoun,
+                        selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                        windowCount: interactionProjection.windowCount,
+                        paneCount: interactionProjection.paneCount,
+                        isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
+                        isComposerPresented: isActiveComposerPresented,
+                        onShowSessions: onShowSessions,
+                        onShowLibrary: onShowLibrary,
+                        waitingAgentStatus: waitingAgentStatus,
+                        onShowWindows: {
+                            showWindows()
+                        },
+                        onShowPanes: showPanes,
+                        onOpenComposer: openComposer,
+                        onToggleKeyboard: toggleKeyboardChrome,
+                        onToggleControl: toggleControlModifier,
+                        onShowShortcuts: showShortcutPalette,
+                        sendKey: performToolbarKey,
+                        composerContent: { selectedComposerBar() },
+                        allowsTerminalKeys: !isReadingAfterFind,
+                        showsNavigationControls: verticalNavigationEdge == nil
+                    )
+                }
+            }
+            .padding(.horizontal, chrome.surfaceHorizontalPadding)
+            .padding(.top, 4)
+            .padding(.bottom, chrome.bottomPadding)
+            .frame(maxWidth: .infinity, alignment: .bottom)
+
+            let terminalContent = ZStack {
                 presentation.terminalTheme.terminalSurfaceBackground
                     .ignoresSafeArea(.all, edges: .all)
 
@@ -302,6 +375,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 alignment: .topLeading
                             )
                             .background(presentation.terminalTheme.terminalSurfaceBackground)
+
 
                         GhosttyTerminalResponderRepresentable(
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
@@ -453,68 +527,124 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         )
                     }
                 }
+                .padding(.top, terminalTopSpacing)
+                .ignoresSafeArea(.container, edges: GhosttyTerminalSafeAreaPolicy.contentEdges(
+                    terminalSafeAreaEdges, hasBottomControls: isActiveComposerPresented || isFindPresented))
             }
-            .overlay(alignment: .bottom) {
-                shortcutPaletteLayer()
-            }
-            .overlay(alignment: .bottom) {
-                attachmentNoticeLayer()
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                Color.clear
-                    .frame(height: bottomChromeHeight)
-                    .overlay(alignment: .bottom) {
-                        Group {
-                            if isFindPresented {
-                                TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
-                                    presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
-                                    onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
-                                    .frame(height: 46)
-                            } else {
-                                GhosttyKeyboardChrome(
-                                    keyboardMode: renderedKeyboardMode,
-                                    isEnabled: interactionProjection.isInputAvailable,
-                                    isInteractionLocked: composer.isSubmitting,
-                                    isCompact: chrome.isCompact,
-                                    isControlArmed: terminalInputController.isControlArmed,
-                                    toolbarKeys: presentation.toolbarKeys,
-                                    topLevelNoun: model.topLevelNoun,
-                                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                                    windowCount: interactionProjection.windowCount,
-                                    paneCount: interactionProjection.paneCount,
-                                    isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
-                                    isComposerPresented: isActiveComposerPresented,
-                                    onShowSessions: onShowSessions,
-                                    onShowLibrary: onShowLibrary,
-                                    waitingAgentStatus: waitingAgentStatus,
-                                    onShowWindows: {
-                                        showWindows()
-                                    },
-                                    onShowPanes: showPanes,
-                                    onOpenComposer: openComposer,
-                                    onToggleKeyboard: toggleKeyboardChrome,
-                                    onToggleControl: toggleControlModifier,
-                                    onShowShortcuts: showShortcutPalette,
-                                    sendKey: performToolbarKey,
-                                    composerContent: { selectedComposerBar() },
-                                    allowsTerminalKeys: !isReadingAfterFind
-                                )
-                            }
-                        }
-                        .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                        .padding(.top, 4)
-                        .padding(.bottom, chrome.bottomPadding)
-                        .frame(maxWidth: .infinity, alignment: .bottom)
-                        .background {
-                            GeometryReader { chromeProxy in
-                                Color.clear.preference(
-                                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
-                                    value: chromeProxy.size.height
-                                )
-                            }
+            .overlay(alignment: .bottom) { shortcutPaletteLayer() }
+            .overlay(alignment: .bottom) { attachmentNoticeLayer() }
+
+            // AnyLayout preserves the terminal representable's structural
+            // identity when rotating between the two layout arrangements.
+            let terminalLayout: AnyLayout = isInnerPortrait
+                ? AnyLayout(GhosttyTerminalControlsLayout(
+                    cellPixelHeight: screenProjection.viewport.cellMetrics.map { CGFloat($0.pixelHeight) } ?? 0,
+                    scale: screenProjection.viewport.cellMetrics.map { CGFloat($0.contentScale) } ?? displayScale,
+                    centersControls: !isActiveComposerPresented && !isFindPresented))
+                : AnyLayout(ZStackLayout())
+            terminalLayout {
+                terminalContent
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if !isInnerPortrait && (verticalNavigationEdge == nil || isActiveComposerPresented || isFindPresented) {
+                            Color.clear.frame(height: bottomChromeHeight)
+                                .overlay(alignment: .bottom) {
+                                    bottomControls.background {
+                                        GeometryReader { chromeProxy in
+                                            Color.clear.preference(
+                                                key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
+                                                value: chromeProxy.size.height)
+                                        }
+                                    }
+                                }
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .bottom)
+                if isInnerPortrait {
+                    bottomControls
+                }
+            }
+            .background {
+                presentation.terminalTheme.terminalSurfaceBackground
+                    .ignoresSafeArea()
+            }
+            // Move the portrait bottom chrome into the container inset while
+            // continuing to respect the keyboard's separate safe area.
+            .ignoresSafeArea(.container, edges: isInnerPortrait ? .bottom : [])
+            .background {
+                if #available(iOS 27.1, *) {
+                    GhosttyVerticalBarEdgeReader(insets: screenProxy.safeAreaInsets) { verticalNavigationEdge = $0 }
+                }
+            }
+            .overlay {
+                GeometryReader { railProxy in
+                if #available(iOS 27.1, *), let edge = verticalNavigationEdge {
+                    let inset = edge == .leading ? screenProxy.safeAreaInsets.leading : screenProxy.safeAreaInsets.trailing
+                    let railWidth: CGFloat = 76
+                    let railX = edge == .leading ? inset / 2 : railProxy.size.width - inset / 2
+                    let viewport = railViewport(in: railProxy, centerX: railX, width: railWidth)
+                    ScrollView(.vertical) {
+                        VStack(spacing: 8) {
+                            railGroup {
+                                railButton("Sessions", icon: "rectangle.stack", identifier: "terminal.sessions", action: onShowSessions)
+                                railButton(chromeStatus.windowAccessibilityLabel, icon: "rectangle.on.rectangle", identifier: "terminal.windows",
+                                           badge: chromeStatus.windowBadge, hint: chromeNavigation.tabsHint,
+                                           enabled: chromeNavigation.isTabsEnabled) {
+                                    showWindows()
+                                }
+                                railButton(chromeStatus.paneAccessibilityLabel, icon: "square.split.2x1", identifier: "terminal.panes",
+                                           badge: chromeStatus.paneBadge, hint: chromeNavigation.panesHint,
+                                           enabled: chromeNavigation.isPanesEnabled,
+                                           action: showPanes)
+                                if usesDuoRail && horizontalSizeClass == .regular && containerSize.width > containerSize.height {
+                                    railButton("Safe area spacing", icon: "rectangle.inset.filled", identifier: "terminal.safe-area.toggle",
+                                               isActive: preservesVerticalSafeAreas) {
+                                        preservesVerticalSafeAreas.toggle()
+                                    }
+                                    .accessibilityValue(preservesVerticalSafeAreas ? "On" : "Off")
+                                    .accessibilityHint("Reserve space at the screen edges, or extend the terminal into it.")
+                                }
+                            }
+                            railGroup {
+                                ForEach(Array(presentation.toolbarKeys.values.enumerated()), id: \.offset) { index, key in
+                                    railKeyButton(key, index: index,
+                                                  isEnabled: interactionProjection.isInputAvailable && !composer.isSubmitting && !isReadingAfterFind)
+                                }
+                            }
+                            railGroup {
+                                let waiting = waitingAgentStatus()
+                                railButton("Home", icon: "house", identifier: "terminal.home",
+                                           dot: waiting, value: waiting.map { "An agent is \($0.word)" }, action: onShowLibrary)
+                                railButton("Open composer", icon: "square.and.pencil", identifier: "terminal.composer.toggle", action: openComposer)
+                                railButton(railKeyboardAccessibilityLabel,
+                                           icon: inputCoordinator.keyboardMode == .hidden || inputCoordinator.keyboardOwner == .composer
+                                                ? "keyboard" : "keyboard.chevron.compact.down",
+                                           identifier: "terminal.keyboard",
+                                           enabled: interactionProjection.isInputAvailable,
+                                           action: toggleKeyboardChrome)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        // Start below the system controls while keeping native
+                        // bottom anchoring when the keyboard makes the rail scroll.
+                        .frame(minHeight: viewport.height, alignment: .top)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .accessibilityIdentifier("terminal.rail")
+                    // Let the scroll view adjust both keyboard transitions as its viewport resizes.
+                    .defaultScrollAnchor(.bottom)
+                    .frame(width: railWidth, height: viewport.height)
+                    .clipped()
+                    .position(x: railX, y: viewport.midY)
+                }
+                }
+                // Include the side inset in the overlay's layout AND hit-test bounds.
+                // Drawing controls outside the GeometryReader made them untappable.
+                .ignoresSafeArea(.container, edges: .horizontal)
+            }
+            .background {
+                GhosttyKeyboardWindowReader(context: keyboardWindowContext) {
+                    reconcileKeyboardWindowGeometry()
+                }
+                .allowsHitTesting(false)
             }
             .onPreferenceChange(GhosttyRenderedBottomChromeHeightPreferenceKey.self) { renderedHeight in
                 let previousHeight = bottomChromeReservation.settledHeight
@@ -557,66 +687,75 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .sheet(item: selectionSheetBinding, onDismiss: {
                 if isFindPresented { findWantsKeyboard = true }
             }) { sheet in
-                let windowLayout = PanePreviewLayout.windowMetrics(
-                    availableSize: screenProxy.size
-                )
-                let navigationBarHeight = TerminalSelectionSheetLayout.nativeNavigationBarHeight(
-                    width: screenProxy.size.width
-                )
-                let windowProjection: GhosttyWindowSelectionSheetRenderProjection? = if case .windows = sheet {
-                    model.windowSelectionSheetRenderProjection(group: shownWindowGroupID)
-                } else {
-                    nil
-                }
-                let headerHeight = windowProjection?.grouping == nil
-                    ? TerminalSelectionSheetLayout.contextHeight
-                    : TerminalSelectionSheetLayout.groupPickerHeight
-                let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
-                    availableHeight: screenProxy.size.height,
-                    navigationBarHeight: navigationBarHeight,
-                    headerHeight: headerHeight
-                )
-                let paneTopologySize = PaneTopologyLayout.size(
-                    availableWidth: TerminalSelectionSheetLayout.contentWidth(
-                        availableWidth: screenProxy.size.width
-                    ),
-                    maximumHeight: maximumContentHeight
-                )
-                let contentHeight = selectionSheetContentHeight(
-                    for: sheet,
-                    windowProjection: windowProjection,
-                    windowLayout: windowLayout,
-                    paneTopologySize: paneTopologySize,
-                    maximumContentHeight: maximumContentHeight
-                )
-                let gridPresentation = selectionSheetGridPresentation(
-                    sheet,
-                    windowProjection: windowProjection,
-                    windowLayout: windowLayout,
-                    contentHeight: contentHeight
-                )
-                selectionSheetContent(
-                    sheet,
-                    windowProjection: windowProjection,
-                    windowLayout: windowLayout,
-                    paneTopologySize: paneTopologySize,
-                    contentHeight: contentHeight
-                )
-                    .presentationDetents(
-                        selectionSheetDetents(
-                            fitted: .height(TerminalSelectionSheetLayout.sheetHeight(
-                                contentHeight: contentHeight,
+                GeometryReader { sheetProxy in
+                    let windowLayout = PanePreviewLayout.windowMetrics(
+                        availableSize: CGSize(width: sheetProxy.size.width, height: screenProxy.size.height)
+                    )
+                    let navigationBarHeight = TerminalSelectionSheetLayout.nativeNavigationBarHeight(
+                        width: sheetProxy.size.width
+                    )
+                    let windowProjection: GhosttyWindowSelectionSheetRenderProjection? = if case .windows = sheet {
+                        model.windowSelectionSheetRenderProjection(group: shownWindowGroupID)
+                    } else {
+                        nil
+                    }
+                    let headerHeight = windowProjection?.grouping == nil
+                        ? TerminalSelectionSheetLayout.contextHeight
+                        : TerminalSelectionSheetLayout.groupPickerHeight
+                    let desiredMaximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
+                        availableHeight: screenProxy.size.height,
+                        navigationBarHeight: navigationBarHeight,
+                        headerHeight: headerHeight
+                    )
+                    let maximumContentHeight = min(desiredMaximumContentHeight,
+                        TerminalSelectionSheetLayout.maximumContentHeight(
+                            availableHeight: sheetProxy.size.height,
+                            navigationBarHeight: navigationBarHeight, headerHeight: headerHeight))
+                    let paneTopologySize = PaneTopologyLayout.size(
+                        availableWidth: TerminalSelectionSheetLayout.contentWidth(
+                            availableWidth: sheetProxy.size.width
+                        ),
+                        maximumHeight: maximumContentHeight
+                    )
+                    let contentHeight = selectionSheetContentHeight(
+                        for: sheet,
+                        windowProjection: windowProjection,
+                        windowLayout: windowLayout,
+                        paneTopologySize: paneTopologySize,
+                        maximumContentHeight: maximumContentHeight
+                    )
+                    // The requested detent is independent of the current sheet
+                    // height, so measuring the sheet cannot create a shrink loop.
+                    let desiredPaneSize = PaneTopologyLayout.size(
+                        availableWidth: TerminalSelectionSheetLayout.contentWidth(availableWidth: sheetProxy.size.width),
+                        maximumHeight: desiredMaximumContentHeight)
+                    let desiredContentHeight = selectionSheetContentHeight(
+                        for: sheet, windowProjection: windowProjection, windowLayout: windowLayout,
+                        paneTopologySize: desiredPaneSize, maximumContentHeight: desiredMaximumContentHeight)
+                    let gridPresentation = selectionSheetGridPresentation(
+                        sheet, windowProjection: windowProjection, windowLayout: windowLayout,
+                        contentHeight: desiredContentHeight)
+                    selectionSheetContent(
+                        sheet,
+                        windowProjection: windowProjection,
+                        windowLayout: windowLayout,
+                        paneTopologySize: paneTopologySize,
+                        contentHeight: contentHeight
+                    )
+                        .presentationDetents(
+                            selectionSheetDetents(fitted: .height(TerminalSelectionSheetLayout.sheetHeight(
+                                contentHeight: desiredContentHeight,
                                 navigationBarHeight: navigationBarHeight,
                                 headerHeight: headerHeight
-                            )),
-                            gridPresentation: gridPresentation
+                            )), gridPresentation: gridPresentation)
                         )
-                    )
-                    // A sheet that can be pulled taller grows before its grid scrolls.
-                    .presentationContentInteraction(gridPresentation == .fitted ? .scrolls : .automatic)
-                    .presentationDragIndicator(gridPresentation == .fitted ? .hidden : .visible)
-                    .remuxSheetPresentationBackground()
-                    .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
+                        .presentationContentInteraction(gridPresentation == .fitted ? .scrolls : .automatic)
+                        .presentationDragIndicator(gridPresentation == .fitted ? .hidden : .visible)
+                        .remuxSheetPresentationBackground()
+                        .ghosttyTerminalChromePresentation(
+                            presentation.terminalTheme.terminalChromeColorScheme
+                        )
+                }
             }
             .ghosttyCloseConfirmationDialog(selectionSheet == nil ? askedCloseQuestion : nil)
             .sheet(isPresented: $isShortcutsSettingsPresented) {
@@ -1816,19 +1955,142 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
+    private var railKeyboardAccessibilityLabel: String {
+        if inputCoordinator.keyboardMode == .hidden {
+            return "Show keyboard controls"
+        }
+        if inputCoordinator.keyboardOwner == .composer {
+            return "Switch keyboard to terminal"
+        }
+        return "Hide keyboard controls"
+    }
+
+    @available(iOS 27.1, *)
+    private func railGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 0), GridItem(.flexible(), spacing: 0)], spacing: 2, content: content)
+            .padding(4)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    @available(iOS 27.1, *)
+    private func railViewport(in proxy: GeometryProxy, centerX: CGFloat, width: CGFloat) -> CGRect {
+        // Query the overlay, which includes the side rail. The terminal's proxy
+        // excludes it and can therefore omit the system regions we need to avoid.
+        var obstacles = proxy.reservedRegions(kind: .occlusion, layoutDirectionBehavior: .fixed).map { region in
+            CGRect(x: region.frame.minX - region.margins.leading,
+                   y: region.frame.minY - region.margins.top,
+                   width: region.frame.width + region.margins.leading + region.margins.trailing,
+                   height: region.frame.height + region.margins.top + region.margins.bottom)
+        }
+        if let window = keyboardWindowContext.window {
+            let origin = proxy.frame(in: .global).origin
+            let keyboard = window.keyboardLayoutGuide.layoutFrame
+            obstacles.append(keyboard.offsetBy(dx: -origin.x, dy: -origin.y))
+            if let scene = window.windowScene, let status = scene.statusBarManager?.statusBarFrame {
+                let frame = window.convert(status, from: scene.coordinateSpace)
+                // Some configurations report the whole side strip as the status
+                // bar. Its individual occlusions are supplied by reservedRegions.
+                if frame.height < window.bounds.height / 2 {
+                    obstacles.append(frame.offsetBy(dx: -origin.x, dy: -origin.y))
+                }
+            }
+        }
+        // SwiftUI has already shortened this overlay for the keyboard, but its
+        // safeAreaInsets.bottom still includes the keyboard's full inset. Do not
+        // subtract that inset from the shortened height a second time. Intersect
+        // with the window's container safe area using absolute vertical edges.
+        let originY = proxy.frame(in: .global).minY
+        let window = keyboardWindowContext.window
+        let top = max(0, (window.map { $0.bounds.minY + $0.safeAreaInsets.top } ?? originY) - originY)
+        let bottom = min(proxy.size.height,
+                         (window.map { $0.bounds.maxY - $0.safeAreaInsets.bottom } ?? (originY + proxy.size.height)) - originY)
+        let bounds = CGRect(x: centerX - width / 2, y: top, width: width, height: max(0, bottom - top))
+        return GhosttyRailViewport.availableFrame(in: bounds, avoiding: obstacles, spacing: 12)
+    }
+
+    private func railKeyButton(_ key: TerminalToolbarKey, index: Int, isEnabled: Bool) -> some View {
+        let isActive = key == .control && terminalInputController.isControlArmed
+        let onLongPress: (() -> Void)? = index == 0 ? { showShortcutPalette() } : nil
+        return GhosttyKeyboardKeyButton(
+            title: key.toolbarTitle,
+            accessibilityLabel: key.settingsTitle,
+            accessibilityHint: index == 0 ? "Hold to open shortcuts." : nil,
+            accessibilityIdentifier: "terminal.toolbar-key.\(index)",
+            accessibilityValue: isActive ? "Armed" : nil,
+            fontSize: 12,
+            width: 34,
+            height: 40,
+            isActive: isActive,
+            isEnabled: isEnabled,
+            onLongPress: onLongPress,
+            hapticsOnActivation: true
+        ) {
+            if key == .control {
+                toggleControlModifier()
+                return true
+            }
+            guard let keyCode = key.shortcutKey?.ghosttyKeyCode else { return false }
+            return performToolbarKey(.init(keyCode: keyCode))
+        }
+    }
+
+    private func railButton(_ title: String, icon: String, identifier: String,
+                            badge: String? = nil, hint: String? = nil,
+                            dot: TerminalAgentStatus? = nil, value: String? = nil,
+                            enabled: Bool = true, isActive: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        GhosttyKeyboardChromeDockButton(
+            systemName: icon,
+            badge: badge,
+            dot: dot,
+            width: 34,
+            height: 40,
+            accessibilityLabel: title,
+            accessibilityValue: value,
+            accessibilityHint: hint,
+            accessibilityIdentifier: identifier,
+            isActive: isActive,
+            isEnabled: enabled && !composer.isSubmitting,
+            hapticsOnActivation: true,
+            action: action
+        )
+    }
+
+    private func reconcileKeyboardWindowGeometry() {
+        guard shouldHandleTerminalKeyboardNotification,
+              let window = keyboardWindowContext.window else { return }
+        // A resize is not a new keyboard appearance. Read the live layout guide
+        // instead of replaying a notification from a previous display geometry.
+        let overlap = GhosttyKeyboardWindowGeometry.dockedOverlapHeight(
+            layoutFrame: window.keyboardLayoutGuide.layoutFrame,
+            windowBounds: window.bounds,
+            bottomSafeAreaInset: window.safeAreaInsets.bottom
+        )
+        if softwareKeyboardOverlapHeight != overlap {
+            softwareKeyboardOverlapHeight = overlap
+        }
+        if overlap > 0, lastSoftwareKeyboardOverlapHeight != overlap {
+            lastSoftwareKeyboardOverlapHeight = overlap
+        }
+    }
+
     private func updateKeyboardVisibility(with notification: Notification) {
-        let frameEnd = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?
-            .cgRectValue
-            ?? CGRect(
-                x: 0,
-                y: UIScreen.main.bounds.maxY,
-                width: UIScreen.main.bounds.width,
-                height: 0
-            )
+        guard let window = keyboardWindowContext.window,
+              let screen = window.windowScene?.screen else { return }
+        if let sourceScreen = notification.object as? UIScreen, sourceScreen !== screen {
+            return
+        }
+        // Keyboard notifications use screen coordinates; the terminal may occupy
+        // only part of that display, and its window changes size while folding.
+        let frameEnd = GhosttyKeyboardWindowGeometry.frameEnd(
+            notification: notification,
+            window: window,
+            coordinateSpace: screen.coordinateSpace
+        )
 
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: frameEnd,
-            screenBounds: UIScreen.main.bounds,
+            screenBounds: window.bounds,
             animationDuration: (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
                 .doubleValue,
             keyboardMode: inputCoordinator.keyboardMode,
@@ -2686,7 +2948,7 @@ struct GhosttySoftwareKeyboardVisibility {
         guard frameEnd.minY < screenBounds.maxY - 1 else { return 0 }
 
         let overlap = frameEnd.intersection(screenBounds)
-        guard !overlap.isNull, overlap.height.isFinite, overlap.height > 0 else {
+        guard !overlap.isNull, overlap.width > 0, overlap.height.isFinite, overlap.height > 0 else {
             return 0
         }
         return overlap.height
@@ -2732,5 +2994,195 @@ struct GhosttySurfaceScreenLifecycleProjection: Equatable {
         @unknown default:
             self.shouldRefocusSystemKeyboard = false
         }
+    }
+}
+
+/// Holds the owning window weakly without publishing UIKit layout callbacks into SwiftUI.
+@MainActor
+private final class GhosttyKeyboardWindowContext {
+    weak var window: UIWindow?
+}
+
+@MainActor
+private struct GhosttyKeyboardWindowReader: UIViewRepresentable {
+    let context: GhosttyKeyboardWindowContext
+    let onWindowGeometryChanged: () -> Void
+
+    func makeUIView(context: Context) -> Probe {
+        Probe(windowContext: self.context, onWindowGeometryChanged: onWindowGeometryChanged)
+    }
+
+    func updateUIView(_ view: Probe, context: Context) {
+        view.onWindowGeometryChanged = onWindowGeometryChanged
+    }
+
+    final class Probe: UIView {
+        let windowContext: GhosttyKeyboardWindowContext
+        var onWindowGeometryChanged: () -> Void
+        private var previousBounds: CGRect?
+        private var previousKeyboardFrame: CGRect?
+        private var previousBottomSafeAreaInset: CGFloat?
+        private weak var previousWindow: UIWindow?
+
+        init(windowContext: GhosttyKeyboardWindowContext, onWindowGeometryChanged: @escaping () -> Void) {
+            self.windowContext = windowContext
+            self.onWindowGeometryChanged = onWindowGeometryChanged
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            windowContext.window = window
+            setNeedsLayout()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let window else { return }
+            let keyboardFrame = window.keyboardLayoutGuide.layoutFrame
+            let bottomInset = window.safeAreaInsets.bottom
+            guard window !== previousWindow || window.bounds != previousBounds
+                || keyboardFrame != previousKeyboardFrame
+                || bottomInset != previousBottomSafeAreaInset else { return }
+            previousWindow = window
+            previousBounds = window.bounds
+            previousKeyboardFrame = keyboardFrame
+            previousBottomSafeAreaInset = bottomInset
+            // Updating SwiftUI state during layout would trigger a recursive update.
+            Task { @MainActor [weak self] in
+                guard let self, self.window != nil else { return }
+                self.onWindowGeometryChanged()
+            }
+        }
+    }
+}
+
+@available(iOS 27.1, *)
+private struct GhosttyVerticalBarEdgeReader: View {
+    @Environment(\.toolbarVerticalEdge) private var edge
+    let insets: EdgeInsets
+    let onChange: (HorizontalEdge?) -> Void
+
+    private var usableEdge: HorizontalEdge? {
+        guard let edge else { return nil }
+        let width = edge == .leading ? insets.leading : insets.trailing
+        return width >= 44 ? edge : nil
+    }
+
+    var body: some View {
+        Color.clear
+            .onAppear { onChange(usableEdge) }
+            .onChange(of: usableEdge) { _, value in onChange(value) }
+    }
+}
+
+// Work in one coordinate space and subtract every obstruction, including ones
+// at the bottom. Keeping the largest contiguous gap gives the scroll view an
+// explicit viewport without guessing whether an occlusion is a top status pill.
+enum GhosttyRailViewport {
+    static func availableFrame(in bounds: CGRect, avoiding obstacles: [CGRect], spacing: CGFloat) -> CGRect {
+        var gaps = [bounds.minY...bounds.maxY]
+        for obstacle in obstacles where obstacle.maxX > bounds.minX && obstacle.minX < bounds.maxX {
+            let lower = obstacle.minY - spacing
+            let upper = obstacle.maxY + spacing
+            gaps = gaps.flatMap { gap -> [ClosedRange<CGFloat>] in
+                guard upper > gap.lowerBound && lower < gap.upperBound else { return [gap] }
+                var remaining: [ClosedRange<CGFloat>] = []
+                if lower > gap.lowerBound { remaining.append(gap.lowerBound...min(lower, gap.upperBound)) }
+                if upper < gap.upperBound { remaining.append(max(upper, gap.lowerBound)...gap.upperBound) }
+                return remaining
+            }
+        }
+        guard let gap = gaps.max(by: { $0.upperBound - $0.lowerBound < $1.upperBound - $1.lowerBound }) else {
+            return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: 0)
+        }
+        let top = max(gap.lowerBound, bounds.minY + spacing)
+        let bottom = min(gap.upperBound, bounds.maxY - spacing)
+        return CGRect(x: bounds.minX, y: top, width: bounds.width, height: max(0, bottom - top))
+    }
+}
+
+// Compact layouts use the outer display's bottom inset. Regular landscape
+// layouts can extend at both vertical edges; portrait keeps its existing layout.
+enum GhosttyTerminalSafeAreaPolicy {
+    // A bottom safe-area inset also carries the app's Compose/Find reservation.
+    // Extending through it would put terminal rows underneath those controls.
+    static func contentEdges(_ edges: Edge.Set, hasBottomControls: Bool) -> Edge.Set {
+        hasBottomControls ? edges.subtracting(.bottom) : edges
+    }
+
+    static func additionalTopSpacing(preservesSafeAreas: Bool, hasVerticalControls: Bool,
+                                     isCompact: Bool, isLandscape: Bool,
+                                     topInset: CGFloat, bottomInset: CGFloat) -> CGFloat {
+        guard preservesSafeAreas, hasVerticalControls, !isCompact, isLandscape else { return 0 }
+        // With status controls on the side, the system may report no top inset.
+        // Match the bottom container band without doubling an existing top inset.
+        return max(0, bottomInset - topInset)
+    }
+
+    static func ignoredEdges(preservesSafeAreas: Bool, hasVerticalControls: Bool,
+                             isCompact: Bool, isLandscape: Bool) -> Edge.Set {
+        guard hasVerticalControls else { return [] }
+        // Outer layouts always use the bottom area; only inner landscape has
+        // a user-selectable safe-area band.
+        if isCompact { return .bottom }
+        return !preservesSafeAreas && isLandscape ? [.top, .bottom] : []
+    }
+}
+
+// Transfer only the fraction that cannot hold a complete character row to the
+// controls area. This depends on local layout, never delayed remote topology.
+enum GhosttyWholeRowLayout {
+    static func viewportHeight(availableHeight: CGFloat, cellPixelHeight: CGFloat, scale: CGFloat) -> CGFloat {
+        guard availableHeight.isFinite, availableHeight > 0,
+              cellPixelHeight.isFinite, cellPixelHeight > 0, scale.isFinite, scale > 0 else { return availableHeight }
+        let pixels = (availableHeight * scale).rounded()
+        let rows = floor(pixels / cellPixelHeight)
+        guard rows >= 1 else { return availableHeight }
+        return rows * cellPixelHeight / scale
+    }
+
+
+}
+
+/// Measures the controls and terminal together, with no asynchronous height
+/// preference or keyboard estimate. The keyboard changes the proposal itself.
+private struct GhosttyTerminalControlsLayout: Layout {
+    let cellPixelHeight: CGFloat
+    let scale: CGFloat
+    let centersControls: Bool
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        let controls = subviews[1].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        let frames = GhosttyTerminalControlsGeometry.frames(
+            bounds: bounds, controlsHeight: controls.height,
+            cellPixelHeight: cellPixelHeight, scale: scale, centersControls: centersControls)
+        subviews[0].place(at: frames.terminal.origin, anchor: .topLeading,
+                          proposal: ProposedViewSize(frames.terminal.size))
+        subviews[1].place(at: frames.controls.origin, anchor: .topLeading,
+                          proposal: ProposedViewSize(frames.controls.size))
+    }
+}
+
+enum GhosttyTerminalControlsGeometry {
+    static func frames(bounds: CGRect, controlsHeight: CGFloat, cellPixelHeight: CGFloat,
+                       scale: CGFloat, centersControls: Bool) -> (terminal: CGRect, controls: CGRect) {
+        let height = min(max(0, controlsHeight), bounds.height)
+        let available = max(0, bounds.height - height)
+        let terminalHeight = GhosttyWholeRowLayout.viewportHeight(
+            availableHeight: available, cellPixelHeight: cellPixelHeight, scale: scale)
+        let remainder = max(0, available - terminalHeight)
+        let terminal = CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: terminalHeight)
+        let controls = CGRect(x: bounds.minX, y: terminal.maxY + (centersControls ? remainder / 2 : 0),
+                              width: bounds.width, height: height)
+        return (terminal, controls)
     }
 }

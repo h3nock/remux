@@ -44,7 +44,7 @@ Remux is in public beta on TestFlight: [join the beta](https://testflight.apple.
 
 Requirements:
 
-- Xcode 26 or later
+- Xcode 27.1 or later (iOS 18 remains the minimum deployment target)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 
 Fetch the prebuilt GhosttyKit framework:

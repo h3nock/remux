@@ -4,7 +4,7 @@ Remux uses XcodeGen. The checked-in project definition is `project.yml`.
 
 ## Requirements
 
-- Xcode with iOS 18 SDK support
+- Xcode 27.1 or later (iOS 18 remains the minimum deployment target)
 - XcodeGen on `PATH`
 - Zig and the Ghostty source checkout at the relative path configured in
   [project.yml](../project.yml)
@@ -47,6 +47,26 @@ xcodebuild test \
   -scheme Remux \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
 ```
+
+### Duo UI checks
+
+The Duo rail and composer reservation tests require the iPhone Duo simulator
+on its outer display. They skip other simulator models before launching the app;
+on Duo, a missing rail remains a test failure. The standard rotation/draft test
+skips Duo because rotating the closed device does not resize its outer display.
+All of these tests use the deterministic transport and require no SSH server.
+
+```bash
+xcodebuild test \
+  -project Remux.xcodeproj -scheme RemuxUIOnly \
+  -destination 'platform=iOS Simulator,name=iPhone Duo,OS=latest' \
+  -only-testing:RemuxUITests/RemuxAppUITests/testDuoRailRemainsVisibleWhenControlOpensKeyboard \
+  -only-testing:RemuxUITests/RemuxAppUITests/testDuoComposerReservesTerminalSpace
+```
+
+CI uses the `xcode-27` hosted image with Xcode 27.1. That image is currently a
+public preview; the standard `macos-26` image does not provide the required SDK.
+The app's minimum deployment target remains iOS 18.
 
 ## Local Files
 

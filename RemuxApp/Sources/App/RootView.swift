@@ -1069,6 +1069,8 @@ struct ServerDeletionConfirmation: Equatable {
 }
 
 private struct ConnectionLibraryView: View {
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private static let collapsedConnectedSessionCount = 3
     private static let collapsedRecentSessionCount = 5
 
@@ -1147,7 +1149,13 @@ private struct ConnectionLibraryView: View {
         .task(id: terminalRendererWarmupID) {
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
-            GhosttyKitRuntime.prewarmTerminalRenderer(terminalSettings: terminalSettings)
+            GhosttyKitRuntime.prewarmTerminalRenderer(
+                terminalSettings: terminalSettings,
+                traitCollection: UITraitCollection(traitsFrom: [
+                    UITraitCollection(displayScale: displayScale),
+                    UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize)),
+                ])
+            )
         }
         .navigationTitle("Home")
         .onChange(of: snapshot.servers.count) { _, count in
@@ -1204,6 +1212,8 @@ private struct ConnectionLibraryView: View {
         [
             terminalSettings.theme.rawValue,
             terminalSettings.fontSize.map(String.init(describing:)) ?? "default",
+            String(describing: displayScale),
+            UIContentSizeCategory(dynamicTypeSize).rawValue,
         ].joined(separator: ":")
     }
 
