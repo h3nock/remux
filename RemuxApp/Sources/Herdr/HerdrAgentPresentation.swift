@@ -25,17 +25,31 @@ final class HerdrAgentPresentation {
         let tabID: String
         /// As Herdr's agent list names it (`client/shell/agent_sidebar.rs` `agent_row`).
         let name: String
-        /// Its workspace, then its tab when the workspace has more than one or the tab has a label of its
-        /// own, as Herdr's agent list places it.
-        let place: String
+        /// What runs in its pane, which its mark shows.
+        let program: TerminalProgram
+        let workspaceName: String?
+        /// Its tab, when the workspace has more than one or the tab has a label of its own, as Herdr's
+        /// agent list places it.
+        let tabName: String?
+        /// The name the user gave it, unless its tab already says it.
+        let givenName: String?
         let state: TerminalAgentState
 
         var id: String { paneID }
+
+        /// Its workspace, then its tab, as Herdr's agent list places it.
+        var place: String {
+            [workspaceName, tabName].compactMap { $0 }.joined(separator: " › ")
+        }
     }
 
     /// The server boot the agents' pane ids belong to.
     private(set) var bootID: String?
     private(set) var agents: [Agent] = []
+    /// The title each agent's program sets for itself, by pane, word for word. Program-owned text: its
+    /// contents are not a contract for Remux to parse. It is apart from `agents`, which every dot follows: a
+    /// title can change many times a minute, and only the rows that show titles should hear of it.
+    private(set) var titles: [String: String] = [:]
     /// When this phone saw each agent's current state change, by pane.
     @ObservationIgnored private(set) var recency: [String: HerdrAgentRecency] = [:]
 
@@ -44,8 +58,8 @@ final class HerdrAgentPresentation {
     /// The state change at which each agent finished work it hasn't started again since.
     @ObservationIgnored private var completed: [String: UInt64] = [:]
     @ObservationIgnored private var working: Set<String> = []
-    /// The snapshot's agents, each with its name and place.
-    @ObservationIgnored private var reported: [(agent: HerdrSnapshot.Agent, name: String, place: String)] = []
+    /// The snapshot's agents, each with the names of its workspace and of its tab when its place has one.
+    @ObservationIgnored private var reported: [(agent: HerdrSnapshot.Agent, workspace: String?, tab: String?)] = []
 
     /// Returns whether what the phone shows of the agents changed. `now` is when the phone has the snapshot.
     @discardableResult
@@ -93,11 +107,7 @@ final class HerdrAgentPresentation {
             let workspace = snapshot.workspaces.first { $0.workspaceID == agent.workspaceID }
             let tabs = snapshot.tabs.filter { $0.workspaceID == agent.workspaceID }
             let tab = tabs.first { $0.tabID == agent.tabID }.flatMap { tabs.count > 1 || $0.customLabel ? $0 : nil }
-            return (
-                agent,
-                agent.listName,
-                [workspace?.label, tab?.label].compactMap { $0 }.joined(separator: " › ")
-            )
+            return (agent, workspace?.label, tab?.label)
         }
         return update()
     }
@@ -135,18 +145,37 @@ final class HerdrAgentPresentation {
         agents.lazy.map(\.state.status).max()
     }
 
+    /// The most urgent state among the agents waiting for the user out of sight: blocked, else done, else none.
+    /// `tabOnScreen` is the tab the user is looking at, whose agents don't count, as they get no banner
+    /// (`HerdrNotificationPolicy`).
+    func waitingStatus(tabOnScreen: String?) -> TerminalAgentStatus? {
+        agents.lazy
+            .filter { $0.tabID != tabOnScreen }
+            .map(\.state.status)
+            .filter { $0 == .blocked || $0 == .done }
+            .max()
+    }
+
     /// Only a change is set, so views reading the agents are told only then.
     private func update() -> Bool {
-        let next = reported.map { agent, name, place in
+        let next = reported.map { agent, workspace, tab in
             let shown = status(of: agent)
+            let given = agent.name.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
             return Agent(
                 paneID: agent.paneID,
                 workspaceID: agent.workspaceID,
                 tabID: agent.tabID,
-                name: name,
-                place: place,
+                name: agent.listName,
+                program: agent.program,
+                workspaceName: workspace,
+                tabName: tab,
+                givenName: given == tab ? nil : given,
                 state: TerminalAgentState(shown.terminalStatus, word: agent.label(for: shown))
             )
+        }
+        let nextTitles = Dictionary(reported.compactMap { agent, _, _ in agent.activity.map { (agent.paneID, $0) } }) { $1 }
+        if nextTitles != titles {
+            titles = nextTitles
         }
         guard next != agents else { return false }
         agents = next
@@ -194,6 +223,11 @@ extension HerdrSnapshot.Agent {
         }
         name = name.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? name
         return Self.knownKinds[name] ?? label
+    }
+
+    /// What the agent is, for its mark: its kind, else the name Herdr's agent list gives it.
+    var program: TerminalProgram {
+        .agent(kind ?? listName)
     }
 
     /// What Herdr drops from the end of a name before it looks the name up (`normalized_agent_lookup_name`).

@@ -463,11 +463,12 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         entries.map(\.agent.paneID)
     }
 
-    /// The Agents list has every agent of the open Herdr sessions in one list, as Herdr's client lists all its
-    /// machines' agents by priority: connected sessions' agents first, then blocked, done, working, idle, and
-    /// those whose state isn't known yet. Each session is named by its server and, unless it is Herdr's
-    /// default session, its name.
-    func testTheAgentsListPutsTheMostUrgentFirstAndDisconnectedSessionsLast() throws {
+    /// The Agents list has every agent of the open Herdr sessions in one list, by priority: blocked, done,
+    /// working, idle, and those whose state isn't known yet with the idle ones. An agent whose session isn't
+    /// connected keeps the place of its last known state (the user's decision of 11 November 2026; Herdr's
+    /// client lists such agents last). Each session is named by its server and, unless it is Herdr's default
+    /// session, its name.
+    func testTheAgentsListPutsTheMostUrgentFirstWhateverTheConnection() throws {
         let tmux = item(.tmux, "main", on: "mac-mini")
         let devbox = item(.herdr, "default", on: "devbox")
         let quiet = item(.herdr, "notes", on: "devbox")
@@ -486,12 +487,16 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         )
         XCTAssertEqual(
             projection.entries.map(\.session.id),
-            [devbox.id, laptop.id, devbox.id, devbox.id, laptop.id, training.id]
+            [devbox.id, training.id, laptop.id, devbox.id, devbox.id, laptop.id]
         )
-        XCTAssertEqual(panes(projection.entries), ["w1:p3", "w1:p1", "w1:p1", "w1:p2", "w1:p2", "w1:p1"])
-        XCTAssertEqual(projection.entries.first?.session.title, "devbox")
-        XCTAssertEqual(projection.entries.last?.session.title, "gpu-box · train")
-        XCTAssertEqual(projection.entries.last?.session.isStale, true)
+        XCTAssertEqual(panes(projection.entries), ["w1:p3", "w1:p1", "w1:p1", "w1:p1", "w1:p2", "w1:p2"])
+        XCTAssertEqual(projection.entries.first?.session.serverName, "devbox")
+        XCTAssertNil(projection.entries.first?.session.sessionName, "Herdr's default session isn't named.")
+        let reconnecting = try XCTUnwrap(projection.entries.first { $0.session.id == training.id })
+        XCTAssertEqual(reconnecting.session.serverName, "gpu-box")
+        XCTAssertEqual(reconnecting.session.sessionName, "train")
+        XCTAssertTrue(reconnecting.session.isStale)
+        XCTAssertEqual(reconnecting.group, .blocked)
         XCTAssertEqual(projection.entries.first?.session.bootID, "boot")
         XCTAssertTrue(projection.namesSessions)
     }
@@ -544,168 +549,159 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertFalse(projection.namesSessions, "one session's agents")
     }
 
-    /// Blocked and Done show only those agents, still the most urgent first; each filter counts its agents.
-    func testTheAgentsFiltersShowAndCountWaitingAndDoneAgents() throws {
+    /// The list has a section for each state that has agents, in the order of how much each needs the user:
+    /// Blocked, Done, Working, Idle. An agent whose state isn't known yet is in Idle. A state without agents
+    /// has no section. The agents of a session that isn't connected stay in the sections of their last known
+    /// states, so the sections are only ever about the agents.
+    func testTheListHasASectionForEachStateThatHasAgents() throws {
         let devbox = item(.herdr, "default", on: "devbox")
-        let training = item(.herdr, "train", on: "gpu-box")
+        let training = item(.herdr, "train", on: "gpu-box", .reconnecting(.transportLoss))
         let agents = [
-            devbox.id: try agents([("w1:p1", .blocked), ("w1:p2", .working), ("w1:p3", .idle)]),
-            training.id: try agents([("w1:p1", .done), ("w1:p2", .blocked)]),
-        ]
-        let projection = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
-        XCTAssertEqual(projection.count(.all), 5)
-        XCTAssertEqual(projection.count(.blocked), 2)
-        XCTAssertEqual(projection.count(.done), 1)
-        XCTAssertEqual(projection.entries(.blocked).map(\.session.id), [devbox.id, training.id])
-        XCTAssertEqual(panes(projection.entries(.blocked)), ["w1:p1", "w1:p2"])
-        XCTAssertEqual(projection.entries(.done).map(\.session.id), [training.id])
-        XCTAssertEqual(projection.entries(.all), projection.entries)
-    }
-
-    /// The filters are Herdr's, in its order (`client/shell/overlays.rs`): All, Blocked, Working, Idle and
-    /// Done. Working and Idle show and count only those agents; Idle has the agents whose state isn't known
-    /// yet too, as they read as idle, after the idle ones.
-    func testWorkingAndIdleShowAndCountTheirAgentsInHerdrsFilterOrder() throws {
-        XCTAssertEqual(SessionAgentsFilter.allCases.map(\.title), ["All", "Blocked", "Working", "Idle", "Done"])
-        let devbox = item(.herdr, "default", on: "devbox")
-        let training = item(.herdr, "train", on: "gpu-box")
-        let agents = [
-            devbox.id: try agents([("w1:p1", .working), ("w1:p3", .unknown), ("w1:p2", .idle)]),
+            devbox.id: try agents([("w1:p1", .working), ("w1:p2", .unknown), ("w1:p3", .blocked), ("w1:p4", .idle)]),
             training.id: try agents([("w1:p1", .working), ("w1:p2", .blocked)]),
         ]
         let projection = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
-        XCTAssertEqual(projection.count(.working), 2)
-        XCTAssertEqual(projection.count(.idle), 2)
-        XCTAssertEqual(projection.entries(.working).map(\.session.id), [devbox.id, training.id])
-        XCTAssertEqual(projection.entries(.idle).map(\.session.id), [devbox.id, devbox.id])
-        XCTAssertEqual(panes(projection.entries(.idle)), ["w1:p2", "w1:p3"])
+        XCTAssertEqual(projection.sections.map(\.group), [.blocked, .working, .idle])
+        XCTAssertEqual(projection.sections.map(\.group.title), ["Blocked", "Working", "Idle"])
+        XCTAssertEqual(projection.sections.map { panes($0.entries) }, [
+            ["w1:p3", "w1:p2"], ["w1:p1", "w1:p1"], ["w1:p2", "w1:p4"],
+        ])
+        XCTAssertEqual(projection.sections.map { $0.entries.map(\.session.isStale) }, [
+            [false, true], [false, true], [false, false],
+        ])
+        XCTAssertEqual(projection.entries, projection.sections.flatMap(\.entries))
     }
 
-    /// An agent that appears while the list is open is held where it was first shown, so a later, more urgent
-    /// arrival goes after it instead of above it; that holds from an empty list too, as when the list opens
-    /// before the session's agents have arrived.
-    func testAgentsThatAppearWhileTheListIsOpenKeepTheirPlaces() throws {
+    /// A row is its agent in one section. When the agent changes state the row in its old section goes and a
+    /// new one comes in its new section, which is what makes the list fade it between the two places (the
+    /// user's decision of 11 November 2026: sliding the same row there blinks over a long distance).
+    func testAnAgentThatChangesStateIsANewRowInItsNewSection() throws {
         let devbox = item(.herdr, "default", on: "devbox")
         let presentation = HerdrAgentPresentation()
-        func agent(_ pane: String, _ status: HerdrAgentStatus, _ stateChange: UInt64) -> String {
-            HerdrServerScript.snapshotAgent(pane, agent: "claude", status: status, stateChange: stateChange)
+        func entry() throws -> SessionAgentsProjection.Entry {
+            try XCTUnwrap(SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation }).entries.first)
         }
-        func projection() -> SessionAgentsProjection {
-            SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
-        }
+        presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [working("w1:p1", stateChange: 1)]), completions: nil)
+        let before = try entry()
+        presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [working("w1:p1", stateChange: 1)]), completions: nil)
+        XCTAssertEqual(try entry().id, before.id, "A snapshot that changes nothing keeps the row.")
 
-        var held: SessionAgentsProjection.HeldOrder?
-        XCTAssertEqual(projection().entries(.all, held: held), [], "the list opened before any agent arrived")
-        // The list holds the rows it shows, as the view does after each update.
-        func show() -> [String] {
-            let entries = projection().entries(.all, held: held)
-            held = SessionAgentsProjection.HeldOrder(filter: .all, ids: entries.map(\.id))
-            return panes(entries)
-        }
+        presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [
+            HerdrServerScript.snapshotAgent("w1:p1", agent: "claude", status: .blocked, stateChange: 2),
+        ]), completions: nil)
+        let blocked = try entry()
+        XCTAssertEqual(blocked.agent.paneID, before.agent.paneID)
+        XCTAssertEqual(blocked.group, .blocked)
+        XCTAssertNotEqual(blocked.id, before.id)
+    }
 
-        presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .working, 1)]), completions: nil, now: seen)
-        XCTAssertEqual(show(), ["w1:p1"])
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [agent("w1:p1", .working, 1), agent("w1:p2", .idle, 2)]),
-            completions: nil,
-            now: seen + .seconds(1)
-        )
-        XCTAssertEqual(show(), ["w1:p1", "w1:p2"])
+    /// Home shows the list's first three agents, whatever their states, and says there are more only when
+    /// there are. Its last row says what all the agents are doing, section by section in the list's order,
+    /// and gives shorter lines that leave whole sections off the end for a row too narrow.
+    func testHomeShowsTheFirstThreeAgentsAndWhatAllOfThemAreDoing() throws {
+        let devbox = item(.herdr, "default", on: "devbox")
+        let training = item(.herdr, "train", on: "gpu-box", .reconnecting(.transportLoss))
+        let agents = [
+            devbox.id: try agents([
+                ("w1:p1", .idle), ("w1:p2", .working), ("w1:p3", .blocked), ("w1:p4", .idle), ("w1:p5", .done),
+            ]),
+            training.id: try agents([("w1:p1", .blocked)]),
+        ]
+        let projection = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
+        XCTAssertEqual(panes(projection.homeEntries), ["w1:p3", "w1:p1", "w1:p5"])
+        XCTAssertEqual(projection.homeEntries.map(\.session.id), [devbox.id, training.id, devbox.id])
+        XCTAssertTrue(projection.hasMoreThanHomeShows)
+        XCTAssertEqual(projection.summaries, [
+            "2 blocked · 1 done · 1 working · 2 idle",
+            "2 blocked · 1 done · 1 working",
+            "2 blocked · 1 done",
+            "2 blocked",
+        ])
 
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(
-                revision: 3,
-                agents: [agent("w1:p1", .working, 1), agent("w1:p2", .idle, 2), agent("w1:p3", .blocked, 3)]
+        let few = [devbox.id: try self.agents([("w1:p1", .idle), ("w1:p2", .working), ("w1:p3", .idle)])]
+        let small = SessionAgentsProjection(activeSessions: [devbox], agents: { few[$0] })
+        XCTAssertEqual(panes(small.homeEntries), ["w1:p2", "w1:p1", "w1:p3"])
+        XCTAssertFalse(small.hasMoreThanHomeShows)
+        XCTAssertEqual(small.summaries.first, "1 working · 2 idle")
+    }
+
+    /// The line under an agent's heading is always in one order, the general before the specific: machine,
+    /// session, workspace › tab, then the name the user gave the agent. Too long, it loses whole names, never
+    /// letters: the session first, then the workspace, which leaves "…" so the tab still reads as a tab, then
+    /// the given name, then the machine. The place's last name always stays.
+    func testAnAgentsPlaceLosesWholeNamesInAFixedOrder() {
+        XCTAssertEqual(
+            SessionAgentsProjection.placeLines(
+                machine: "mac mini", session: "work", workspace: "remux-herdr", tab: "keyboard", givenName: "fixer"
             ),
-            completions: nil,
-            now: seen + .seconds(2)
+            [
+                "mac mini · work · remux-herdr › keyboard · fixer",
+                "mac mini · remux-herdr › keyboard · fixer",
+                "mac mini · … › keyboard · fixer",
+                "mac mini · … › keyboard",
+                "… › keyboard",
+            ]
         )
-        XCTAssertEqual(show(), ["w1:p1", "w1:p2", "w1:p3"])
-        XCTAssertEqual(panes(projection().entries(.all)), ["w1:p3", "w1:p1", "w1:p2"], "the order when the list opens again")
+        // One session's agents: no machine or session to name.
+        XCTAssertEqual(
+            SessionAgentsProjection.placeLines(machine: nil, session: nil, workspace: "api", tab: "auth", givenName: nil),
+            ["api › auth", "… › auth"]
+        )
+        // Without a tab the workspace is the last name of the place, so it stays.
+        XCTAssertEqual(
+            SessionAgentsProjection.placeLines(machine: "devbox", session: nil, workspace: "web", tab: nil, givenName: "fixer"),
+            ["devbox · web · fixer", "devbox · web", "web"]
+        )
+        XCTAssertEqual(
+            SessionAgentsProjection.placeLines(machine: nil, session: nil, workspace: nil, tab: nil, givenName: nil),
+            []
+        )
     }
 
-    /// An agent that leaves the filter and comes back while the list is open is added after the rows still
-    /// shown, rather than taking back its old place above them.
-    func testAnAgentThatComesBackToTheFilterGoesAfterTheRowsShown() throws {
+    /// A row names its machine, and its session unless that is Herdr's default one, only when the list has
+    /// agents from more than one session.
+    func testARowNamesItsMachineAndSessionOnlyAmongSeveralSessions() throws {
+        let devbox = item(.herdr, "default", on: "devbox")
+        let training = item(.herdr, "train", on: "gpu-box")
+        let agents = [devbox.id: try agents([("w1:p1", .working)]), training.id: try agents([("w1:p1", .blocked)])]
+        let both = SessionAgentsProjection(activeSessions: [devbox, training], agents: { agents[$0] })
+        XCTAssertEqual(both.entries.map { $0.placeLines(namesSession: both.namesSessions).first }, [
+            "gpu-box · train · api › agents", "devbox · api › agents",
+        ])
+        let one = SessionAgentsProjection(activeSessions: [devbox], agents: { agents[$0] })
+        XCTAssertEqual(one.entries.first?.placeLines(namesSession: one.namesSessions).first, "api › agents")
+    }
+
+    /// A row leads with the title its agent's program sets, word for word, and falls back to the agent's name.
+    /// The name the user gave the agent isn't repeated under a heading that already says it.
+    func testARowLeadsWithItsAgentsOwnTitle() throws {
         let devbox = item(.herdr, "default", on: "devbox")
         let presentation = HerdrAgentPresentation()
-        func agent(_ pane: String, _ status: HerdrAgentStatus, _ stateChange: UInt64) -> String {
-            HerdrServerScript.snapshotAgent(pane, agent: "claude", status: status, stateChange: stateChange)
+        func entry(name: String?, stripped: String?) throws -> SessionAgentsProjection.Entry {
+            presentation.project(try HerdrSnapshotJSON.twoWorkspaces(agents: [HerdrServerScript.snapshotAgent(
+                "w1:p1", name: name, terminalTitleStripped: stripped, agent: "claude", tab: "t2"
+            )]), completions: nil)
+            return try XCTUnwrap(SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation }).entries.first)
         }
-        func projection() -> SessionAgentsProjection {
-            SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
-        }
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .blocked, 1), agent("w1:p2", .blocked, 1)]),
-            completions: nil,
-            now: seen
-        )
-        var held: SessionAgentsProjection.HeldOrder?
-        func show() -> [String] {
-            let entries = projection().entries(.blocked, held: held)
-            held = SessionAgentsProjection.HeldOrder(filter: .blocked, ids: entries.map(\.id))
-            return panes(entries)
-        }
-        XCTAssertEqual(show(), ["w1:p1", "w1:p2"])
+        let titled = try entry(name: "fixer", stripped: "remux | Fix [tests] (2/3)")
+        XCTAssertEqual(titled.heading, "remux | Fix [tests] (2/3)")
+        XCTAssertEqual(titled.placeLines(namesSession: false).first, "api › auth · fixer")
 
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(revision: 2, agents: [agent("w1:p1", .working, 2), agent("w1:p2", .blocked, 1)]),
-            completions: nil,
-            now: seen + .seconds(1)
-        )
-        XCTAssertEqual(show(), ["w1:p2"])
-
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(revision: 3, agents: [agent("w1:p1", .blocked, 3), agent("w1:p2", .blocked, 1)]),
-            completions: nil,
-            now: seen + .seconds(2)
-        )
-        XCTAssertEqual(show(), ["w1:p2", "w1:p1"])
+        let untitled = try entry(name: "fixer", stripped: nil)
+        XCTAssertEqual(untitled.heading, "fixer")
+        XCTAssertEqual(untitled.placeLines(namesSession: false).first, "api › auth", "The heading already says the name.")
+        XCTAssertEqual(try entry(name: nil, stripped: nil).heading, "claude")
     }
 
-    /// Each filter starts with the most urgent first: the rows held for Done don't stay above a blocked agent
-    /// once All is picked again.
-    func testANewFilterStartsWithTheMostUrgentFirst() throws {
-        let devbox = item(.herdr, "default", on: "devbox")
-        let presentation = try agents([("w1:p1", .blocked), ("w1:p2", .done), ("w1:p3", .working)])
-        let projection = SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
-        let done = SessionAgentsProjection.HeldOrder(filter: .done, ids: projection.entries(.done, held: nil).map(\.id))
-        XCTAssertEqual(panes(projection.entries(.done, held: done)), ["w1:p2"])
-        XCTAssertEqual(panes(projection.entries(.all, held: done)), ["w1:p1", "w1:p2", "w1:p3"])
-    }
-
-    /// While the list is open its rows keep their places: an agent whose state changed stays where it was,
-    /// one that appeared goes after the rest, and one that left or no longer matches the filter is gone.
-    /// Another filter starts from the most urgent again.
-    func testOpenListRowsKeepTheirPlacesAsStatesChange() throws {
-        let devbox = item(.herdr, "default", on: "devbox")
-        let presentation = HerdrAgentPresentation()
-        func agent(_ pane: String, _ status: HerdrAgentStatus, _ stateChange: UInt64) -> String {
-            HerdrServerScript.snapshotAgent(pane, agent: "claude", status: status, stateChange: stateChange)
-        }
-        func projection() -> SessionAgentsProjection {
-            SessionAgentsProjection(activeSessions: [devbox], agents: { _ in presentation })
-        }
-
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(agents: [agent("w1:p1", .blocked, 1), agent("w1:p2", .working, 1), agent("w1:p3", .idle, 1)]),
-            completions: nil,
-            now: seen
-        )
-        let held = SessionAgentsProjection.HeldOrder(filter: .all, ids: projection().entries(.all, held: nil).map(\.id))
-        XCTAssertEqual(panes(projection().entries(.all, held: nil)), ["w1:p1", "w1:p2", "w1:p3"])
-
-        presentation.project(
-            try HerdrSnapshotJSON.twoWorkspaces(
-                revision: 2,
-                agents: [agent("w1:p1", .working, 2), agent("w1:p3", .blocked, 3), agent("w1:p4", .blocked, 4)]
-            ),
-            completions: nil,
-            now: seen + .seconds(1)
-        )
-        XCTAssertEqual(panes(projection().entries(.all, held: held)), ["w1:p1", "w1:p3", "w1:p4"])
-        XCTAssertEqual(panes(projection().entries(.blocked, held: held)), ["w1:p4", "w1:p3"], "another filter")
-        XCTAssertEqual(panes(projection().entries(.all, held: nil)), ["w1:p4", "w1:p3", "w1:p1"], "the order when the list opens again")
+    /// One touch opens one agent: a second open within half a second of the first is dropped, since a row that
+    /// fades into a new place as a finger lifts can report the tap twice.
+    func testOneTouchOpensOneAgent() {
+        var gate = AgentOpenGate()
+        let start = ContinuousClock.now
+        XCTAssertTrue(gate.admits(at: start))
+        XCTAssertFalse(gate.admits(at: start + .milliseconds(30)))
+        XCTAssertFalse(gate.admits(at: start + .milliseconds(499)))
+        XCTAssertTrue(gate.admits(at: start + .milliseconds(600)))
     }
 
     private func loadedDiscovery(

@@ -284,15 +284,6 @@ final class GhosttyKitControlSurface {
     }
 
     @discardableResult
-    func sendPaste(_ text: String) -> Bool {
-        guard !invalidated else { return false }
-        guard !text.isEmpty else { return true }
-        return withUTF8(text) { pointer, count in
-            Self.accepted(ghostty_terminal_surface_paste(handle, pointer, count))
-        }
-    }
-
-    @discardableResult
     func sendKeyEvent(_ event: GhosttySurfaceKeyEvent) -> Bool {
         guard !invalidated else { return false }
         return event.withCValue {
