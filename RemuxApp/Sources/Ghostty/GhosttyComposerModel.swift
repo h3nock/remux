@@ -58,7 +58,7 @@ final class GhosttyComposerModel: ObservableObject {
         case photo(PhotosPickerItem)
         case capturedPhoto(UIImage)
         case pastedFile(URL)
-        case pastedImage(GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest)
+        case pastedImage(GhosttyAttachmentPasteboardSnapshot.PastedImage)
     }
 
     private struct AttachmentPreparationJob {
@@ -243,14 +243,14 @@ final class GhosttyComposerModel: ObservableObject {
     }
 
     func addPastedImage(
-        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
+        _ image: GhosttyAttachmentPasteboardSnapshot.PastedImage,
         preparing transferService: any GhosttyAttachmentTransferService
     ) {
         let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
         attachments.append(attachment)
         statusMessage = nil
         prepareTransfer(transferService)
-        beginAttachmentPreparation(attachment.id, from: .pastedImage(request))
+        beginAttachmentPreparation(attachment.id, from: .pastedImage(image))
     }
 
     func addPastedFile(
@@ -498,9 +498,9 @@ final class GhosttyComposerModel: ObservableObject {
                     attachmentID: attachmentID,
                     attemptID: attemptID
                 )
-            case .pastedImage(let request):
+            case .pastedImage(let image):
                 await preparePastedImageAttachment(
-                    request,
+                    image,
                     attachmentID: attachmentID,
                     attemptID: attemptID
                 )
@@ -592,13 +592,11 @@ final class GhosttyComposerModel: ObservableObject {
     }
 
     private func preparePastedImageAttachment(
-        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
+        _ image: GhosttyAttachmentPasteboardSnapshot.PastedImage,
         attachmentID: GhosttyPendingAttachment.ID,
         attemptID: UUID
     ) async {
-        guard let attachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(
-            from: request
-        ) else {
+        guard let attachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(from: image) else {
             failAttachmentPreparation(attachmentID, attemptID: attemptID)
             return
         }

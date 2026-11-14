@@ -3,9 +3,11 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct GhosttyAttachmentPasteboardSnapshot: Equatable {
-    struct ImageProviderRequest {
-        let provider: NSItemProvider
-        let typeIdentifier: String
+    /// A picture's bytes, read while its paste is handled: the pasteboard stops serving what was pasted soon after,
+    /// so a read left for later can fail or come back empty.
+    struct PastedImage {
+        let data: Data
+        let contentType: UTType?
     }
 
     let hasImages: Bool
@@ -41,75 +43,21 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         )
     }
 
+    /// The picture on `pasteboard`, read now. Call it from the paste itself.
     @MainActor
-    static func currentImagePreviewData(_ pasteboard: UIPasteboard = .general) async -> Data? {
-        guard let request = imageProviderRequest(in: pasteboard) else {
-            return nil
-        }
-
-        if let fileURL = await loadImageFileCopy(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) {
-            defer {
-                removeTemporaryImageFileCopy(fileURL)
+    static func currentImage(_ pasteboard: UIPasteboard = .general) -> PastedImage? {
+        let pictureTypes = imagePasteboardTypes
+            + pasteboard.types.filter { UTType($0)?.conforms(to: .image) == true }
+        for type in pictureTypes {
+            if let data = pasteboard.data(forPasteboardType: type), !data.isEmpty {
+                return PastedImage(data: data, contentType: UTType(type))
             }
-
-            return await GhosttyAttachmentImagePreviewData.makePreviewData(fromFileAt: fileURL)
         }
-
-        guard let data = await loadImageData(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) else {
-            return nil
-        }
-
-        return await GhosttyAttachmentImagePreviewData.makePreviewData(from: data)
+        return nil
     }
 
-    @MainActor
-    static func currentImageAttachment(_ pasteboard: UIPasteboard = .general) async -> GhosttyPendingAttachment? {
-        guard let request = imageProviderRequest(in: pasteboard) else {
-            return nil
-        }
-
-        return await imageAttachment(from: request)
-    }
-
-    @MainActor
-    static func currentImageProviderRequest(
-        _ pasteboard: UIPasteboard = .general
-    ) -> ImageProviderRequest? {
-        imageProviderRequest(in: pasteboard)
-    }
-
-    @MainActor
-    static func imageAttachment(
-        from request: ImageProviderRequest
-    ) async -> GhosttyPendingAttachment? {
-        if let fileURL = await loadImageFileCopy(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) {
-            defer {
-                removeTemporaryImageFileCopy(fileURL)
-            }
-
-            return await makeImageAttachment(fromFileAt: fileURL)
-        }
-
-        guard let data = await loadImageData(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) else {
-            return nil
-        }
-
-        return await makeImageAttachment(
-            from: data,
-            contentType: UTType(request.typeIdentifier)
-        )
+    static func imageAttachment(from image: PastedImage) async -> GhosttyPendingAttachment? {
+        await makeImageAttachment(from: image.data, contentType: image.contentType)
     }
 
     var pendingAttachments: [GhosttyPendingAttachment] {
@@ -170,90 +118,6 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         return true
     }
 
-    @MainActor
-    private static func imageProviderRequest(in pasteboard: UIPasteboard) -> ImageProviderRequest? {
-        for provider in pasteboard.itemProviders {
-            guard let typeIdentifier = imageTypeIdentifier(for: provider) else {
-                continue
-            }
-
-            return ImageProviderRequest(provider: provider, typeIdentifier: typeIdentifier)
-        }
-
-        return nil
-    }
-
-    private static func imageTypeIdentifier(for provider: NSItemProvider) -> String? {
-        imagePasteboardTypes.first { provider.hasItemConformingToTypeIdentifier($0) }
-    }
-
-    @MainActor
-    private static func loadImageFileCopy(
-        from provider: NSItemProvider,
-        typeIdentifier: String
-    ) async -> URL? {
-        await withCheckedContinuation { continuation in
-            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
-                guard let url else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: copyTemporaryImageFile(url, typeIdentifier: typeIdentifier))
-            }
-        }
-    }
-
-    @MainActor
-    private static func loadImageData(
-        from provider: NSItemProvider,
-        typeIdentifier: String
-    ) async -> Data? {
-        await withCheckedContinuation { continuation in
-            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
-                guard let data, !data.isEmpty else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: data)
-            }
-        }
-    }
-
-    private static func copyTemporaryImageFile(_ sourceURL: URL, typeIdentifier: String) -> URL? {
-        let fileManager = FileManager.default
-        let directory = fileManager.temporaryDirectory
-            .appendingPathComponent("RemuxPasteboardImage-\(UUID().uuidString)", isDirectory: true)
-
-        do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent(
-                "Image.\(fileExtension(for: sourceURL, typeIdentifier: typeIdentifier))"
-            )
-            try fileManager.copyItem(at: sourceURL, to: destination)
-            return destination
-        } catch {
-            try? fileManager.removeItem(at: directory)
-            return nil
-        }
-    }
-
-    private static func removeTemporaryImageFileCopy(_ url: URL) {
-        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
-    }
-
-    private static func makeImageAttachment(fromFileAt fileURL: URL) async -> GhosttyPendingAttachment? {
-        async let previewData = GhosttyAttachmentImagePreviewData.makePreviewData(fromFileAt: fileURL)
-
-        do {
-            let stagedURL = try await GhosttyAttachmentStagingStore.stageFileURL(fileURL)
-            return await preparedImageAttachment(stagedURL: stagedURL, previewData: await previewData)
-        } catch {
-            return nil
-        }
-    }
-
     private static func makeImageAttachment(
         from data: Data,
         contentType: UTType?
@@ -284,15 +148,6 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         }
 
         return .pasteboardImage(fileURL: prepared.url, previewData: previewData)
-    }
-
-    private static func fileExtension(for url: URL, typeIdentifier: String) -> String {
-        let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !pathExtension.isEmpty {
-            return pathExtension
-        }
-
-        return UTType(typeIdentifier)?.preferredFilenameExtension ?? "image"
     }
 
     private static var imagePasteboardTypes: [String] {

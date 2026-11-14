@@ -1501,13 +1501,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let pasteboard = UIPasteboard.general
 
         if pasteboard.hasImages {
-            guard let request = GhosttyAttachmentPasteboardSnapshot.currentImageProviderRequest()
-            else {
+            guard let image = GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard) else {
                 presentAttachmentNotice("Couldn’t paste the image.")
                 return false
             }
             withAnimation(.easeOut(duration: 0.16)) {
-                composer.addPastedImage(request, preparing: attachmentTransferServiceFactory())
+                composer.addPastedImage(image, preparing: attachmentTransferServiceFactory())
                 attachmentNotice = nil
             }
             return true
