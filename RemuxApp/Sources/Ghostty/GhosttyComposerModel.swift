@@ -78,6 +78,9 @@ final class GhosttyComposerModel: ObservableObject {
         }
     }
     @Published var attachments: [GhosttyPendingAttachment] = []
+    /// How many photos the draft has named, so a removed photo's number is never given to another photo. It starts
+    /// again once the draft holds no photo.
+    private var photosNamed = 0
     @Published var statusMessage: String?
     @Published private(set) var isSubmitting = false
     @Published private var attachmentTransferState: AttachmentTransferState?
@@ -182,19 +185,30 @@ final class GhosttyComposerModel: ObservableObject {
         _ items: [PhotosPickerItem],
         preparing transferService: any GhosttyAttachmentTransferService
     ) -> Bool {
-        let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
-            contentTypes: items.map(\.supportedContentTypes),
-            highestPhotoNumber: GhosttyPendingAttachment.highestPhotoNumber(in: attachments)
-        )
+        let pendingAttachments = appendPhotoPlaceholders(contentTypes: items.map(\.supportedContentTypes))
         guard !pendingAttachments.isEmpty else { return false }
 
-        attachments = attachments.map { $0.numberedAsFirstPhoto() } + pendingAttachments
-        statusMessage = nil
         prepareTransfer(transferService)
         for (item, attachment) in zip(items, pendingAttachments) {
             beginAttachmentPreparation(attachment.id, from: .photo(item))
         }
         return true
+    }
+
+    private func appendPhotoPlaceholders(contentTypes: [[UTType]]) -> [GhosttyPendingAttachment] {
+        if !attachments.contains(where: { $0.kind == .photo }) {
+            photosNamed = 0
+        }
+        let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
+            contentTypes: contentTypes,
+            photosAlreadyNamed: photosNamed
+        )
+        guard !pendingAttachments.isEmpty else { return [] }
+
+        photosNamed += pendingAttachments.count
+        attachments = attachments.map { $0.numberedAsFirstPhoto() } + pendingAttachments
+        statusMessage = nil
+        return pendingAttachments
     }
 
     @discardableResult

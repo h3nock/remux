@@ -256,39 +256,26 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// `highestPhotoNumber` is the highest number a photo in the draft already carries, so photos added in
-    /// separate picks, or after one was removed, still get different names.
+    /// `photosAlreadyNamed` is how many photos the draft has named so far, so photos added in separate picks, or after
+    /// one was removed, still get different names.
     static func mediaSelections(
         contentTypes: [[UTType]],
-        highestPhotoNumber: Int = 0
+        photosAlreadyNamed: Int = 0
     ) -> [GhosttyPendingAttachment] {
         guard !contentTypes.isEmpty else { return [] }
 
-        let shouldNumber = highestPhotoNumber + contentTypes.count > 1
+        let shouldNumber = photosAlreadyNamed + contentTypes.count > 1
         return contentTypes.enumerated().compactMap { index, contentTypes in
             let kind = mediaKind(contentTypes)
             guard kind == .photo else { return nil }
 
             return GhosttyPendingAttachment(
                 kind: kind,
-                title: mediaTitle(kind, number: shouldNumber ? highestPhotoNumber + index + 1 : nil),
+                title: mediaTitle(kind, number: shouldNumber ? photosAlreadyNamed + index + 1 : nil),
                 detail: "Preparing…",
                 preparationState: .preparing
             )
         }
-    }
-
-    /// The number in a photo's name: an unnumbered photo counts as the first.
-    static func highestPhotoNumber(in attachments: [GhosttyPendingAttachment]) -> Int {
-        let unnumbered = mediaTitle(.photo, number: nil)
-        return attachments.lazy
-            .filter { $0.kind == .photo }
-            .map { attachment in
-                attachment.title == unnumbered
-                    ? 1
-                    : Int(attachment.title.dropFirst(unnumbered.count + 1)) ?? 1
-            }
-            .max() ?? 0
     }
 
     /// The draft's first photo is added unnumbered; once a second photo joins it, it becomes "Photo 1".
