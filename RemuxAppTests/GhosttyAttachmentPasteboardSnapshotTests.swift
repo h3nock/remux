@@ -66,6 +66,24 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
         XCTAssertLessThanOrEqual(max(size.width, size.height), CGFloat(GhosttyAttachmentImagePreviewData.maxPixelDimension))
     }
 
+    @MainActor
+    func testAPastedPhotoIsSentTheWayAPickedPhotoIs() async throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        // Points; the renderer multiplies by the screen's scale, so this is larger than the limit on every simulator.
+        pasteboard.setData(try makeJPEGData(width: 1_200, height: 900), forPasteboardType: UTType.jpeg.identifier)
+
+        let loadedAttachment = await GhosttyAttachmentPasteboardSnapshot.currentImageAttachment(pasteboard)
+        guard case .file(let stagedURL) = try XCTUnwrap(loadedAttachment).payload else {
+            return XCTFail("Expected file-backed image payload")
+        }
+        defer {
+            GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+        }
+
+        let size = try XCTUnwrap(imagePixelSize(try Data(contentsOf: stagedURL)))
+        XCTAssertEqual(size, CGSize(width: 2_000, height: 1_500))
+    }
+
     func testURLWinsOverStringWhenBothAreReadable() {
         let url = URL(string: "https://example.com/image.png")!
         let snapshot = GhosttyAttachmentPasteboardSnapshot(

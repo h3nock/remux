@@ -448,11 +448,19 @@ final class GhosttyComposerModel: ObservableObject {
             guard let self else { return }
             switch source {
             case .photo(let item):
-                await preparePhotoAttachment(
-                    item,
-                    attachmentID: attachmentID,
-                    attemptID: attemptID
-                )
+                await preparePhotoAttachment(attachmentID: attachmentID, attemptID: attemptID) {
+                    guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
+                          let stagedURL = try await item.loadTransferable(type: GhosttyPhotoPickerTransfer.self)?
+                              .stagedURL else {
+                        return nil
+                    }
+                    do {
+                        return try await GhosttyAttachmentPhotoPreparation.preparePhoto(at: stagedURL)
+                    } catch {
+                        GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+                        throw error
+                    }
+                }
             case .pastedFile(let url):
                 await preparePastedFileAttachment(
                     url,
@@ -475,33 +483,32 @@ final class GhosttyComposerModel: ObservableObject {
         attachmentPreparationJobs[attachmentID]?.task = task
     }
 
+    /// Prepares a photo from the library or the camera. `preparePhoto` stages the picture and makes it the way it is
+    /// sent, or returns nil when there is no picture; if it throws once something is staged, it removes that itself.
     private func preparePhotoAttachment(
-        _ item: PhotosPickerItem,
         attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
+        attemptID: UUID,
+        preparedWith preparePhoto: () async throws -> GhosttyAttachmentPhotoPreparation.PreparedPhoto?
     ) async {
-        guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
-              let title = attachments.first(where: { $0.id == attachmentID })?.title else {
+        guard let title = attachments.first(where: { $0.id == attachmentID })?.title else {
             failAttachmentPreparation(attachmentID, attemptID: attemptID)
             return
         }
 
         var stagedURL: URL?
         do {
-            guard let transfer = try await item.loadTransferable(
-                type: GhosttyPhotoPickerTransfer.self
-            ) else {
+            guard let prepared = try await preparePhoto() else {
                 failAttachmentPreparation(attachmentID, attemptID: attemptID)
                 return
             }
-            stagedURL = transfer.stagedURL
+            stagedURL = prepared.url
             try Task.checkCancellation()
 
             let renamedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
-                transfer.stagedURL,
+                prepared.url,
                 filename: GhosttyAttachmentStagingStore.imageFilename(
                     title: title,
-                    contentTypes: item.supportedContentTypes,
+                    contentTypes: [prepared.contentType],
                     uniqueID: attachmentID
                 )
             )

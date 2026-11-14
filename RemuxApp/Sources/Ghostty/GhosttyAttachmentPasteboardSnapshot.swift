@@ -248,12 +248,7 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
 
         do {
             let stagedURL = try await GhosttyAttachmentStagingStore.stageFileURL(fileURL)
-            guard let previewData = await previewData else {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                return nil
-            }
-
-            return .pasteboardImage(fileURL: stagedURL, previewData: previewData)
+            return await preparedImageAttachment(stagedURL: stagedURL, previewData: await previewData)
         } catch {
             return nil
         }
@@ -271,15 +266,24 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
                 title: "Pasted image",
                 contentTypes: contentType.map { [$0] } ?? []
             )
-            guard let previewData = await previewData else {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                return nil
-            }
-
-            return .pasteboardImage(fileURL: stagedURL, previewData: previewData)
+            return await preparedImageAttachment(stagedURL: stagedURL, previewData: await previewData)
         } catch {
             return nil
         }
+    }
+
+    /// A pasted picture is sent the way a picked photo is.
+    private static func preparedImageAttachment(
+        stagedURL: URL,
+        previewData: Data?
+    ) async -> GhosttyPendingAttachment? {
+        guard let previewData,
+              let prepared = try? await GhosttyAttachmentPhotoPreparation.preparePhoto(at: stagedURL) else {
+            GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+            return nil
+        }
+
+        return .pasteboardImage(fileURL: prepared.url, previewData: previewData)
     }
 
     private static func fileExtension(for url: URL, typeIdentifier: String) -> String {

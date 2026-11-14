@@ -8,39 +8,16 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertEqual(
             GhosttyAttachmentImageMarkupRenderer.outputFilename(
                 for: "../Screenshot.jpeg",
-                outputFormat: .jpeg
+                contentType: .jpeg
             ),
             "Screenshot-annotated.jpeg"
         )
         XCTAssertEqual(
             GhosttyAttachmentImageMarkupRenderer.outputFilename(
                 for: "   ",
-                outputFormat: .png
+                contentType: .png
             ),
             "image-annotated.png"
-        )
-    }
-
-    func testPreferredOutputFormatPreservesPNGAndUsesJPEGForPhotoFormats() {
-        XCTAssertEqual(
-            GhosttyAttachmentImageMarkupOutputFormat.preferred(forFilename: "terminal.png"),
-            .png
-        )
-        XCTAssertEqual(
-            GhosttyAttachmentImageMarkupOutputFormat.preferred(forFilename: "photo.jpg"),
-            .jpeg
-        )
-        XCTAssertEqual(
-            GhosttyAttachmentImageMarkupOutputFormat.preferred(forFilename: "photo.jpeg"),
-            .jpeg
-        )
-        XCTAssertEqual(
-            GhosttyAttachmentImageMarkupOutputFormat.preferred(forFilename: "photo.heic"),
-            .jpeg
-        )
-        XCTAssertEqual(
-            GhosttyAttachmentImageMarkupOutputFormat.preferred(forFilename: "attachment"),
-            .png
         )
     }
 
@@ -74,71 +51,33 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertEqual(size.height, 240, accuracy: 0.001)
     }
 
-    func testExportSizeCapsLargeImagesPreservingAspectRatio() {
-        let size = GhosttyAttachmentImageMarkupRenderer.exportSize(
-            for: CGSize(width: 4_032, height: 3_024)
-        )
-
-        XCTAssertEqual(size.width, 2_048, accuracy: 0.001)
-        XCTAssertEqual(size.height, 1_536, accuracy: 0.001)
-    }
-
-    func testExportSizeDoesNotUpscaleSmallImages() {
-        let size = GhosttyAttachmentImageMarkupRenderer.exportSize(
-            for: CGSize(width: 320, height: 240)
-        )
-
-        XCTAssertEqual(size.width, 320, accuracy: 0.001)
-        XCTAssertEqual(size.height, 240, accuracy: 0.001)
-    }
-
     @MainActor
-    func testRenderPNGDataProducesPreviewableAnnotatedImage() throws {
+    func testAnAnnotatedSolidPictureIsWrittenAsJPEG() throws {
         let baseImage = try makeImage(width: 80, height: 60)
         let drawing = makeDrawing(color: .red)
 
-        let output = try GhosttyAttachmentImageMarkupRenderer.renderData(
+        let result = try GhosttyAttachmentImageMarkupRenderer.renderData(
             baseImage: baseImage,
             drawing: drawing,
-            documentSize: CGSize(width: 80, height: 60),
-            outputFormat: .png
-        ).data
+            documentSize: CGSize(width: 80, height: 60)
+        )
 
-        XCTAssertFalse(output.isEmpty)
-        XCTAssertTrue(output.starts(with: Data([0x89, 0x50, 0x4E, 0x47])))
-        XCTAssertNotNil(UIImage(data: output))
-        XCTAssertNotNil(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: output))
+        XCTAssertEqual(result.picture.contentType, .jpeg)
+        XCTAssertTrue(result.picture.data.starts(with: Data([0xFF, 0xD8])))
+        XCTAssertNotNil(UIImage(data: result.picture.data))
+        XCTAssertNotNil(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: result.picture.data))
     }
 
     @MainActor
-    func testRenderDataCanEncodeJPEGOutput() throws {
-        let baseImage = try makeImage(width: 80, height: 60)
-        let drawing = makeDrawing(color: .red)
-
-        let output = try GhosttyAttachmentImageMarkupRenderer.renderData(
-            baseImage: baseImage,
-            drawing: drawing,
-            documentSize: CGSize(width: 80, height: 60),
-            outputFormat: .jpeg
-        ).data
-
-        XCTAssertFalse(output.isEmpty)
-        XCTAssertTrue(output.starts(with: Data([0xFF, 0xD8])))
-        XCTAssertNotNil(UIImage(data: output))
-        XCTAssertNotNil(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: output))
-    }
-
-    @MainActor
-    func testRenderPNGDataPreservesWhiteInk() throws {
+    func testRenderDataPreservesWhiteInk() throws {
         let baseImage = try makeImage(width: 80, height: 60, fill: .black)
         let drawing = makeHorizontalDrawing(color: .white, width: 22)
 
         let output = try GhosttyAttachmentImageMarkupRenderer.renderData(
             baseImage: baseImage,
             drawing: drawing,
-            documentSize: CGSize(width: 80, height: 60),
-            outputFormat: .png
-        ).data
+            documentSize: CGSize(width: 80, height: 60)
+        ).picture.data
 
         let pixel = try brightestPixel(from: output, in: CGRect(x: 20, y: 20, width: 40, height: 20))
         XCTAssertGreaterThan(pixel.red, 0.82)
@@ -148,17 +87,19 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
     }
 
     @MainActor
-    func testRenderPNGDataPreservesTransparentBasePixels() throws {
+    func testAnAnnotatedPictureWithSeeThroughPixelsIsWrittenAsPNGAndKeepsThem() throws {
         let baseImage = try makeTransparentImage(width: 80, height: 60)
         let drawing = makeHorizontalDrawing(color: .white, width: 12)
 
-        let output = try GhosttyAttachmentImageMarkupRenderer.renderData(
+        let result = try GhosttyAttachmentImageMarkupRenderer.renderData(
             baseImage: baseImage,
             drawing: drawing,
-            documentSize: CGSize(width: 80, height: 60),
-            outputFormat: .png
-        ).data
+            documentSize: CGSize(width: 80, height: 60)
+        )
+        let output = result.picture.data
 
+        XCTAssertEqual(result.picture.contentType, .png)
+        XCTAssertTrue(output.starts(with: Data([0x89, 0x50, 0x4E, 0x47])))
         XCTAssertLessThan(try renderedPixel(from: output, x: 2, y: 2).alpha, 0.05)
         XCTAssertLessThan(try renderedPixel(from: output, x: 2, y: 57).alpha, 0.05)
         XCTAssertLessThan(try renderedPixel(from: output, x: 77, y: 2).alpha, 0.05)
@@ -166,7 +107,7 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
     }
 
     @MainActor
-    func testRenderPNGDataScalesDocumentDrawingToImageSize() throws {
+    func testRenderDataScalesDocumentDrawingToImageSize() throws {
         let baseImage = try makeImage(width: 100, height: 100, fill: .black)
         let drawing = makeHorizontalDrawing(
             color: .white,
@@ -179,9 +120,8 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         let output = try GhosttyAttachmentImageMarkupRenderer.renderData(
             baseImage: baseImage,
             drawing: drawing,
-            documentSize: CGSize(width: 50, height: 50),
-            outputFormat: .png
-        ).data
+            documentSize: CGSize(width: 50, height: 50)
+        ).picture.data
 
         let pixel = try brightestPixel(from: output, in: CGRect(x: 25, y: 45, width: 55, height: 10))
         XCTAssertGreaterThan(pixel.red, 0.82)
@@ -201,18 +141,20 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
             endX: 896
         )
 
-        let output = try GhosttyAttachmentImageMarkupRenderer.renderData(
+        let result = try GhosttyAttachmentImageMarkupRenderer.renderData(
             baseImage: baseImage,
             drawing: drawing,
-            documentSize: CGSize(width: 1_024, height: 768),
-            outputFormat: .png
-        ).data
+            documentSize: CGSize(width: 1_024, height: 768)
+        )
+        let output = result.picture.data
 
+        // Shrinking a solid picture leaves it solid.
+        XCTAssertEqual(result.picture.contentType, .jpeg)
         let image = try XCTUnwrap(UIImage(data: output))
-        XCTAssertEqual(image.size.width, 2_048, accuracy: 0.001)
-        XCTAssertEqual(image.size.height, 1_536, accuracy: 0.001)
+        XCTAssertEqual(image.size.width, 2_000, accuracy: 0.001)
+        XCTAssertEqual(image.size.height, 1_500, accuracy: 0.001)
 
-        let pixel = try brightestPixel(from: output, in: CGRect(x: 256, y: 762, width: 1_536, height: 12))
+        let pixel = try brightestPixel(from: output, in: CGRect(x: 250, y: 744, width: 1_500, height: 12))
         XCTAssertGreaterThan(pixel.red, 0.82)
         XCTAssertGreaterThan(pixel.green, 0.82)
         XCTAssertGreaterThan(pixel.blue, 0.82)
@@ -220,13 +162,12 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
     }
 
     @MainActor
-    func testRenderPNGDataRejectsInvalidDocumentSize() throws {
+    func testRenderDataRejectsInvalidDocumentSize() throws {
         XCTAssertThrowsError(
             try GhosttyAttachmentImageMarkupRenderer.renderData(
                 baseImage: try makeImage(width: 80, height: 60),
                 drawing: PKDrawing(),
-                documentSize: .zero,
-                outputFormat: .png
+                documentSize: .zero
             )
         ) { error in
             XCTAssertEqual(

@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 /// navigation bar: cancel, undo and redo, and the confirmation that keeps the marks.
 struct GhosttyAttachmentImageMarkupEditor: View {
     let imageURL: URL
-    let outputFormat: GhosttyAttachmentImageMarkupOutputFormat
     let onCancel: () -> Void
     let onDone: (GhosttyAttachmentImageMarkupResult) -> Void
 
@@ -207,8 +206,7 @@ struct GhosttyAttachmentImageMarkupEditor: View {
             let result = try GhosttyAttachmentImageMarkupRenderer.renderData(
                 baseImage: image,
                 drawing: drawing,
-                documentSize: documentSize,
-                outputFormat: outputFormat
+                documentSize: documentSize
             )
             onDone(result)
         } catch {
@@ -242,61 +240,15 @@ final class GhosttyAttachmentMarkupUndo: ObservableObject {
     }
 }
 
-enum GhosttyAttachmentImageMarkupOutputFormat: Equatable, Sendable {
-    case png
-    case jpeg
-
-    static let jpegCompressionQuality: CGFloat = 0.9
-
-    static func preferred(forFilename filename: String) -> Self {
-        let fileExtension = URL(fileURLWithPath: filename)
-            .pathExtension
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        switch fileExtension {
-        case "png":
-            return .png
-        case "jpg", "jpeg", "heic", "heif":
-            return .jpeg
-        default:
-            guard let contentType = UTType(filenameExtension: fileExtension),
-                  contentType.conforms(to: .jpeg) else {
-                return .png
-            }
-            return .jpeg
-        }
-    }
-
-    var fileExtension: String {
-        switch self {
-        case .png:
-            return "png"
-        case .jpeg:
-            return "jpeg"
-        }
-    }
-
-    var traceLabel: String {
-        switch self {
-        case .png:
-            return "png"
-        case .jpeg:
-            return "jpeg"
-        }
-    }
-}
-
 struct GhosttyAttachmentImageMarkupResult {
-    let data: Data
-    let outputFormat: GhosttyAttachmentImageMarkupOutputFormat
+    /// Written as any rewritten picture is (`GhosttyAttachmentPhotoPreparation.rewrittenPicture(for:)`).
+    let picture: GhosttyAttachmentPhotoPreparation.EncodedPicture
     let renderStartedAt: UInt64
     let renderCompletedAt: UInt64
 }
 
 enum GhosttyAttachmentImageMarkupRenderer {
     static let maxDocumentLongSide: CGFloat = 1_024
-    static let maxExportLongSide: CGFloat = 2_048
 
     enum RenderError: Error, Equatable {
         case invalidDocumentSize
@@ -306,7 +258,7 @@ enum GhosttyAttachmentImageMarkupRenderer {
 
     static func outputFilename(
         for sourceFilename: String,
-        outputFormat: GhosttyAttachmentImageMarkupOutputFormat
+        contentType: UTType
     ) -> String {
         let component = sourceFilename
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -319,7 +271,7 @@ enum GhosttyAttachmentImageMarkupRenderer {
             .deletingPathExtension()
             .lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(stem.isEmpty ? "image" : stem)-annotated.\(outputFormat.fileExtension)"
+        return "\(stem.isEmpty ? "image" : stem)-annotated.\(contentType.preferredFilenameExtension ?? "jpeg")"
     }
 
     static func aspectFitRect(imageSize: CGSize, containerSize: CGSize) -> CGRect {
@@ -356,25 +308,11 @@ enum GhosttyAttachmentImageMarkupRenderer {
         )
     }
 
-    static func exportSize(for imageSize: CGSize) -> CGSize {
-        guard imageSize.width > 0, imageSize.height > 0 else {
-            return .zero
-        }
-
-        let longSide = max(imageSize.width, imageSize.height)
-        let scale = min(1, maxExportLongSide / longSide)
-        return CGSize(
-            width: max(1, (imageSize.width * scale).rounded()),
-            height: max(1, (imageSize.height * scale).rounded())
-        )
-    }
-
     @MainActor
     static func renderData(
         baseImage: UIImage,
         drawing: PKDrawing,
-        documentSize: CGSize,
-        outputFormat: GhosttyAttachmentImageMarkupOutputFormat
+        documentSize: CGSize
     ) throws -> GhosttyAttachmentImageMarkupResult {
         let totalStartedAt = GhosttyRuntimeTrace.nowNanos()
         guard documentSize.width > 0, documentSize.height > 0 else {
@@ -385,14 +323,16 @@ enum GhosttyAttachmentImageMarkupRenderer {
         guard sourceImageSize.width > 0, sourceImageSize.height > 0 else {
             throw RenderError.invalidImageSize
         }
-        let outputImageSize = exportSize(for: sourceImageSize)
+        // An annotated picture is sent as a rewritten picture is.
+        let outputImageSize = GhosttyAttachmentPhotoPreparation.sentSize(for: sourceImageSize)
         guard outputImageSize.width > 0, outputImageSize.height > 0 else {
             throw RenderError.invalidImageSize
         }
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
-        format.opaque = outputFormat == .jpeg
+        // See-through parts of the picture stay so, and decide its format.
+        format.opaque = false
 
         let renderer = UIGraphicsImageRenderer(size: outputImageSize, format: format)
         let compositeStartedAt = GhosttyRuntimeTrace.nowNanos()
@@ -415,28 +355,19 @@ enum GhosttyAttachmentImageMarkupRenderer {
         let compositeCompletedAt = GhosttyRuntimeTrace.nowNanos()
 
         let encodeStartedAt = GhosttyRuntimeTrace.nowNanos()
-        let data: Data?
-        switch outputFormat {
-        case .png:
-            data = renderedImage.pngData()
-        case .jpeg:
-            data = renderedImage.jpegData(
-                compressionQuality: GhosttyAttachmentImageMarkupOutputFormat.jpegCompressionQuality
-            )
-        }
+        let picture = renderedImage.cgImage.flatMap(GhosttyAttachmentPhotoPreparation.rewrittenPicture(for:))
         let encodeCompletedAt = GhosttyRuntimeTrace.nowNanos()
 
-        guard let data, !data.isEmpty else {
+        guard let picture, !picture.data.isEmpty else {
             throw RenderError.encodingFailed
         }
 
         GhosttyRuntimeTrace.perf(
-            "attachment.markup.render format=\(outputFormat.traceLabel) bytes=\(data.count) source_px=\(Int(sourceImageSize.width))x\(Int(sourceImageSize.height)) output_px=\(Int(outputImageSize.width))x\(Int(outputImageSize.height)) document_px=\(Int(documentSize.width))x\(Int(documentSize.height)) composite_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: compositeStartedAt, to: compositeCompletedAt)) encode_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: encodeStartedAt, to: encodeCompletedAt)) total_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: totalStartedAt, to: encodeCompletedAt))"
+            "attachment.markup.render format=\(picture.contentType.preferredFilenameExtension ?? "?") bytes=\(picture.data.count) source_px=\(Int(sourceImageSize.width))x\(Int(sourceImageSize.height)) output_px=\(Int(outputImageSize.width))x\(Int(outputImageSize.height)) document_px=\(Int(documentSize.width))x\(Int(documentSize.height)) composite_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: compositeStartedAt, to: compositeCompletedAt)) encode_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: encodeStartedAt, to: encodeCompletedAt)) total_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: totalStartedAt, to: encodeCompletedAt))"
         )
 
         return GhosttyAttachmentImageMarkupResult(
-            data: data,
-            outputFormat: outputFormat,
+            picture: picture,
             renderStartedAt: totalStartedAt,
             renderCompletedAt: encodeCompletedAt
         )

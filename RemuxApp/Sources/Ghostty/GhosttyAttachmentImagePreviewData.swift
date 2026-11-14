@@ -39,39 +39,8 @@ enum GhosttyAttachmentImagePreviewData {
     }
 
     private static func makePreviewDataSynchronously(from source: CGImageSource) -> Data? {
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension
-        ]
-
-        guard let image = CGImageSourceCreateThumbnailAtIndex(
-            source,
-            0,
-            thumbnailOptions as CFDictionary
-        ) else {
-            return nil
-        }
-
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output,
-            UTType.jpeg.identifier as CFString,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-
-        CGImageDestinationAddImage(destination, image, [
-            kCGImageDestinationLossyCompressionQuality: compressionQuality
-        ] as CFDictionary)
-
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-
-        return output as Data
+        GhosttyAttachmentImageCoding
+            .uprightImage(from: source, maxPixelDimension: maxPixelDimension)
+            .flatMap { GhosttyAttachmentImageCoding.data(for: $0, as: .jpeg, lossyQuality: compressionQuality) }
     }
 }
