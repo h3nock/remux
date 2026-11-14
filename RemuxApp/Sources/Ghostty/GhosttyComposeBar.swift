@@ -397,11 +397,12 @@ struct GhosttyComposeBar: View {
     private func presentAttachmentMenu() {
         guard #available(iOS 26.0, *) else { return }
         typealias Layout = GhosttyComposerAttachmentMenuLayout
-        // Over the keyboard the menu hangs its full padding past the bar. Over the bottom of the screen it hangs only
-        // as far as the room there allows: nothing on an iPhone with a Home button.
-        let overhang = isSoftwareKeyboardVisible
-            ? Layout.inset
-            : min(Layout.inset, max(0, UIScreen.main.bounds.maxY - barFrameOnScreen.maxY - Layout.screenMargin))
+        let overhang = Layout.overhang(
+            itemCount: attachmentMenuItems.count,
+            barFrameOnScreen: barFrameOnScreen,
+            screenHeight: UIScreen.main.bounds.height,
+            isKeyboardUp: isSoftwareKeyboardVisible
+        )
         let menu = GhosttyComposerAttachmentMenuModel(
             items: attachmentMenuItems,
             overhang: overhang,
@@ -1467,8 +1468,19 @@ enum GhosttyComposerAttachmentMenuLayout {
     /// The side of the square around the bar in which a tap closes the menu: more than any screen, so all of it.
     static let dismissReach: CGFloat = 4000
 
-    /// Kept between the menu and the bottom of the screen when the keyboard is down.
+    /// Kept between the menu and the edge of the screen it would otherwise reach.
     static let screenMargin: CGFloat = 8
+
+    /// How far the menu reaches below the bar. Over the keyboard it hangs its full padding past the bar, and further
+    /// where the screen above the bar is too short for it, as on a small phone in landscape. Over the bottom of the
+    /// screen it hangs only as far as the room there allows: nothing on an iPhone with a Home button.
+    static func overhang(itemCount: Int, barFrameOnScreen: CGRect, screenHeight: CGFloat, isKeyboardUp: Bool) -> CGFloat {
+        if isKeyboardUp {
+            let height = frame(itemCount: itemCount, barSize: barFrameOnScreen.size, overhang: 0).height
+            return max(inset, height + screenMargin - barFrameOnScreen.maxY)
+        }
+        return min(inset, max(0, screenHeight - barFrameOnScreen.maxY - screenMargin))
+    }
 
     static func frame(itemCount: Int, barSize: CGSize, overhang: CGFloat) -> CGRect {
         let height = CGFloat(itemCount) * rowPitch + inset

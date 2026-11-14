@@ -219,6 +219,7 @@
 		86FDD5D3E753D153E149D09B /* HerdrPopupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C986E697CC5C170E0DEC8F7E /* HerdrPopupTests.swift */; };
 		87437EE52B5AA5C4ECDD543F /* direct-terminal-0.9.3-01-shell.expected.json in Resources */ = {isa = PBXBuildFile; fileRef = 4E3822F64DB6F7047B9A2225 /* direct-terminal-0.9.3-01-shell.expected.json */; };
 		87A3C40BA75A75592A482867 /* GhosttyComposerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F7D40090293C627F8A1800 /* GhosttyComposerModel.swift */; };
+		880F19F4E1FA9C5A239E2C64 /* GhosttyComposerAttachmentMenuLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB83A43A69B658FF5A8F175A /* GhosttyComposerAttachmentMenuLayoutTests.swift */; };
 		887D13BFCFC9A3616924D45B /* direct-terminal-0.9.5-03-missing.c2s.bin in Resources */ = {isa = PBXBuildFile; fileRef = E008F30DFD7B78390EB254CC /* direct-terminal-0.9.5-03-missing.c2s.bin */; };
 		890ADA9AC6BC01F9D619CAD8 /* PanePreviewLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603A62637F1E7C43FD9A1370 /* PanePreviewLayoutTests.swift */; };
 		894D7E491F922716720F1E99 /* GhosttyPaneLinesViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90BFC28E36860F02E40D95F9 /* GhosttyPaneLinesViewTests.swift */; };
@@ -864,6 +865,7 @@
 		F93F23D523764FF038AC9014 /* HerdrClientMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrClientMessage.swift; sourceTree = "<group>"; };
 		F94DE6B4FA428C0684F1352C /* GhosttyComposerTextViewPasteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyComposerTextViewPasteTests.swift; sourceTree = "<group>"; };
 		FAD50A96A7A00BCE29EAB82D /* HerdrSurfaceDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurfaceDecoder.swift; sourceTree = "<group>"; };
+		FB83A43A69B658FF5A8F175A /* GhosttyComposerAttachmentMenuLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyComposerAttachmentMenuLayoutTests.swift; sourceTree = "<group>"; };
 		FC3F9F61A40DD02A7DD80980 /* RemuxSFTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxSFTPClient.swift; sourceTree = "<group>"; };
 		FD83012043308BB49D4D1E61 /* direct-terminal-0.9.3-05-keyboard.s2c.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "direct-terminal-0.9.3-05-keyboard.s2c.bin"; sourceTree = "<group>"; };
 		FEB75395B60269B5FAD07420 /* herdr-16-paste-limit-A.s2c.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "herdr-16-paste-limit-A.s2c.bin"; sourceTree = "<group>"; };
@@ -961,6 +963,7 @@
 				84DD89E37AC083383B988185 /* GhosttyAttachmentPasteboardSnapshotTests.swift */,
 				7B26DD6960469E280CA4DBCA /* GhosttyAttachmentPhotoPreparationTests.swift */,
 				5A9A68C878571836AC7EDA41 /* GhosttyAttachmentStagingStoreTests.swift */,
+				FB83A43A69B658FF5A8F175A /* GhosttyComposerAttachmentMenuLayoutTests.swift */,
 				6DFE39E14E057AACAB31247A /* GhosttyComposerDictationControllerTests.swift */,
 				73A45AC69F71555066A656AE /* GhosttyComposerSubmissionControllerTests.swift */,
 				F94DE6B4FA428C0684F1352C /* GhosttyComposerTextViewPasteTests.swift */,
@@ -1920,6 +1923,7 @@
 				7C99EDFDCE3B0927D26C1029 /* GhosttyAttachmentPasteboardSnapshotTests.swift in Sources */,
 				1B648A6885006DD951E7694C /* GhosttyAttachmentPhotoPreparationTests.swift in Sources */,
 				3959173AC4F6B2A7849A6A1E /* GhosttyAttachmentStagingStoreTests.swift in Sources */,
+				880F19F4E1FA9C5A239E2C64 /* GhosttyComposerAttachmentMenuLayoutTests.swift in Sources */,
 				235F42F79C9BB749EDF48422 /* GhosttyComposerDictationControllerTests.swift in Sources */,
 				F54B4A3EDFFB92FE150328AD /* GhosttyComposerSubmissionControllerTests.swift in Sources */,
 				A995E523794A38E60BB7C3BC /* GhosttyComposerTextViewPasteTests.swift in Sources */,
