@@ -6,17 +6,16 @@ import UniformTypeIdentifiers
 /// How a picture from the camera, the Photos picker or a paste, or one marked up, is sent to a remote session, and the
 /// making of one that is sent that way.
 ///
-/// - A picture with more than one frame, an animated GIF, PNG or WebP or a HEICS sequence, is sent exactly as it is: at
-///   any size, and with any location it records, since it can't be written again without losing its frames.
-/// - A still larger than `maxPixelDimension` is shrunk to it and rewritten.
-/// - A still that fits is rewritten unless it is a JPEG or PNG. A JPEG or PNG is kept when it really has see-through
-///   pixels; a solid one is kept unless its rewrite is smaller. A rotation tag alone never forces a rewrite.
-/// - No still carries any metadata but its rotation tag, so nothing of where, when or with what it was taken goes with
-///   it. A rewrite has none at all; a kept JPEG or PNG is a copy with its pixels and rotation tag as they were and
-///   nothing else.
+/// - A picture with more than one frame, an animated GIF, PNG or WebP or a HEICS sequence, is sent exactly as it is, at
+///   any size and with any metadata it carries: Image I/O can't take metadata out of one without writing every frame
+///   again, and can't write WebP at all.
+/// - A PNG that fits stays a PNG unless it is solid and its JPEG is smaller. Upright, it keeps its image data as it is,
+///   with only the chunks that draw it; turned by a rotation tag, it is written again upright.
+/// - Every other still is rewritten, shrunk to `maxPixelDimension` when it is larger.
 ///
-/// A rewrite is upright, carries none of the source's metadata, and is a JPEG, or a PNG when it really has see-through
-/// pixels, which JPEG can't hold.
+/// A rewrite is drawn from the upright pixels, so it carries none of the source's metadata, and is a JPEG, or a PNG when
+/// it really has see-through pixels, which JPEG can't hold. No still goes with anything of where, when or with what it
+/// was taken.
 enum GhosttyAttachmentPhotoPreparation {
     /// The longest side, in pixels, a picture is sent at.
     static let maxPixelDimension = 2_000
@@ -89,26 +88,59 @@ enum GhosttyAttachmentPhotoPreparation {
             }
             let isSeeThrough = hasSeeThroughPixels(image)
 
-            let original = sizeToSend == pixelSize
-                ? cleanCopy(source, index: index, type: sourceType, orientation: properties[kCGImagePropertyOrientation])
-                : nil
-
-            // Larger than the limit, in another format, or with metadata that can't be taken out of it as it is.
-            guard let original else {
+            guard sizeToSend == pixelSize, sourceType.conforms(to: .png) else {
                 guard let rewrite = encodedPicture(image, as: isSeeThrough ? .png : .jpeg) else {
                     throw PreparationError.encodingFailed
                 }
                 return try replace(url, with: rewrite)
             }
-            // The original is kept on a tie, and when its JPEG can't be made.
-            if !isSeeThrough,
-               let rewrite = encodedPicture(image, as: .jpeg),
-               rewrite.data.count < original.data.count {
-                return try replace(url, with: rewrite)
+
+            // Without its rotation tag an upright PNG draws the same; a turned one has to be written again upright.
+            let isUpright = (properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1
+            let original = isUpright ? (try? Data(contentsOf: url)).flatMap(pngWithoutMetadata) : nil
+            guard let png = original.map({ EncodedPicture(data: $0, contentType: .png) })
+                ?? encodedPicture(image, as: .png) else {
+                throw PreparationError.encodingFailed
             }
-            return try replace(url, with: original)
+            // The PNG is kept on a tie, and when its JPEG can't be made.
+            if !isSeeThrough, let jpeg = encodedPicture(image, as: .jpeg), jpeg.data.count < png.data.count {
+                return try replace(url, with: jpeg)
+            }
+            return try replace(url, with: png)
         }
     }
+
+    /// The PNG in `data` with only the chunks that draw it, each as it was; nil when `data` is not a whole PNG.
+    static func pngWithoutMetadata(_ data: Data) -> Data? {
+        let signature = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        guard data.starts(with: signature) else { return nil }
+
+        var kept = signature
+        var offset = data.startIndex + signature.count
+        // A chunk is its data's length in 4 bytes, its type in 4, its data, and a 4-byte checksum.
+        while data.endIndex - offset >= 12 {
+            let length = data[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            guard data.endIndex - offset - 12 >= length else { return nil }
+            let end = offset + 12 + length
+            let type = String(decoding: data[offset + 4..<offset + 8], as: UTF8.self)
+            if pngDrawingChunks.contains(type) {
+                kept.append(data[offset..<end])
+            }
+            if type == "IEND" {
+                return kept
+            }
+            offset = end
+        }
+        return nil
+    }
+
+    /// The chunks that draw a PNG: its header, palette, image data and end, its transparency, colour and pixel
+    /// density, and the frames of an animation. The rest, text, EXIF, XMP and time among them, describes it.
+    private static let pngDrawingChunks: Set<String> = [
+        "IHDR", "PLTE", "IDAT", "IEND",
+        "tRNS", "bKGD", "cHRM", "gAMA", "iCCP", "sRGB", "sBIT", "cICP", "mDCv", "cLLi", "pHYs", "sPLT",
+        "acTL", "fcTL", "fdAT"
+    ]
 
     /// `image` written as a rewritten picture is: as PNG when it really has see-through pixels, as JPEG otherwise.
     static func rewrittenPicture(for image: CGImage) -> EncodedPicture? {
@@ -184,55 +216,6 @@ enum GhosttyAttachmentPhotoPreparation {
         }
     }
 
-    /// The JPEG or PNG in `source` with its pixels and rotation tag as they were and no other metadata: a JPEG's
-    /// compressed pixels are copied, a PNG, being lossless, is written again. Nil for any other format, and when the
-    /// copy still records a location.
-    private static func cleanCopy(_ source: CGImageSource, index: Int, type: UTType, orientation: Any?) -> EncodedPicture? {
-        let output = NSMutableData()
-        guard type.conforms(to: .jpeg) || type.conforms(to: .png),
-              let destination = CGImageDestinationCreateWithData(output, type.identifier as CFString, 1, nil) else {
-            return nil
-        }
-
-        let didCopy: Bool
-        if type.conforms(to: .jpeg) {
-            let metadata = CGImageMetadataCreateMutable()
-            if let orientation {
-                CGImageMetadataSetValueMatchingImageProperty(
-                    metadata,
-                    kCGImagePropertyTIFFDictionary,
-                    kCGImagePropertyTIFFOrientation,
-                    orientation as CFTypeRef
-                )
-            }
-            didCopy = CGImageDestinationCopyImageSource(destination, source, [
-                kCGImageDestinationMetadata: metadata,
-                kCGImageDestinationMergeMetadata: false
-            ] as CFDictionary, nil)
-        } else {
-            guard let image = CGImageSourceCreateImageAtIndex(source, index, nil) else { return nil }
-            CGImageDestinationAddImage(
-                destination,
-                image,
-                orientation.map { [kCGImagePropertyOrientation: $0] as CFDictionary }
-            )
-            didCopy = CGImageDestinationFinalize(destination)
-        }
-
-        guard didCopy,
-              let copy = CGImageSourceCreateWithData(output, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(
-                  copy,
-                  CGImageSourceGetPrimaryImageIndex(copy),
-                  nil
-              ) as? [CFString: Any],
-              properties[kCGImagePropertyGPSDictionary] == nil,
-              properties[kCGImagePropertyIPTCDictionary] == nil else {
-            return nil
-        }
-        return EncodedPicture(data: output as Data, contentType: type)
-    }
-
     private static func encodedPicture(_ image: CGImage, as type: UTType) -> EncodedPicture? {
         GhosttyAttachmentImageCoding.data(for: image, as: type, lossyQuality: jpegCompressionQuality)
             .map { EncodedPicture(data: $0, contentType: type) }
@@ -247,9 +230,12 @@ enum GhosttyAttachmentPhotoPreparation {
         return PreparedPhoto(url: outputURL, contentType: picture.contentType)
     }
 
-    /// More than one frame in a format whose frames make an animation, an image sequence (HEICS) among them. In
-    /// other formats, such as HEIC, further pictures are not frames, and the primary one is the picture.
-    private static func isAnimated(_ source: CGImageSource, type: UTType) -> Bool {
-        CGImageSourceGetCount(source) > 1 && [UTType.gif, .png, .webP, .heics].contains { type.conforms(to: $0) }
+    /// The formats whose frames make an animation, an image sequence (HEICS) among them. In other formats, such as
+    /// HEIC, further pictures are not frames, and the primary one is the picture.
+    static let animationTypes: [UTType] = [.gif, .png, .webP, .heics]
+
+    /// More than one frame in a format whose frames make an animation.
+    static func isAnimated(_ source: CGImageSource, type: UTType) -> Bool {
+        CGImageSourceGetCount(source) > 1 && animationTypes.contains { type.conforms(to: $0) }
     }
 }

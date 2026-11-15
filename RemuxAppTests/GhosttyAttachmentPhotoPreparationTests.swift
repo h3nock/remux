@@ -158,20 +158,20 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 1)
     }
 
-    func testAStillThatFitsKeepsItsPixelsWhenItsJPEGIsLarger() throws {
+    func testAJPEGThatFitsIsRewrittenEvenWhenThatIsLarger() throws {
         let url = try write(
             try makeNoisyImage(width: 400, height: 300),
             as: .jpeg,
             name: "small.jpg",
             properties: [kCGImageDestinationLossyCompressionQuality: 0.3]
         )
-        let originalPixels = try storedPixels(at: url)
-        XCTAssertGreaterThan(try jpegRewriteByteCount(of: url), try Data(contentsOf: url).count)
+        let jpegByteCount = try jpegRewriteByteCount(of: url)
+        XCTAssertGreaterThan(jpegByteCount, try Data(contentsOf: url).count)
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
         XCTAssertEqual(prepared.contentType, .jpeg)
-        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
+        XCTAssertEqual(try Data(contentsOf: prepared.url).count, jpegByteCount)
     }
 
     func testAStillIsComparedWithItsJPEGAsItWouldBeSent() throws {
@@ -192,68 +192,99 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
 
-    func testARotationTagAloneDoesNotRewriteAPicture() throws {
+    func testAPNGThatFitsTurnedByARotationTagIsSentUprightAsPNG() throws {
         let url = try write(
-            try makeNoisyImage(width: 400, height: 300),
-            as: .jpeg,
-            name: "sideways.jpg",
-            properties: [kCGImageDestinationLossyCompressionQuality: 0.3, kCGImagePropertyOrientation: 6]
-        )
-        let originalPixels = try storedPixels(at: url)
-
-        let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
-
-        XCTAssertEqual(prepared.contentType, .jpeg)
-        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
-        XCTAssertEqual(try imageFacts(at: prepared.url).orientation, 6)
-    }
-
-    // MARK: - Location
-
-    func testAKeptJPEGCarriesItsPixelsAndRotationTagAndNothingElse() throws {
-        let url = try write(
-            try makeNoisyImage(width: 400, height: 300),
-            as: .jpeg,
-            name: "located.jpg",
-            properties: Self.everythingAPhotoRecords.merging([
-                kCGImageDestinationLossyCompressionQuality: 0.3,
-                kCGImagePropertyOrientation: 6
-            ]) { _, new in new }
-        )
-        let originalPixels = try storedPixels(at: url)
-        XCTAssertTrue(try imageFacts(at: url).hasLocation)
-        XCTAssertTrue(try imageFacts(at: url).hasPlaceOrComment)
-
-        let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
-
-        let facts = try imageFacts(at: prepared.url)
-        XCTAssertEqual(prepared.contentType, .jpeg)
-        XCTAssertFalse(facts.hasLocation)
-        XCTAssertFalse(facts.hasPlaceOrComment)
-        XCTAssertEqual(facts.orientation, 6)
-        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
-    }
-
-    func testAKeptPNGCarriesItsPixelsAndRotationTagAndNothingElse() throws {
-        let url = try write(
-            try makeCheckerboard(width: 400, height: 300),
+            try makeImage(width: 400, height: 300),
             as: .png,
-            name: "located.png",
-            properties: Self.everythingAPhotoRecords.merging([kCGImagePropertyOrientation: 6]) { _, new in new }
+            name: "sideways.png",
+            properties: [kCGImagePropertyOrientation: 6]
         )
-        let originalPixels = try storedPixels(at: url)
-        XCTAssertTrue(try imageFacts(at: url).hasLocation)
-        XCTAssertTrue(try imageFacts(at: url).hasPlaceOrComment)
         XCTAssertLessThan(try Data(contentsOf: url).count, try jpegRewriteByteCount(of: url))
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
         let facts = try imageFacts(at: prepared.url)
         XCTAssertEqual(prepared.contentType, .png)
+        XCTAssertEqual(facts.width, 300)
+        XCTAssertEqual(facts.height, 400)
+        XCTAssertEqual(facts.orientation, 1)
+        // The top-left of the stored picture is red; turned upright, red is at the top-right.
+        let image = try decodedImage(at: prepared.url)
+        XCTAssertTrue(try pixel(of: image, x: 280, y: 20).isMostlyRed)
+        XCTAssertFalse(try pixel(of: image, x: 20, y: 20).isMostlyRed)
+    }
+
+    // MARK: - Metadata
+
+    func testAJPEGThatFitsGoesWithNothingButItsPicture() throws {
+        let url = try write(
+            try makeNoisyImage(width: 400, height: 300),
+            as: .jpeg,
+            name: "described.jpg",
+            properties: Self.everythingAPhotoRecords.merging([kCGImagePropertyOrientation: 6]) { _, new in new }
+        )
+        var original = try Data(contentsOf: url)
+        // Where a motion photo keeps its video, after the end of the picture.
+        original.append(Data(Self.dataAfterThePicture.utf8))
+        try original.write(to: url)
+        XCTAssertTrue(try imageFacts(at: url).hasLocation)
+        for text in Self.recordedText {
+            XCTAssertNotNil(original.range(of: Data(text.utf8)), text)
+        }
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
+
+        let sent = try Data(contentsOf: prepared.url)
+        let facts = try imageFacts(at: prepared.url)
+        XCTAssertEqual(prepared.contentType, .jpeg)
         XCTAssertFalse(facts.hasLocation)
-        XCTAssertFalse(facts.hasPlaceOrComment)
-        XCTAssertEqual(facts.orientation, 6)
-        XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
+        for text in Self.recordedText + [Self.dataAfterThePicture] {
+            XCTAssertNil(sent.range(of: Data(text.utf8)), text)
+        }
+        XCTAssertEqual(sent.suffix(2), Data([0xFF, 0xD9]))
+        // Upright instead of tagged.
+        XCTAssertEqual(facts.width, 300)
+        XCTAssertEqual(facts.height, 400)
+        XCTAssertEqual(facts.orientation, 1)
+    }
+
+    func testAPNGThatFitsKeepsItsImageDataAndNothingThatDescribesIt() throws {
+        let url = try write(
+            try makeCheckerboard(width: 400, height: 300),
+            as: .png,
+            name: "described.png",
+            properties: Self.everythingAPhotoRecords
+        )
+        let original = try Data(contentsOf: url)
+        XCTAssertTrue(try imageFacts(at: url).hasLocation)
+        XCTAssertTrue(Self.recordedText.contains { original.range(of: Data($0.utf8)) != nil })
+        XCTAssertLessThan(original.count, try jpegRewriteByteCount(of: url))
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
+
+        let sent = try Data(contentsOf: prepared.url)
+        XCTAssertEqual(prepared, .init(url: url, contentType: .png))
+        XCTAssertFalse(try imageFacts(at: prepared.url).hasLocation)
+        for text in Self.recordedText {
+            XCTAssertNil(sent.range(of: Data(text.utf8)), text)
+        }
+        // Every chunk that draws the picture goes as it was, and nothing else goes.
+        let drawing: Set = [
+            "IHDR", "PLTE", "IDAT", "IEND", "tRNS", "bKGD", "cHRM", "gAMA", "iCCP", "sRGB", "sBIT", "cICP", "mDCv",
+            "cLLi", "pHYs", "sPLT"
+        ]
+        XCTAssertEqual(try Self.pngChunks(sent), try Self.pngChunks(original).filter { drawing.contains($0.type) })
+        XCTAssertTrue(try Self.pngChunks(sent).contains { $0.type == "IDAT" })
+    }
+
+    func testOnlyAWholePNGHasItsMetadataTakenOut() throws {
+        let url = try write(try makeCheckerboard(width: 40, height: 30), as: .png, name: "whole.png")
+        let whole = try Data(contentsOf: url)
+
+        XCTAssertNotNil(GhosttyAttachmentPhotoPreparation.pngWithoutMetadata(whole))
+        // Without its end chunk.
+        XCTAssertNil(GhosttyAttachmentPhotoPreparation.pngWithoutMetadata(whole.dropLast(12)))
+        XCTAssertNil(GhosttyAttachmentPhotoPreparation.pngWithoutMetadata(Data("not a picture".utf8)))
     }
 
     func testARewrittenPictureIsSentWithoutItsLocation() throws {
@@ -330,16 +361,50 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// A GPS position, a place name and a comment, as a photo editor might record them.
+    /// Where, when and with what a picture was taken, as a camera or a photo editor might record it.
     private static var everythingAPhotoRecords: [CFString: Any] {
         [
             kCGImagePropertyGPSDictionary: location,
             kCGImagePropertyIPTCDictionary: [
-                kCGImagePropertyIPTCCity: "Paris",
-                kCGImagePropertyIPTCCountryPrimaryLocationName: "France"
+                kCGImagePropertyIPTCCity: "Addis Ababa",
+                kCGImagePropertyIPTCCountryPrimaryLocationName: "Ethiopia"
             ],
-            kCGImagePropertyExifDictionary: [kCGImagePropertyExifUserComment: "taken at home"]
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifUserComment: "taken at home",
+                kCGImagePropertyExifDateTimeOriginal: "2026:11:15 09:41:00",
+                kCGImagePropertyExifBodySerialNumber: "SERIAL-0042"
+            ],
+            kCGImagePropertyTIFFDictionary: [
+                kCGImagePropertyTIFFMake: "Remux Test Maker",
+                kCGImagePropertyTIFFModel: "Remux Test Camera"
+            ]
         ]
+    }
+
+    /// The text `everythingAPhotoRecords` writes, looked for in a file's bytes.
+    private static let recordedText = [
+        "Addis Ababa", "Ethiopia", "taken at home", "2026:11:15 09:41:00", "SERIAL-0042", "Remux Test Maker",
+        "Remux Test Camera"
+    ]
+
+    private static let dataAfterThePicture = "bytes after the end of the picture"
+
+    private struct PNGChunk: Equatable {
+        let type: String
+        let data: Data
+    }
+
+    /// The chunks of the PNG `data`, read from its bytes.
+    private static func pngChunks(_ data: Data) throws -> [PNGChunk] {
+        var chunks: [PNGChunk] = []
+        var offset = 8
+        while offset + 12 <= data.count {
+            let length = data[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            let type = try XCTUnwrap(String(data: data[offset + 4..<offset + 8], encoding: .ascii))
+            chunks.append(PNGChunk(type: type, data: data[offset + 8..<offset + 8 + length]))
+            offset += 12 + length
+        }
+        return chunks
     }
 
     private static var location: [CFString: Any] {
