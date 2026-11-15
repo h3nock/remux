@@ -116,18 +116,19 @@ struct HerdrCommandLane {
         var snapshots: [HerdrSnapshot] = []
     }
 
-    /// The view requests' steps not yet sent: the creations and closes of the requests the current one
-    /// replaced, then the current request's own.
+    /// The view requests' steps not yet sent, all of which go: the creations and closes of the requests the
+    /// current one replaced, then the current request's own, which leave with it (`dropSteps(of:)`).
     private(set) var steps: [(request: UInt64, step: Step)] = []
     private var waiting: [Command] = []
     private(set) var inFlight: InFlight?
 
     var isIdle: Bool { inFlight == nil }
 
-    /// Whether `request` has a step waiting or in flight.
+    /// Whether `request` has a step waiting or in flight, or a creation or close it replaced does: that one
+    /// still takes the session somewhere.
     func hasWork(for request: UInt64) -> Bool {
-        if steps.contains(where: { $0.request == request }) { return true }
-        if case .step(request, _)? = inFlight?.item { return true }
+        if steps.contains(where: { $0.request == request || $0.step.changesSession }) { return true }
+        if case .step(let id, let step)? = inFlight?.item, id == request || step.changesSession { return true }
         return false
     }
 

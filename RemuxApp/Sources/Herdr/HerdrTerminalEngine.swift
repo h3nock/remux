@@ -834,19 +834,12 @@ actor HerdrTerminalEngine {
     }
 
     /// The view changes of the commands Herdr hasn't answered, in the order it applies them: the command in
-    /// flight unless a snapshot since it went shows its effect, and the steps not yet sent that still go,
-    /// which take the session where the user goes.
+    /// flight unless a snapshot since it went shows its effect, and the steps not yet sent, which take the
+    /// session where the user goes.
     private var changesToCome: [ViewChange] {
         var changes = lane.inFlight.flatMap(inFlightChange).map { [$0] } ?? []
-        changes += lane.steps.filter { stillGoes($0.step, of: $0.request) }.compactMap { ViewChange(sent: $0.step) }
+        changes += lane.steps.compactMap { ViewChange(sent: $0.step) }
         return changes
-    }
-
-    /// Whether a step in the lane still goes: one of the current request while it is in progress and not
-    /// overtaken, and a creation or close of a request it replaced, which the user asked for.
-    private func stillGoes(_ step: HerdrCommandLane.Step, of id: UInt64) -> Bool {
-        guard let request else { return false }
-        return id == request.id ? request.inProgress && !request.overtaken : step.changesSession
     }
 
     /// The change the command in flight makes, unless a snapshot that came while it was in flight shows its
@@ -1758,7 +1751,7 @@ actor HerdrTerminalEngine {
             let params: any Encodable & Sendable
             switch next {
             case .step(let id, let step):
-                guard let request, stillGoes(step, of: id) else {
+                guard let request else {
                     lane.removeNext()
                     continue
                 }

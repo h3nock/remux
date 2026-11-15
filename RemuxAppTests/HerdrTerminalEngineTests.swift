@@ -2792,6 +2792,44 @@ final class HerdrTerminalEngineTests: XCTestCase {
         await engine.stop()
     }
 
+    /// A move whose tab another client closes while a split it replaced still waits doesn't end before the
+    /// split goes: the split will take the session to the pane it makes, so a pick of the pane on screen
+    /// right after isn't there already, and goes after the split.
+    func testAPickOfThePaneOnScreenStillGoesAfterASplitWaitingAhead() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        await feed.receive(try Self.places(revision: 1, closed: ["Q"]))
+        let show = try await start(feed, updates, Self.show())
+        try await acknowledgeShow(feed, outbox, floor: 1)
+        await feed.receive(.surface(try Self.surface(
+            revision: 1,
+            lines: ["one ", "two "],
+            panes: [Self.pane("P", x: 0, width: 4, height: 2, focused: true)]
+        )))
+        try await activation(show, updates)
+        await feed.command("worktree.list", params: [String: String](), answered: { _ in })
+        let split = HerdrCreation.split(pane: "P", workspaceID: "w1", direction: .right)
+        _ = try await start(feed, updates, .moved(.creation(split), fromAnotherTab: false, columns: 4, rows: 2, zoom: Self.notZooming))
+        _ = try await start(feed, updates, Self.move("R", fromAnotherTab: true))
+
+        await feed.receive(try Self.places(revision: 2, gone: ["t2"], closed: ["Q"]))
+        await feed.receive(.surface(try Self.surface(
+            projection: 2,
+            revision: 2,
+            lines: ["one ", "two "],
+            panes: [Self.pane("P", x: 0, width: 4, height: 2, focused: true)]
+        )))
+        let pick = await feed.start(Self.move("P"), within: .seconds(5))
+        XCTAssertNotNil(pick, "the pick of the pane on screen started nothing, though the split will move the session")
+        try await answer(feed, outbox)
+        XCTAssertEqual(try outbox.commands().last, "pane.split")
+        try await answer(feed, outbox, json: #"{"type":"pane_info","pane":{"pane_id":"Q"}}"#)
+        await feed.receive(try Self.places(revision: 3, focusedPane: "Q", gone: ["t2"]))
+        XCTAssertEqual(try outbox.commands().last, "focus P", "the pick was lost behind the split")
+        await engine.stop()
+    }
+
     /// Closing the tab on screen holds the frames until a snapshot no longer lists it, then the setting zooms
     /// the tab Herdr shows: the tab left isn't drawn again, nor the tab reached unzoomed. The closed tab
     /// takes Remux's zoom with it, so nothing is unzoomed first.
