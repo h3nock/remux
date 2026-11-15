@@ -86,6 +86,52 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
     }
 
     @MainActor
+    func testAStillGIFOfferedWithAPNGIsPastedAsThePNG() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makePNGData(width: 40, height: 30)
+        pasteboard.items = [[
+            UTType.gif.identifier: try makeGIFData(frameCount: 1),
+            UTType.png.identifier: picture
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.contentType, .png)
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
+    func testAPNGIsPastedAheadOfAJPEGOfTheSamePicture() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makePNGData(width: 40, height: 30)
+        pasteboard.items = [[
+            UTType.jpeg.identifier: try makeJPEGData(width: 40, height: 30),
+            UTType.png.identifier: picture
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.contentType, .png)
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
+    func testAFormatThatCannotBeReadAsAPictureIsPassedOver() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makeJPEGData(width: 40, height: 30)
+        XCTAssertTrue(UTType.svg.conforms(to: .image))
+        pasteboard.items = [[
+            UTType.svg.identifier: Data(#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"/>"#.utf8),
+            UTType.jpeg.identifier: picture
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.contentType, .jpeg)
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
     func testAPictureAfterTextOnTheClipboardIsPasted() throws {
         let pasteboard = UIPasteboard.withUniqueName()
         let picture = try makePNGData(width: 40, height: 30)

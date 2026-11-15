@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UIKit
 import UniformTypeIdentifiers
 
@@ -45,21 +46,34 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
 
     /// The first picture on `pasteboard`, in whichever of its items holds one, read now. Call it from the paste itself.
     ///
-    /// Within an item, a representation that can hold an animation is taken first, so an animated GIF offered along
-    /// with a still PNG of its first frame keeps its frames; otherwise the item's own order is followed, which puts its
-    /// original first.
+    /// An item can offer one picture in several formats. One that really moves is taken first, so an animation offered
+    /// with a still of its first frame keeps its frames. Otherwise PNG, which keeps every pixel as it is, goes ahead of
+    /// the other formats, which follow in the item's order. A format Image I/O can't read, such as SVG, is passed over.
     @MainActor
     static func currentImage(_ pasteboard: UIPasteboard = .general) -> PastedImage? {
-        let canHoldAnimation = { (type: UTType) in [UTType.gif, .webP, .heics].contains { type.conforms(to: $0) } }
         for index in 0..<pasteboard.numberOfItems {
             let item = IndexSet(integer: index)
             let pictureTypes = (pasteboard.types(forItemSet: item)?.first ?? [])
                 .compactMap(UTType.init)
                 .filter { $0.conforms(to: .image) }
-            for type in pictureTypes.filter(canHoldAnimation) + pictureTypes.filter({ !canHoldAnimation($0) }) {
-                if let data = pasteboard.data(forPasteboardType: type.identifier, inItemSet: item)?.first, !data.isEmpty {
-                    return PastedImage(data: data, contentType: type)
+            var still: PastedImage?
+            for type in pictureTypes.filter({ $0.conforms(to: .png) }) + pictureTypes.filter({ !$0.conforms(to: .png) }) {
+                let canMove = GhosttyAttachmentPhotoPreparation.animationTypes.contains { type.conforms(to: $0) }
+                // Once there is a still, only a format that can move could be better.
+                guard still == nil || canMove,
+                      let data = pasteboard.data(forPasteboardType: type.identifier, inItemSet: item)?.first,
+                      let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      CGImageSourceGetCount(source) > 0 else {
+                    continue
                 }
+                let picture = PastedImage(data: data, contentType: type)
+                if GhosttyAttachmentPhotoPreparation.isAnimated(source, type: type) {
+                    return picture
+                }
+                still = still ?? picture
+            }
+            if let still {
+                return still
             }
         }
         return nil
