@@ -64,11 +64,18 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
 
         let output = try await Task.detached {
             XCTAssertFalse(Thread.isMainThread)
-            return try GhosttyAttachmentImageMarkupRenderer.renderData(
-                baseImage: baseImage,
-                drawing: drawing,
-                documentSize: CGSize(width: 80, height: 60)
-            ).picture.data
+            // Drawn with the dark appearance current, which would turn white ink dark.
+            var output: Result<Data, Error>?
+            UITraitCollection(userInterfaceStyle: .dark).performAsCurrent {
+                output = Result {
+                    try GhosttyAttachmentImageMarkupRenderer.renderData(
+                        baseImage: baseImage,
+                        drawing: drawing,
+                        documentSize: CGSize(width: 80, height: 60)
+                    ).picture.data
+                }
+            }
+            return try XCTUnwrap(output).get()
         }.value
 
         // White ink stays white: the marks are drawn in the light appearance there too.
