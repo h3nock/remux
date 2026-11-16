@@ -8,7 +8,6 @@ struct GhosttyAttachmentPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedAttachmentID: UUID?
     @State private var markupRequest: GhosttyAttachmentMarkupRequest?
-    @State private var preparingMarkupAttachmentID: UUID?
     @State private var markupFailureMessage: String?
     @Binding var attachments: [GhosttyPendingAttachment]
     let onRemove: (GhosttyPendingAttachment.ID) -> Void
@@ -57,9 +56,9 @@ struct GhosttyAttachmentPreviewSheet: View {
     private var stage: some View {
         if let request = markupRequest {
             GhosttyAttachmentImageMarkupEditor(
-                imageURL: request.editingURL,
+                imageSource: request.imageSource,
                 onCancel: {
-                    cancelMarkup(request)
+                    markupRequest = nil
                 },
                 onDone: { result in
                     saveMarkup(result, request: request)
@@ -158,13 +157,8 @@ struct GhosttyAttachmentPreviewSheet: View {
             Haptic.chromeControlPress()
             beginMarkup(attachment)
         } label: {
-            if preparingMarkupAttachmentID == attachment.id {
-                ProgressView()
-            } else {
-                Label("Markup", systemImage: "pencil.tip.crop.circle")
-            }
+            Label("Markup", systemImage: "pencil.tip.crop.circle")
         }
-        .disabled(preparingMarkupAttachmentID != nil)
         .accessibilityIdentifier("terminal.attachments.preview.markup-selected")
     }
 
@@ -437,76 +431,21 @@ struct GhosttyAttachmentPreviewSheet: View {
         }
     }
 
+    /// The editor opens at once on the attachment's own file and reads the picture itself.
     private func beginMarkup(_ attachment: GhosttyPendingAttachment) {
-        guard preparingMarkupAttachmentID == nil, markupRequest == nil else { return }
-        preparingMarkupAttachmentID = attachment.id
+        guard markupRequest == nil,
+              attachment.supportsImageMarkup,
+              let filename = attachment.imageMarkupFilename,
+              let imageSource = GhosttyAttachmentMarkupImageSource(attachment.payload) else {
+            return
+        }
+
         markupFailureMessage = nil
-
-        Task {
-            do {
-                let request = try await makeMarkupRequest(for: attachment)
-                await MainActor.run {
-                    guard attachments.contains(where: { $0.id == attachment.id }) else {
-                        GhosttyAttachmentStagingStore.cleanupSynchronously([request.editingURL])
-                        preparingMarkupAttachmentID = nil
-                        return
-                    }
-
-                    markupRequest = request
-                    preparingMarkupAttachmentID = nil
-                }
-            } catch {
-                await MainActor.run {
-                    preparingMarkupAttachmentID = nil
-                    markupFailureMessage = "Markup could not be opened for this image."
-                }
-            }
-        }
-    }
-
-    private func makeMarkupRequest(
-        for attachment: GhosttyPendingAttachment
-    ) async throws -> GhosttyAttachmentMarkupRequest {
-        guard attachment.supportsImageMarkup,
-              let filename = attachment.imageMarkupFilename else {
-            throw GhosttyAttachmentMarkupError.unsupported
-        }
-
-        let editingURL: URL
-        switch attachment.payload {
-        case .file(let url):
-            editingURL = try await GhosttyAttachmentStagingStore.stageFileURL(
-                url,
-                filename: filename
-            )
-        case .securityScopedFile(let file):
-            editingURL = try await Task.detached(priority: .utility) {
-                try file.withAccessibleURL { accessibleURL in
-                    try GhosttyAttachmentStagingStore.stageFileURLSynchronously(
-                        accessibleURL,
-                        filename: filename
-                    )
-                }
-            }.value
-        case .link, .text, nil:
-            throw GhosttyAttachmentMarkupError.unsupported
-        }
-
-        guard await GhosttyAttachmentImagePreviewData.makePreviewData(fromFileAt: editingURL) != nil else {
-            GhosttyAttachmentStagingStore.cleanupSynchronously([editingURL])
-            throw GhosttyAttachmentMarkupError.previewUnavailable
-        }
-
-        return GhosttyAttachmentMarkupRequest(
+        markupRequest = GhosttyAttachmentMarkupRequest(
             attachmentID: attachment.id,
-            editingURL: editingURL,
+            imageSource: imageSource,
             sourceFilename: filename
         )
-    }
-
-    private func cancelMarkup(_ request: GhosttyAttachmentMarkupRequest) {
-        GhosttyAttachmentStagingStore.cleanupSynchronously([request.editingURL])
-        markupRequest = nil
     }
 
     private func saveMarkup(
@@ -527,10 +466,7 @@ struct GhosttyAttachmentPreviewSheet: View {
 
                 let stagedURL = try await stagedURLTask
                 guard let previewData = await previewDataTask else {
-                    GhosttyAttachmentStagingStore.cleanupSynchronously([
-                        request.editingURL,
-                        stagedURL,
-                    ])
+                    GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
                     throw GhosttyAttachmentMarkupError.previewUnavailable
                 }
 
@@ -548,7 +484,6 @@ struct GhosttyAttachmentPreviewSheet: View {
                 )
             } catch {
                 await MainActor.run {
-                    GhosttyAttachmentStagingStore.cleanupSynchronously([request.editingURL])
                     markupRequest = nil
                     markupFailureMessage = "Markup could not be saved."
                 }
@@ -581,7 +516,6 @@ struct GhosttyAttachmentPreviewSheet: View {
     ) {
         defer {
             markupRequest = nil
-            GhosttyAttachmentStagingStore.cleanupSynchronously([request.editingURL])
         }
 
         guard let index = attachments.firstIndex(where: { $0.id == request.attachmentID }) else {
@@ -601,12 +535,11 @@ struct GhosttyAttachmentPreviewSheet: View {
 
 private struct GhosttyAttachmentMarkupRequest {
     let attachmentID: UUID
-    let editingURL: URL
+    let imageSource: GhosttyAttachmentMarkupImageSource
     let sourceFilename: String
 }
 
 private enum GhosttyAttachmentMarkupError: Error {
-    case unsupported
     case previewUnavailable
 }
 

@@ -1,3 +1,4 @@
+import ImageIO
 import PencilKit
 import UIKit
 import XCTest
@@ -54,6 +55,46 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertTrue(result.picture.data.starts(with: Data([0xFF, 0xD8])))
         XCTAssertNotNil(UIImage(data: result.picture.data))
         XCTAssertNotNil(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: result.picture.data))
+    }
+
+    @MainActor
+    func testThePictureToMarkUpIsReadUprightAtTheSizeItIsSent() throws {
+        let stored = try XCTUnwrap(try makeImage(width: 4_000, height: 3_000).cgImage)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("markup-\(UUID().uuidString).jpeg")
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, stored, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let image = try XCTUnwrap(GhosttyAttachmentMarkupImageSource.file(url).loadImage())
+
+        XCTAssertEqual(image.width, 1_500)
+        XCTAssertEqual(image.height, 2_000)
+    }
+
+    @MainActor
+    func testASmallPictureToMarkUpIsReadAtItsOwnSize() throws {
+        let png = try XCTUnwrap(try makeImage(width: 400, height: 300).pngData())
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("markup-\(UUID().uuidString).png")
+        try png.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let image = try XCTUnwrap(GhosttyAttachmentMarkupImageSource.file(url).loadImage())
+
+        XCTAssertEqual(image.width, 400)
+        XCTAssertEqual(image.height, 300)
+    }
+
+    func testAFileThatIsNotAPictureHasNothingToMarkUp() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("markup-\(UUID().uuidString).jpeg")
+        try Data([0x01, 0x02]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertNil(GhosttyAttachmentMarkupImageSource.file(url).loadImage())
+        XCTAssertNil(GhosttyAttachmentMarkupImageSource.file(url.appendingPathExtension("missing")).loadImage())
     }
 
     @MainActor
