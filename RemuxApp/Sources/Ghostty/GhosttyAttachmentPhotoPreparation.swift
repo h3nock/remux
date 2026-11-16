@@ -77,7 +77,11 @@ enum GhosttyAttachmentPhotoPreparation {
             let preparation = try prepare(source) { try? Data(contentsOf: url) }
             switch preparation.sent {
             case .asItIs(let contentType):
-                return PreparedPhoto(url: url, contentType: contentType, previewData: preparation.previewData)
+                return PreparedPhoto(
+                    url: try named(url, for: contentType),
+                    contentType: contentType,
+                    previewData: preparation.previewData
+                )
             case .rewritten(let picture):
                 return try replace(url, with: picture, previewData: preparation.previewData)
             }
@@ -98,8 +102,8 @@ enum GhosttyAttachmentPhotoPreparation {
             ] as CFDictionary) else {
                 throw PreparationError.unreadableImage
             }
-            return try stage(try prepare(source) { data }, original: { data }) { sent in
-                GhosttyAttachmentStagingStore.imageFilename(title: title, contentTypes: [sent.contentType])
+            return try stage(try prepare(source) { data }, original: .data(data)) { contentType in
+                GhosttyAttachmentStagingStore.imageFilename(title: title, contentTypes: [contentType])
             }
         }
     }
@@ -125,9 +129,9 @@ enum GhosttyAttachmentPhotoPreparation {
             }
             return try stage(
                 try prepare(source) { try? Data(contentsOf: url) },
-                original: { try Data(contentsOf: url) }
-            ) { sent in
-                sentFilename(for: filename, as: sent.contentType)
+                original: .file(url)
+            ) { contentType in
+                sentFilename(for: filename, as: contentType)
             }
         }
     }
@@ -153,22 +157,44 @@ enum GhosttyAttachmentPhotoPreparation {
         return type.conforms(to: .image) && CGImageSourceGetCount(source) > 0
     }
 
-    /// Stages what `preparation` sends, the picture as it is, read from `original`, or its rewrite, under the name
-    /// `filename` gives it.
+    /// Where a picture prepared from somewhere the app doesn't own comes from.
+    private enum Original {
+        case data(Data)
+        /// Copied as it is, never read whole, when it is sent as it is: an animation can be large.
+        case file(URL)
+    }
+
+    /// Stages what `preparation` sends, the picture as it is or its rewrite, under the name `filename` gives its
+    /// format.
     private static func stage(
         _ preparation: Preparation,
-        original: () throws -> Data,
-        filename: (EncodedPicture) -> String
+        original: Original,
+        filename: (UTType) -> String
     ) throws -> PreparedPhoto {
-        let sent: EncodedPicture
-        switch preparation.sent {
-        case .asItIs(let contentType):
-            sent = EncodedPicture(data: try original(), contentType: contentType)
-        case .rewritten(let picture):
-            sent = picture
+        let url: URL
+        let contentType: UTType
+        switch (preparation.sent, original) {
+        case (.asItIs(let type), .data(let data)):
+            url = try GhosttyAttachmentStagingStore.stageDataSynchronously(data, filename: filename(type))
+            contentType = type
+        case (.asItIs(let type), .file(let fileURL)):
+            url = try GhosttyAttachmentStagingStore.stageFileURLSynchronously(fileURL, filename: filename(type))
+            contentType = type
+        case (.rewritten(let picture), _):
+            url = try GhosttyAttachmentStagingStore.stageDataSynchronously(picture.data, filename: filename(picture.contentType))
+            contentType = picture.contentType
         }
-        let url = try GhosttyAttachmentStagingStore.stageDataSynchronously(sent.data, filename: filename(sent))
-        return PreparedPhoto(url: url, contentType: sent.contentType, previewData: preparation.previewData)
+        return PreparedPhoto(url: url, contentType: contentType, previewData: preparation.previewData)
+    }
+
+    /// The staged file at `url`, renamed when its name doesn't give `type`'s extension, as a picture from the Photos
+    /// picker can arrive without one or with another.
+    private static func named(_ url: URL, for type: UTType) throws -> URL {
+        let filename = sentFilename(for: url.lastPathComponent, as: type)
+        guard filename != url.lastPathComponent else { return url }
+        let renamed = url.deletingLastPathComponent().appendingPathComponent(filename)
+        try FileManager.default.moveItem(at: url, to: renamed)
+        return renamed
     }
 
     /// What is sent for a picture, and its preview.
@@ -355,7 +381,8 @@ enum GhosttyAttachmentPhotoPreparation {
         // The staged file goes first: its new name can differ from the old one by letter case only, which is the
         // same file where the file system ignores case.
         try FileManager.default.removeItem(at: url)
-        let outputURL = url.deletingPathExtension().appendingPathExtension(for: picture.contentType)
+        let outputURL = url.deletingLastPathComponent()
+            .appendingPathComponent(sentFilename(for: url.lastPathComponent, as: picture.contentType))
         try picture.data.write(to: outputURL, options: .atomic)
         return PreparedPhoto(url: outputURL, contentType: picture.contentType, previewData: previewData)
     }

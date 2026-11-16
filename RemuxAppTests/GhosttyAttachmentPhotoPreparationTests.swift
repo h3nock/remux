@@ -509,6 +509,37 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertFalse(GhosttyAttachmentPhotoPreparation.isPicture(at: pdf))
     }
 
+    func testAnAnimationFromThePickerIsNamedForItsFormat() throws {
+        for name in ["provider", "provider.jpeg"] {
+            let url = try writeAnimation(frames: [
+                try makeImage(width: 40, height: 30),
+                try makeImage(width: 40, height: 30)
+            ], name: name)
+            let original = try Data(contentsOf: url)
+
+            let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
+
+            XCTAssertEqual(prepared.contentType, .gif)
+            XCTAssertEqual(prepared.url.lastPathComponent, "provider.gif", name)
+            XCTAssertEqual(try Data(contentsOf: prepared.url), original)
+            try FileManager.default.removeItem(at: prepared.url)
+        }
+    }
+
+    func testAnAnimationFromFilesIsCopiedAsItIsUnderItsName() throws {
+        let url = try writeAnimation(frames: [
+            try makeImage(width: 40, height: 30),
+            try makeImage(width: 40, height: 30)
+        ], name: "moving.gif")
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePictureFileSynchronously(at: url, filename: "moving.gif")
+        defer { GhosttyAttachmentStagingStore.cleanupSynchronously([prepared.url]) }
+
+        XCTAssertEqual(prepared.url.lastPathComponent, "moving.gif")
+        XCTAssertNotEqual(prepared.url, url)
+        XCTAssertEqual(try Data(contentsOf: prepared.url), try Data(contentsOf: url))
+    }
+
     // MARK: - Helpers
 
     /// Where, when and with what a picture was taken, as a camera or a photo editor might record it.
