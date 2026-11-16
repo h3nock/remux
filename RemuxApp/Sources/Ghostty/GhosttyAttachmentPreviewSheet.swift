@@ -240,7 +240,7 @@ struct GhosttyAttachmentPreviewSheet: View {
     private func page(_ attachment: GhosttyPendingAttachment) -> some View {
         switch attachment.previewPayload {
         case .imageData(let data):
-            imagePreview(data)
+            imagePreview(data, isInView: isSelected(attachment))
         case .file(let url):
             filePreview(url)
                 .padding(GhosttyAttachmentPreviewStyle.pagePadding)
@@ -260,9 +260,9 @@ struct GhosttyAttachmentPreviewSheet: View {
     }
 
     @ViewBuilder
-    private func imagePreview(_ data: Data) -> some View {
+    private func imagePreview(_ data: Data, isInView: Bool) -> some View {
         if Self.isPicture(data) {
-            GhosttyAttachmentInteractiveImagePreview(imageData: data)
+            GhosttyAttachmentInteractiveImagePreview(imageData: data, isInView: isInView)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             unavailablePreview

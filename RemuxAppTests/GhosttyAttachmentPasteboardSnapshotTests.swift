@@ -81,7 +81,6 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
 
         let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
 
-        XCTAssertEqual(image.contentType, .gif)
         XCTAssertEqual(image.data, animation)
     }
 
@@ -96,7 +95,6 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
 
         let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
 
-        XCTAssertEqual(image.contentType, .png)
         XCTAssertEqual(image.data, picture)
     }
 
@@ -111,7 +109,6 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
 
         let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
 
-        XCTAssertEqual(image.contentType, .png)
         XCTAssertEqual(image.data, picture)
     }
 
@@ -127,7 +124,6 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
 
         let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
 
-        XCTAssertEqual(image.contentType, .jpeg)
         XCTAssertEqual(image.data, picture)
     }
 
@@ -142,7 +138,6 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
 
         let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
 
-        XCTAssertEqual(image.contentType, .png)
         XCTAssertEqual(image.data, picture)
     }
 

@@ -8,7 +8,6 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
     /// so a read left for later can fail or come back empty.
     struct PastedImage {
         let data: Data
-        let contentType: UTType?
     }
 
     let hasImages: Bool
@@ -66,7 +65,7 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
                       CGImageSourceGetCount(source) > 0 else {
                     continue
                 }
-                let picture = PastedImage(data: data, contentType: type)
+                let picture = PastedImage(data: data)
                 if GhosttyAttachmentPhotoPreparation.isAnimated(source, type: type) {
                     return picture
                 }

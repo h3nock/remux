@@ -40,12 +40,6 @@ enum GhosttyAttachmentStagingStore {
         }.value
     }
 
-    static func stageFileURL(_ sourceURL: URL, filename: String) async throws -> URL {
-        try await Task.detached(priority: .utility) {
-            try stageFileURLSynchronously(sourceURL, filename: filename)
-        }.value
-    }
-
     static func stageFileURLSynchronously(_ sourceURL: URL) throws -> URL {
         try stageFileURLSynchronously(sourceURL, filename: sourceURL.lastPathComponent)
     }

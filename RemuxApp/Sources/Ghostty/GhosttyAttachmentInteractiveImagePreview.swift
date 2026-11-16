@@ -2,9 +2,10 @@ import SwiftUI
 import UIKit
 
 /// A preview picture that can be zoomed. It is decoded again only when its bytes change, so a redraw of the sheet
-/// around it neither decodes it again nor resets the zoom.
+/// around it neither decodes it again nor resets the zoom. A page out of view goes back to fitting, as in Photos.
 struct GhosttyAttachmentInteractiveImagePreview: UIViewRepresentable {
     let imageData: Data
+    let isInView: Bool
 
     func makeUIView(context: Context) -> GhosttyAttachmentInteractiveImageView {
         let view = GhosttyAttachmentInteractiveImageView()
@@ -14,6 +15,9 @@ struct GhosttyAttachmentInteractiveImagePreview: UIViewRepresentable {
 
     func updateUIView(_ view: GhosttyAttachmentInteractiveImageView, context: Context) {
         view.configure(imageData: imageData)
+        if !isInView {
+            view.fit()
+        }
     }
 }
 
@@ -49,6 +53,12 @@ final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate 
         guard bounds.size != laidOutBounds else { return }
         laidOutBounds = bounds.size
         resetImageLayout()
+    }
+
+    /// Back to the whole picture, unzoomed.
+    func fit() {
+        guard scrollView.zoomScale != scrollView.minimumZoomScale else { return }
+        scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
