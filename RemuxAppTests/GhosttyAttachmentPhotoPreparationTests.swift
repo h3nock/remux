@@ -507,6 +507,12 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertTrue(GhosttyAttachmentPhotoPreparation.isPicture(at: picture))
         XCTAssertFalse(GhosttyAttachmentPhotoPreparation.isPicture(at: text))
         XCTAssertFalse(GhosttyAttachmentPhotoPreparation.isPicture(at: pdf))
+        for (type, name) in [(UTType.jpeg, "photo.jpg"), (.gif, "still.gif"), (.heic, "photo.heic")] {
+            XCTAssertTrue(GhosttyAttachmentPhotoPreparation.isPicture(at: try write(try makeImage(width: 40, height: 30), as: type, name: name)), name)
+        }
+        // Another kind of image is sent as the file it is.
+        let tiff = try write(try makeImage(width: 40, height: 30), as: .tiff, name: "scan.tiff")
+        XCTAssertFalse(GhosttyAttachmentPhotoPreparation.isPicture(at: tiff))
     }
 
     func testAnAnimationFromThePickerIsNamedForItsFormat() throws {

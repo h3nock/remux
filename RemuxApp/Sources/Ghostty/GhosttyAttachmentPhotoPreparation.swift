@@ -146,7 +146,12 @@ enum GhosttyAttachmentPhotoPreparation {
         return type.preferredFilenameExtension.map { "\(stem).\($0)" } ?? stem
     }
 
-    /// Whether the file at `url` holds a picture Image I/O can read, judged by its contents, not its name.
+    /// The formats a file is sent in as a picture: those of everyday pictures. Any other image, such as a Photoshop
+    /// document, a camera's raw picture or a TIFF with pages, is sent as the file it is: rewritten, it would be
+    /// flattened to one picture.
+    static let pictureFormats: [UTType] = [.png, .jpeg, .heic, .heif, .gif, .webP]
+
+    /// Whether the file at `url` holds a picture in one of `pictureFormats`, judged by its contents, not its name.
     static func isPicture(at url: URL) -> Bool {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [
             kCGImageSourceShouldCache: false
@@ -154,7 +159,7 @@ enum GhosttyAttachmentPhotoPreparation {
             let type = (CGImageSourceGetType(source) as String?).flatMap(UTType.init) else {
             return false
         }
-        return type.conforms(to: .image) && CGImageSourceGetCount(source) > 0
+        return pictureFormats.contains { type.conforms(to: $0) } && CGImageSourceGetCount(source) > 0
     }
 
     /// Where a picture prepared from somewhere the app doesn't own comes from.
