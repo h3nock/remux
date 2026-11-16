@@ -5,13 +5,20 @@ import UniformTypeIdentifiers
 /// Shrinks and encodes attachment pictures with ImageIO, which reads a picture at the size asked for instead of
 /// holding its full-size bitmap.
 enum GhosttyAttachmentImageCoding {
-    /// The primary picture in `source`, upright and at most `maxPixelDimension` on its long side.
+    /// The primary picture in `source`, upright and at most `maxPixelDimension` on its long side, and never larger than
+    /// it is: Image I/O enlarges a picture to the size asked for.
     static func uprightImage(from source: CGImageSource, maxPixelDimension: Int) -> CGImage? {
-        CGImageSourceCreateThumbnailAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), [
+        let index = CGImageSourceGetPrimaryImageIndex(source)
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+        let longSide = max(
+            properties?[kCGImagePropertyPixelWidth] as? Int ?? 0,
+            properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+        )
+        return CGImageSourceCreateThumbnailAtIndex(source, index, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension
+            kCGImageSourceThumbnailMaxPixelSize: longSide > 0 ? min(maxPixelDimension, longSide) : maxPixelDimension
         ] as CFDictionary)
     }
 

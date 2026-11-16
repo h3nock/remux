@@ -31,6 +31,16 @@ final class GhosttyAttachmentImagePreviewDataTests: XCTestCase {
         XCTAssertLessThanOrEqual(max(size.width, size.height), CGFloat(GhosttyAttachmentImagePreviewData.maxPixelDimension))
     }
 
+    func testAPreviewIsNeverLargerThanThePicture() throws {
+        let sourceData = try makeJPEGData(width: 400, height: 300)
+        let sourceSize = try XCTUnwrap(imagePixelSize(sourceData))
+        XCTAssertLessThan(max(sourceSize.width, sourceSize.height), CGFloat(GhosttyAttachmentImagePreviewData.maxPixelDimension))
+
+        let previewData = try XCTUnwrap(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: sourceData))
+
+        XCTAssertEqual(imagePixelSize(previewData), sourceSize)
+    }
+
     func testInvalidImageDataReturnsNil() {
         XCTAssertNil(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: Data([0x01, 0x02])))
     }
