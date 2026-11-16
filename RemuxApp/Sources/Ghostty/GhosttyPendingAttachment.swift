@@ -32,14 +32,9 @@ struct GhosttySecurityScopedAttachmentFile: Equatable, Sendable {
             }
         }
 
-        let resourceValues = try? url.resourceValues(forKeys: [
-            .fileSizeKey,
-            .localizedNameKey,
-        ])
-        let filename = Self.displayFilename(
-            localizedName: resourceValues?.localizedName,
-            fallbackURL: url
-        )
+        let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey])
+        // The file's own name, extension included. The name Files shows can leave the extension out.
+        let filename = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         let bookmarkData = try url.bookmarkData(
             options: bookmarkCreationOptions,
             includingResourceValuesForKeys: nil,
@@ -49,7 +44,7 @@ struct GhosttySecurityScopedAttachmentFile: Equatable, Sendable {
         return GhosttySecurityScopedAttachmentFile(
             bookmarkData: bookmarkData,
             originalURL: url,
-            filename: filename,
+            filename: filename.isEmpty ? "File" : filename,
             fileSize: resourceValues?.fileSize.map(Int64.init)
         )
     }
@@ -101,21 +96,6 @@ struct GhosttySecurityScopedAttachmentFile: Equatable, Sendable {
         }
 
         return resolvedURL
-    }
-
-    private static func displayFilename(
-        localizedName: String?,
-        fallbackURL: URL
-    ) -> String {
-        let localizedName = localizedName?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let localizedName, !localizedName.isEmpty {
-            return localizedName
-        }
-
-        let filename = fallbackURL.lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return filename.isEmpty ? "File" : filename
     }
 
     private static var bookmarkCreationOptions: URL.BookmarkCreationOptions {

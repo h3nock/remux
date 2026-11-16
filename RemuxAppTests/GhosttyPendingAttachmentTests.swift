@@ -99,6 +99,27 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         }
     }
 
+    /// A file is known by its own name, extension included, which is also the name it is sent under, even when
+    /// Files shows it without its extension.
+    func testAFileFromFilesKeepsItsRealNameWhenFilesHidesTheExtension() throws {
+        var url = try makeSourceFile(named: "report.pdf", data: Data("file contents".utf8))
+        var values = URLResourceValues()
+        values.hasHiddenExtension = true
+        try url.setResourceValues(values)
+        let shown = try url.resourceValues(forKeys: [.localizedNameKey]).localizedName
+
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+
+        XCTAssertEqual(attachment.title, "report.pdf")
+        XCTAssertEqual(attachment.detail, "PDF file")
+        guard case .securityScopedFile(let file) = attachment.payload else {
+            return XCTFail("Expected a file from Files")
+        }
+        // The name the file is sent under.
+        XCTAssertEqual(file.filename, "report.pdf")
+        try XCTSkipIf(shown == "report.pdf", "The extension is shown here, so this only checks the name, not the hidden case.")
+    }
+
     func testImageFileAttachmentSupportsMarkupByFilename() throws {
         let url = try makeSourceFile(named: "screenshot.jpeg", data: Data([0x01]))
         let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
