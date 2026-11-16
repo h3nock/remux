@@ -40,7 +40,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertEqual(size.height, 240, accuracy: 0.001)
     }
 
-    @MainActor
     func testAnAnnotatedSolidPictureIsWrittenAsJPEG() throws {
         let baseImage = try makeImage(width: 80, height: 60)
         let drawing = makeDrawing(color: .red)
@@ -54,12 +53,33 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertEqual(result.picture.contentType, .jpeg)
         XCTAssertTrue(result.picture.data.starts(with: Data([0xFF, 0xD8])))
         XCTAssertNotNil(UIImage(data: result.picture.data))
-        XCTAssertNotNil(GhosttyAttachmentImagePreviewData.makePreviewDataSynchronously(from: result.picture.data))
+        // The preview comes with it, made from the same pixels.
+        XCTAssertTrue(result.previewData.starts(with: Data([0xFF, 0xD8])))
+        XCTAssertEqual(UIImage(data: result.previewData)?.size, CGSize(width: 80, height: 60))
     }
 
-    @MainActor
+    func testAMarkedUpPictureIsRenderedOffTheMainThread() async throws {
+        let baseImage = try makeImage(width: 80, height: 60, fill: .black)
+        let drawing = makeHorizontalDrawing(color: .white, width: 22)
+
+        let output = try await Task.detached {
+            XCTAssertFalse(Thread.isMainThread)
+            return try GhosttyAttachmentImageMarkupRenderer.renderData(
+                baseImage: baseImage,
+                drawing: drawing,
+                documentSize: CGSize(width: 80, height: 60)
+            ).picture.data
+        }.value
+
+        // White ink stays white: the marks are drawn in the light appearance there too.
+        let pixel = try brightestPixel(from: output, in: CGRect(x: 20, y: 20, width: 40, height: 20))
+        XCTAssertGreaterThan(pixel.red, 0.82)
+        XCTAssertGreaterThan(pixel.green, 0.82)
+        XCTAssertGreaterThan(pixel.blue, 0.82)
+    }
+
     func testThePictureToMarkUpIsReadUprightAtTheSizeItIsSent() throws {
-        let stored = try XCTUnwrap(try makeImage(width: 4_000, height: 3_000).cgImage)
+        let stored = try makeImage(width: 4_000, height: 3_000)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("markup-\(UUID().uuidString).jpeg")
         let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil))
@@ -73,9 +93,8 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertEqual(image.height, 2_000)
     }
 
-    @MainActor
     func testASmallPictureToMarkUpIsReadAtItsOwnSize() throws {
-        let png = try XCTUnwrap(try makeImage(width: 400, height: 300).pngData())
+        let png = try XCTUnwrap(UIImage(cgImage: try makeImage(width: 400, height: 300)).pngData())
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("markup-\(UUID().uuidString).png")
         try png.write(to: url)
@@ -97,7 +116,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertNil(GhosttyAttachmentMarkupImageSource.file(url.appendingPathExtension("missing")).loadImage())
     }
 
-    @MainActor
     func testRenderDataPreservesWhiteInk() throws {
         let baseImage = try makeImage(width: 80, height: 60, fill: .black)
         let drawing = makeHorizontalDrawing(color: .white, width: 22)
@@ -115,7 +133,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixel.alpha, 0.95)
     }
 
-    @MainActor
     func testAnAnnotatedPictureWithSeeThroughPixelsIsWrittenAsPNGAndKeepsThem() throws {
         let baseImage = try makeTransparentImage(width: 80, height: 60)
         let drawing = makeHorizontalDrawing(color: .white, width: 12)
@@ -135,7 +152,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertLessThan(try renderedPixel(from: output, x: 77, y: 57).alpha, 0.05)
     }
 
-    @MainActor
     func testRenderDataScalesDocumentDrawingToImageSize() throws {
         let baseImage = try makeImage(width: 100, height: 100, fill: .black)
         let drawing = makeHorizontalDrawing(
@@ -159,7 +175,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixel.alpha, 0.95)
     }
 
-    @MainActor
     func testRenderDataExportsCappedImageAndScalesDrawing() throws {
         let baseImage = try makeImage(width: 4_096, height: 3_072, fill: .black)
         let drawing = makeHorizontalDrawing(
@@ -190,7 +205,6 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixel.alpha, 0.95)
     }
 
-    @MainActor
     func testRenderDataRejectsInvalidDocumentSize() throws {
         XCTAssertThrowsError(
             try GhosttyAttachmentImageMarkupRenderer.renderData(
@@ -206,31 +220,30 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         }
     }
 
-    @MainActor
     private func makeImage(
         width: Int,
         height: Int,
         fill: UIColor = .white
-    ) throws -> UIImage {
+    ) throws -> CGImage {
         let format = UIGraphicsImageRendererFormat()
         format.opaque = true
         format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format)
-        return renderer.image { context in
+        return try XCTUnwrap(renderer.image { context in
             fill.setFill()
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        }
+        }.cgImage)
     }
 
-    private func makeTransparentImage(width: Int, height: Int) throws -> UIImage {
+    private func makeTransparentImage(width: Int, height: Int) throws -> CGImage {
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false
         format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format)
-        return renderer.image { context in
+        return try XCTUnwrap(renderer.image { context in
             UIColor.clear.setFill()
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        }
+        }.cgImage)
     }
 
     private func makeDrawing(color: UIColor, width: CGFloat = 6) -> PKDrawing {

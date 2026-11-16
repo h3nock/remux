@@ -22,8 +22,14 @@ enum GhosttyAttachmentImageCoding {
         ] as CFDictionary)
     }
 
-    /// `image` as a file of `type`. Only the pixels are written: none of a source's metadata is carried over.
-    static func data(for image: CGImage, as type: UTType, lossyQuality: Double) -> Data? {
+    /// `image` as a file of `type`, shrunk to at most `maxPixelDimension` on its long side when one is given, and never
+    /// enlarged. Only the pixels are written: none of a source's metadata is carried over.
+    static func data(
+        for image: CGImage,
+        as type: UTType,
+        lossyQuality: Double,
+        maxPixelDimension: Int? = nil
+    ) -> Data? {
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             output,
@@ -34,9 +40,11 @@ enum GhosttyAttachmentImageCoding {
             return nil
         }
 
-        CGImageDestinationAddImage(destination, image, [
-            kCGImageDestinationLossyCompressionQuality: lossyQuality
-        ] as CFDictionary)
+        var options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: lossyQuality]
+        if let maxPixelDimension, maxPixelDimension < max(image.width, image.height) {
+            options[kCGImageDestinationImageMaxPixelSize] = maxPixelDimension
+        }
+        CGImageDestinationAddImage(destination, image, options as CFDictionary)
         guard CGImageDestinationFinalize(destination) else {
             return nil
         }

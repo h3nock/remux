@@ -184,6 +184,8 @@ struct GhosttyAttachmentImageMarkupEditor: View {
                 drawing: $drawing,
                 undo: undo
             )
+            // What is saved is the drawing as it was when Done was tapped, so no stroke starts while it is written.
+            .allowsHitTesting(!isRendering)
             .accessibilityLabel("Markup canvas")
             .accessibilityIdentifier("terminal.attachments.markup.canvas")
 
@@ -239,25 +241,30 @@ struct GhosttyAttachmentImageMarkupEditor: View {
     }
 
     private func finishMarkup() {
-        guard case .loaded(let image) = phase, canFinish else { return }
+        guard case .loaded(let image) = phase, let baseImage = image.cgImage, canFinish else { return }
         guard !drawing.bounds.isEmpty else {
             onCancel()
             return
         }
 
         let documentSize = GhosttyAttachmentImageMarkupRenderer.documentSize(for: image.size)
+        let drawing = drawing
         isRendering = true
 
-        do {
-            let result = try GhosttyAttachmentImageMarkupRenderer.renderData(
-                baseImage: image,
-                drawing: drawing,
-                documentSize: documentSize
-            )
-            onDone(result)
-        } catch {
-            isRendering = false
-            saveFailureMessage = "Markup could not be saved."
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try GhosttyAttachmentImageMarkupRenderer.renderData(
+                        baseImage: baseImage,
+                        drawing: drawing,
+                        documentSize: documentSize
+                    )
+                }.value
+                onDone(result)
+            } catch {
+                isRendering = false
+                saveFailureMessage = "Markup could not be saved."
+            }
         }
     }
 }
@@ -286,9 +293,10 @@ final class GhosttyAttachmentMarkupUndo: ObservableObject {
     }
 }
 
-struct GhosttyAttachmentImageMarkupResult {
+struct GhosttyAttachmentImageMarkupResult: Sendable {
     /// Written as any rewritten picture is (`GhosttyAttachmentPhotoPreparation.rewrittenPicture(for:)`).
     let picture: GhosttyAttachmentPhotoPreparation.EncodedPicture
+    let previewData: Data
     let renderStartedAt: UInt64
     let renderCompletedAt: UInt64
 }
@@ -333,9 +341,10 @@ enum GhosttyAttachmentImageMarkupRenderer {
         )
     }
 
-    @MainActor
+    /// `drawing` over `baseImage`, written with its preview. It runs on any thread: PencilKit draws a drawing on any
+    /// thread, and the appearance the marks are drawn in is set for the calling thread only.
     static func renderData(
-        baseImage: UIImage,
+        baseImage: CGImage,
         drawing: PKDrawing,
         documentSize: CGSize
     ) throws -> GhosttyAttachmentImageMarkupResult {
@@ -344,7 +353,7 @@ enum GhosttyAttachmentImageMarkupRenderer {
             throw RenderError.invalidDocumentSize
         }
 
-        let sourceImageSize = baseImage.size
+        let sourceImageSize = CGSize(width: baseImage.width, height: baseImage.height)
         guard sourceImageSize.width > 0, sourceImageSize.height > 0 else {
             throw RenderError.invalidImageSize
         }
@@ -356,13 +365,14 @@ enum GhosttyAttachmentImageMarkupRenderer {
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
-        // See-through parts of the picture stay so, and decide its format.
-        format.opaque = false
+        // See-through parts of the picture stay so, and decide its format. A picture with no alpha channel has none,
+        // so its marked-up copy is drawn opaque and has none to look for.
+        format.opaque = !hasAlphaChannel(baseImage)
 
         let renderer = UIGraphicsImageRenderer(size: outputImageSize, format: format)
         let compositeStartedAt = GhosttyRuntimeTrace.nowNanos()
         let renderedImage = renderer.image { _ in
-            baseImage.draw(in: CGRect(origin: .zero, size: outputImageSize))
+            UIImage(cgImage: baseImage).draw(in: CGRect(origin: .zero, size: outputImageSize))
 
             let drawingScale = min(
                 outputImageSize.width / documentSize.width,
@@ -381,9 +391,10 @@ enum GhosttyAttachmentImageMarkupRenderer {
 
         let encodeStartedAt = GhosttyRuntimeTrace.nowNanos()
         let picture = renderedImage.cgImage.flatMap(GhosttyAttachmentPhotoPreparation.rewrittenPicture(for:))
+        let previewData = renderedImage.cgImage.flatMap(GhosttyAttachmentImagePreviewData.previewData(for:))
         let encodeCompletedAt = GhosttyRuntimeTrace.nowNanos()
 
-        guard let picture, !picture.data.isEmpty else {
+        guard let picture, !picture.data.isEmpty, let previewData else {
             throw RenderError.encodingFailed
         }
 
@@ -393,9 +404,19 @@ enum GhosttyAttachmentImageMarkupRenderer {
 
         return GhosttyAttachmentImageMarkupResult(
             picture: picture,
+            previewData: previewData,
             renderStartedAt: totalStartedAt,
             renderCompletedAt: encodeCompletedAt
         )
+    }
+
+    private static func hasAlphaChannel(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return false
+        default:
+            return true
+        }
     }
 }
 

@@ -6,6 +6,16 @@ enum GhosttyAttachmentImagePreviewData {
     static let maxPixelDimension = 1_280
     private static let compressionQuality = 0.84
 
+    /// From pixels already decoded for sending, so the picture is not decoded a second time.
+    static func previewData(for image: CGImage) -> Data? {
+        GhosttyAttachmentImageCoding.data(
+            for: image,
+            as: .jpeg,
+            lossyQuality: compressionQuality,
+            maxPixelDimension: maxPixelDimension
+        )
+    }
+
     static func makePreviewData(from data: Data) async -> Data? {
         await Task.detached(priority: .utility) {
             makePreviewDataSynchronously(from: data)
