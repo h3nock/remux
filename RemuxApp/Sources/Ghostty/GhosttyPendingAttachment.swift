@@ -280,10 +280,6 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         urls.map(file(url:))
     }
 
-    static func securityScopedFile(url: URL) throws -> GhosttyPendingAttachment {
-        securityScopedFile(try GhosttySecurityScopedAttachmentFile.make(url: url))
-    }
-
     static func securityScopedFile(_ file: GhosttySecurityScopedAttachmentFile) -> GhosttyPendingAttachment {
         GhosttyPendingAttachment(
             kind: .file,

@@ -76,7 +76,7 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         let data = Data("file contents".utf8)
         let url = try makeSourceFile(named: "report.pdf", data: data)
 
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         XCTAssertEqual(attachment.kind, .file)
         XCTAssertEqual(attachment.title, "report.pdf")
@@ -108,7 +108,7 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         try url.setResourceValues(values)
         let shown = try url.resourceValues(forKeys: [.localizedNameKey]).localizedName
 
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         XCTAssertEqual(attachment.title, "report.pdf")
         XCTAssertEqual(attachment.detail, "PDF file")
@@ -123,7 +123,7 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
     /// A file from Files is sent as it is, so it isn't marked up; a picture from Files joins as a picture.
     func testAFileFromFilesOffersNoMarkup() throws {
         let url = try makeSourceFile(named: "screenshot.jpeg", data: Data([0x01]))
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         XCTAssertFalse(attachment.supportsImageMarkup)
     }
@@ -156,7 +156,7 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
 
     func testNonImageFileAttachmentDoesNotSupportMarkup() throws {
         let url = try makeSourceFile(named: "report.pdf", data: Data([0x01]))
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         XCTAssertFalse(attachment.supportsImageMarkup)
     }

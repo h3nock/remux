@@ -1,10 +1,6 @@
 import Foundation
 import UniformTypeIdentifiers
 
-enum GhosttyAttachmentStagingStoreError: Error, Equatable {
-    case urlOutsideStagingRoot(URL)
-}
-
 enum GhosttyAttachmentStagingStore {
     static let directoryName = "RemuxAttachmentStaging"
 
@@ -87,17 +83,6 @@ enum GhosttyAttachmentStagingStore {
         }
 
         return destination
-    }
-
-    static func stageImageDataSynchronously(
-        _ data: Data,
-        title: String,
-        contentTypes: [UTType]
-    ) throws -> URL {
-        try stageDataSynchronously(
-            data,
-            filename: imageFilename(title: title, contentTypes: contentTypes)
-        )
     }
 
     static func cleanup(_ attachments: [GhosttyPendingAttachment]) {
