@@ -55,10 +55,11 @@ final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate 
         resetImageLayout()
     }
 
-    /// Back to the whole picture, unzoomed.
+    /// Back to the whole picture, unzoomed. Animated, since a page left by a tap on another's thumbnail is still
+    /// sliding out of view.
     func fit() {
         guard scrollView.zoomScale != scrollView.minimumZoomScale else { return }
-        scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
+        scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
