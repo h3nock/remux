@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -260,13 +261,19 @@ struct GhosttyAttachmentPreviewSheet: View {
 
     @ViewBuilder
     private func imagePreview(_ data: Data) -> some View {
-        if let image = UIImage(data: data) {
-            GhosttyAttachmentInteractiveImagePreview(image: image)
+        if Self.isPicture(data) {
+            GhosttyAttachmentInteractiveImagePreview(imageData: data)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             unavailablePreview
                 .padding(GhosttyAttachmentPreviewStyle.pagePadding)
         }
+    }
+
+    /// Whether `data` holds a picture, from its header alone: the picture itself is decoded once, by the page.
+    private static func isPicture(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return false }
+        return CGImageSourceGetCount(source) > 0
     }
 
     private func filePreview(_ url: URL) -> some View {
@@ -524,11 +531,9 @@ private struct GhosttyAttachmentPreviewThumbnail: View {
 
     var body: some View {
         Group {
-            if case .imageData(let data) = attachment.previewPayload,
-               let image = UIImage(data: data) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+            if case .imageData(let data) = attachment.previewPayload {
+                GhosttyAttachmentPreviewSquare(imageData: data, side: 48)
+                    .equatable()
             } else {
                 Image(systemName: attachment.systemName)
                     .font(.system(size: 18, weight: .medium))

@@ -24,6 +24,31 @@ enum GhosttyAttachmentPreviewStyle {
     static let thumbnailBandHeight: CGFloat = 68
 }
 
+/// A preview picture filling a square `side` points across, decoded at that size: a chip or a thumbnail shows a small
+/// square, not the whole preview. Used with `.equatable()`, it is decoded again only when the preview changes, not each
+/// time the view around it is drawn.
+struct GhosttyAttachmentPreviewSquare: View, Equatable {
+    let imageData: Data
+    let side: CGFloat
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        let pixels = Int((side * displayScale).rounded(.up))
+        if let image = GhosttyAttachmentImagePreviewData.thumbnail(from: imageData, filling: pixels) {
+            Image(uiImage: UIImage(cgImage: image, scale: displayScale, orientation: .up))
+                .resizable()
+                .scaledToFill()
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(GhosttySheetPalette.secondary)
+        }
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.side == rhs.side && lhs.imageData == rhs.imageData
+    }
+}
+
 extension View {
     @ViewBuilder
     func ghosttyAttachmentPreviewContentSurface() -> some View {

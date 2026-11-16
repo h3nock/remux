@@ -1183,11 +1183,9 @@ private struct GhosttyComposerAttachmentStrip: View {
 
     @ViewBuilder
     private func attachmentPreview(_ attachment: GhosttyPendingAttachment) -> some View {
-        if case .imageData(let data) = attachment.previewPayload,
-           let image = UIImage(data: data) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
+        if case .imageData(let data) = attachment.previewPayload {
+            GhosttyAttachmentPreviewSquare(imageData: data, side: 58)
+                .equatable()
                 .frame(width: 58, height: 58)
                 .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay {

@@ -30,6 +30,21 @@ final class GhosttyAttachmentImagePreviewDataTests: XCTestCase {
         XCTAssertEqual(try imagePixelSize(previewData), CGSize(width: 1_280, height: 720))
     }
 
+    func testAThumbnailIsDecodedJustLargeEnoughToFillItsSquare() throws {
+        let previewData = try XCTUnwrap(
+            GhosttyAttachmentImagePreviewData.previewData(for: try makeImage(width: 1_600, height: 1_200))
+        )
+
+        let thumbnail = try XCTUnwrap(GhosttyAttachmentImagePreviewData.thumbnail(from: previewData, filling: 174))
+        XCTAssertEqual(thumbnail.width, 232)
+        XCTAssertEqual(thumbnail.height, 174)
+
+        let small = try XCTUnwrap(GhosttyAttachmentImagePreviewData.previewData(for: try makeImage(width: 40, height: 30)))
+        let unenlarged = try XCTUnwrap(GhosttyAttachmentImagePreviewData.thumbnail(from: small, filling: 174))
+        XCTAssertEqual(unenlarged.width, 40)
+        XCTAssertNil(GhosttyAttachmentImagePreviewData.thumbnail(from: Data([0x01, 0x02]), filling: 174))
+    }
+
     func testBytesThatAreNotAPictureHaveNoPreview() throws {
         let source = try XCTUnwrap(CGImageSourceCreateWithData(Data([0x01, 0x02]) as CFData, nil))
 
