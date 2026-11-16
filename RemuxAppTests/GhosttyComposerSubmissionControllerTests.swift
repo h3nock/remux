@@ -443,35 +443,46 @@ final class GhosttyComposerAttachmentPrepareTests: XCTestCase {
         XCTAssertEqual(composer.attachments.first?.title, "report.txt")
     }
 
-    /// The draft's first photo is numbered once a second joins, before or after it is prepared, and is sent under
-    /// its number.
+    /// The draft's first photo is numbered once a second joins, before, while or after it is prepared, and is sent
+    /// under its number.
     func testAPhotoIsSentUnderTheNumberItHasWhenSent() async throws {
-        let composer = GhosttyComposerModel()
-        let service = PrepareRecordingAttachmentTransferService()
+        enum SecondJoins { case beforePreparing, whilePreparing, afterPreparing }
         let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30)).image { context in
             UIColor.systemTeal.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
         }
-        func waitUntilPrepared() async throws {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while composer.attachments.contains(where: { $0.preparationState == .preparing }), ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(10))
+        for order in [SecondJoins.beforePreparing, .whilePreparing, .afterPreparing] {
+            let composer = GhosttyComposerModel()
+            let service = PrepareRecordingAttachmentTransferService()
+            func waitUntilPrepared() async throws {
+                let deadline = ContinuousClock.now + .seconds(5)
+                while composer.attachments.contains(where: { $0.preparationState == .preparing }), ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
             }
-        }
 
-        composer.addCapturedPhoto(image, preparing: service)
-        try await waitUntilPrepared()
-        composer.addCapturedPhoto(image, preparing: service)
-        try await waitUntilPrepared()
-
-        let photos = composer.attachments
-        addTeardownBlock { GhosttyAttachmentStagingStore.cleanup(photos) }
-        XCTAssertEqual(photos.map(\.title), ["Photo 1", "Photo 2"])
-        for (photo, number) in zip(photos, [1, 2]) {
-            guard case .file(_, let filename) = try XCTUnwrap(photo.transferSource).payload else {
-                return XCTFail("Expected a staged photo")
+            composer.addCapturedPhoto(image, preparing: service)
+            switch order {
+            case .beforePreparing:
+                break
+            case .whilePreparing:
+                // The first photo's preparation starts and waits on its work off the main actor.
+                await Task.yield()
+            case .afterPreparing:
+                try await waitUntilPrepared()
             }
-            XCTAssertEqual(filename, "photo-\(number)-\(photo.id.uuidString.prefix(8).lowercased()).jpeg")
+            composer.addCapturedPhoto(image, preparing: service)
+            try await waitUntilPrepared()
+
+            let photos = composer.attachments
+            addTeardownBlock { GhosttyAttachmentStagingStore.cleanup(photos) }
+            XCTAssertEqual(photos.map(\.title), ["Photo 1", "Photo 2"], "\(order)")
+            for (photo, number) in zip(photos, [1, 2]) {
+                guard case .file(_, let filename) = try XCTUnwrap(photo.transferSource).payload else {
+                    return XCTFail("Expected a staged photo")
+                }
+                XCTAssertEqual(filename, "photo-\(number)-\(photo.id.uuidString.prefix(8).lowercased()).jpeg", "\(order)")
+            }
         }
     }
 
