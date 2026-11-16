@@ -9,10 +9,13 @@ import UniformTypeIdentifiers
 struct GhosttyAttachmentImageMarkupEditor: View {
     /// The prepared picture's file, which the editor reads and never writes.
     let imageURL: URL
+    /// Shown while the picture is read, in the same place, so the picture doesn't change.
+    let preview: UIImage?
     let onCancel: () -> Void
     let onDone: (GhosttyAttachmentImageMarkupResult) -> Void
 
     @State private var phase: LoadPhase = .loading
+    @State private var isLoadingLong = false
     @State private var drawing = PKDrawing()
     @State private var isRendering = false
     @State private var isConfirmingDiscard = false
@@ -133,8 +136,23 @@ struct GhosttyAttachmentImageMarkupEditor: View {
     private var editorContent: some View {
         switch phase {
         case .loading:
-            ProgressView()
-                .controlSize(.large)
+            ZStack {
+                if let preview {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFit()
+                }
+                if isLoadingLong {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+            }
+            // A picture is read in tens of milliseconds; only a slower one, such as a large file, shows that it is
+            // still loading.
+            .task {
+                try? await Task.sleep(for: .milliseconds(250))
+                isLoadingLong = true
+            }
 
         case .loaded(let image):
             GhosttyAttachmentMarkupCanvas(
