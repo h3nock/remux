@@ -126,17 +126,6 @@ enum GhosttyAttachmentStagingStore {
         return destination
     }
 
-    static func stageImageData(
-        _ data: Data,
-        title: String,
-        contentTypes: [UTType]
-    ) async throws -> URL {
-        try await stageData(
-            data,
-            filename: imageFilename(title: title, contentTypes: contentTypes)
-        )
-    }
-
     static func stageImageDataSynchronously(
         _ data: Data,
         title: String,

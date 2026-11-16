@@ -71,57 +71,112 @@ enum GhosttyAttachmentPhotoPreparation {
         try autoreleasepool {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, [
                 kCGImageSourceShouldCache: false
-            ] as CFDictionary),
-                let sourceType = (CGImageSourceGetType(source) as String?).flatMap(UTType.init) else {
+            ] as CFDictionary) else {
                 throw PreparationError.unreadableImage
             }
-            let index = CGImageSourceGetPrimaryImageIndex(source)
-            guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
-                  let pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int,
-                  let pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int else {
-                throw PreparationError.unreadableImage
+            let preparation = try prepare(source) { try? Data(contentsOf: url) }
+            switch preparation.sent {
+            case .asItIs(let contentType):
+                return PreparedPhoto(url: url, contentType: contentType, previewData: preparation.previewData)
+            case .rewritten(let picture):
+                return try replace(url, with: picture, previewData: preparation.previewData)
             }
-
-            if isAnimated(source, type: sourceType) {
-                guard let previewData = GhosttyAttachmentImagePreviewData.previewData(from: source) else {
-                    throw PreparationError.unreadableImage
-                }
-                return PreparedPhoto(url: url, contentType: sourceType, previewData: previewData)
-            }
-
-            let pixelSize = CGSize(width: pixelWidth, height: pixelHeight)
-            let sizeToSend = sentSize(for: pixelSize)
-            guard let image = GhosttyAttachmentImageCoding.uprightImage(
-                from: source,
-                maxPixelDimension: Int(max(sizeToSend.width, sizeToSend.height))
-            ) else {
-                throw PreparationError.unreadableImage
-            }
-            guard let previewData = GhosttyAttachmentImagePreviewData.previewData(for: image) else {
-                throw PreparationError.encodingFailed
-            }
-            let isSeeThrough = hasSeeThroughPixels(image)
-
-            guard sizeToSend == pixelSize, sourceType.conforms(to: .png) else {
-                guard let rewrite = encodedPicture(image, as: isSeeThrough ? .png : .jpeg) else {
-                    throw PreparationError.encodingFailed
-                }
-                return try replace(url, with: rewrite, previewData: previewData)
-            }
-
-            // Without its rotation tag an upright PNG draws the same; a turned one has to be written again upright.
-            let isUpright = (properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1
-            let original = isUpright ? (try? Data(contentsOf: url)).flatMap(pngWithoutMetadata) : nil
-            guard let png = original.map({ EncodedPicture(data: $0, contentType: .png) })
-                ?? encodedPicture(image, as: .png) else {
-                throw PreparationError.encodingFailed
-            }
-            // The PNG is kept on a tie, and when its JPEG can't be made.
-            if !isSeeThrough, let jpeg = encodedPicture(image, as: .jpeg), jpeg.data.count < png.data.count {
-                return try replace(url, with: jpeg, previewData: previewData)
-            }
-            return try replace(url, with: png, previewData: previewData)
         }
+    }
+
+    /// Prepares a pasted picture from its bytes, and stages only what is sent.
+    static func preparePastedPicture(_ data: Data, title: String) async throws -> PreparedPhoto {
+        try await Task.detached(priority: .userInitiated) {
+            try preparePastedPictureSynchronously(data, title: title)
+        }.value
+    }
+
+    static func preparePastedPictureSynchronously(_ data: Data, title: String) throws -> PreparedPhoto {
+        try autoreleasepool {
+            guard let source = CGImageSourceCreateWithData(data as CFData, [
+                kCGImageSourceShouldCache: false
+            ] as CFDictionary) else {
+                throw PreparationError.unreadableImage
+            }
+            let preparation = try prepare(source) { data }
+            let sent: EncodedPicture
+            switch preparation.sent {
+            case .asItIs(let contentType):
+                sent = EncodedPicture(data: data, contentType: contentType)
+            case .rewritten(let picture):
+                sent = picture
+            }
+            let url = try GhosttyAttachmentStagingStore.stageImageDataSynchronously(
+                sent.data,
+                title: title,
+                contentTypes: [sent.contentType]
+            )
+            return PreparedPhoto(url: url, contentType: sent.contentType, previewData: preparation.previewData)
+        }
+    }
+
+    /// What is sent for a picture, and its preview.
+    private struct Preparation {
+        enum Sent {
+            case asItIs(UTType)
+            case rewritten(EncodedPicture)
+        }
+
+        let sent: Sent
+        let previewData: Data
+    }
+
+    /// How the picture in `source` is sent. `original` gives its file's bytes, read only for a PNG that may keep them.
+    private static func prepare(_ source: CGImageSource, original: () -> Data?) throws -> Preparation {
+        guard let sourceType = (CGImageSourceGetType(source) as String?).flatMap(UTType.init) else {
+            throw PreparationError.unreadableImage
+        }
+        let index = CGImageSourceGetPrimaryImageIndex(source)
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int,
+              let pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int else {
+            throw PreparationError.unreadableImage
+        }
+
+        if isAnimated(source, type: sourceType) {
+            guard let previewData = GhosttyAttachmentImagePreviewData.previewData(from: source) else {
+                throw PreparationError.unreadableImage
+            }
+            return Preparation(sent: .asItIs(sourceType), previewData: previewData)
+        }
+
+        let pixelSize = CGSize(width: pixelWidth, height: pixelHeight)
+        let sizeToSend = sentSize(for: pixelSize)
+        guard let image = GhosttyAttachmentImageCoding.uprightImage(
+            from: source,
+            maxPixelDimension: Int(max(sizeToSend.width, sizeToSend.height))
+        ) else {
+            throw PreparationError.unreadableImage
+        }
+        guard let previewData = GhosttyAttachmentImagePreviewData.previewData(for: image) else {
+            throw PreparationError.encodingFailed
+        }
+        let isSeeThrough = hasSeeThroughPixels(image)
+
+        guard sizeToSend == pixelSize, sourceType.conforms(to: .png) else {
+            guard let rewrite = encodedPicture(image, as: isSeeThrough ? .png : .jpeg) else {
+                throw PreparationError.encodingFailed
+            }
+            return Preparation(sent: .rewritten(rewrite), previewData: previewData)
+        }
+
+        // Without its rotation tag an upright PNG draws the same; a turned one has to be written again upright.
+        let isUpright = (properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1
+        let kept = isUpright ? original().flatMap(pngWithoutMetadata) : nil
+        guard let png = kept.map({ EncodedPicture(data: $0, contentType: .png) })
+            ?? encodedPicture(image, as: .png) else {
+            throw PreparationError.encodingFailed
+        }
+        // The PNG is kept on a tie, and when its JPEG can't be made.
+        if !isSeeThrough, let jpeg = encodedPicture(image, as: .jpeg), jpeg.data.count < png.data.count {
+            return Preparation(sent: .rewritten(jpeg), previewData: previewData)
+        }
+        return Preparation(sent: .rewritten(png), previewData: previewData)
     }
 
     /// The PNG in `data` with only the chunks that draw it, each as it was; nil when `data` is not a whole PNG.

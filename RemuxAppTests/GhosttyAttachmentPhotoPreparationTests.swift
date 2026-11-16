@@ -397,6 +397,64 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertTrue(try pixel(of: decodedImage(of: captured.previewData), x: 900, y: 50).isMostlyRed)
     }
 
+    // MARK: - Pasted
+
+    func testAPastedStillIsStagedOnlyAsItIsSent() throws {
+        let data = try Data(contentsOf: try write(try makeImage(width: 4_032, height: 3_024), as: .jpeg, name: "pasted.jpeg"))
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePastedPictureSynchronously(data, title: "Pasted image")
+        defer { GhosttyAttachmentStagingStore.cleanupSynchronously([prepared.url]) }
+
+        XCTAssertTrue(prepared.url.path.hasPrefix(GhosttyAttachmentStagingStore.stagingRoot().path))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: prepared.url.deletingLastPathComponent().path),
+            [prepared.url.lastPathComponent]
+        )
+        let facts = try imageFacts(at: prepared.url)
+        XCTAssertEqual(prepared.contentType, .jpeg)
+        XCTAssertEqual(facts.type, .jpeg)
+        XCTAssertEqual(facts.width, 2_000)
+        XCTAssertEqual(facts.height, 1_500)
+        XCTAssertEqual(try imageFacts(of: prepared.previewData).width, GhosttyAttachmentImagePreviewData.maxPixelDimension)
+    }
+
+    func testAPastedAnimationIsStagedAsItIs() throws {
+        let data = try Data(contentsOf: try writeAnimation(frames: [
+            try makeImage(width: 400, height: 300),
+            try makeImage(width: 400, height: 300)
+        ], name: "moving.gif"))
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePastedPictureSynchronously(data, title: "Pasted image")
+        defer { GhosttyAttachmentStagingStore.cleanupSynchronously([prepared.url]) }
+
+        XCTAssertEqual(prepared.contentType, .gif)
+        XCTAssertEqual(prepared.url.pathExtension, "gif")
+        XCTAssertEqual(try Data(contentsOf: prepared.url), data)
+    }
+
+    func testAPastedPNGThatFitsKeepsItsImageData() throws {
+        let url = try write(try makeNoisyImage(width: 400, height: 300, seed: 7), as: .png, name: "pasted.png")
+        let data = try Data(contentsOf: url)
+        let expected = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePastedPictureSynchronously(data, title: "Pasted image")
+        defer { GhosttyAttachmentStagingStore.cleanupSynchronously([prepared.url]) }
+
+        XCTAssertEqual(prepared.contentType, expected.contentType)
+        XCTAssertEqual(try Data(contentsOf: prepared.url), try Data(contentsOf: expected.url))
+    }
+
+    func testPastedBytesThatAreNotAPictureAreRefusedAndNothingIsStaged() throws {
+        let before = (try? FileManager.default.contentsOfDirectory(atPath: GhosttyAttachmentStagingStore.stagingRoot().path)) ?? []
+
+        XCTAssertThrowsError(
+            try GhosttyAttachmentPhotoPreparation.preparePastedPictureSynchronously(Data("not a picture".utf8), title: "Pasted image")
+        )
+
+        let after = (try? FileManager.default.contentsOfDirectory(atPath: GhosttyAttachmentStagingStore.stagingRoot().path)) ?? []
+        XCTAssertEqual(Set(after), Set(before))
+    }
+
     // MARK: - Helpers
 
     /// Where, when and with what a picture was taken, as a camera or a photo editor might record it.
