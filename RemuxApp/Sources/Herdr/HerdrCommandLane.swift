@@ -5,10 +5,12 @@ import Foundation
 /// every command Remux sends waits here, and the engine, which owns the lane, decides what goes next in
 /// the same turn as the answer or snapshot that frees it.
 ///
-/// The order is one rule: the current view request's steps first, in order; then every other command (a
-/// selection read, a link question, the zoom button, the pane sheet's layout question) in the order asked.
-/// A request that replaces another drops only the steps that one hadn't sent; the other commands still go.
-/// A step waiting for the snapshot that shows where the step before it took the session holds the lane.
+/// The order is one rule: the view requests' steps first, in order; then every other command (a selection
+/// read, a link question, the zoom button, the pane sheet's layout question) in the order asked. A request
+/// that replaces another drops the focuses and zooms that one hadn't sent, but not a creation or close the
+/// user asked for, which still goes first, as Herdr's client never drops one for a later pick; the other
+/// commands still go. A step waiting for the snapshot that shows where the step before it took the session
+/// holds the lane.
 /// `client_shell.surface.set` isn't a command here: Herdr answers it even while a command is in flight
 /// (`endpoint_requests.rs` checks for it before `endpoint_busy`).
 struct HerdrCommandLane {
@@ -36,6 +38,14 @@ struct HerdrCommandLane {
             switch self {
             case .zoom, .zoomReached: true
             case .focus, .create, .close: false
+            }
+        }
+
+        /// Whether the step makes or closes something, which a newer request doesn't drop.
+        var changesSession: Bool {
+            switch self {
+            case .create, .close: true
+            case .zoom, .zoomReached, .focus: false
             }
         }
 
@@ -106,28 +116,34 @@ struct HerdrCommandLane {
         var snapshots: [HerdrSnapshot] = []
     }
 
-    /// The current view request's steps not yet sent.
-    private(set) var steps: [Step] = []
-    private var stepsRequest: UInt64?
+    /// The view requests' steps not yet sent, all of which go: the creations and closes of the requests the
+    /// current one replaced, then the current request's own, which leave with it (`dropSteps(of:)`).
+    private(set) var steps: [(request: UInt64, step: Step)] = []
     private var waiting: [Command] = []
     private(set) var inFlight: InFlight?
 
     var isIdle: Bool { inFlight == nil }
 
-    /// Whether `request` has a step waiting or in flight.
+    /// Whether `request` has a step waiting or in flight, or a creation or close it replaced does: that one
+    /// still takes the session somewhere.
     func hasWork(for request: UInt64) -> Bool {
-        if stepsRequest == request, !steps.isEmpty { return true }
-        if case .step(request, _)? = inFlight?.item { return true }
+        if steps.contains(where: { $0.request == request || $0.step.changesSession }) { return true }
+        if case .step(let id, let step)? = inFlight?.item, id == request || step.changesSession { return true }
         return false
     }
 
-    /// The steps of a new current request; the previous request's unsent steps don't go.
+    /// The steps of a new current request. The previous requests' unsent steps don't go, except a creation
+    /// or close, which goes first (`Step.changesSession`).
     mutating func replaceSteps(_ steps: [Step], for request: UInt64) {
-        self.steps = steps
-        stepsRequest = request
+        self.steps = self.steps.filter { $0.step.changesSession } + steps.map { (request, $0) }
     }
 
-    /// The current request sends nothing more.
+    /// `request` sends nothing more.
+    mutating func dropSteps(of request: UInt64) {
+        steps.removeAll { $0.request == request }
+    }
+
+    /// No step goes from here on, as Herdr takes no command from a session that isn't on screen.
     mutating func dropSteps() {
         steps.removeAll()
     }
@@ -149,13 +165,13 @@ struct HerdrCommandLane {
 
     /// The next item in the lane's order; nil when nothing waits.
     var next: Item? {
-        if let request = stepsRequest, let step = steps.first { return .step(request: request, step) }
+        if let first = steps.first { return .step(request: first.request, first.step) }
         return waiting.first.map(Item.command)
     }
 
     /// Takes the next item out of line.
     mutating func removeNext() {
-        if stepsRequest != nil, !steps.isEmpty {
+        if !steps.isEmpty {
             steps.removeFirst()
         } else if !waiting.isEmpty {
             waiting.removeFirst()
@@ -213,7 +229,6 @@ struct HerdrCommandLane {
         defer {
             inFlight = nil
             steps.removeAll()
-            stepsRequest = nil
             waiting.removeAll()
         }
         return (inFlight, waiting)

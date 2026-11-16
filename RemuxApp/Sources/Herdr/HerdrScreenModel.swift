@@ -1244,13 +1244,14 @@ final class HerdrScreenModel {
     }
 
     /// Remux's move to `destination`: a view request the engine starts when it goes (`.move`); the newest
-    /// wins, and as in Herdr's client, a move while a show is in progress takes that show over. It goes
-    /// with the command Herdr's client sends for the place or creation. Herdr's zoom is a flag on a tab,
-    /// which shows its focused pane, so a move within the tab on screen is a `pane.focus`, as Herdr's
-    /// client sends on a click. A move to another tab changes the tab: the tab left keeps its zoom, Remux's
-    /// included; the setting zooms the tab reached unless it is zoomed already; and a pane's `pane.focus`
-    /// marks the tab's agents seen. The engine holds the frames meanwhile, so only the tab reached shows, as
-    /// it ends up. A tab another client moves the session to stays as it is.
+    /// wins, though a creation or close asked before it still goes first, and as in Herdr's client, a move
+    /// while a show is in progress takes that show over. It goes with the command Herdr's client sends for
+    /// the place or creation. Herdr's zoom is a flag on a tab, which shows its focused pane, so a move
+    /// within the tab on screen is a `pane.focus`, as Herdr's client sends on a click. A move to another tab
+    /// changes the tab: the tab left keeps its zoom, Remux's included; the setting zooms the tab reached
+    /// unless it is zoomed already; and a pane's `pane.focus` marks the tab's agents seen. The engine holds
+    /// the frames meanwhile, so only the tab reached shows, as it ends up. A tab another client moves the
+    /// session to stays as it is.
     ///
     /// The user is in the move's pane from this moment (`userPaneID`), so keys typed right after a tap go
     /// to the pane tapped.
@@ -1897,6 +1898,9 @@ final class HerdrScreenModel {
                 if let delivered { delivered.resume(returning: false) } else { inputFailed(attemptID) }
             }
         case .move(let destination, let fromAnotherTab, let ask):
+            // A newer move replaces a pick still queued here. A creation or close goes on, as the engine keeps
+            // its command when a newer move replaces it (`HerdrCommandLane`).
+            if case .place = destination, ask != attempt.moveAsks { return }
             reconcileShellGeometry(forNavigation: true)
             guard let geometry else { return moveTaken(ask, by: nil, on: attempt) }
             let request = await feed.start(
