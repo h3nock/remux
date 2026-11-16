@@ -76,6 +76,26 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertFalse(try pixel(of: image, x: 100, y: 100).isMostlyRed)
     }
 
+    func testAPreparedStillCarriesItsPreviewUprightAtThePreviewSize() throws {
+        let url = try write(
+            try makeImage(width: 2_400, height: 1_800),
+            as: .jpeg,
+            name: "sideways.jpg",
+            properties: [kCGImagePropertyOrientation: 6]
+        )
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
+
+        let facts = try imageFacts(of: prepared.previewData)
+        XCTAssertEqual(facts.type, .jpeg)
+        XCTAssertEqual(facts.width, 960)
+        XCTAssertEqual(facts.height, 1_280)
+        XCTAssertEqual(facts.orientation, 1)
+        let image = try decodedImage(of: prepared.previewData)
+        XCTAssertTrue(try pixel(of: image, x: 900, y: 50).isMostlyRed)
+        XCTAssertFalse(try pixel(of: image, x: 50, y: 50).isMostlyRed)
+    }
+
     func testALargeAnimationIsSentAsItIs() throws {
         let url = try writeAnimation(frames: [
             try makeImage(width: 2_400, height: 100),
@@ -85,8 +105,13 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .gif))
+        XCTAssertEqual(prepared.url, url)
+        XCTAssertEqual(prepared.contentType, .gif)
         XCTAssertEqual(try Data(contentsOf: url), original)
+        // Its preview is its first frame at the preview size.
+        let preview = try imageFacts(of: prepared.previewData)
+        XCTAssertEqual(preview.type, .jpeg)
+        XCTAssertEqual(preview.width, GhosttyAttachmentImagePreviewData.maxPixelDimension)
     }
 
     func testAnImageSequenceIsSentAsItIs() throws {
@@ -98,8 +123,10 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .heics))
+        XCTAssertEqual(prepared.url, url)
+        XCTAssertEqual(prepared.contentType, .heics)
         XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertEqual(try imageFacts(of: prepared.previewData).width, GhosttyAttachmentImagePreviewData.maxPixelDimension)
     }
 
     // MARK: - Fits the limit
@@ -113,8 +140,11 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .gif))
+        XCTAssertEqual(prepared.url, url)
+        XCTAssertEqual(prepared.contentType, .gif)
         XCTAssertEqual(try Data(contentsOf: url), original)
+        // A preview is never larger than the picture.
+        XCTAssertEqual(try imageFacts(of: prepared.previewData).width, 400)
     }
 
     func testAStillThatFitsWithSeeThroughPixelsKeepsItsPixels() throws {
@@ -129,7 +159,8 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .png))
+        XCTAssertEqual(prepared.url, url)
+        XCTAssertEqual(prepared.contentType, .png)
         XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
 
@@ -187,7 +218,8 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
 
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
-        XCTAssertEqual(prepared, .init(url: url, contentType: .png))
+        XCTAssertEqual(prepared.url, url)
+        XCTAssertEqual(prepared.contentType, .png)
         XCTAssertLessThan(try Data(contentsOf: prepared.url).count, jpegByteCount)
         XCTAssertEqual(try storedPixels(at: prepared.url), originalPixels)
     }
@@ -263,7 +295,8 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         let prepared = try GhosttyAttachmentPhotoPreparation.preparePhotoSynchronously(at: url)
 
         let sent = try Data(contentsOf: prepared.url)
-        XCTAssertEqual(prepared, .init(url: url, contentType: .png))
+        XCTAssertEqual(prepared.url, url)
+        XCTAssertEqual(prepared.contentType, .png)
         XCTAssertFalse(try imageFacts(at: prepared.url).hasLocation)
         for text in Self.recordedText {
             XCTAssertNil(sent.range(of: Data(text.utf8)), text)
@@ -345,10 +378,10 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         let stored = try makeImage(width: 4_032, height: 3_024)
         let photo = UIImage(cgImage: stored, scale: 1, orientation: .right)
 
-        let data = try GhosttyAttachmentPhotoPreparation.jpegDataSynchronously(forCapturedPhoto: photo)
+        let captured = try GhosttyAttachmentPhotoPreparation.preparedCapturedPhotoSynchronously(photo)
 
         let url = directory.appendingPathComponent("captured.jpeg")
-        try data.write(to: url)
+        try captured.jpegData.write(to: url)
         let facts = try imageFacts(at: url)
         XCTAssertEqual(facts.type, .jpeg)
         XCTAssertEqual(facts.width, 1_500)
@@ -357,6 +390,11 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         let image = try decodedImage(at: url)
         XCTAssertTrue(try pixel(of: image, x: 1_400, y: 100).isMostlyRed)
         XCTAssertFalse(try pixel(of: image, x: 100, y: 100).isMostlyRed)
+        // Its preview is the same upright picture at the preview size.
+        let preview = try imageFacts(of: captured.previewData)
+        XCTAssertEqual(preview.width, 960)
+        XCTAssertEqual(preview.height, 1_280)
+        XCTAssertTrue(try pixel(of: decodedImage(of: captured.previewData), x: 900, y: 50).isMostlyRed)
     }
 
     // MARK: - Helpers
@@ -577,7 +615,14 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
     }
 
     private func imageFacts(at url: URL) throws -> ImageFacts {
-        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        try imageFacts(of: try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil)))
+    }
+
+    private func imageFacts(of data: Data) throws -> ImageFacts {
+        try imageFacts(of: try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil)))
+    }
+
+    private func imageFacts(of source: CGImageSource) throws -> ImageFacts {
         let properties = try XCTUnwrap(
             CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         )
@@ -597,6 +642,14 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
     private func decodedImage(at url: URL) throws -> CGImage {
         try XCTUnwrap(CGImageSourceCreateImageAtIndex(
             try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil)),
+            0,
+            nil
+        ))
+    }
+
+    private func decodedImage(of data: Data) throws -> CGImage {
+        try XCTUnwrap(CGImageSourceCreateImageAtIndex(
+            try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil)),
             0,
             nil
         ))

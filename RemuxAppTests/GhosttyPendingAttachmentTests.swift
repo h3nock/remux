@@ -176,47 +176,6 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         XCTAssertEqual(attachment.previewPayload, .imageData(previewData))
     }
 
-    func testPhotoAttachmentBuildsPreviewFromStagedFile() async throws {
-        let imageData = try makeJPEGData(width: 1_600, height: 900)
-        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
-            imageData,
-            filename: "photo.jpeg"
-        )
-
-        let attachment = await GhosttyPendingAttachment.photo(
-            title: "Photo 1",
-            stagedFileURL: stagedURL
-        )
-        let unwrappedAttachment = try XCTUnwrap(attachment)
-
-        XCTAssertEqual(unwrappedAttachment.kind, .photo)
-        XCTAssertEqual(unwrappedAttachment.title, "Photo 1")
-        XCTAssertEqual(unwrappedAttachment.payload, .file(stagedURL))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: stagedURL.path))
-
-        guard case .imageData(let previewData) = unwrappedAttachment.previewPayload else {
-            return XCTFail("Expected image preview data")
-        }
-        XCTAssertFalse(previewData.isEmpty)
-
-        GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-    }
-
-    func testPhotoAttachmentCleansStagedFileWhenPreviewCannotLoad() async throws {
-        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
-            Data([0x01, 0x02]),
-            filename: "photo.jpeg"
-        )
-
-        let attachment = await GhosttyPendingAttachment.photo(
-            title: "Photo 1",
-            stagedFileURL: stagedURL
-        )
-
-        XCTAssertNil(attachment)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
-    }
-
     func testPasteboardImagePlaceholderHasNoPayloadUntilPreviewLoads() {
         let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
 
@@ -297,13 +256,5 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         let url = directory.appendingPathComponent(name)
         try data.write(to: url)
         return url
-    }
-
-    private func makeJPEGData(width: Int, height: Int) throws -> Data {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height))
-        return renderer.jpegData(withCompressionQuality: 0.9) { context in
-            UIColor.systemBlue.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        }
     }
 }

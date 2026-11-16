@@ -38,6 +38,14 @@ enum GhosttyAttachmentPhotoPreparation {
     struct PreparedPhoto: Equatable, Sendable {
         let url: URL
         let contentType: UTType
+        /// Made from the pixels the preparation decoded (`GhosttyAttachmentImagePreviewData`).
+        let previewData: Data
+    }
+
+    /// A photo just taken, as it is sent, with its preview.
+    struct CapturedPhoto: Sendable {
+        let jpegData: Data
+        let previewData: Data
     }
 
     /// A picture's file contents and their format.
@@ -75,7 +83,10 @@ enum GhosttyAttachmentPhotoPreparation {
             }
 
             if isAnimated(source, type: sourceType) {
-                return PreparedPhoto(url: url, contentType: sourceType)
+                guard let previewData = GhosttyAttachmentImagePreviewData.previewData(from: source) else {
+                    throw PreparationError.unreadableImage
+                }
+                return PreparedPhoto(url: url, contentType: sourceType, previewData: previewData)
             }
 
             let pixelSize = CGSize(width: pixelWidth, height: pixelHeight)
@@ -86,13 +97,16 @@ enum GhosttyAttachmentPhotoPreparation {
             ) else {
                 throw PreparationError.unreadableImage
             }
+            guard let previewData = GhosttyAttachmentImagePreviewData.previewData(for: image) else {
+                throw PreparationError.encodingFailed
+            }
             let isSeeThrough = hasSeeThroughPixels(image)
 
             guard sizeToSend == pixelSize, sourceType.conforms(to: .png) else {
                 guard let rewrite = encodedPicture(image, as: isSeeThrough ? .png : .jpeg) else {
                     throw PreparationError.encodingFailed
                 }
-                return try replace(url, with: rewrite)
+                return try replace(url, with: rewrite, previewData: previewData)
             }
 
             // Without its rotation tag an upright PNG draws the same; a turned one has to be written again upright.
@@ -104,9 +118,9 @@ enum GhosttyAttachmentPhotoPreparation {
             }
             // The PNG is kept on a tie, and when its JPEG can't be made.
             if !isSeeThrough, let jpeg = encodedPicture(image, as: .jpeg), jpeg.data.count < png.data.count {
-                return try replace(url, with: jpeg)
+                return try replace(url, with: jpeg, previewData: previewData)
             }
-            return try replace(url, with: png)
+            return try replace(url, with: png, previewData: previewData)
         }
     }
 
@@ -187,8 +201,8 @@ enum GhosttyAttachmentPhotoPreparation {
         return false
     }
 
-    /// The JPEG to send for a photo just taken with the camera.
-    static func jpegDataSynchronously(forCapturedPhoto photo: UIImage) throws -> Data {
+    /// The JPEG to send for a photo just taken with the camera, and its preview.
+    static func preparedCapturedPhotoSynchronously(_ photo: UIImage) throws -> CapturedPhoto {
         try autoreleasepool {
             let size = sentSize(
                 for: CGSize(width: photo.size.width * photo.scale, height: photo.size.height * photo.scale)
@@ -209,10 +223,11 @@ enum GhosttyAttachmentPhotoPreparation {
                       for: image,
                       as: .jpeg,
                       lossyQuality: jpegCompressionQuality
-                  ) else {
+                  ),
+                  let previewData = GhosttyAttachmentImagePreviewData.previewData(for: image) else {
                 throw PreparationError.encodingFailed
             }
-            return data
+            return CapturedPhoto(jpegData: data, previewData: previewData)
         }
     }
 
@@ -221,13 +236,17 @@ enum GhosttyAttachmentPhotoPreparation {
             .map { EncodedPicture(data: $0, contentType: type) }
     }
 
-    private static func replace(_ url: URL, with picture: EncodedPicture) throws -> PreparedPhoto {
+    private static func replace(
+        _ url: URL,
+        with picture: EncodedPicture,
+        previewData: Data
+    ) throws -> PreparedPhoto {
         // The staged file goes first: its new name can differ from the old one by letter case only, which is the
         // same file where the file system ignores case.
         try FileManager.default.removeItem(at: url)
         let outputURL = url.deletingPathExtension().appendingPathExtension(for: picture.contentType)
         try picture.data.write(to: outputURL, options: .atomic)
-        return PreparedPhoto(url: outputURL, contentType: picture.contentType)
+        return PreparedPhoto(url: outputURL, contentType: picture.contentType, previewData: previewData)
     }
 
     /// The formats whose frames make an animation, an image sequence (HEICS) among them. In other formats, such as

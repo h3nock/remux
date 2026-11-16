@@ -478,19 +478,21 @@ final class GhosttyComposerModel: ObservableObject {
             case .capturedPhoto(let image):
                 // The camera's JPEG is already made the way a picture is sent.
                 await preparePhotoAttachment(attachmentID: attachmentID, attemptID: attemptID) {
-                    let stagedURL = try await Task.detached(priority: .userInitiated) {
-                        try GhosttyAttachmentStagingStore.stageDataSynchronously(
-                            GhosttyAttachmentPhotoPreparation.jpegDataSynchronously(forCapturedPhoto: image),
+                    try await Task.detached(priority: .userInitiated) {
+                        let photo = try GhosttyAttachmentPhotoPreparation.preparedCapturedPhotoSynchronously(image)
+                        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
+                            photo.jpegData,
                             filename: GhosttyAttachmentStagingStore.imageFilename(
                                 title: "Photo",
                                 contentTypes: [Self.capturedPhotoContentType]
                             )
                         )
+                        return GhosttyAttachmentPhotoPreparation.PreparedPhoto(
+                            url: stagedURL,
+                            contentType: Self.capturedPhotoContentType,
+                            previewData: photo.previewData
+                        )
                     }.value
-                    return GhosttyAttachmentPhotoPreparation.PreparedPhoto(
-                        url: stagedURL,
-                        contentType: Self.capturedPhotoContentType
-                    )
                 }
             case .pastedFile(let url):
                 await preparePastedFileAttachment(
@@ -544,14 +546,11 @@ final class GhosttyComposerModel: ObservableObject {
                 )
             )
             stagedURL = renamedURL
-            guard let photo = await GhosttyPendingAttachment.photo(
-                title: title,
-                stagedFileURL: renamedURL
-            ) else {
-                failAttachmentPreparation(attachmentID, attemptID: attemptID)
-                return
-            }
-            applyPreparedAttachment(photo, to: attachmentID, attemptID: attemptID)
+            applyPreparedAttachment(
+                .photo(title: title, fileURL: renamedURL, previewData: prepared.previewData),
+                to: attachmentID,
+                attemptID: attemptID
+            )
         } catch is CancellationError {
             if let stagedURL {
                 GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
