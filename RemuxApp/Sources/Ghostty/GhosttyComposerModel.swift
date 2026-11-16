@@ -583,13 +583,30 @@ final class GhosttyComposerModel: ObservableObject {
     ) async {
         var stagedURL: URL?
         do {
-            let preparedURL = try await GhosttyAttachmentStagingStore.stageFileURL(url)
-            stagedURL = preparedURL
+            // A pasted file that holds a picture is a picture, as one picked in Files is.
+            let prepared = try await Task.detached(priority: .userInitiated) { () throws -> GhosttyPendingAttachment in
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess { url.stopAccessingSecurityScopedResource() }
+                }
+                guard GhosttyAttachmentPhotoPreparation.isPicture(at: url) else {
+                    return .file(url: try GhosttyAttachmentStagingStore.stageFileURLSynchronously(url))
+                }
+                let picture = try GhosttyAttachmentPhotoPreparation.preparePictureFileSynchronously(
+                    at: url,
+                    filename: url.lastPathComponent
+                )
+                return .picture(fileURL: picture.url, previewData: picture.previewData)
+            }.value
+            if case .file(let url) = prepared.payload {
+                stagedURL = url
+            }
             try Task.checkCancellation()
             applyPreparedAttachment(
-                .file(url: preparedURL),
+                prepared,
                 to: attachmentID,
-                attemptID: attemptID
+                attemptID: attemptID,
+                title: prepared.kind == .picture ? prepared.title : nil
             )
         } catch is CancellationError {
             if let stagedURL {
@@ -615,7 +632,8 @@ final class GhosttyComposerModel: ObservableObject {
         applyPreparedAttachment(attachment, to: attachmentID, attemptID: attemptID)
     }
 
-    /// The attachment keeps its title, which may have changed while it was prepared, unless `title` is given.
+    /// The attachment becomes what was prepared, a pasted file perhaps a picture, and keeps its title, which may have
+    /// changed while it was prepared, unless `title` is given.
     private func applyPreparedAttachment(
         _ preparedAttachment: GhosttyPendingAttachment,
         to attachmentID: GhosttyPendingAttachment.ID,
@@ -628,12 +646,14 @@ final class GhosttyComposerModel: ObservableObject {
             return
         }
 
-        updateAttachment(
+        guard let index = attachments.firstIndex(where: { $0.id == attachmentID }) else { return }
+        attachments[index] = GhosttyPendingAttachment(
             id: attachmentID,
-            title: title,
+            kind: preparedAttachment.kind,
+            title: title ?? attachments[index].title,
+            detail: preparedAttachment.detail,
             payload: preparedAttachment.payload,
             previewPayload: preparedAttachment.previewPayload,
-            detail: preparedAttachment.detail,
             preparationState: .ready
         )
         attachmentPreparationJobs.removeValue(forKey: attachmentID)
@@ -660,7 +680,6 @@ final class GhosttyComposerModel: ObservableObject {
 
     private func updateAttachment(
         id: UUID,
-        title: String? = nil,
         payload: GhosttyAttachmentPayload? = nil,
         previewPayload: GhosttyAttachmentPreviewPayload? = nil,
         detail: String,
@@ -668,7 +687,6 @@ final class GhosttyComposerModel: ObservableObject {
     ) {
         guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
         attachments[index] = attachments[index].updating(
-            title: title,
             payload: payload,
             previewPayload: previewPayload,
             detail: detail,

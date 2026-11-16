@@ -475,6 +475,34 @@ final class GhosttyComposerAttachmentPrepareTests: XCTestCase {
         }
     }
 
+    /// A pasted file that holds a picture is a picture, as one picked in Files is: it can be marked up.
+    func testAPastedPictureFileJoinsAsAPicture() async throws {
+        let composer = GhosttyComposerModel()
+        let service = PrepareRecordingAttachmentTransferService()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let picture = directory.appendingPathComponent("pasted-shot.png")
+        try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30)).pngData { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+        }).write(to: picture)
+
+        composer.addPastedFile(picture, preparing: service)
+
+        let deadline = ContinuousClock.now + .seconds(5)
+        while composer.attachments.first?.preparationState == .preparing, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let prepared = try XCTUnwrap(composer.attachments.first)
+        addTeardownBlock { GhosttyAttachmentStagingStore.cleanup([prepared]) }
+        XCTAssertEqual(prepared.kind, .picture)
+        XCTAssertEqual(prepared.title, "pasted-shot.png")
+        XCTAssertTrue(prepared.supportsImageMarkup)
+        guard case .file(let sentURL) = prepared.payload else { return XCTFail("Expected a staged picture") }
+        XCTAssertNotEqual(sentURL, picture)
+    }
+
     func testAddingNothingPreparesNothing() async throws {
         let composer = GhosttyComposerModel()
         let service = PrepareRecordingAttachmentTransferService()
