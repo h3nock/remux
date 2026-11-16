@@ -537,17 +537,9 @@ final class GhosttyComposerModel: ObservableObject {
             stagedURL = prepared.url
             try Task.checkCancellation()
 
-            let renamedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
-                prepared.url,
-                filename: GhosttyAttachmentStagingStore.imageFilename(
-                    title: title,
-                    contentTypes: [prepared.contentType],
-                    uniqueID: attachmentID
-                )
-            )
-            stagedURL = renamedURL
+            // The photo keeps the title it has then: it is sent under its number as that is when it is sent.
             applyPreparedAttachment(
-                .photo(title: title, fileURL: renamedURL, previewData: prepared.previewData),
+                .photo(title: title, fileURL: prepared.url, previewData: prepared.previewData),
                 to: attachmentID,
                 attemptID: attemptID
             )

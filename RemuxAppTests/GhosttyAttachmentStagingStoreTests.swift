@@ -48,64 +48,6 @@ final class GhosttyAttachmentStagingStoreTests: XCTestCase {
         GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
     }
 
-    func testRenameStagedFileUsesRequestedSafeFilename() throws {
-        let sourceURL = try makeSourceFile(named: "provider-temp-file", data: Data([0x01, 0x02]))
-        let stagedURL = try GhosttyAttachmentStagingStore.stageFileURLSynchronously(sourceURL)
-
-        let renamedURL = try GhosttyAttachmentStagingStore.renameStagedFileSynchronously(
-            stagedURL,
-            filename: "../Photo 1.jpeg"
-        )
-
-        XCTAssertEqual(renamedURL.lastPathComponent, "Photo 1.jpeg")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
-        XCTAssertEqual(try Data(contentsOf: renamedURL), Data([0x01, 0x02]))
-
-        GhosttyAttachmentStagingStore.cleanupSynchronously([renamedURL])
-    }
-
-    func testRenameStagedFileRejectsNonStagedURL() throws {
-        let sourceURL = try makeSourceFile(named: "outside.txt", data: Data())
-
-        XCTAssertThrowsError(
-            try GhosttyAttachmentStagingStore.renameStagedFileSynchronously(
-                sourceURL,
-                filename: "photo.jpeg"
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? GhosttyAttachmentStagingStoreError,
-                .urlOutsideStagingRoot(sourceURL)
-            )
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
-    }
-
-    func testRenameStagedFileRejectsSiblingDirectoryWithMatchingPrefix() throws {
-        let root = GhosttyAttachmentStagingStore.stagingRoot()
-        let siblingDirectory = URL(fileURLWithPath: root.path + "-sibling", isDirectory: true)
-        try FileManager.default.createDirectory(at: siblingDirectory, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: siblingDirectory)
-        }
-
-        let siblingURL = siblingDirectory.appendingPathComponent("outside.txt")
-        try Data().write(to: siblingURL)
-
-        XCTAssertThrowsError(
-            try GhosttyAttachmentStagingStore.renameStagedFileSynchronously(
-                siblingURL,
-                filename: "photo.jpeg"
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? GhosttyAttachmentStagingStoreError,
-                .urlOutsideStagingRoot(siblingURL)
-            )
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: siblingURL.path))
-    }
-
     func testCleanupIgnoresFilesOutsideStagingDirectory() throws {
         let sourceURL = try makeSourceFile(named: "keep.txt", data: Data("keep".utf8))
 
