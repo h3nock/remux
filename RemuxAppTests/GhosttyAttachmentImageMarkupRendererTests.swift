@@ -20,6 +20,11 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
             ),
             "image-annotated.png"
         )
+        // Marked up again, it stays one marked-up picture.
+        XCTAssertEqual(
+            GhosttyAttachmentImageMarkupRenderer.outputFilename(for: "IMG_0002-annotated.jpeg", contentType: .jpeg),
+            "IMG_0002-annotated.jpeg"
+        )
     }
 
     func testDocumentSizeCapsLargeImagesPreservingAspectRatio() {

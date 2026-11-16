@@ -317,7 +317,9 @@ enum GhosttyAttachmentImageMarkupRenderer {
             .deletingPathExtension()
             .lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(stem.isEmpty ? "image" : stem)-annotated.\(contentType.preferredFilenameExtension ?? "jpeg")"
+        // A picture marked up again stays one marked-up picture.
+        let annotatedStem = stem.hasSuffix("-annotated") ? stem : "\(stem.isEmpty ? "image" : stem)-annotated"
+        return "\(annotatedStem).\(contentType.preferredFilenameExtension ?? "jpeg")"
     }
 
     static func documentSize(for imageSize: CGSize) -> CGSize {
