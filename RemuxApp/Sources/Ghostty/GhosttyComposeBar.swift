@@ -1276,7 +1276,7 @@ private struct GhosttyComposerAttachmentStrip: View {
 
     private func isImageAttachment(_ attachment: GhosttyPendingAttachment) -> Bool {
         switch attachment.kind {
-        case .photo, .pasteboardImage:
+        case .photo, .picture, .pasteboardImage:
             true
         case .video, .media, .file, .pasteboardLink, .pasteboardText:
             false

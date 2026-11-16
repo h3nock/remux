@@ -57,7 +57,7 @@ struct GhosttyAttachmentPreviewSheet: View {
     private var stage: some View {
         if let request = markupRequest {
             GhosttyAttachmentImageMarkupEditor(
-                imageSource: request.imageSource,
+                imageURL: request.imageURL,
                 onCancel: {
                     markupRequest = nil
                 },
@@ -443,14 +443,14 @@ struct GhosttyAttachmentPreviewSheet: View {
         guard markupRequest == nil,
               attachment.supportsImageMarkup,
               let filename = attachment.imageMarkupFilename,
-              let imageSource = GhosttyAttachmentMarkupImageSource(attachment.payload) else {
+              case .file(let imageURL) = attachment.payload else {
             return
         }
 
         markupFailureMessage = nil
         markupRequest = GhosttyAttachmentMarkupRequest(
             attachmentID: attachment.id,
-            imageSource: imageSource,
+            imageURL: imageURL,
             sourceFilename: filename
         )
     }
@@ -522,7 +522,7 @@ struct GhosttyAttachmentPreviewSheet: View {
 
 private struct GhosttyAttachmentMarkupRequest {
     let attachmentID: UUID
-    let imageSource: GhosttyAttachmentMarkupImageSource
+    let imageURL: URL
     let sourceFilename: String
 }
 

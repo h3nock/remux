@@ -404,6 +404,45 @@ final class GhosttyComposerAttachmentPrepareTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url).prefix(2), Data([0xFF, 0xD8]))
     }
 
+    /// A picture among the files picked in Files joins as a picture, prepared as a photo is under its own name;
+    /// the others are files, sent as they are, in the order they were picked.
+    func testAPictureFromFilesJoinsAsAPicture() async throws {
+        let composer = GhosttyComposerModel()
+        let service = PrepareRecordingAttachmentTransferService()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let picture = directory.appendingPathComponent("shot.png")
+        try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30)).pngData { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+        }).write(to: picture)
+        let original = try Data(contentsOf: picture)
+        let report = directory.appendingPathComponent("report.txt")
+        try Data("report".utf8).write(to: report)
+
+        let didAdd = try await composer.addSecurityScopedFiles([report, picture], preparing: service)
+
+        XCTAssertTrue(didAdd)
+        XCTAssertEqual(composer.attachments.map(\.kind), [.file, .picture])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while composer.attachments.last?.preparationState == .preparing, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let prepared = try XCTUnwrap(composer.attachments.last)
+        addTeardownBlock { GhosttyAttachmentStagingStore.cleanup([prepared]) }
+        XCTAssertEqual(prepared.preparationState, .ready)
+        XCTAssertEqual(prepared.title, "shot.png")
+        XCTAssertTrue(prepared.supportsImageMarkup)
+        guard case .file(let sentURL) = prepared.payload, case .imageData = prepared.previewPayload else {
+            return XCTFail("A picture from Files is staged and previewed as a photo is.")
+        }
+        XCTAssertEqual(sentURL.lastPathComponent, "shot.png")
+        XCTAssertNotEqual(sentURL, picture)
+        XCTAssertEqual(try Data(contentsOf: picture), original, "The file in Files is left as it is.")
+        XCTAssertEqual(composer.attachments.first?.title, "report.txt")
+    }
+
     /// The draft's first photo is numbered once a second joins, before or after it is prepared, and is sent under
     /// its number.
     func testAPhotoIsSentUnderTheNumberItHasWhenSent() async throws {

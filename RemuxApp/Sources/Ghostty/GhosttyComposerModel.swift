@@ -57,6 +57,7 @@ final class GhosttyComposerModel: ObservableObject {
     private enum AttachmentPreparationSource {
         case photo(PhotosPickerItem)
         case capturedPhoto(UIImage)
+        case pictureFile(GhosttySecurityScopedAttachmentFile)
         case pastedFile(URL)
         case pastedImage(GhosttyAttachmentPasteboardSnapshot.PastedImage)
     }
@@ -225,20 +226,32 @@ final class GhosttyComposerModel: ObservableObject {
         return pendingAttachments
     }
 
+    /// Files picked in Files. A picture among them is prepared and shown as a photo is, under its own name; any
+    /// other file is sent as it is.
     @discardableResult
     func addSecurityScopedFiles(
         _ urls: [URL],
         preparing transferService: any GhosttyAttachmentTransferService
     ) async throws -> Bool {
         guard !urls.isEmpty else { return false }
-        let pendingAttachments = try await Task.detached(priority: .utility) {
-            try GhosttyPendingAttachment.securityScopedFiles(urls: urls)
+        let picks = try await Task.detached(priority: .userInitiated) {
+            try urls.map { url in
+                let file = try GhosttySecurityScopedAttachmentFile.make(url: url)
+                let isPicture = (try? file.withAccessibleURL(GhosttyAttachmentPhotoPreparation.isPicture(at:))) ?? false
+                return (file: file, isPicture: isPicture)
+            }
         }.value
-        guard !pendingAttachments.isEmpty else { return false }
+        guard !picks.isEmpty else { return false }
 
-        attachments.append(contentsOf: pendingAttachments)
+        let added = picks.map { pick in
+            pick.isPicture ? GhosttyPendingAttachment.picturePlaceholder(pick.file) : .securityScopedFile(pick.file)
+        }
+        attachments.append(contentsOf: added)
         statusMessage = nil
         prepareTransfer(transferService)
+        for (pick, attachment) in zip(picks, added) where pick.isPicture {
+            beginAttachmentPreparation(attachment.id, from: .pictureFile(pick.file))
+        }
         return true
     }
 
@@ -494,6 +507,14 @@ final class GhosttyComposerModel: ObservableObject {
                         )
                     }.value
                 }
+            case .pictureFile(let file):
+                guard let prepared = try? await GhosttyAttachmentPhotoPreparation.preparePictureFile(file) else {
+                    failAttachmentPreparation(attachmentID, attemptID: attemptID)
+                    return
+                }
+                let picture = GhosttyPendingAttachment.picture(fileURL: prepared.url, previewData: prepared.previewData)
+                // Known from now on by the name it is sent under.
+                applyPreparedAttachment(picture, to: attachmentID, attemptID: attemptID, title: picture.title)
             case .pastedFile(let url):
                 await preparePastedFileAttachment(
                     url,
@@ -594,10 +615,12 @@ final class GhosttyComposerModel: ObservableObject {
         applyPreparedAttachment(attachment, to: attachmentID, attemptID: attemptID)
     }
 
+    /// The attachment keeps its title, which may have changed while it was prepared, unless `title` is given.
     private func applyPreparedAttachment(
         _ preparedAttachment: GhosttyPendingAttachment,
         to attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
+        attemptID: UUID,
+        title: String? = nil
     ) {
         guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID,
               attachments.contains(where: { $0.id == attachmentID }) else {
@@ -607,6 +630,7 @@ final class GhosttyComposerModel: ObservableObject {
 
         updateAttachment(
             id: attachmentID,
+            title: title,
             payload: preparedAttachment.payload,
             previewPayload: preparedAttachment.previewPayload,
             detail: preparedAttachment.detail,
@@ -636,6 +660,7 @@ final class GhosttyComposerModel: ObservableObject {
 
     private func updateAttachment(
         id: UUID,
+        title: String? = nil,
         payload: GhosttyAttachmentPayload? = nil,
         previewPayload: GhosttyAttachmentPreviewPayload? = nil,
         detail: String,
@@ -643,6 +668,7 @@ final class GhosttyComposerModel: ObservableObject {
     ) {
         guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
         attachments[index] = attachments[index].updating(
+            title: title,
             payload: payload,
             previewPayload: previewPayload,
             detail: detail,

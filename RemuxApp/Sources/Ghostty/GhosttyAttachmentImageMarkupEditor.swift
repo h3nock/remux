@@ -4,52 +4,11 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The picture being marked up: an attachment's own file, read where it is. The editor never writes to it.
-enum GhosttyAttachmentMarkupImageSource: Equatable, Sendable {
-    case file(URL)
-    case securityScopedFile(GhosttySecurityScopedAttachmentFile)
-
-    init?(_ payload: GhosttyAttachmentPayload?) {
-        switch payload {
-        case .file(let url):
-            self = .file(url)
-        case .securityScopedFile(let file):
-            self = .securityScopedFile(file)
-        case .link, .text, nil:
-            return nil
-        }
-    }
-
-    /// The picture upright, at most the size it is sent at (`GhosttyAttachmentPhotoPreparation.maxPixelDimension`),
-    /// which is all the editor shows and all a marked-up picture is drawn from. Nil when it can't be read.
-    func loadImage() -> CGImage? {
-        switch self {
-        case .file(let url):
-            return Self.image(at: url)
-        case .securityScopedFile(let file):
-            return try? file.withAccessibleURL { url in
-                Self.image(at: url)
-            }
-        }
-    }
-
-    private static func image(at url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [
-            kCGImageSourceShouldCache: false
-        ] as CFDictionary) else {
-            return nil
-        }
-        return GhosttyAttachmentImageCoding.uprightImage(
-            from: source,
-            maxPixelDimension: GhosttyAttachmentPhotoPreparation.maxPixelDimension
-        )
-    }
-}
-
 /// Markup of one image, shown in the attachment preview's own frame. Its controls go to the surrounding
 /// navigation bar: cancel, undo and redo, and the confirmation that keeps the marks.
 struct GhosttyAttachmentImageMarkupEditor: View {
-    let imageSource: GhosttyAttachmentMarkupImageSource
+    /// The prepared picture's file, which the editor reads and never writes.
+    let imageURL: URL
     let onCancel: () -> Void
     let onDone: (GhosttyAttachmentImageMarkupResult) -> Void
 
@@ -68,7 +27,7 @@ struct GhosttyAttachmentImageMarkupEditor: View {
                 toolbarContent
             }
             .interactiveDismissDisabled()
-            .task(id: imageSource) {
+            .task(id: imageURL) {
                 await loadImage()
             }
             .alert(
@@ -223,10 +182,10 @@ struct GhosttyAttachmentImageMarkupEditor: View {
     private func loadImage() async {
         phase = .loading
         let startedAt = GhosttyRuntimeTrace.nowNanos()
-        let source = imageSource
+        let url = imageURL
         // Decoded here, off the main thread, so showing it decodes nothing there.
         let image = await Task.detached(priority: .userInitiated) {
-            source.loadImage()
+            GhosttyAttachmentImageMarkupRenderer.baseImage(at: url)
         }.value
         GhosttyRuntimeTrace.perf(
             "attachment.markup.open loaded=\(image != nil) px=\(image.map { "\($0.width)x\($0.height)" } ?? "-") elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
@@ -308,6 +267,21 @@ enum GhosttyAttachmentImageMarkupRenderer {
         case invalidDocumentSize
         case invalidImageSize
         case encodingFailed
+    }
+
+    /// The picture at `url`, upright and at most the size it is sent at
+    /// (`GhosttyAttachmentPhotoPreparation.maxPixelDimension`), which is all the editor shows and all a marked-up
+    /// picture is drawn from. Nil when it can't be read.
+    static func baseImage(at url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary) else {
+            return nil
+        }
+        return GhosttyAttachmentImageCoding.uprightImage(
+            from: source,
+            maxPixelDimension: GhosttyAttachmentPhotoPreparation.maxPixelDimension
+        )
     }
 
     static func outputFilename(

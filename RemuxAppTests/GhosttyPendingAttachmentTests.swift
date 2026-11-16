@@ -120,12 +120,38 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         try XCTSkipIf(shown == "report.pdf", "The extension is shown here, so this only checks the name, not the hidden case.")
     }
 
-    func testImageFileAttachmentSupportsMarkupByFilename() throws {
+    /// A file from Files is sent as it is, so it isn't marked up; a picture from Files joins as a picture.
+    func testAFileFromFilesOffersNoMarkup() throws {
         let url = try makeSourceFile(named: "screenshot.jpeg", data: Data([0x01]))
         let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
 
-        XCTAssertTrue(attachment.supportsImageMarkup)
-        XCTAssertEqual(attachment.imageMarkupFilename, "screenshot.jpeg")
+        XCTAssertFalse(attachment.supportsImageMarkup)
+    }
+
+    func testAPictureFromFilesIsKnownByTheNameItIsSentUnder() throws {
+        let url = try makeSourceFile(named: "Mockup.PNG", data: Data([0x01]))
+        let file = try GhosttySecurityScopedAttachmentFile.make(url: url)
+
+        let placeholder = GhosttyPendingAttachment.picturePlaceholder(file)
+        XCTAssertEqual(placeholder.kind, .picture)
+        XCTAssertEqual(placeholder.title, "Mockup.PNG")
+        XCTAssertEqual(placeholder.preparationState, .preparing)
+        XCTAssertFalse(placeholder.supportsImageMarkup)
+
+        let sentURL = URL(fileURLWithPath: "/tmp/remux/Mockup.jpeg")
+        let picture = GhosttyPendingAttachment.picture(fileURL: sentURL, previewData: Data([0x02]))
+        XCTAssertEqual(picture.kind, .picture)
+        XCTAssertEqual(picture.title, "Mockup.jpeg")
+        XCTAssertEqual(picture.systemName, "photo")
+        XCTAssertEqual(picture.payload, .file(sentURL))
+        XCTAssertEqual(picture.previewPayload, .imageData(Data([0x02])))
+        XCTAssertTrue(picture.supportsImageMarkup)
+
+        // Marked up, it takes the name of the file that is then sent; a photo keeps its number.
+        let annotatedURL = URL(fileURLWithPath: "/tmp/remux/Mockup-annotated.jpeg")
+        XCTAssertEqual(picture.updatingAnnotatedImage(fileURL: annotatedURL, previewData: Data([0x03])).title, "Mockup-annotated.jpeg")
+        let photo = GhosttyPendingAttachment.photo(title: "Photo 1", fileURL: sentURL, previewData: Data([0x02]))
+        XCTAssertEqual(photo.updatingAnnotatedImage(fileURL: annotatedURL, previewData: Data([0x03])).title, "Photo 1")
     }
 
     func testNonImageFileAttachmentDoesNotSupportMarkup() throws {

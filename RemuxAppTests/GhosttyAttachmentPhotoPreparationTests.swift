@@ -455,6 +455,60 @@ final class GhosttyAttachmentPhotoPreparationTests: XCTestCase {
         XCTAssertEqual(Set(after), Set(before))
     }
 
+    // MARK: - Files
+
+    func testAPictureFromFilesIsSentAsAPhotoIsUnderItsOwnName() throws {
+        let url = try write(try makeImage(width: 3_000, height: 2_000), as: .png, name: "mockup.png")
+        let original = try Data(contentsOf: url)
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePictureFileSynchronously(at: url, filename: "mockup.png")
+        defer { GhosttyAttachmentStagingStore.cleanupSynchronously([prepared.url]) }
+
+        // Shrunk and written as JPEG, as a photo is; the name keeps its stem, and the file in Files is left alone.
+        XCTAssertEqual(prepared.url.lastPathComponent, "mockup.jpeg")
+        XCTAssertTrue(prepared.url.path.hasPrefix(GhosttyAttachmentStagingStore.stagingRoot().path))
+        let facts = try imageFacts(at: prepared.url)
+        XCTAssertEqual(facts.type, .jpeg)
+        XCTAssertEqual(facts.width, 2_000)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertEqual(try imageFacts(of: prepared.previewData).width, GhosttyAttachmentImagePreviewData.maxPixelDimension)
+    }
+
+    func testAPictureFromFilesSentInItsOwnFormatKeepsItsName() throws {
+        let url = try write(try makeCutout(width: 400, height: 300), as: .png, name: "Icon.PNG")
+
+        let prepared = try GhosttyAttachmentPhotoPreparation.preparePictureFileSynchronously(at: url, filename: "Icon.PNG")
+        defer { GhosttyAttachmentStagingStore.cleanupSynchronously([prepared.url]) }
+
+        XCTAssertEqual(prepared.contentType, .png)
+        XCTAssertEqual(prepared.url.lastPathComponent, "Icon.PNG")
+    }
+
+    func testASentPictureIsNamedForItsFormat() {
+        XCTAssertEqual(GhosttyAttachmentPhotoPreparation.sentFilename(for: "icon.png", as: .jpeg), "icon.jpeg")
+        XCTAssertEqual(GhosttyAttachmentPhotoPreparation.sentFilename(for: "IMG_0001.JPG", as: .jpeg), "IMG_0001.JPG")
+        XCTAssertEqual(GhosttyAttachmentPhotoPreparation.sentFilename(for: "IMG_0002.HEIC", as: .jpeg), "IMG_0002.jpeg")
+        XCTAssertEqual(GhosttyAttachmentPhotoPreparation.sentFilename(for: "drawing", as: .png), "drawing.png")
+        XCTAssertEqual(GhosttyAttachmentPhotoPreparation.sentFilename(for: "10.30.15 shot.png", as: .png), "10.30.15 shot.png")
+    }
+
+    func testOnlyAFileThatHoldsAPictureIsTakenForOne() throws {
+        let picture = try write(try makeImage(width: 40, height: 30), as: .png, name: "no-extension")
+        let text = directory.appendingPathComponent("notes.png")
+        try Data("not a picture".utf8).write(to: text)
+        let pdf = directory.appendingPathComponent("page.pdf")
+        let pdfData = NSMutableData()
+        let consumer = try XCTUnwrap(CGDataConsumer(data: pdfData))
+        var box = CGRect(x: 0, y: 0, width: 40, height: 30)
+        let context = try XCTUnwrap(CGContext(consumer: consumer, mediaBox: &box, nil))
+        context.beginPDFPage(nil); context.endPDFPage(); context.closePDF()
+        try (pdfData as Data).write(to: pdf)
+
+        XCTAssertTrue(GhosttyAttachmentPhotoPreparation.isPicture(at: picture))
+        XCTAssertFalse(GhosttyAttachmentPhotoPreparation.isPicture(at: text))
+        XCTAssertFalse(GhosttyAttachmentPhotoPreparation.isPicture(at: pdf))
+    }
+
     // MARK: - Helpers
 
     /// Where, when and with what a picture was taken, as a camera or a photo editor might record it.

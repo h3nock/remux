@@ -3,8 +3,8 @@ import ImageIO
 import UIKit
 import UniformTypeIdentifiers
 
-/// How a picture from the camera, the Photos picker or a paste, or one marked up, is sent to a remote session, and the
-/// making of one that is sent that way.
+/// How a picture from the camera, the Photos picker, Files or a paste, or one marked up, is sent to a remote session,
+/// and the making of one that is sent that way.
 ///
 /// - A picture with more than one frame, an animated GIF, PNG or WebP or a HEICS sequence, is sent exactly as it is, at
 ///   any size and with any metadata it carries: Image I/O can't take metadata out of one without writing every frame
@@ -98,21 +98,77 @@ enum GhosttyAttachmentPhotoPreparation {
             ] as CFDictionary) else {
                 throw PreparationError.unreadableImage
             }
-            let preparation = try prepare(source) { data }
-            let sent: EncodedPicture
-            switch preparation.sent {
-            case .asItIs(let contentType):
-                sent = EncodedPicture(data: data, contentType: contentType)
-            case .rewritten(let picture):
-                sent = picture
+            return try stage(try prepare(source) { data }, original: { data }) { sent in
+                GhosttyAttachmentStagingStore.imageFilename(title: title, contentTypes: [sent.contentType])
             }
-            let url = try GhosttyAttachmentStagingStore.stageImageDataSynchronously(
-                sent.data,
-                title: title,
-                contentTypes: [sent.contentType]
-            )
-            return PreparedPhoto(url: url, contentType: sent.contentType, previewData: preparation.previewData)
         }
+    }
+
+    /// Prepares a picture picked in Files, read while the app may open it, and stages only what is sent. The file
+    /// itself is left as it is.
+    static func preparePictureFile(_ file: GhosttySecurityScopedAttachmentFile) async throws -> PreparedPhoto {
+        try await Task.detached(priority: .userInitiated) {
+            try file.withAccessibleURL { url in
+                try preparePictureFileSynchronously(at: url, filename: file.filename)
+            }
+        }.value
+    }
+
+    /// What is sent keeps the file's name, so it can be referred to by it. Only the extension changes, when the
+    /// picture is sent in another format than the one its name gives.
+    static func preparePictureFileSynchronously(at url: URL, filename: String) throws -> PreparedPhoto {
+        try autoreleasepool {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, [
+                kCGImageSourceShouldCache: false
+            ] as CFDictionary) else {
+                throw PreparationError.unreadableImage
+            }
+            return try stage(
+                try prepare(source) { try? Data(contentsOf: url) },
+                original: { try Data(contentsOf: url) }
+            ) { sent in
+                sentFilename(for: filename, as: sent.contentType)
+            }
+        }
+    }
+
+    /// `filename` as it is when its extension names `type`, otherwise with the extension `type` prefers.
+    static func sentFilename(for filename: String, as type: UTType) -> String {
+        let name = filename as NSString
+        if UTType(filenameExtension: name.pathExtension)?.conforms(to: type) == true {
+            return filename
+        }
+        let stem = name.deletingPathExtension.isEmpty ? "image" : name.deletingPathExtension
+        return type.preferredFilenameExtension.map { "\(stem).\($0)" } ?? stem
+    }
+
+    /// Whether the file at `url` holds a picture Image I/O can read, judged by its contents, not its name.
+    static func isPicture(at url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary),
+            let type = (CGImageSourceGetType(source) as String?).flatMap(UTType.init) else {
+            return false
+        }
+        return type.conforms(to: .image) && CGImageSourceGetCount(source) > 0
+    }
+
+    /// Stages what `preparation` sends, the picture as it is, read from `original`, or its rewrite, under the name
+    /// `filename` gives it.
+    private static func stage(
+        _ preparation: Preparation,
+        original: () throws -> Data,
+        filename: (EncodedPicture) -> String
+    ) throws -> PreparedPhoto {
+        let sent: EncodedPicture
+        switch preparation.sent {
+        case .asItIs(let contentType):
+            sent = EncodedPicture(data: try original(), contentType: contentType)
+        case .rewritten(let picture):
+            sent = picture
+        }
+        let url = try GhosttyAttachmentStagingStore.stageDataSynchronously(sent.data, filename: filename(sent))
+        return PreparedPhoto(url: url, contentType: sent.contentType, previewData: preparation.previewData)
     }
 
     /// What is sent for a picture, and its preview.

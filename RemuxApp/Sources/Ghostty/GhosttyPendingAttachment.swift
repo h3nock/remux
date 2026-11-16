@@ -152,6 +152,8 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
 
     enum Kind: Equatable, Sendable {
         case photo
+        /// A picture picked in Files. It is prepared and shown as a photo is, and keeps the file's name.
+        case picture
         case video
         case media
         case file
@@ -161,7 +163,7 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
 
         var systemName: String {
             switch self {
-            case .photo, .pasteboardImage:
+            case .photo, .picture, .pasteboardImage:
                 "photo"
             case .video:
                 "video"
@@ -211,29 +213,21 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         previewPayload != nil
     }
 
+    /// A picture can be marked up once it is prepared.
     var supportsImageMarkup: Bool {
         switch kind {
-        case .photo, .pasteboardImage:
+        case .photo, .picture, .pasteboardImage:
             return imageMarkupFilename != nil
-        case .file:
-            guard let filename = imageMarkupFilename else { return false }
-            return Self.isImageFilename(filename)
-        case .video, .media, .pasteboardLink, .pasteboardText:
+        case .file, .video, .media, .pasteboardLink, .pasteboardText:
             return false
         }
     }
 
+    /// The prepared picture's file name.
     var imageMarkupFilename: String? {
-        switch payload {
-        case .file(let url):
-            let filename = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-            return filename.isEmpty ? nil : filename
-        case .securityScopedFile(let file):
-            let filename = file.filename.trimmingCharacters(in: .whitespacesAndNewlines)
-            return filename.isEmpty ? nil : filename
-        case .link, .text, nil:
-            return nil
-        }
+        guard case .file(let url) = payload else { return nil }
+        let filename = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return filename.isEmpty ? nil : filename
     }
 
     /// `photosAlreadyNamed` is how many photos the draft has named so far, so photos added in separate picks, or after
@@ -287,18 +281,17 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
     }
 
     static func securityScopedFile(url: URL) throws -> GhosttyPendingAttachment {
-        let file = try GhosttySecurityScopedAttachmentFile.make(url: url)
-        return GhosttyPendingAttachment(
+        securityScopedFile(try GhosttySecurityScopedAttachmentFile.make(url: url))
+    }
+
+    static func securityScopedFile(_ file: GhosttySecurityScopedAttachmentFile) -> GhosttyPendingAttachment {
+        GhosttyPendingAttachment(
             kind: .file,
             title: file.filename,
             detail: fileDetail(filename: file.filename),
             payload: .securityScopedFile(file),
             previewPayload: .securityScopedFile(file)
         )
-    }
-
-    static func securityScopedFiles(urls: [URL]) throws -> [GhosttyPendingAttachment] {
-        try urls.map(securityScopedFile(url:))
     }
 
     static func pasteboardImage(previewData: Data) -> GhosttyPendingAttachment {
@@ -324,6 +317,27 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         GhosttyPendingAttachment(
             kind: .photo,
             title: title,
+            detail: "Image",
+            payload: .file(fileURL),
+            previewPayload: .imageData(previewData)
+        )
+    }
+
+    /// A picture picked in Files, until it is prepared.
+    static func picturePlaceholder(_ file: GhosttySecurityScopedAttachmentFile) -> GhosttyPendingAttachment {
+        GhosttyPendingAttachment(
+            kind: .picture,
+            title: file.filename,
+            detail: "Preparing…",
+            preparationState: .preparing
+        )
+    }
+
+    /// A picture picked in Files once prepared, known by the name of the file that is sent.
+    static func picture(fileURL: URL, previewData: Data) -> GhosttyPendingAttachment {
+        GhosttyPendingAttachment(
+            kind: .picture,
+            title: fileURL.lastPathComponent,
             detail: "Image",
             payload: .file(fileURL),
             previewPayload: .imageData(previewData)
@@ -358,6 +372,7 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
     }
 
     func updating(
+        title: String? = nil,
         payload: GhosttyAttachmentPayload? = nil,
         previewPayload: GhosttyAttachmentPreviewPayload? = nil,
         detail: String,
@@ -366,7 +381,7 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         GhosttyPendingAttachment(
             id: id,
             kind: kind,
-            title: title,
+            title: title ?? self.title,
             detail: detail,
             payload: payload ?? self.payload,
             previewPayload: previewPayload ?? self.previewPayload,
@@ -382,8 +397,10 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         )
     }
 
+    /// A picture from Files takes the name of its marked-up file, which is what is sent.
     func updatingAnnotatedImage(fileURL: URL, previewData: Data) -> GhosttyPendingAttachment {
         updating(
+            title: kind == .picture ? fileURL.lastPathComponent : nil,
             payload: .file(fileURL),
             previewPayload: .imageData(previewData),
             detail: "Annotated image"
@@ -425,18 +442,6 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fileExtension.isEmpty else { return "File" }
         return "\(fileExtension.uppercased()) file"
-    }
-
-    private static func isImageFilename(_ filename: String) -> Bool {
-        let fileExtension = URL(fileURLWithPath: filename)
-            .pathExtension
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !fileExtension.isEmpty,
-              let contentType = UTType(filenameExtension: fileExtension) else {
-            return false
-        }
-
-        return contentType.conforms(to: .image)
     }
 
     private static func mediaKind(_ contentTypes: [UTType]) -> Kind {

@@ -94,7 +94,7 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let image = try XCTUnwrap(GhosttyAttachmentMarkupImageSource.file(url).loadImage())
+        let image = try XCTUnwrap(GhosttyAttachmentImageMarkupRenderer.baseImage(at: url))
 
         XCTAssertEqual(image.width, 1_500)
         XCTAssertEqual(image.height, 2_000)
@@ -107,7 +107,7 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         try png.write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let image = try XCTUnwrap(GhosttyAttachmentMarkupImageSource.file(url).loadImage())
+        let image = try XCTUnwrap(GhosttyAttachmentImageMarkupRenderer.baseImage(at: url))
 
         XCTAssertEqual(image.width, 400)
         XCTAssertEqual(image.height, 300)
@@ -119,8 +119,8 @@ final class GhosttyAttachmentImageMarkupRendererTests: XCTestCase {
         try Data([0x01, 0x02]).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        XCTAssertNil(GhosttyAttachmentMarkupImageSource.file(url).loadImage())
-        XCTAssertNil(GhosttyAttachmentMarkupImageSource.file(url.appendingPathExtension("missing")).loadImage())
+        XCTAssertNil(GhosttyAttachmentImageMarkupRenderer.baseImage(at: url))
+        XCTAssertNil(GhosttyAttachmentImageMarkupRenderer.baseImage(at: url.appendingPathExtension("missing")))
     }
 
     func testRenderDataPreservesWhiteInk() throws {
