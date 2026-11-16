@@ -1,10 +1,6 @@
 import Foundation
 import UniformTypeIdentifiers
 
-enum GhosttyAttachmentStagingStoreError: Error, Equatable {
-    case urlOutsideStagingRoot(URL)
-}
-
 enum GhosttyAttachmentStagingStore {
     static let directoryName = "RemuxAttachmentStaging"
 
@@ -40,12 +36,6 @@ enum GhosttyAttachmentStagingStore {
         }.value
     }
 
-    static func stageFileURL(_ sourceURL: URL, filename: String) async throws -> URL {
-        try await Task.detached(priority: .utility) {
-            try stageFileURLSynchronously(sourceURL, filename: filename)
-        }.value
-    }
-
     static func stageFileURLSynchronously(_ sourceURL: URL) throws -> URL {
         try stageFileURLSynchronously(sourceURL, filename: sourceURL.lastPathComponent)
     }
@@ -73,37 +63,6 @@ enum GhosttyAttachmentStagingStore {
         return destination
     }
 
-    static func renameStagedFile(_ stagedURL: URL, filename: String) async throws -> URL {
-        try await Task.detached(priority: .utility) {
-            try renameStagedFileSynchronously(stagedURL, filename: filename)
-        }.value
-    }
-
-    static func renameStagedFileSynchronously(_ stagedURL: URL, filename: String) throws -> URL {
-        let fileManager = FileManager.default
-        let root = stagingRoot(fileManager: fileManager)
-        guard isStagedURL(stagedURL, root: root) else {
-            throw GhosttyAttachmentStagingStoreError.urlOutsideStagingRoot(stagedURL)
-        }
-
-        let destination = stagedURL
-            .deletingLastPathComponent()
-            .appendingPathComponent(stagedFilename(for: filename))
-
-        guard destination != stagedURL else {
-            return stagedURL
-        }
-
-        do {
-            try fileManager.moveItem(at: stagedURL, to: destination)
-        } catch {
-            try? fileManager.removeItem(at: stagedURL.deletingLastPathComponent())
-            throw error
-        }
-
-        return destination
-    }
-
     static func stageData(_ data: Data, filename: String) async throws -> URL {
         try await Task.detached(priority: .utility) {
             try stageDataSynchronously(data, filename: filename)
@@ -124,28 +83,6 @@ enum GhosttyAttachmentStagingStore {
         }
 
         return destination
-    }
-
-    static func stageImageData(
-        _ data: Data,
-        title: String,
-        contentTypes: [UTType]
-    ) async throws -> URL {
-        try await stageData(
-            data,
-            filename: imageFilename(title: title, contentTypes: contentTypes)
-        )
-    }
-
-    static func stageImageDataSynchronously(
-        _ data: Data,
-        title: String,
-        contentTypes: [UTType]
-    ) throws -> URL {
-        try stageDataSynchronously(
-            data,
-            filename: imageFilename(title: title, contentTypes: contentTypes)
-        )
     }
 
     static func cleanup(_ attachments: [GhosttyPendingAttachment]) {

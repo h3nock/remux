@@ -917,6 +917,7 @@ final class RemuxAppUITests: XCTestCase {
         let closeButton = app.buttons["terminal.composer.toggle"]
         let micButton = app.buttons["terminal.composer.mic"]
         let sendButton = app.buttons["terminal.composer.send"]
+        XCTAssertEqual(attachmentButton.label, "Add attachment")
         XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
         XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
         XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
@@ -929,6 +930,257 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(keyboard.exists)
         XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 1))
         attachScreenshot(named: "composer-multiline-keyboard-stable")
+    }
+
+    func testComposerAttachmentMenuOpensWithKeyboardUpAndKeepsIt() {
+        launchSeededSimulatorTerminal()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        composerField.tap()
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 3))
+
+        let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let photosRow = app.buttons["terminal.composer.attachments.photos"]
+        let filesRow = app.buttons["terminal.composer.attachments.files"]
+        let keyboard = app.keyboards.firstMatch
+        let composerBounds = app.descendants(matching: .any)["terminal.composer.bounds"].firstMatch
+
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        XCTAssertEqual(photosRow.label, "Photos")
+        XCTAssertEqual(filesRow.label, "Files")
+        XCTAssertLessThan(photosRow.frame.maxY, filesRow.frame.maxY)
+        XCTAssertTrue(keyboard.exists, "Opening the menu must leave the keyboard up.")
+        attachScreenshot(named: "composer-attachment-menu-keyboard-up")
+
+        // On iOS 26 and 27 the app's own menu hangs below the composer over the keyboard, and a touch on the keys
+        // closes it and types nothing. On other versions the + opens Apple's standard menu.
+        if Self.showsTheAppsOwnAttachmentMenu {
+            XCTAssertEqual(
+                filesRow.frame.minX,
+                composerBounds.frame.minX,
+                accuracy: 1,
+                "The menu starts at the composer's left edge."
+            )
+            XCTAssertGreaterThan(
+                filesRow.frame.maxY,
+                composerBounds.frame.maxY,
+                "The menu hangs below the composer."
+            )
+            keyboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+            XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+            XCTAssertTrue(
+                app.staticTexts["terminal.composer.placeholder"].exists,
+                "The key under the touch must not type."
+            )
+            XCTAssertTrue(keyboard.exists)
+            attachmentButton.tap()
+            XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        }
+
+        // A tap or a drag on the terminal closes it too.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).tap()
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(keyboard.exists)
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        let terminalDrag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        terminalDrag.press(forDuration: 0.05, thenDragTo: terminalDrag.withOffset(CGVector(dx: 0, dy: 120)))
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2), "A drag outside the menu closes it.")
+        XCTAssertTrue(keyboard.exists)
+
+        // Photos opens the picker; cancelling it gives the keyboard back to the composer.
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        photosRow.tap()
+        let cancelPicker = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelPicker.waitForExistence(timeout: 10))
+        cancelPicker.tap()
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
+        XCTAssertFalse(photosRow.exists)
+
+        // With the keyboard down the menu is drawn in the composer, above the bottom of the screen, and a tap on the
+        // terminal closes it without bringing the keyboard back.
+        let handle = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
+        let dragStart = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 14)))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "attachment menu, keyboard down"))
+        attachmentButton.tap()
+        XCTAssertTrue(photosRow.waitForExistence(timeout: 2))
+        XCTAssertLessThanOrEqual(filesRow.frame.maxY, app.frame.maxY, "The menu fits above the bottom of the screen.")
+        if Self.showsTheAppsOwnAttachmentMenu {
+            XCTAssertEqual(filesRow.frame.minX, composerBounds.frame.minX, accuracy: 1)
+        }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).tap()
+        XCTAssertTrue(photosRow.waitForNonExistence(timeout: 2))
+        XCTAssertFalse(isSoftwareKeyboardOnScreen(keyboard), "Closing the menu leaves the keyboard down.")
+    }
+
+    /// The iOS versions on which the app draws its own attachment menu (`GhosttyKeyboardWindowTracker.isSupported`).
+    private static var showsTheAppsOwnAttachmentMenu: Bool {
+        if #available(iOS 28.0, *) { return false }
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
+    /// The viewer acts on the attachment it shows: opening a chip shows that attachment, markup keeps it in view, and
+    /// Remove takes out the one in view. The picture on screen is read from a screenshot, since the selection alone
+    /// can name one attachment while another is shown.
+    func testAttachmentViewerActsOnTheAttachmentItShows() {
+        launchSeededSimulatorTerminal()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        app.buttons["terminal.composer.toggle"].tap()
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("draft")
+        pasteSolidPicture(.red, into: field)
+        pasteSolidPicture(.blue, into: field)
+
+        let chips = app.buttons.matching(NSPredicate(format: "label == %@", "Preview Pasted image"))
+        XCTAssertTrue(waitForCount(of: chips, toBe: 2, timeout: 10))
+        // Compared after the viewer closes; what typing put there is not this test's concern.
+        let draft = field.value as? String
+        let secondChip = chips.element(boundBy: 1)
+        XCTAssertTrue(waitUntil(secondChip, isEnabled: true, timeout: 10))
+        secondChip.tap()
+        let markup = app.buttons["terminal.attachments.preview.markup-selected"]
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Opening the second chip shows the second picture.")
+
+        let pager = app.descendants(matching: .any)["terminal.attachments.preview.pager"].firstMatch
+        pager.swipeRight()
+        XCTAssertTrue(waitForSolidPicture(.red, timeout: 8), "Swiping right shows the first picture.")
+        pager.swipeLeft()
+        XCTAssertTrue(waitForSolidPicture(.blue, timeout: 8), "Swiping left shows the second picture again.")
+
+        markup.tap()
+        let cancel = app.buttons["terminal.attachments.markup.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Cancelling markup keeps the same picture in view.")
+
+        // A stroke away from the middle, saved.
+        let canvas = app.descendants(matching: .any)["terminal.attachments.markup.canvas"]
+        let undo = app.buttons["terminal.attachments.markup.undo"]
+        let done = app.buttons["terminal.attachments.markup.done"]
+        markup.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        drawStroke(on: canvas)
+        XCTAssertTrue(waitUntil(undo, isEnabled: true, timeout: 3), "A stroke can be undone.")
+        attachScreenshot(named: "attachment-markup-palette")
+        done.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue, "Saving markup keeps the same picture in view.")
+
+        // Undo reaches only this markup's strokes: not the one saved before, nor the draft typed before it.
+        markup.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        drawStroke(on: canvas)
+        XCTAssertTrue(waitUntil(undo, isEnabled: true, timeout: 3))
+        undo.tap()
+        XCTAssertTrue(
+            waitUntil(undo, isEnabled: false, timeout: 3),
+            "With its one stroke undone, markup has nothing left to undo."
+        )
+        done.tap()
+        XCTAssertTrue(markup.waitForExistence(timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .blue)
+
+        app.buttons["terminal.attachments.preview.remove"].tap()
+        XCTAssertTrue(waitForCount(of: app.buttons.matching(identifier: "terminal.attachments.preview.thumbnail"), toBe: 0, timeout: 5))
+        XCTAssertEqual(solidPictureInView(), .red, "Remove takes out the picture in view and shows the other.")
+        app.buttons["terminal.attachments.preview.close"].firstMatch.tap()
+        XCTAssertTrue(waitForCount(of: chips, toBe: 1, timeout: 5))
+        XCTAssertEqual(field.value as? String, draft, "The viewer leaves the draft as it was.")
+    }
+
+    private enum SolidPicture: Equatable {
+        case red, blue
+
+        var color: UIColor {
+            switch self {
+            case .red: UIColor(red: 1, green: 0, blue: 0, alpha: 1)
+            case .blue: UIColor(red: 0, green: 0, blue: 1, alpha: 1)
+            }
+        }
+    }
+
+    /// Pastes a solid picture with the field's own Paste, as a person would.
+    private func pasteSolidPicture(_ picture: SolidPicture, into field: XCUIElement) {
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 400, height: 300)).pngData { context in
+            picture.color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
+        }
+        UIPasteboard.general.setData(png, forPasteboardType: "public.png")
+        field.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+    }
+
+    /// Which solid picture fills the middle of the screen, or nil for anything else.
+    private func solidPictureInView() -> SolidPicture? {
+        let screenshot = XCUIScreen.main.screenshot().image
+        guard let image = screenshot.cgImage else { return nil }
+        let center = CGRect(x: image.width / 2, y: image.height / 2, width: 1, height: 1)
+        guard let pixel = image.cropping(to: center) else { return nil }
+        var rgba = [UInt8](repeating: 0, count: 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
+        let (red, blue) = (Int(rgba[0]), Int(rgba[2]))
+        if red > 180, blue < 80 { return .red }
+        if blue > 180, red < 80 { return .blue }
+        return nil
+    }
+
+    /// A short stroke on the left of the picture, which fills the width of the screen in the middle of it, clear of
+    /// the middle the picture checks read.
+    private func drawStroke(on canvas: XCUIElement) {
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.42))
+            .press(forDuration: 0.1, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.46)))
+    }
+
+    private func waitUntil(_ element: XCUIElement, isEnabled: Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, element.isEnabled == isEnabled { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return element.exists && element.isEnabled == isEnabled
+    }
+
+    private func waitForSolidPicture(_ picture: SolidPicture, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if solidPictureInView() == picture { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return solidPictureInView() == picture
+    }
+
+    private func waitForCount(of query: XCUIElementQuery, toBe count: Int, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if query.count == count { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return query.count == count
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {

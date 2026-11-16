@@ -5,6 +5,15 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
     func testAttachmentModalPresentationsBecomeTransientInputOwners() {
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: true,
+                isPhotosPickerPresented: false,
+                isFileImporterPresented: false,
+                isPreviewPresented: false
+            ).isTransientInputOwnerPresented
+        )
+        XCTAssertTrue(
+            GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: false,
                 isPhotosPickerPresented: true,
                 isFileImporterPresented: false,
                 isPreviewPresented: false
@@ -12,6 +21,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: false,
                 isPhotosPickerPresented: false,
                 isFileImporterPresented: true,
                 isPreviewPresented: false
@@ -19,6 +29,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
+                isCameraPresented: false,
                 isPhotosPickerPresented: false,
                 isFileImporterPresented: false,
                 isPreviewPresented: true
@@ -114,5 +125,40 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         XCTAssertFalse(GhosttyTerminalCoverPhase.restoringKeyboard.ownsTerminalInput)
         XCTAssertTrue(GhosttyTerminalCoverPhase.restoringKeyboard.isRestoringKeyboard)
         XCTAssertFalse(GhosttyTerminalCoverPhase.visible.isRestoringKeyboard)
+    }
+
+    func testComposerHoldsKeyboardWhenItOwnsIt() {
+        XCTAssertTrue(
+            GhosttyComposerResponderFocusPolicy(
+                keyboardMode: .system,
+                keyboardOwner: .composer,
+                isTransientInputOwnerPresented: false
+            ).wantsFirstResponder
+        )
+        XCTAssertFalse(
+            GhosttyComposerResponderFocusPolicy(
+                keyboardMode: .system,
+                keyboardOwner: .terminal,
+                isTransientInputOwnerPresented: false
+            ).wantsFirstResponder
+        )
+        XCTAssertFalse(
+            GhosttyComposerResponderFocusPolicy(
+                keyboardMode: .hidden,
+                keyboardOwner: .composer,
+                isTransientInputOwnerPresented: false
+            ).wantsFirstResponder
+        )
+    }
+
+    func testComposerGivesUpKeyboardUnderPickerCameraAndViewer() {
+        XCTAssertFalse(
+            GhosttyComposerResponderFocusPolicy(
+                keyboardMode: .system,
+                keyboardOwner: .composer,
+                isTransientInputOwnerPresented: true
+            ).wantsFirstResponder,
+            "Wanting the keyboard under the viewer, the composer takes it back when markup ends and it covers the viewer."
+        )
     }
 }

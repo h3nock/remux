@@ -803,6 +803,42 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
+    /// The UI tests' simulated server answers every command an attach sends, in order, so its pane
+    /// takes input. It falls out of step when the client or the session controller sends another.
+    func testTheUITestingServerTranscriptAttachesAPaneThatTakesInput() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = TmuxTerminalSession(
+            app: runtime.appHandleForTesting,
+            transport: DeterministicTmuxControlTransport(chunks: [RemuxAppDependencies.uiTestingTmuxTranscript()]),
+            baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
+            paneViewTheme: { .remuxDark },
+            zoomOwner: TmuxZoomOwner(serverID: UUID())
+        )
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(session: session, initialViewportHandler: { _, _, _ in }, viewportStabilityHandler: { _ in })
+        session.updateViewportMeasurement(try XCTUnwrap(runtime.measureTmuxViewportLayout(
+            size: CGSize(width: 390, height: 600), scale: UIScreen.main.scale
+        )))
+        session.connect(viewport: TmuxControlViewport(columns: 83, rows: 44, pixelWidth: 0, pixelHeight: 0))
+        for _ in 0..<100 where session.surfacesByPaneID[0] == nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let pane = try XCTUnwrap(session.surfacesByPaneID[0], "the pane was never loaded")
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        viewController.view.addSubview(pane.renderer.view)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        for _ in 0..<100 where !adapter.terminalInteractionProjection.isInputAvailable {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(pane.renderer.presentation, .ready)
+        XCTAssertTrue(adapter.terminalInteractionProjection.isInputAvailable)
+        adapter.invalidate()
+        await session.shutdown()
+    }
+
     private func drain(_ controller: TmuxSessionController) async {
         await withCheckedContinuation { continuation in
             controller.queue.async {

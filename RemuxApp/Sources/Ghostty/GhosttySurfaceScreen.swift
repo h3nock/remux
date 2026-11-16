@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import SwiftUI
 import UIKit
@@ -16,12 +17,14 @@ struct GhosttySurfaceScreenPresentation: Equatable {
 }
 
 struct GhosttyAttachmentInputOwnerProjection: Equatable {
+    let isCameraPresented: Bool
     let isPhotosPickerPresented: Bool
     let isFileImporterPresented: Bool
     let isPreviewPresented: Bool
 
     var isTransientInputOwnerPresented: Bool {
-        isPhotosPickerPresented
+        isCameraPresented
+            || isPhotosPickerPresented
             || isFileImporterPresented
             || isPreviewPresented
     }
@@ -93,6 +96,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
+    @State private var isAttachmentCameraPresented = false
     @State private var isAttachmentPhotosPickerPresented = false
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
@@ -643,12 +647,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
                     attachments: composerAttachmentsBinding,
-                    initiallySelectedAttachmentID: request.attachmentID
+                    initiallySelectedAttachmentID: request.attachmentID,
+                    onRemove: removePendingAttachment
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .remuxSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(presentation.terminalTheme.terminalChromeColorScheme)
+            }
+            .fullScreenCover(isPresented: $isAttachmentCameraPresented) {
+                GhosttyAttachmentCameraPicker(onFinish: handleAttachmentCameraCapture)
+                    .ignoresSafeArea()
             }
             .photosPicker(
                 isPresented: $isAttachmentPhotosPickerPresented,
@@ -762,6 +771,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var isAttachmentInputOwnerPresented: Bool {
         GhosttyAttachmentInputOwnerProjection(
+            isCameraPresented: isAttachmentCameraPresented,
             isPhotosPickerPresented: isAttachmentPhotosPickerPresented,
             isFileImporterPresented: isAttachmentFileImporterPresented,
             isPreviewPresented: attachmentPreviewRequest != nil
@@ -798,8 +808,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyComposeBar(
                 composer: composer,
                 canSubmit: isTerminalInputAvailable,
-                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
-                    && inputCoordinator.keyboardOwner == .composer,
+                wantsKeyboardFocus: GhosttyComposerResponderFocusPolicy(
+                    keyboardMode: inputCoordinator.keyboardMode,
+                    keyboardOwner: inputCoordinator.keyboardOwner,
+                    isTransientInputOwnerPresented: isTransientInputOwnerPresented
+                ).wantsFirstResponder,
                 isSoftwareKeyboardVisible: inputCoordinator.keyboardMode == .system
                     && inputCoordinator.keyboardOwner == .composer
                     && softwareKeyboardOverlapHeight > 0,
@@ -811,6 +824,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
                 onDismissKeyboard: dismissComposerKeyboard,
                 onClose: closeComposer,
+                onTakePhoto: attachmentCameraAction,
                 onChoosePhotos: openAttachmentPhotosPicker,
                 onChooseFiles: openAttachmentFilePicker,
                 onOpenAttachment: showPendingAttachmentPreview,
@@ -1395,6 +1409,32 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         composer.retryAttachment(attachmentID)
     }
 
+    private var attachmentCameraAction: (() -> Void)? {
+        guard GhosttyAttachmentCameraPicker.isCameraAvailable else { return nil }
+        return openAttachmentCamera
+    }
+
+    private func openAttachmentCamera() {
+        Task { @MainActor in
+            // Asked here so a refusal gets an explanation; the camera would otherwise open on a black screen.
+            guard await AVCaptureDevice.requestAccess(for: .video) else {
+                presentAttachmentNotice("Camera access is off. Turn it on in Settings.")
+                return
+            }
+            isAttachmentCameraPresented = true
+        }
+    }
+
+    private func handleAttachmentCameraCapture(_ image: UIImage?) {
+        isAttachmentCameraPresented = false
+        guard let image else { return }
+
+        withAnimation(.easeOut(duration: 0.16)) {
+            composer.addCapturedPhoto(image, preparing: attachmentTransferServiceFactory())
+            attachmentNotice = nil
+        }
+    }
+
     private func openAttachmentPhotosPicker() {
         isAttachmentPhotosPickerPresented = true
     }
@@ -1461,13 +1501,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let pasteboard = UIPasteboard.general
 
         if pasteboard.hasImages {
-            guard let request = GhosttyAttachmentPasteboardSnapshot.currentImageProviderRequest()
-            else {
+            guard let image = GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard) else {
                 presentAttachmentNotice("Couldn’t paste the image.")
                 return false
             }
             withAnimation(.easeOut(duration: 0.16)) {
-                composer.addPastedImage(request, preparing: attachmentTransferServiceFactory())
+                composer.addPastedImage(image, preparing: attachmentTransferServiceFactory())
                 attachmentNotice = nil
             }
             return true
@@ -1844,6 +1883,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "beginTransition": "\(projection.shouldBeginViewportTransition)",
             ]
         )
+        // UIKit also posts these with the keyboard where it already rests, for one many times a second while a menu
+        // is open. Such a notification changes nothing; acting on it would redraw the screen, and with a menu open
+        // the redraw makes UIKit post again.
+        if projection.isVisible,
+           projection.overlapHeight == softwareKeyboardOverlapHeight,
+           !terminalViewportCoordinator.isKeyboardTransitionActive,
+           !isAwaitingSystemKeyboardPresentation {
+            var updatedCoordinator = inputCoordinator
+            updatedCoordinator.updateSoftwareKeyboardVisibility(
+                true,
+                isInputCovered: isTerminalInputCovered || isFindPresented || isReadingAfterFind
+            )
+            if updatedCoordinator == inputCoordinator {
+                GhosttyRuntimeTrace.perf("kbd.visibility unchanged overlap=\(projection.overlapHeight)")
+                return
+            }
+        }
         GhosttyRuntimeTrace.perf(
             "kbd.visibility visible=\(projection.isVisible) overlap=\(projection.overlapHeight) duration_ms=\(String(format: "%.3f", projection.animationDuration * 1000)) fallback_ms=\(String(format: "%.3f", projection.fallbackDelay * 1000)) beginTransition=\(projection.shouldBeginViewportTransition) awaitingSystem=\(isAwaitingSystemKeyboardPresentation) frame=\(Int(frameEnd.origin.x)),\(Int(frameEnd.origin.y)),\(Int(frameEnd.width)),\(Int(frameEnd.height))"
         )

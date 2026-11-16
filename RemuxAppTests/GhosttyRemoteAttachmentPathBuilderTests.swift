@@ -341,7 +341,7 @@ final class GhosttyAttachmentTransferSourceTests: XCTestCase {
 
     func testSecurityScopedFileAttachmentCreatesTransferSource() throws {
         let url = try makeTemporaryFile(named: "report.pdf", contents: "hello")
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         let source = attachment.transferSource
 

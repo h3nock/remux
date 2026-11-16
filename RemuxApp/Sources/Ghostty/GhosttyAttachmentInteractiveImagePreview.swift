@@ -1,23 +1,30 @@
 import SwiftUI
 import UIKit
 
+/// A preview picture that can be zoomed. It is decoded again only when its bytes change, so a redraw of the sheet
+/// around it neither decodes it again nor resets the zoom. A page out of view goes back to fitting, as in Photos.
 struct GhosttyAttachmentInteractiveImagePreview: UIViewRepresentable {
-    let image: UIImage
+    let imageData: Data
+    let isInView: Bool
 
     func makeUIView(context: Context) -> GhosttyAttachmentInteractiveImageView {
         let view = GhosttyAttachmentInteractiveImageView()
-        view.configure(image: image)
+        view.configure(imageData: imageData)
         return view
     }
 
     func updateUIView(_ view: GhosttyAttachmentInteractiveImageView, context: Context) {
-        view.configure(image: image)
+        view.configure(imageData: imageData)
+        if !isInView {
+            view.fit()
+        }
     }
 }
 
 final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate {
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
+    private var displayedData: Data?
     private var displayedImage: UIImage?
     private var laidOutBounds: CGSize = .zero
 
@@ -31,10 +38,11 @@ final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate 
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(image: UIImage) {
-        guard displayedImage !== image else { return }
-        displayedImage = image
-        imageView.image = image
+    func configure(imageData: Data) {
+        guard displayedData != imageData else { return }
+        displayedData = imageData
+        displayedImage = UIImage(data: imageData)
+        imageView.image = displayedImage
         laidOutBounds = .zero
         setNeedsLayout()
     }
@@ -47,6 +55,13 @@ final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate 
         resetImageLayout()
     }
 
+    /// Back to the whole picture, unzoomed. Animated, since a page left by a tap on another's thumbnail is still
+    /// sliding out of view.
+    func fit() {
+        guard scrollView.zoomScale != scrollView.minimumZoomScale else { return }
+        scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+    }
+
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
         imageView
     }
@@ -56,10 +71,10 @@ final class GhosttyAttachmentInteractiveImageView: UIView, UIScrollViewDelegate 
     }
 
     private func setup() {
-        backgroundColor = .black
+        backgroundColor = .clear
 
         scrollView.delegate = self
-        scrollView.backgroundColor = .black
+        scrollView.backgroundColor = .clear
         scrollView.bouncesZoom = true
         scrollView.minimumZoomScale = 1
         scrollView.maximumZoomScale = 4

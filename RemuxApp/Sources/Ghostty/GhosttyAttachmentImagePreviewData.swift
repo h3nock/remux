@@ -2,76 +2,40 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
+/// The picture an attachment shows in the composer and the viewer: a JPEG at most `maxPixelDimension` on its long side.
 enum GhosttyAttachmentImagePreviewData {
     static let maxPixelDimension = 1_280
     private static let compressionQuality = 0.84
 
-    static func makePreviewData(from data: Data) async -> Data? {
-        await Task.detached(priority: .utility) {
-            makePreviewDataSynchronously(from: data)
-        }.value
+    /// From pixels already decoded for sending, so the picture is not decoded a second time.
+    static func previewData(for image: CGImage) -> Data? {
+        GhosttyAttachmentImageCoding.data(
+            for: image,
+            as: .jpeg,
+            lossyQuality: compressionQuality,
+            maxPixelDimension: maxPixelDimension
+        )
     }
 
-    static func makePreviewData(fromFileAt url: URL) async -> Data? {
-        await Task.detached(priority: .utility) {
-            makePreviewDataSynchronously(fromFileAt: url)
-        }.value
-    }
-
-    static func makePreviewDataSynchronously(from data: Data) -> Data? {
+    /// The preview in `data`, decoded just large enough to fill a square `side` pixels across.
+    static func thumbnail(from data: Data, filling side: Int) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, [
             kCGImageSourceShouldCache: false
-        ] as CFDictionary) else {
+        ] as CFDictionary),
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? Int,
+            let height = properties[kCGImagePropertyPixelHeight] as? Int,
+            width > 0, height > 0 else {
             return nil
         }
-
-        return makePreviewDataSynchronously(from: source)
+        let longSide = (Double(side) * Double(max(width, height)) / Double(min(width, height))).rounded(.up)
+        return GhosttyAttachmentImageCoding.uprightImage(from: source, maxPixelDimension: Int(longSide))
     }
 
-    static func makePreviewDataSynchronously(fromFileAt url: URL) -> Data? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [
-            kCGImageSourceShouldCache: false
-        ] as CFDictionary) else {
-            return nil
-        }
-
-        return makePreviewDataSynchronously(from: source)
-    }
-
-    private static func makePreviewDataSynchronously(from source: CGImageSource) -> Data? {
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension
-        ]
-
-        guard let image = CGImageSourceCreateThumbnailAtIndex(
-            source,
-            0,
-            thumbnailOptions as CFDictionary
-        ) else {
-            return nil
-        }
-
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output,
-            UTType.jpeg.identifier as CFString,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-
-        CGImageDestinationAddImage(destination, image, [
-            kCGImageDestinationLossyCompressionQuality: compressionQuality
-        ] as CFDictionary)
-
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-
-        return output as Data
+    /// For a picture that is sent without being decoded, such as an animation: its primary frame.
+    static func previewData(from source: CGImageSource) -> Data? {
+        GhosttyAttachmentImageCoding
+            .uprightImage(from: source, maxPixelDimension: maxPixelDimension)
+            .flatMap(previewData(for:))
     }
 }

@@ -28,6 +28,14 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         XCTAssertEqual(attachments.map(\.title), ["Photo 1", "Photo 2"])
     }
 
+    func testNumberingAsFirstPhotoLeavesOtherAttachmentsAlone() {
+        let numbered = GhosttyPendingAttachment.mediaSelections(contentTypes: [[.png], [.jpeg]])
+        let pasted = GhosttyPendingAttachment.pasteboardImagePlaceholder()
+
+        XCTAssertEqual(numbered.map { $0.numberedAsFirstPhoto().title }, ["Photo 1", "Photo 2"])
+        XCTAssertEqual(pasted.numberedAsFirstPhoto(), pasted)
+    }
+
     func testEmptyMediaSelectionCreatesNoAttachments() {
         XCTAssertTrue(GhosttyPendingAttachment.mediaSelections(contentTypes: []).isEmpty)
     }
@@ -68,7 +76,7 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         let data = Data("file contents".utf8)
         let url = try makeSourceFile(named: "report.pdf", data: data)
 
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         XCTAssertEqual(attachment.kind, .file)
         XCTAssertEqual(attachment.title, "report.pdf")
@@ -91,17 +99,64 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         }
     }
 
-    func testImageFileAttachmentSupportsMarkupByFilename() throws {
-        let url = try makeSourceFile(named: "screenshot.jpeg", data: Data([0x01]))
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+    /// A file is known by its own name, extension included, which is also the name it is sent under, even when
+    /// Files shows it without its extension.
+    func testAFileFromFilesKeepsItsRealNameWhenFilesHidesTheExtension() throws {
+        var url = try makeSourceFile(named: "report.pdf", data: Data("file contents".utf8))
+        var values = URLResourceValues()
+        values.hasHiddenExtension = true
+        try url.setResourceValues(values)
+        let shown = try url.resourceValues(forKeys: [.localizedNameKey]).localizedName
 
-        XCTAssertTrue(attachment.supportsImageMarkup)
-        XCTAssertEqual(attachment.imageMarkupFilename, "screenshot.jpeg")
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
+
+        XCTAssertEqual(attachment.title, "report.pdf")
+        XCTAssertEqual(attachment.detail, "PDF file")
+        guard case .securityScopedFile(let file) = attachment.payload else {
+            return XCTFail("Expected a file from Files")
+        }
+        // The name the file is sent under.
+        XCTAssertEqual(file.filename, "report.pdf")
+        try XCTSkipIf(shown == "report.pdf", "The extension is shown here, so this only checks the name, not the hidden case.")
+    }
+
+    /// A file from Files is sent as it is, so it isn't marked up; a picture from Files joins as a picture.
+    func testAFileFromFilesOffersNoMarkup() throws {
+        let url = try makeSourceFile(named: "screenshot.jpeg", data: Data([0x01]))
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
+
+        XCTAssertFalse(attachment.supportsImageMarkup)
+    }
+
+    func testAPictureFromFilesIsKnownByTheNameItIsSentUnder() throws {
+        let url = try makeSourceFile(named: "Mockup.PNG", data: Data([0x01]))
+        let file = try GhosttySecurityScopedAttachmentFile.make(url: url)
+
+        let placeholder = GhosttyPendingAttachment.picturePlaceholder(file)
+        XCTAssertEqual(placeholder.kind, .picture)
+        XCTAssertEqual(placeholder.title, "Mockup.PNG")
+        XCTAssertEqual(placeholder.preparationState, .preparing)
+        XCTAssertFalse(placeholder.supportsImageMarkup)
+
+        let sentURL = URL(fileURLWithPath: "/tmp/remux/Mockup.jpeg")
+        let picture = GhosttyPendingAttachment.picture(fileURL: sentURL, previewData: Data([0x02]))
+        XCTAssertEqual(picture.kind, .picture)
+        XCTAssertEqual(picture.title, "Mockup.jpeg")
+        XCTAssertEqual(picture.systemName, "photo")
+        XCTAssertEqual(picture.payload, .file(sentURL))
+        XCTAssertEqual(picture.previewPayload, .imageData(Data([0x02])))
+        XCTAssertTrue(picture.supportsImageMarkup)
+
+        // Marked up, it takes the name of the file that is then sent; a photo keeps its number.
+        let annotatedURL = URL(fileURLWithPath: "/tmp/remux/Mockup-annotated.jpeg")
+        XCTAssertEqual(picture.updatingAnnotatedImage(fileURL: annotatedURL, previewData: Data([0x03])).title, "Mockup-annotated.jpeg")
+        let photo = GhosttyPendingAttachment.photo(title: "Photo 1", fileURL: sentURL, previewData: Data([0x02]))
+        XCTAssertEqual(photo.updatingAnnotatedImage(fileURL: annotatedURL, previewData: Data([0x03])).title, "Photo 1")
     }
 
     func testNonImageFileAttachmentDoesNotSupportMarkup() throws {
         let url = try makeSourceFile(named: "report.pdf", data: Data([0x01]))
-        let attachment = try GhosttyPendingAttachment.securityScopedFile(url: url)
+        let attachment = try GhosttyPendingAttachment.securityScopedFile(GhosttySecurityScopedAttachmentFile.make(url: url))
 
         XCTAssertFalse(attachment.supportsImageMarkup)
     }
@@ -166,47 +221,6 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         XCTAssertEqual(attachment.detail, "Annotated image")
         XCTAssertEqual(attachment.payload, .file(annotatedURL))
         XCTAssertEqual(attachment.previewPayload, .imageData(previewData))
-    }
-
-    func testPhotoAttachmentBuildsPreviewFromStagedFile() async throws {
-        let imageData = try makeJPEGData(width: 1_600, height: 900)
-        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
-            imageData,
-            filename: "photo.jpeg"
-        )
-
-        let attachment = await GhosttyPendingAttachment.photo(
-            title: "Photo 1",
-            stagedFileURL: stagedURL
-        )
-        let unwrappedAttachment = try XCTUnwrap(attachment)
-
-        XCTAssertEqual(unwrappedAttachment.kind, .photo)
-        XCTAssertEqual(unwrappedAttachment.title, "Photo 1")
-        XCTAssertEqual(unwrappedAttachment.payload, .file(stagedURL))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: stagedURL.path))
-
-        guard case .imageData(let previewData) = unwrappedAttachment.previewPayload else {
-            return XCTFail("Expected image preview data")
-        }
-        XCTAssertFalse(previewData.isEmpty)
-
-        GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-    }
-
-    func testPhotoAttachmentCleansStagedFileWhenPreviewCannotLoad() async throws {
-        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
-            Data([0x01, 0x02]),
-            filename: "photo.jpeg"
-        )
-
-        let attachment = await GhosttyPendingAttachment.photo(
-            title: "Photo 1",
-            stagedFileURL: stagedURL
-        )
-
-        XCTAssertNil(attachment)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
     }
 
     func testPasteboardImagePlaceholderHasNoPayloadUntilPreviewLoads() {
@@ -289,13 +303,5 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         let url = directory.appendingPathComponent(name)
         try data.write(to: url)
         return url
-    }
-
-    private func makeJPEGData(width: Int, height: Int) throws -> Data {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height))
-        return renderer.jpegData(withCompressionQuality: 0.9) { context in
-            UIColor.systemBlue.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        }
     }
 }

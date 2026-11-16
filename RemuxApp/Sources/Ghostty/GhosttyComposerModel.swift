@@ -56,8 +56,10 @@ final class GhosttyComposerModel: ObservableObject {
 
     private enum AttachmentPreparationSource {
         case photo(PhotosPickerItem)
+        case capturedPhoto(UIImage)
+        case pictureFile(GhosttySecurityScopedAttachmentFile)
         case pastedFile(URL)
-        case pastedImage(GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest)
+        case pastedImage(GhosttyAttachmentPasteboardSnapshot.PastedImage)
     }
 
     private struct AttachmentPreparationJob {
@@ -67,6 +69,7 @@ final class GhosttyComposerModel: ObservableObject {
     }
 
     private static var pasteSettlementDelay: Duration { .milliseconds(150) }
+    private nonisolated static let capturedPhotoContentType = UTType.jpeg
 
     @Published var isPresented = false
     @Published var draft = "" {
@@ -78,6 +81,9 @@ final class GhosttyComposerModel: ObservableObject {
         }
     }
     @Published var attachments: [GhosttyPendingAttachment] = []
+    /// How many photos the draft has named, so a removed photo's number is never given to another photo. It starts
+    /// again once the draft holds no photo.
+    private var photosNamed = 0
     @Published var statusMessage: String?
     @Published private(set) var isSubmitting = false
     @Published private var attachmentTransferState: AttachmentTransferState?
@@ -182,13 +188,9 @@ final class GhosttyComposerModel: ObservableObject {
         _ items: [PhotosPickerItem],
         preparing transferService: any GhosttyAttachmentTransferService
     ) -> Bool {
-        let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
-            contentTypes: items.map(\.supportedContentTypes)
-        )
+        let pendingAttachments = appendPhotoPlaceholders(contentTypes: items.map(\.supportedContentTypes))
         guard !pendingAttachments.isEmpty else { return false }
 
-        attachments.append(contentsOf: pendingAttachments)
-        statusMessage = nil
         prepareTransfer(transferService)
         for (item, attachment) in zip(items, pendingAttachments) {
             beginAttachmentPreparation(attachment.id, from: .photo(item))
@@ -196,32 +198,72 @@ final class GhosttyComposerModel: ObservableObject {
         return true
     }
 
+    /// A photo just taken with the camera. It joins the draft as a photo like one picked from the library.
+    func addCapturedPhoto(
+        _ image: UIImage,
+        preparing transferService: any GhosttyAttachmentTransferService
+    ) {
+        guard let attachment = appendPhotoPlaceholders(contentTypes: [[Self.capturedPhotoContentType]]).first else {
+            return
+        }
+        prepareTransfer(transferService)
+        beginAttachmentPreparation(attachment.id, from: .capturedPhoto(image))
+    }
+
+    private func appendPhotoPlaceholders(contentTypes: [[UTType]]) -> [GhosttyPendingAttachment] {
+        if !attachments.contains(where: { $0.kind == .photo }) {
+            photosNamed = 0
+        }
+        let pendingAttachments = GhosttyPendingAttachment.mediaSelections(
+            contentTypes: contentTypes,
+            photosAlreadyNamed: photosNamed
+        )
+        guard !pendingAttachments.isEmpty else { return [] }
+
+        photosNamed += pendingAttachments.count
+        attachments = attachments.map { $0.numberedAsFirstPhoto() } + pendingAttachments
+        statusMessage = nil
+        return pendingAttachments
+    }
+
+    /// Files picked in Files. A picture among them is prepared and shown as a photo is, under its own name; any
+    /// other file is sent as it is.
     @discardableResult
     func addSecurityScopedFiles(
         _ urls: [URL],
         preparing transferService: any GhosttyAttachmentTransferService
     ) async throws -> Bool {
         guard !urls.isEmpty else { return false }
-        let pendingAttachments = try await Task.detached(priority: .utility) {
-            try GhosttyPendingAttachment.securityScopedFiles(urls: urls)
+        let picks = try await Task.detached(priority: .userInitiated) {
+            try urls.map { url in
+                let file = try GhosttySecurityScopedAttachmentFile.make(url: url)
+                let isPicture = (try? file.withAccessibleURL(GhosttyAttachmentPhotoPreparation.isPicture(at:))) ?? false
+                return (file: file, isPicture: isPicture)
+            }
         }.value
-        guard !pendingAttachments.isEmpty else { return false }
+        guard !picks.isEmpty else { return false }
 
-        attachments.append(contentsOf: pendingAttachments)
+        let added = picks.map { pick in
+            pick.isPicture ? GhosttyPendingAttachment.picturePlaceholder(pick.file) : .securityScopedFile(pick.file)
+        }
+        attachments.append(contentsOf: added)
         statusMessage = nil
         prepareTransfer(transferService)
+        for (pick, attachment) in zip(picks, added) where pick.isPicture {
+            beginAttachmentPreparation(attachment.id, from: .pictureFile(pick.file))
+        }
         return true
     }
 
     func addPastedImage(
-        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
+        _ image: GhosttyAttachmentPasteboardSnapshot.PastedImage,
         preparing transferService: any GhosttyAttachmentTransferService
     ) {
         let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
         attachments.append(attachment)
         statusMessage = nil
         prepareTransfer(transferService)
-        beginAttachmentPreparation(attachment.id, from: .pastedImage(request))
+        beginAttachmentPreparation(attachment.id, from: .pastedImage(image))
     }
 
     func addPastedFile(
@@ -433,20 +475,55 @@ final class GhosttyComposerModel: ObservableObject {
             guard let self else { return }
             switch source {
             case .photo(let item):
-                await preparePhotoAttachment(
-                    item,
-                    attachmentID: attachmentID,
-                    attemptID: attemptID
-                )
+                await preparePhotoAttachment(attachmentID: attachmentID, attemptID: attemptID) {
+                    guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
+                          let stagedURL = try await item.loadTransferable(type: GhosttyPhotoPickerTransfer.self)?
+                              .stagedURL else {
+                        return nil
+                    }
+                    do {
+                        return try await GhosttyAttachmentPhotoPreparation.preparePhoto(at: stagedURL)
+                    } catch {
+                        GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+                        throw error
+                    }
+                }
+            case .capturedPhoto(let image):
+                // The camera's JPEG is already made the way a picture is sent.
+                await preparePhotoAttachment(attachmentID: attachmentID, attemptID: attemptID) {
+                    try await Task.detached(priority: .userInitiated) {
+                        let photo = try GhosttyAttachmentPhotoPreparation.preparedCapturedPhotoSynchronously(image)
+                        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
+                            photo.jpegData,
+                            filename: GhosttyAttachmentStagingStore.imageFilename(
+                                title: "Photo",
+                                contentTypes: [Self.capturedPhotoContentType]
+                            )
+                        )
+                        return GhosttyAttachmentPhotoPreparation.PreparedPhoto(
+                            url: stagedURL,
+                            contentType: Self.capturedPhotoContentType,
+                            previewData: photo.previewData
+                        )
+                    }.value
+                }
+            case .pictureFile(let file):
+                guard let prepared = try? await GhosttyAttachmentPhotoPreparation.preparePictureFile(file) else {
+                    failAttachmentPreparation(attachmentID, attemptID: attemptID)
+                    return
+                }
+                let picture = GhosttyPendingAttachment.picture(fileURL: prepared.url, previewData: prepared.previewData)
+                // Known from now on by the name it is sent under.
+                applyPreparedAttachment(picture, to: attachmentID, attemptID: attemptID, title: picture.title)
             case .pastedFile(let url):
                 await preparePastedFileAttachment(
                     url,
                     attachmentID: attachmentID,
                     attemptID: attemptID
                 )
-            case .pastedImage(let request):
+            case .pastedImage(let image):
                 await preparePastedImageAttachment(
-                    request,
+                    image,
                     attachmentID: attachmentID,
                     attemptID: attemptID
                 )
@@ -460,45 +537,33 @@ final class GhosttyComposerModel: ObservableObject {
         attachmentPreparationJobs[attachmentID]?.task = task
     }
 
+    /// Prepares a photo from the library or the camera. `preparePhoto` stages the picture and makes it the way it is
+    /// sent, or returns nil when there is no picture; if it throws once something is staged, it removes that itself.
     private func preparePhotoAttachment(
-        _ item: PhotosPickerItem,
         attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
+        attemptID: UUID,
+        preparedWith preparePhoto: () async throws -> GhosttyAttachmentPhotoPreparation.PreparedPhoto?
     ) async {
-        guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
-              let title = attachments.first(where: { $0.id == attachmentID })?.title else {
+        guard let title = attachments.first(where: { $0.id == attachmentID })?.title else {
             failAttachmentPreparation(attachmentID, attemptID: attemptID)
             return
         }
 
         var stagedURL: URL?
         do {
-            guard let transfer = try await item.loadTransferable(
-                type: GhosttyPhotoPickerTransfer.self
-            ) else {
+            guard let prepared = try await preparePhoto() else {
                 failAttachmentPreparation(attachmentID, attemptID: attemptID)
                 return
             }
-            stagedURL = transfer.stagedURL
+            stagedURL = prepared.url
             try Task.checkCancellation()
 
-            let renamedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
-                transfer.stagedURL,
-                filename: GhosttyAttachmentStagingStore.imageFilename(
-                    title: title,
-                    contentTypes: item.supportedContentTypes,
-                    uniqueID: attachmentID
-                )
+            // The photo keeps the title it has then: it is sent under its number as that is when it is sent.
+            applyPreparedAttachment(
+                .photo(title: title, fileURL: prepared.url, previewData: prepared.previewData),
+                to: attachmentID,
+                attemptID: attemptID
             )
-            stagedURL = renamedURL
-            guard let photo = await GhosttyPendingAttachment.photo(
-                title: title,
-                stagedFileURL: renamedURL
-            ) else {
-                failAttachmentPreparation(attachmentID, attemptID: attemptID)
-                return
-            }
-            applyPreparedAttachment(photo, to: attachmentID, attemptID: attemptID)
         } catch is CancellationError {
             if let stagedURL {
                 GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
@@ -518,13 +583,30 @@ final class GhosttyComposerModel: ObservableObject {
     ) async {
         var stagedURL: URL?
         do {
-            let preparedURL = try await GhosttyAttachmentStagingStore.stageFileURL(url)
-            stagedURL = preparedURL
+            // A pasted file that holds a picture is a picture, as one picked in Files is.
+            let prepared = try await Task.detached(priority: .userInitiated) { () throws -> GhosttyPendingAttachment in
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess { url.stopAccessingSecurityScopedResource() }
+                }
+                guard GhosttyAttachmentPhotoPreparation.isPicture(at: url) else {
+                    return .file(url: try GhosttyAttachmentStagingStore.stageFileURLSynchronously(url))
+                }
+                let picture = try GhosttyAttachmentPhotoPreparation.preparePictureFileSynchronously(
+                    at: url,
+                    filename: url.lastPathComponent
+                )
+                return .picture(fileURL: picture.url, previewData: picture.previewData)
+            }.value
+            if case .file(let url) = prepared.payload {
+                stagedURL = url
+            }
             try Task.checkCancellation()
             applyPreparedAttachment(
-                .file(url: preparedURL),
+                prepared,
                 to: attachmentID,
-                attemptID: attemptID
+                attemptID: attemptID,
+                title: prepared.kind == .picture ? prepared.title : nil
             )
         } catch is CancellationError {
             if let stagedURL {
@@ -539,23 +621,24 @@ final class GhosttyComposerModel: ObservableObject {
     }
 
     private func preparePastedImageAttachment(
-        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
+        _ image: GhosttyAttachmentPasteboardSnapshot.PastedImage,
         attachmentID: GhosttyPendingAttachment.ID,
         attemptID: UUID
     ) async {
-        guard let attachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(
-            from: request
-        ) else {
+        guard let attachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(from: image) else {
             failAttachmentPreparation(attachmentID, attemptID: attemptID)
             return
         }
         applyPreparedAttachment(attachment, to: attachmentID, attemptID: attemptID)
     }
 
+    /// The attachment becomes what was prepared, a pasted file perhaps a picture, and keeps its title, which may have
+    /// changed while it was prepared, unless `title` is given.
     private func applyPreparedAttachment(
         _ preparedAttachment: GhosttyPendingAttachment,
         to attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
+        attemptID: UUID,
+        title: String? = nil
     ) {
         guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID,
               attachments.contains(where: { $0.id == attachmentID }) else {
@@ -563,11 +646,14 @@ final class GhosttyComposerModel: ObservableObject {
             return
         }
 
-        updateAttachment(
+        guard let index = attachments.firstIndex(where: { $0.id == attachmentID }) else { return }
+        attachments[index] = GhosttyPendingAttachment(
             id: attachmentID,
+            kind: preparedAttachment.kind,
+            title: title ?? attachments[index].title,
+            detail: preparedAttachment.detail,
             payload: preparedAttachment.payload,
             previewPayload: preparedAttachment.previewPayload,
-            detail: preparedAttachment.detail,
             preparationState: .ready
         )
         attachmentPreparationJobs.removeValue(forKey: attachmentID)

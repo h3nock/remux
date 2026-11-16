@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 struct GhosttyAttachmentTransferSource: Identifiable, Equatable, Sendable {
     enum Payload: Equatable, Sendable {
@@ -774,7 +775,16 @@ extension GhosttyPendingAttachment {
         }
     }
 
+    /// A photo is named for its title as it is when sent: the draft's first photo is numbered only once a second
+    /// joins, which can be after it was prepared. Anything else keeps its file's name.
     private func transferFilename(for url: URL) -> String {
+        if kind == .photo {
+            return GhosttyAttachmentStagingStore.imageFilename(
+                title: title,
+                contentTypes: UTType(filenameExtension: url.pathExtension).map { [$0] } ?? [],
+                uniqueID: id
+            )
+        }
         let filename = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         return filename.isEmpty ? title : filename
     }
