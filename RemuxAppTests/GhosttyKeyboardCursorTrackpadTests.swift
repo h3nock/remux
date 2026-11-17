@@ -282,7 +282,7 @@ final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
     }
 
     @MainActor
-    func testARefusedArrowStopsTheDragAndItStillEndsAsOne() {
+    func testARejectedArrowEndsTheGesture() {
         let recorder = Recorder()
         recorder.accepts = false
         let driver = recorder.driver()
@@ -291,13 +291,9 @@ final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
 
         driver.update(owner: owner, at: point(down: 40), now: 1)
         driver.update(owner: owner, at: point(down: 80), now: 1.1)
-        driver.repeatTick(at: 10)
 
         XCTAssertEqual(recorder.keys.count, 1)
         XCTAssertEqual(driver.feedback.state, .hidden)
-        // Lifting ends a drag, so the hold doesn't go on to select, and nothing carries on after it.
-        XCTAssertEqual(driver.end(owner: owner, now: 2), .steered)
-        XCTAssertFalse(driver.canRegrip(owner: owner, at: 2.1))
         XCTAssertNil(driver.end(owner: owner))
     }
 

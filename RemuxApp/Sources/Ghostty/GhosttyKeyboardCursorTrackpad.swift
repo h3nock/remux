@@ -425,12 +425,7 @@ final class GhosttyKeyboardCursorTrackpadDriver {
     /// Ends the touch. A non-owner gets nil, so a terminal hold it doesn't own still goes on to select.
     @discardableResult
     func end(owner: AnyObject, now: TimeInterval = CACurrentMediaTime()) -> Ending? {
-        guard self.owner === owner else { return nil }
-        guard let trackpad else {
-            // Its arrows were refused: it was a drag all the same, and nothing carries on.
-            cancelCurrentGesture()
-            return .steered
-        }
+        guard self.owner === owner, let trackpad else { return nil }
         if isRegripTouch, !trackpad.hasMoved {
             cancelCurrentGesture()
             return .endedRegrip
@@ -469,7 +464,7 @@ final class GhosttyKeyboardCursorTrackpadDriver {
     private func emit(_ direction: GhosttyKeyboardCursorTrackpad.Direction, now: TimeInterval) -> Bool {
         didSteer = true
         guard sendKeyEvent?(GhosttySurfaceKeyEvent(keyCode: direction.keyCode)) == true else {
-            stopSteering()
+            cancelCurrentGesture()
             return false
         }
         arrowsSent += 1
@@ -504,16 +499,6 @@ final class GhosttyKeyboardCursorTrackpadDriver {
             link.invalidate()
             repeatLink = nil
         }
-    }
-
-    /// An arrow was refused: no more go and the stick leaves, but the touch stays this gesture's, so lifting it ends a
-    /// drag rather than a still hold that would select.
-    private func stopSteering() {
-        trackpad = nil
-        updateRepeatLink()
-        sendKeyEvent = nil
-        anchor = nil
-        publish()
     }
 
     private func cancelCurrentGesture() {
