@@ -28,6 +28,7 @@
 		0CF2F2E7A387E122A26ACCAB /* HerdrBorderLine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75E2991616FCD09075BF017F /* HerdrBorderLine.swift */; };
 		0D87FF270B10C1226AACD1D3 /* HerdrClientMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F93F23D523764FF038AC9014 /* HerdrClientMessage.swift */; };
 		0DCAADC05D6444284C9F4CCD /* RemuxSSHExecSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9586DC1E9C276FB8513E59B4 /* RemuxSSHExecSessionTests.swift */; };
+		0DF73541ECDE065713889101 /* TouchPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39D4DF6907234A571C3438F4 /* TouchPath.swift */; };
 		0DFDB09E1E79B4A5B3F465AC /* herdr-13-bell-clipboard-A.c2s.bin in Resources */ = {isa = PBXBuildFile; fileRef = 18268048A18288F9D17B72AA /* herdr-13-bell-clipboard-A.c2s.bin */; };
 		0EA336314209E4DD2E944AB1 /* HerdrTerminalAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C18060375CA9A4243434C0 /* HerdrTerminalAttachmentTests.swift */; };
 		10209186B1586F92DC9A345A /* herdr-09-resize-A.c2s.bin in Resources */ = {isa = PBXBuildFile; fileRef = BDF01FC6C1A14561748440B0 /* herdr-09-resize-A.c2s.bin */; };
@@ -548,6 +549,7 @@
 		3946EC0FFAF1FDB73056471C /* SSHPublicKeyInstallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPublicKeyInstallSheet.swift; sourceTree = "<group>"; };
 		3952803B4C0F5E847EEDEB75 /* TmuxScreenModelForegroundActiveCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxScreenModelForegroundActiveCheckTests.swift; sourceTree = "<group>"; };
 		399D92906CFF34B95159B66A /* direct-terminal-0.9.5-01-shell.s2c.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "direct-terminal-0.9.5-01-shell.s2c.bin"; sourceTree = "<group>"; };
+		39D4DF6907234A571C3438F4 /* TouchPath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchPath.swift; sourceTree = "<group>"; };
 		3A30CC244E7E9AB1756DFE6C /* direct-terminal-0.9.5-03-missing.expected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "direct-terminal-0.9.5-03-missing.expected.json"; sourceTree = "<group>"; };
 		3AD4C7AC962EA4CD349D3E47 /* RemoteProgramCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProgramCommand.swift; sourceTree = "<group>"; };
 		3B1C511196E36EC63A430EB9 /* GhosttyManagedSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyManagedSurface.swift; sourceTree = "<group>"; };
@@ -1312,6 +1314,7 @@
 			children = (
 				25F0019F1714AE6BD9F41209 /* RemuxAppUITests.swift */,
 				05617ECDC542A8A167C52296 /* ShortcutPaletteUITests.swift */,
+				39D4DF6907234A571C3438F4 /* TouchPath.swift */,
 			);
 			path = RemuxAppUITests;
 			sourceTree = "<group>";
@@ -1908,6 +1911,7 @@
 			files = (
 				F4176AEAA1F4C62E48B7BA4C /* RemuxAppUITests.swift in Sources */,
 				53A275DBC331E4F5DF34FD86 /* ShortcutPaletteUITests.swift in Sources */,
+				0DF73541ECDE065713889101 /* TouchPath.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

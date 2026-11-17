@@ -5245,6 +5245,7 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    /// A hold then a sideways drag sends one arrow per column of travel, and nothing more while the thumb rests.
     func testLiveTerminalLongPressSteeringWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("steering")
         defer {
@@ -5255,24 +5256,12 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
-        let collector = [
-            #"tty=/dev/tty"#,
-            #"saved=$(stty -g <$tty) || exit"#,
-            #"trap "stty $saved <$tty" EXIT"#,
-            #"stty raw -echo <$tty"#,
-            #"data= chunk="#,
-            #"IFS= read -r -k 3 -t 8 chunk <$tty; status=$?; [[ -n $chunk ]] && data+=$chunk"#,
-            #"while (( status == 0 )); do chunk=; IFS= read -r -k 3 -t 0.6 chunk <$tty; status=$?; [[ -n $chunk ]] && data+=$chunk; done"#,
-            #"stty $saved <$tty || exit; trap - EXIT"#,
-            #"esc=$(printf "\033"); csi="${esc}[D"; ss3="${esc}OD"; rest=$data; count=0; valid=1"#,
-            #"while [[ -n $rest ]]; do if [[ $rest == ${csi}* ]]; then rest=${rest[4,-1]}; elif [[ $rest == ${ss3}* ]]; then rest=${rest[4,-1]}; else valid=0; break; fi; (( count++ )); done"#,
-            #"if (( valid && count >= 3 )); then print -r -- REMUX_STEER_REPEAT_OK; else hex=$(print -rn -- "$data" | od -An -tx1 | tr -d " \n"); print -r -- "REMUX_STEER_REPEAT_FAIL_$hex"; fi"#,
-        ].joined(separator: "; ")
-        sendTerminalCommand("zsh -fc '\(collector)'")
-        hideKeyboardIfPresent()
-
         let terminal = app.otherElements["terminal.screen"].firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        let expected = Int(terminal.frame.width * 0.08 / Self.columnTravel)
+        sendTerminalCommand(arrowKeyCollector(name: "STEER", passes: "l == \(expected) && r + u + d == 0"))
+        hideKeyboardIfPresent()
+
         terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.50))
             .press(
                 forDuration: 0.55,
@@ -5287,8 +5276,137 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_STEER_REPEAT_OK"
+            marker: "REMUX_STEER_OK"
         )
+    }
+
+    /// Past six rows the arrows repeat while the thumb rests, and turning back stops them at once: the last arrow
+    /// comes well before the thumb lifts a second later, and none goes back up a row the thumb didn't travel.
+    @MainActor
+    func testLiveTerminalFollowRepeatStopsOnTurningBackWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("follow-turn")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        sendTerminalCommand(arrowKeyCollector(name: "TURN", passes: "d >= 10 && u + l + r == 0 && span < 2000"))
+        hideKeyboardIfPresent()
+
+        let frame = terminal.frame
+        let start = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.3)
+        try TouchPath.play(from: start, [
+            .hold(0.6),
+            .move(to: CGPoint(x: start.x, y: start.y + 130), over: 0.4),
+            .hold(1.2),
+            .move(to: CGPoint(x: start.x, y: start.y + 118), over: 0.1),
+            .hold(1.0),
+        ])
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_TURN_OK"
+        )
+    }
+
+    /// Within a second of letting go, a touch carries the drag on without the hold; a tap in that second ends it, so
+    /// a drag after the tap sends nothing.
+    @MainActor
+    func testLiveTerminalFollowRegripCarriesOnUntilATapWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("follow-regrip")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        sendTerminalCommand(arrowKeyCollector(name: "REGRIP", passes: "d == 5 && u + l + r == 0"))
+        hideKeyboardIfPresent()
+
+        let frame = terminal.frame
+        let first = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.35)
+        let second = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.3)
+        // 3.25 rows with the hold, then 2.25 rows re-gripped without it.
+        try TouchPath.play(from: first, [.hold(0.6), .move(to: CGPoint(x: first.x, y: first.y + 52), over: 0.3)])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try TouchPath.play(from: second, [.move(to: CGPoint(x: second.x, y: second.y + 36), over: 0.3)])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try TouchPath.play(from: second, [.hold(0.05)])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try TouchPath.play(from: second, [.move(to: CGPoint(x: second.x + 40, y: second.y), over: 0.3)])
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_REGRIP_OK"
+        )
+    }
+
+    /// Holding the keyboard's space bar and sliding sends arrows the same way. iOS reports a cursor point rather than
+    /// the thumb, so this checks the direction and that the slide steps, not an exact count.
+    @MainActor
+    func testLiveSpaceBarFollowSendsArrowsWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("follow-space")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        sendTerminalCommand(arrowKeyCollector(name: "SPACE", passes: "r >= 3 && l + u + d == 0"))
+        let space = app.keyboards.keys["space"].firstMatch
+        XCTAssertTrue(space.waitForExistence(timeout: 8))
+        let start = CGPoint(x: space.frame.midX, y: space.frame.midY)
+        try TouchPath.play(from: start, [
+            .hold(1.0),
+            .move(to: CGPoint(x: start.x + 60, y: start.y), over: 0.4),
+            .hold(0.6),
+        ])
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_SPACE_OK"
+        )
+    }
+
+    /// The app sends one arrow per this much sideways travel.
+    private static let columnTravel: CGFloat = 7.8
+
+    /// A program for the pane that reads arrow keys for as long as they keep coming and prints a dot for each, as a
+    /// list redraws its selection. When the keys stop it prints REMUX_<name>_D…_U…_L…_R…_SPAN… (milliseconds from the
+    /// first key to the last), and REMUX_<name>_OK when `passes`, a zsh arithmetic test over d, u, l, r and span,
+    /// holds.
+    private func arrowKeyCollector(name: String, passes: String) -> String {
+        let script = [
+            #"zmodload zsh/datetime"#,
+            #"tty=/dev/tty"#,
+            #"saved=$(stty -g <$tty) || exit"#,
+            #"trap "stty $saved <$tty" EXIT"#,
+            #"stty raw -echo <$tty"#,
+            #"d=0 u=0 l=0 r=0 first= last= wait=30"#,
+            #"while :; do chunk=; IFS= read -r -k 3 -t $wait chunk <$tty || break; t=$EPOCHREALTIME; case ${chunk[3]} in A) (( u++ ));; B) (( d++ ));; C) (( r++ ));; D) (( l++ ));; esac; [[ -z $first ]] && first=$t; last=$t; printf . >$tty; wait=2.5; done"#,
+            #"stty $saved <$tty; trap - EXIT"#,
+            #"span=0; [[ -n $first ]] && span=$(( (last - first) * 1000 )); span=${span%.*}"#,
+            "print -r -- REMUX_\(name)_D${d}_U${u}_L${l}_R${r}_SPAN${span}",
+            "if (( \(passes) )); then print -r -- REMUX_\(name)_OK; fi",
+        ].joined(separator: "; ")
+        return "zsh -fc '\(script)'"
     }
 
     func testLiveTmuxPrefixEntersCopyModeWhenConfigured() throws {
