@@ -490,10 +490,15 @@ private final class GhosttyCompositeViewportContainerView: UIView,
 
     private func beginTerminalLongPress(_ recognizer: UILongPressGestureRecognizer) {
         guard let driver = trackpadDriver,
-              let (_, surface, _) = visibleSurface(
+              let (surfaceID, surface, _) = visibleSurface(
                   at: recognizer.location(in: self)
               )
         else { return }
+        // A hold makes its pane the one in use, as a tap does, so the arrows a drag sends and the typing after
+        // it go to the pane under the thumb. A popup takes input already.
+        if surfaceID != projection.focusedSurfaceID, surfaceID != projection.popup?.id {
+            onSurfaceTap?(surfaceID, false)
+        }
 
         cancelLocalSelectionInteraction()
         localSelectionSurface = surface
