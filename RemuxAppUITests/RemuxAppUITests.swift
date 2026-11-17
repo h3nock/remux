@@ -5258,15 +5258,17 @@ final class RemuxAppUITests: XCTestCase {
 
         let terminal = app.otherElements["terminal.screen"].firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
-        let expected = Int(terminal.frame.width * 0.08 / Self.columnTravel)
-        sendTerminalCommand(arrowKeyCollector(name: "STEER", passes: "l == \(expected) && r + u + d == 0"))
+        sendTerminalCommand(arrowKeyCollector(name: "STEER", passes: "l == 4 && r + u + d == 0"))
         hideKeyboardIfPresent()
 
+        // Four and a half columns: half a column clear of the fourth arrow and the fifth, as a synthesized drag can
+        // end a point or so off.
+        let travel = 4.5 * Self.columnTravel / terminal.frame.width
         terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.50))
             .press(
                 forDuration: 0.55,
                 thenDragTo: terminal.coordinate(
-                    withNormalizedOffset: CGVector(dx: 0.52, dy: 0.50)
+                    withNormalizedOffset: CGVector(dx: 0.60 - travel, dy: 0.50)
                 ),
                 withVelocity: .slow,
                 thenHoldForDuration: 0.90
