@@ -92,7 +92,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var keyboardViewportTransitionCoordinator = GhosttyKeyboardViewportTransitionCoordinator()
     @State private var topologyActionInputRefocusCoordinator = GhosttyTopologyActionInputRefocusCoordinator()
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
-    @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
@@ -278,7 +277,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 ) != .refused else { return false }
                                 return model.sendKeyEvent(event, to: surfaceID).isAccepted
                             },
-                            onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             isMouseCaptured: { surfaceID in
                                 model.isMouseCaptured(for: surfaceID)
                             },
@@ -324,7 +322,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendPaste: sendTerminalPaste,
                             sendKeyEvent: sendTerminalKeyEvent,
                             isModifierArmed: { terminalInputController.isControlArmed },
-                            onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
                         )
                         .frame(
@@ -389,10 +386,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onTrustHostKey: onTrustHostKey
                         )
                     }
-                    .overlay(alignment: .topTrailing) {
-                        GhosttyKeyboardCursorTrackpadHUD(state: trackpadFeedback)
-                            .padding(.top, 12)
-                            .padding(.trailing, 12)
+                    .overlay {
+                        GhosttyKeyboardCursorTrackpadStick(feedback: trackpadDriver.feedback)
                     }
                     .onAppear {
                         traceTerminalViewportSnapshot(

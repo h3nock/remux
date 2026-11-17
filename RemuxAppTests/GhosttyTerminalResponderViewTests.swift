@@ -796,11 +796,10 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testFloatingCursorCrossingFirstTierEmitsArrowAndPublishesTier() {
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+    func testFloatingCursorSendsOneArrowPerColumnOfTravel() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
         var receivedEvents: [GhosttySurfaceKeyEvent] = []
-        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
-
         view.update(
             isEnabled: true,
             wantsFirstResponder: true,
@@ -810,34 +809,24 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendKeyEvent: {
                 receivedEvents.append($0)
                 return true
-            },
-            onTrackpadFeedbackChange: { feedback.append($0) }
+            }
         )
 
         view.beginFloatingCursor(at: .zero)
-        view.updateFloatingCursor(at: .init(x: 36, y: 0))
+        XCTAssertEqual(driver.feedback.state.anchor, .keyboard)
+        view.updateFloatingCursor(at: .init(x: 16, y: 0))
+        XCTAssertEqual(driver.feedback.state.direction, .right)
         view.endFloatingCursor()
 
-        XCTAssertEqual(receivedEvents.map(\.keyCode), [.arrowRight])
-        XCTAssertEqual(feedback, [
-            .active,
-            .init(
-                isVisible: true,
-                direction: .right,
-                committedTier: .one,
-                armingTier: nil,
-                armingProgress: 0
-            ),
-            .hidden,
-        ])
+        XCTAssertEqual(receivedEvents.map(\.keyCode), [.arrowRight, .arrowRight])
+        XCTAssertEqual(driver.feedback.state, .hidden)
     }
 
     @MainActor
-    func testFloatingCursorPartialArmingSendsNothing() {
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+    func testFloatingCursorWobbleSendsNothing() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
         var receivedEvents: [GhosttySurfaceKeyEvent] = []
-        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
-
         view.update(
             isEnabled: true,
             wantsFirstResponder: true,
@@ -847,35 +836,22 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendKeyEvent: {
                 receivedEvents.append($0)
                 return true
-            },
-            onTrackpadFeedbackChange: { feedback.append($0) }
+            }
         )
 
         view.beginFloatingCursor(at: .zero)
-        view.updateFloatingCursor(at: .init(x: 22, y: 0))
+        view.updateFloatingCursor(at: .init(x: 4, y: 2))
         view.endFloatingCursor()
 
         XCTAssertTrue(receivedEvents.isEmpty)
-        XCTAssertEqual(feedback, [
-            .active,
-            .init(
-                isVisible: true,
-                direction: .right,
-                committedTier: .neutral,
-                armingTier: .one,
-                armingProgress: 0.5
-            ),
-            .hidden,
-        ])
+        XCTAssertEqual(driver.feedback.state, .hidden)
     }
 
     @MainActor
     func testDisablingResponderCancelsActiveTrackpadGesture() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
         let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
         var receivedEvents: [GhosttySurfaceKeyEvent] = []
-        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
-
         view.update(
             isEnabled: true,
             wantsFirstResponder: true,
@@ -885,12 +861,12 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendKeyEvent: {
                 receivedEvents.append($0)
                 return true
-            },
-            onTrackpadFeedbackChange: { feedback.append($0) }
+            }
         )
 
         view.beginFloatingCursor(at: .zero)
-        view.updateFloatingCursor(at: .init(x: 36, y: 0))
+        view.updateFloatingCursor(at: .init(x: 0, y: 100))
+        XCTAssertTrue(driver.feedback.state.isRepeating)
         let eventCountBeforeDisable = receivedEvents.count
 
         view.update(
@@ -899,11 +875,10 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 1,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadFeedbackChange: { feedback.append($0) }
+            sendKeyEvent: { _ in true }
         )
 
-        XCTAssertEqual(feedback.last, .hidden)
+        XCTAssertEqual(driver.feedback.state, .hidden)
         driver.repeatTick(at: .greatestFiniteMagnitude)
         XCTAssertEqual(receivedEvents.count, eventCountBeforeDisable)
     }

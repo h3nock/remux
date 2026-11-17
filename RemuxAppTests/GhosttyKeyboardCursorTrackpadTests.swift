@@ -3,390 +3,313 @@ import XCTest
 @testable import Remux
 
 final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
-    private let configuration = GhosttyKeyboardCursorTrackpad.Configuration(
-        neutralRadius: 2,
-        armingDistance: 8,
-        tierPlateauDistance: 4,
-        oneXRepeatInterval: 0.2,
-        twoXRepeatInterval: 0.1,
-        threeXRepeatInterval: 0.05,
-        directionSwitchRatio: 1.25,
-        tierReleaseHysteresis: 2
-    )
+    private typealias Trackpad = GhosttyKeyboardCursorTrackpad
+    private typealias Metrics = GhosttyKeyboardCursorTrackpad.Metrics
 
-    func testRadialZonesSeparateArmingFromStableCommittedTiers() {
-        var trackpad = makeTrackpad()
+    private let hold = CGPoint(x: 200, y: 300)
 
-        XCTAssertEqual(trackpad.update(at: .init(x: 1, y: 0)), .active)
-        assertFeedback(
-            trackpad.update(at: .init(x: 6, y: 0)),
-            direction: .right,
-            committedTier: .neutral,
-            armingTier: .one,
-            armingProgress: 0.5
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 10, y: 0)),
-            direction: .right,
-            committedTier: .one
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 12, y: 0)),
-            direction: .right,
-            committedTier: .one
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 18, y: 0)),
-            direction: .right,
-            committedTier: .one,
-            armingTier: .two,
-            armingProgress: 0.5
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 22, y: 0)),
-            direction: .right,
-            committedTier: .two
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 24, y: 0)),
-            direction: .right,
-            committedTier: .two
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 30, y: 0)),
-            direction: .right,
-            committedTier: .two,
-            armingTier: .three,
-            armingProgress: 0.5
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 34, y: 0)),
-            direction: .right,
-            committedTier: .three
-        )
+    // MARK: Following the thumb
+
+    func testNothingIsSentBeforeTheAxisIsChosen() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+
+        XCTAssertEqual(trackpad.move(to: point(down: 5), at: 0).arrows, 0)
+        XCTAssertFalse(trackpad.hasMoved)
     }
 
-    func testTierProgressUsesRadiusFromOrigin() {
-        var trackpad = makeTrackpad()
-
-        assertFeedback(
-            trackpad.update(at: .init(x: 6, y: 8)),
-            direction: .down,
-            committedTier: .one
-        )
-    }
-
-    func testMovingInwardPastReleaseHysteresisLowersCommittedTier() {
-        var trackpad = makeTrackpad()
-        XCTAssertEqual(trackpad.update(at: .init(x: 24, y: 0)).committedTier, .two)
-
-        assertFeedback(
-            trackpad.update(at: .init(x: 19, y: 0)),
-            direction: .right,
-            committedTier: .one,
-            armingTier: .two,
-            armingProgress: 0.625
-        )
-    }
-
-    func testCommittedTierDoesNotChatterAtReleaseBoundary() {
-        var trackpad = makeTrackpad()
-        XCTAssertEqual(trackpad.update(at: .init(x: 22, y: 0)).committedTier, .two)
-
-        assertFeedback(
-            trackpad.update(at: .init(x: 21, y: 0)),
-            direction: .right,
-            committedTier: .two
-        )
-        assertFeedback(
-            trackpad.update(at: .init(x: 19, y: 0)),
-            direction: .right,
-            committedTier: .one,
-            armingTier: .two,
-            armingProgress: 0.625
-        )
-    }
-
-    func testReturningInsideNeutralCircleClearsDirectionAndStopsSteering() {
-        var trackpad = makeTrackpad()
-        _ = trackpad.update(at: .init(x: 22, y: 0))
-
-        XCTAssertEqual(trackpad.update(at: .init(x: 1, y: 0)), .active)
-    }
-
-    func testFixedOriginMapsAllCardinalDirections() {
-        let samples: [(CGPoint, GhosttyKeyboardCursorTrackpad.Direction)] = [
-            (.init(x: 10, y: 0), .right),
-            (.init(x: -10, y: 0), .left),
-            (.init(x: 0, y: -10), .up),
-            (.init(x: 0, y: 10), .down),
-        ]
-
-        for (point, direction) in samples {
-            var trackpad = makeTrackpad()
-            assertFeedback(
-                trackpad.update(at: point),
-                direction: direction,
-                committedTier: .one
-            )
+    func testOneArrowGoesPerRowOfTravelHoweverTheTravelIsSliced() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+        var arrows = 0
+        for y in stride(from: 3, through: 80, by: 3) {
+            arrows += trackpad.move(to: point(down: CGFloat(y)), at: 0).arrows
         }
+
+        XCTAssertEqual(arrows, Int(78 / Metrics.rowTravel))
+        XCTAssertEqual(trackpad.direction, .down)
+        XCTAssertEqual(trackpad.progress, 78 / Metrics.preciseReach, accuracy: 0.001)
+        XCTAssertFalse(trackpad.isRepeating)
     }
 
-    func testAxisHysteresisPreventsDirectionFlickerNearDiagonal() {
-        var trackpad = makeTrackpad()
-        XCTAssertEqual(trackpad.update(at: .init(x: 20, y: 10)).direction, .right)
+    func testSidewaysTravelCountsColumns() {
+        var trackpad = Trackpad(at: hold, edges: nil)
 
-        XCTAssertEqual(trackpad.update(at: .init(x: 20, y: 24)).direction, .right)
-        XCTAssertEqual(trackpad.update(at: .init(x: 20, y: 25)).direction, .down)
+        let step = trackpad.move(to: point(right: 40), at: 0)
+
+        XCTAssertEqual(step.direction, .right)
+        XCTAssertEqual(step.arrows, Int(40 / Metrics.columnTravel))
     }
 
-    func testCrossingOriginReversesImmediatelyOnSameAxis() {
-        var trackpad = makeTrackpad()
-        XCTAssertEqual(trackpad.update(at: .init(x: 10, y: 0)).direction, .right)
+    func testTurningBackStartsANewRunFromTheTurn() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+        XCTAssertEqual(trackpad.move(to: point(down: 48), at: 0).arrows, 3)
 
-        XCTAssertEqual(trackpad.update(at: .init(x: -10, y: 0)).direction, .left)
+        // Coming back less than the turn-back distance keeps the run going the same way.
+        XCTAssertEqual(trackpad.move(to: point(down: 41), at: 0).arrows, 0)
+        XCTAssertEqual(trackpad.direction, .down)
+
+        let turn = trackpad.move(to: point(down: 39), at: 0)
+        XCTAssertEqual(turn.direction, .up)
+        XCTAssertEqual(turn.arrows, 0)
+        // Counted from the turning point, 48: one row back is one arrow up.
+        XCTAssertEqual(trackpad.move(to: point(down: 32), at: 0), .init(direction: .up, arrows: 1))
     }
 
-    func testStationaryPointKeepsSameCommittedState() {
-        var trackpad = makeTrackpad()
-        let point = CGPoint(x: 18, y: 0)
-        let first = trackpad.update(at: point)
+    func testAClearTurnOntoTheOtherAxisSwitchesIt() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+        XCTAssertEqual(trackpad.move(to: point(down: 20), at: 0).arrows, 1)
 
-        XCTAssertEqual(trackpad.update(at: point), first)
+        var arrows = 0
+        for x in stride(from: 4, through: 40, by: 4) {
+            arrows += trackpad.move(to: CGPoint(x: hold.x + CGFloat(x), y: hold.y + 20), at: 0).arrows
+        }
+
+        XCTAssertEqual(trackpad.direction, .right)
+        XCTAssertGreaterThan(arrows, 0)
     }
 
-    func testRepeatIntervalsAreExplicitForEachTier() {
-        let trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
+    // MARK: Repeating past the reach
 
-        XCTAssertNil(trackpad.repeatInterval(for: .neutral))
-        XCTAssertEqual(trackpad.repeatInterval(for: .one)!, 0.2, accuracy: 0.000_001)
-        XCTAssertEqual(trackpad.repeatInterval(for: .two)!, 0.1, accuracy: 0.000_001)
-        XCTAssertEqual(trackpad.repeatInterval(for: .three)!, 0.05, accuracy: 0.000_001)
+    func testPastTheReachTheRestOfTheRowsGoThenItRepeats() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+
+        let step = trackpad.move(to: point(down: Metrics.preciseReach + 4), at: 10)
+
+        XCTAssertEqual(step, .init(direction: .down, arrows: 6, startsRepeating: true))
+        XCTAssertTrue(trackpad.isRepeating)
+        XCTAssertEqual(trackpad.progress, 1)
+        XCTAssertNil(trackpad.repeatArrow(at: 10 + Metrics.firstRepeatDelay - 0.01))
+        XCTAssertEqual(trackpad.repeatArrow(at: 10 + Metrics.firstRepeatDelay), .down)
     }
 
-    func testDefaultCadencesMatchPrecisionAndTraversalRoles() {
-        let trackpad = GhosttyKeyboardCursorTrackpad()
+    func testRepeatsGetFasterTheFurtherPastTheReach() {
+        var shallow = Trackpad(at: hold, edges: nil)
+        _ = shallow.move(to: point(down: Metrics.preciseReach + 0.5), at: 0)
+        var deep = Trackpad(at: hold, edges: nil)
+        _ = deep.move(to: point(down: Metrics.preciseReach + Metrics.repeatRange + 20), at: 0)
 
-        XCTAssertEqual(trackpad.repeatInterval(for: .one)!, 0.45, accuracy: 0.000_001)
-        XCTAssertEqual(trackpad.repeatInterval(for: .two)!, 0.225, accuracy: 0.000_001)
-        XCTAssertEqual(trackpad.repeatInterval(for: .three)!, 0.12, accuracy: 0.000_001)
+        XCTAssertEqual(interval(after: &shallow), 1 / Metrics.slowestRepeatRate, accuracy: 0.01)
+        XCTAssertEqual(interval(after: &deep), 1 / Metrics.fastestRepeatRate, accuracy: 0.001)
     }
 
-    func testDefaultGeometryKeepsAllTiersWithinOneHundredTwentyPoints() {
-        var trackpad = GhosttyKeyboardCursorTrackpad()
-        _ = trackpad.begin(at: .zero)
+    func testEasingBackALittleKeepsRepeating() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+        _ = trackpad.move(to: point(down: 120), at: 0)
 
-        XCTAssertEqual(trackpad.update(at: .init(x: 7, y: 0)), .active)
-        assertFeedback(
-            trackpad.update(at: .init(x: 22, y: 0)),
-            direction: .right,
-            committedTier: .neutral,
-            armingTier: .one,
-            armingProgress: 0.5
-        )
-        XCTAssertEqual(trackpad.update(at: .init(x: 36, y: 0)).committedTier, .one)
-        XCTAssertEqual(trackpad.update(at: .init(x: 78, y: 0)).committedTier, .two)
-        XCTAssertEqual(trackpad.update(at: .init(x: 120, y: 0)).committedTier, .three)
+        _ = trackpad.move(to: point(down: 113), at: 0)
+
+        XCTAssertTrue(trackpad.isRepeating)
     }
+
+    func testTurningBackWhileRepeatingStopsAtOnceAndStepsBackPrecisely() {
+        var trackpad = Trackpad(at: hold, edges: nil)
+        _ = trackpad.move(to: point(down: 120), at: 0)
+
+        let turn = trackpad.move(to: point(down: 111), at: 1)
+
+        XCTAssertFalse(trackpad.isRepeating)
+        XCTAssertNil(trackpad.repeatArrow(at: 5))
+        XCTAssertEqual(turn.direction, .up)
+        XCTAssertEqual(turn.arrows, 0)
+        XCTAssertEqual(trackpad.move(to: point(down: 120 - Metrics.rowTravel), at: 1).arrows, 1)
+    }
+
+    // MARK: Screen edges
+
+    func testAnEdgeRepeatsOnlyWhileTheRunHeadsThatWay() {
+        let edges = CGRect(x: 0, y: 50, width: 400, height: 800)
+        let start = CGPoint(x: 200, y: 760)
+        var trackpad = Trackpad(at: start, edges: edges)
+
+        let into = trackpad.move(to: CGPoint(x: 200, y: 800), at: 0)
+        XCTAssertTrue(into.startsRepeating)
+        XCTAssertTrue(trackpad.isRepeating)
+        XCTAssertEqual(trackpad.repeatArrow(at: Metrics.firstEdgeRepeatDelay), .down)
+
+        _ = trackpad.move(to: CGPoint(x: 200, y: 791), at: 1)
+        XCTAssertFalse(trackpad.isRepeating)
+    }
+
+    func testAnEdgeBandStartsNoCloserThanTheMinimumTravelFromTheHold() {
+        let edges = CGRect(x: 0, y: 50, width: 400, height: 800)
+        let start = CGPoint(x: 200, y: 830)
+        var trackpad = Trackpad(at: start, edges: edges)
+
+        XCTAssertFalse(trackpad.move(to: CGPoint(x: 200, y: 830 + Metrics.edgeMinimumTravel - 1), at: 0).startsRepeating)
+        XCTAssertTrue(trackpad.move(to: CGPoint(x: 200, y: 830 + Metrics.edgeMinimumTravel + 1), at: 0).startsRepeating)
+    }
+
+    // MARK: Driver
 
     @MainActor
-    func testDriverDoesNotEmitDuringInitialArming() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-
-        let feedback = harness.driver.update(owner: harness.owner, at: .init(x: 6, y: 0), now: 0)
-
-        XCTAssertTrue(harness.keyCodes.isEmpty)
-        assertFeedback(
-            feedback!,
-            direction: .right,
-            committedTier: .neutral,
-            armingTier: .one,
-            armingProgress: 0.5
-        )
-    }
-
-    @MainActor
-    func testDriverRepeatsCommittedDirectionWhileFingerIsStill() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
-
-        XCTAssertEqual(harness.keyCodes, [.arrowRight])
-        harness.driver.repeatTick(at: 0.19)
-        XCTAssertEqual(harness.keyCodes, [.arrowRight])
-        harness.driver.repeatTick(at: 0.20)
-        harness.driver.repeatTick(at: 0.39)
-        harness.driver.repeatTick(at: 0.40)
-
-        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight, .arrowRight])
-        XCTAssertEqual(harness.driver.end(owner: harness.owner), true)
-    }
-
-    @MainActor
-    func testDriverKeepsCurrentRateWhileNextTierIsArming() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
-
-        let feedback = harness.driver.update(owner: harness.owner, at: .init(x: 18, y: 0), now: 0.1)
-        harness.driver.repeatTick(at: 0.20)
-
-        assertFeedback(
-            feedback!,
-            direction: .right,
-            committedTier: .one,
-            armingTier: .two,
-            armingProgress: 0.5
-        )
-        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight])
-    }
-
-    @MainActor
-    func testDriverUsesFasterCadenceOnlyAfterTierCommits() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
-
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 22, y: 0), now: 0.1)
-        harness.driver.repeatTick(at: 0.19)
-        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight])
-        harness.driver.repeatTick(at: 0.20)
-
-        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight, .arrowRight])
-        XCTAssertEqual(harness.hapticCues, [.tierChanged, .tierChanged])
-    }
-
-    @MainActor
-    func testDriverDoesNotEmitExtraCommandWhenMovingToSlowerTier() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 22, y: 0), now: 0)
-        XCTAssertEqual(harness.keyCodes, [.arrowRight])
-
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 19, y: 0), now: 0.1)
-
-        XCTAssertEqual(harness.keyCodes, [.arrowRight])
-        XCTAssertEqual(harness.hapticCues, [.tierChanged, .tierChanged])
-    }
-
-    @MainActor
-    func testDriverStopsImmediatelyInsideNeutralZone() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
-
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 1, y: 0), now: 0.1)
-        harness.driver.repeatTick(at: 1)
-
-        XCTAssertEqual(harness.keyCodes, [.arrowRight])
-        XCTAssertEqual(harness.hapticCues, [.tierChanged, .neutralEntered])
-    }
-
-    @MainActor
-    func testDriverDirectionChangeEmitsNewDirectionAndCancelsOldRepeat() {
-        let harness = DriverHarness(configuration: configuration)
-        defer { harness.driver.cancel(owner: harness.owner) }
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
-
-        _ = harness.driver.update(owner: harness.owner, at: .init(x: -10, y: 0), now: 0.1)
-        harness.driver.repeatTick(at: 0.299)
-        harness.driver.repeatTick(at: 0.301)
-
-        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowLeft, .arrowLeft])
-    }
-
-    @MainActor
-    func testDriverRejectsUpdatesFromAnotherOwner() {
-        let harness = DriverHarness(configuration: configuration)
-        let otherOwner = NSObject()
-        defer { harness.driver.cancel(owner: harness.owner) }
-
-        XCTAssertNil(harness.driver.update(owner: otherOwner, at: .init(x: 10, y: 0)))
-        XCTAssertNil(harness.driver.end(owner: otherOwner))
-        XCTAssertEqual(harness.driver.end(owner: harness.owner), false)
-    }
-
-    @MainActor
-    func testDriverCancelsGestureWhenKeyPathRejectsInput() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver(configuration: configuration)
+    func testTheDriverSendsByTravelAndShowsTheRun() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
         let owner = NSObject()
-        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
-        var attempts = 0
-        driver.begin(
-            owner: owner,
-            at: .zero,
-            sendKeyEvent: { _ in
-                attempts += 1
-                return false
-            },
-            onFeedbackChange: { feedback.append($0) }
-        )
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
 
-        _ = driver.update(owner: owner, at: .init(x: 10, y: 0), now: 0)
+        driver.update(owner: owner, at: point(down: 32), now: 1)
 
-        XCTAssertEqual(attempts, 1)
-        XCTAssertEqual(feedback, [.active, .hidden])
-        XCTAssertNil(driver.update(owner: owner, at: .init(x: 22, y: 0)))
+        XCTAssertEqual(recorder.keys, [.arrowDown, .arrowDown])
+        XCTAssertEqual(driver.feedback.state.anchor, .thumb(hold))
+        XCTAssertEqual(driver.feedback.state.direction, .down)
+        XCTAssertEqual(driver.feedback.state.arrowsSent, 2)
+        XCTAssertEqual(recorder.haptics, [.holdStarted, .arrowSent])
+    }
+
+    @MainActor
+    func testTheDriverRepeatsPastTheReachAndStopsOnTheTurn() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+        driver.update(owner: owner, at: point(down: 100), now: 1)
+        XCTAssertEqual(recorder.haptics.last, .repeatStarted)
+        XCTAssertTrue(driver.feedback.state.isRepeating)
+
+        driver.repeatTick(at: 1 + Metrics.firstRepeatDelay)
+        XCTAssertEqual(recorder.keys.count, 7)
+
+        driver.update(owner: owner, at: point(down: 90), now: 2)
+        driver.repeatTick(at: 10)
+        XCTAssertEqual(recorder.keys.count, 7)
+        XCTAssertFalse(driver.feedback.state.isRepeating)
+        XCTAssertEqual(driver.feedback.state.direction, .up)
+    }
+
+    @MainActor
+    func testADragLetGoEndsSteered() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+        driver.update(owner: owner, at: point(down: 20), now: 1)
+
+        XCTAssertEqual(driver.end(owner: owner), .steered)
+        XCTAssertEqual(driver.feedback.state, .hidden)
+    }
+
+    @MainActor
+    func testAHoldLetGoInPlaceIsStationary() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+
+        XCTAssertEqual(driver.end(owner: owner), .stationary)
+        XCTAssertEqual(driver.feedback.state, .hidden)
+    }
+
+    @MainActor
+    func testTheDriverIgnoresAnotherOwner() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        let other = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+
+        driver.update(owner: other, at: point(down: 40), now: 1)
+
+        XCTAssertTrue(recorder.keys.isEmpty)
+        XCTAssertNil(driver.end(owner: other))
+        XCTAssertFalse(driver.cancel(owner: other))
+        XCTAssertTrue(driver.feedback.state.isVisible)
+    }
+
+    @MainActor
+    func testARejectedArrowEndsTheGesture() {
+        let recorder = Recorder()
+        recorder.accepts = false
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+
+        driver.update(owner: owner, at: point(down: 40), now: 1)
+        driver.update(owner: owner, at: point(down: 80), now: 1.1)
+
+        XCTAssertEqual(recorder.keys.count, 1)
+        XCTAssertEqual(driver.feedback.state, .hidden)
         XCTAssertNil(driver.end(owner: owner))
     }
 
-    private func makeTrackpad() -> GhosttyKeyboardCursorTrackpad {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        trackpad.begin(at: .zero)
-        return trackpad
+    @MainActor
+    func testArrowHapticsAreSpacedOut() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+
+        driver.update(owner: owner, at: point(down: 64), now: 1)
+
+        XCTAssertEqual(recorder.keys.count, 4)
+        XCTAssertEqual(recorder.haptics, [.holdStarted, .arrowSent])
     }
 
-    private func assertFeedback(
-        _ feedback: GhosttyKeyboardCursorTrackpad.FeedbackState,
-        direction: GhosttyKeyboardCursorTrackpad.Direction,
-        committedTier: GhosttyKeyboardCursorTrackpad.SpeedTier,
-        armingTier: GhosttyKeyboardCursorTrackpad.SpeedTier? = nil,
-        armingProgress: CGFloat = 0,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        XCTAssertTrue(feedback.isVisible, file: file, line: line)
-        XCTAssertEqual(feedback.direction, direction, file: file, line: line)
-        XCTAssertEqual(feedback.committedTier, committedTier, file: file, line: line)
-        XCTAssertEqual(feedback.armingTier, armingTier, file: file, line: line)
-        XCTAssertEqual(feedback.armingProgress, armingProgress, accuracy: 0.000_001, file: file, line: line)
-    }
-}
+    // MARK: Stick placement
 
-@MainActor
-private final class DriverHarness {
-    let driver: GhosttyKeyboardCursorTrackpadDriver
-    let owner = NSObject()
-    let hapticRecorder: HapticRecorder
-    private(set) var keyCodes: [GhosttySurfaceKeyEvent.KeyCode] = []
+    private typealias Stick = GhosttyKeyboardCursorTrackpadStick
 
-    var hapticCues: [GhosttyKeyboardCursorTrackpadDriver.HapticCue] {
-        hapticRecorder.cues
+    func testTheStickSitsAboveTheThumbTowardTheMiddle() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 700)
+
+        XCTAssertEqual(Stick.center(for: .thumb(CGPoint(x: 300, y: 400)), windowOrigin: .zero, in: bounds), CGPoint(x: 240, y: 336))
+        XCTAssertEqual(Stick.center(for: .thumb(CGPoint(x: 80, y: 400)), windowOrigin: .zero, in: bounds), CGPoint(x: 140, y: 336))
     }
 
-    init(configuration: GhosttyKeyboardCursorTrackpad.Configuration) {
-        let hapticRecorder = HapticRecorder()
-        self.hapticRecorder = hapticRecorder
-        driver = GhosttyKeyboardCursorTrackpadDriver(
-            configuration: configuration,
-            playHaptic: { [hapticRecorder] cue in
-                hapticRecorder.cues.append(cue)
-            }
-        )
-        driver.begin(
-            owner: owner,
-            at: .zero,
-            sendKeyEvent: { [weak self] event in
-                self?.keyCodes.append(event.keyCode)
-                return true
-            },
-            onFeedbackChange: { _ in }
+    func testTheStickSitsBesideTheThumbWhereThereIsNoRoomAbove() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 700)
+
+        XCTAssertEqual(Stick.center(for: .thumb(CGPoint(x: 300, y: 80)), windowOrigin: .zero, in: bounds), CGPoint(x: 216, y: 72))
+    }
+
+    func testTheStickUsesTheTerminalAreasOwnCoordinates() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 700)
+
+        XCTAssertEqual(
+            Stick.center(for: .thumb(CGPoint(x: 300, y: 459)), windowOrigin: CGPoint(x: 0, y: 59), in: bounds),
+            CGPoint(x: 240, y: 336)
         )
     }
-}
 
-@MainActor
-private final class HapticRecorder {
-    var cues: [GhosttyKeyboardCursorTrackpadDriver.HapticCue] = []
+    func testASpaceBarHoldCentresTheStickAboveTheKeyboard() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 500)
+
+        XCTAssertEqual(Stick.center(for: .keyboard, windowOrigin: .zero, in: bounds), CGPoint(x: 200, y: 456))
+    }
+
+    // MARK: Helpers
+
+    private func point(down distance: CGFloat) -> CGPoint {
+        CGPoint(x: hold.x, y: hold.y + distance)
+    }
+
+    private func point(right distance: CGFloat) -> CGPoint {
+        CGPoint(x: hold.x + distance, y: hold.y)
+    }
+
+    /// The time between the first two repeats.
+    private func interval(after trackpad: inout Trackpad) -> TimeInterval {
+        var time: TimeInterval = 0
+        var fired: [TimeInterval] = []
+        while fired.count < 2, time < 5 {
+            if trackpad.repeatArrow(at: time) != nil { fired.append(time) }
+            time += 0.0005
+        }
+        return fired[1] - fired[0]
+    }
+
+    @MainActor
+    private final class Recorder {
+        var keys: [GhosttySurfaceKeyEvent.KeyCode] = []
+        var haptics: [GhosttyKeyboardCursorTrackpadDriver.HapticCue] = []
+        var accepts = true
+
+        func driver() -> GhosttyKeyboardCursorTrackpadDriver {
+            GhosttyKeyboardCursorTrackpadDriver(playHaptic: { [weak self] in self?.haptics.append($0) })
+        }
+
+        func send(_ event: GhosttySurfaceKeyEvent) -> Bool {
+            keys.append(event.keyCode)
+            return accepts
+        }
+    }
 }
