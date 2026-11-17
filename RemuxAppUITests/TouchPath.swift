@@ -47,7 +47,10 @@ enum TouchPath {
         for segment in segments {
             switch segment {
             case .hold(let duration):
+                // The synthesizer glides between the points it is given, so the touch is pinned at the end of the
+                // hold; otherwise it creeps toward the next move while it should rest.
                 offset += duration
+                moveTo.call(path, moveTo.selector, point, offset)
             case .move(let end, let duration):
                 let steps = max(1, Int((duration / moveStep).rounded()))
                 for step in 1...steps {
