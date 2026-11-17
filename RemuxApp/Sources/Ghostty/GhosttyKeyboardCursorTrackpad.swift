@@ -133,16 +133,19 @@ struct GhosttyKeyboardCursorTrackpad {
 
     private mutating func followRun(to point: CGPoint, at time: TimeInterval) -> Step {
         if let isVertical {
-            // A clear turn onto the other axis switches it, except while repeating past the reach.
+            // A clear turn onto the other axis switches it, except while repeating past the reach. The new run starts
+            // where the turn began, so the travel that showed it sends its arrows too, however finely it was reported.
             if repetition?.cause != .reach {
                 let sideways = recentPath.reduce(0) { $0 + abs($1.dx) }
                 let upright = recentPath.reduce(0) { $0 + abs($1.dy) }
                 if isVertical, sideways > 2 * upright, sideways >= Metrics.axisSwitchTravel {
                     self.isVertical = false
-                    run = Run(anchor: point.x - origin.x, peak: point.x - origin.x)
+                    let turn = point.x - origin.x - recentPath.reduce(0) { $0 + $1.dx }
+                    run = Run(anchor: turn, peak: turn)
                 } else if !isVertical, upright > 2 * sideways, upright >= Metrics.axisSwitchTravel {
                     self.isVertical = true
-                    run = Run(anchor: point.y - origin.y, peak: point.y - origin.y)
+                    let turn = point.y - origin.y - recentPath.reduce(0) { $0 + $1.dy }
+                    run = Run(anchor: turn, peak: turn)
                 }
             }
         } else {

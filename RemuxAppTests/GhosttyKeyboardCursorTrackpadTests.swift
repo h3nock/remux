@@ -54,17 +54,38 @@ final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
         XCTAssertEqual(trackpad.move(to: point(down: 32), at: 0), .init(direction: .up, arrows: 1))
     }
 
-    func testAClearTurnOntoTheOtherAxisSwitchesIt() {
-        var trackpad = Trackpad(at: hold, edges: nil)
-        XCTAssertEqual(trackpad.move(to: point(down: 20), at: 0).arrows, 1)
-
-        var arrows = 0
+    func testATurnOntoTheOtherAxisCountsTheTravelThatShowedIt() {
+        // Down two rows, then 40 pt sideways: as many small moves, and as one.
+        var finely = Trackpad(at: hold, edges: nil)
+        XCTAssertEqual(finely.move(to: point(down: 32), at: 0).arrows, 2)
+        var sideways = 0
         for x in stride(from: 4, through: 40, by: 4) {
-            arrows += trackpad.move(to: CGPoint(x: hold.x + CGFloat(x), y: hold.y + 20), at: 0).arrows
+            sideways += finely.move(to: CGPoint(x: hold.x + CGFloat(x), y: hold.y + 32), at: 0).arrows
         }
+        var coarsely = Trackpad(at: hold, edges: nil)
+        _ = coarsely.move(to: point(down: 32), at: 0)
+        let atOnce = coarsely.move(to: CGPoint(x: hold.x + 40, y: hold.y + 32), at: 0).arrows
 
-        XCTAssertEqual(trackpad.direction, .right)
-        XCTAssertGreaterThan(arrows, 0)
+        XCTAssertEqual(finely.direction, .right)
+        XCTAssertEqual(sideways, Int(40 / Metrics.columnTravel))
+        XCTAssertEqual(atOnce, sideways)
+    }
+
+    func testATurnBackOntoTheVerticalAxisCountsTheTravelThatShowedIt() {
+        // Right four columns, then 64 pt down: as many small moves, and as one.
+        var finely = Trackpad(at: hold, edges: nil)
+        _ = finely.move(to: point(right: 32), at: 0)
+        var down = 0
+        for y in stride(from: 4, through: 64, by: 4) {
+            down += finely.move(to: CGPoint(x: hold.x + 32, y: hold.y + CGFloat(y)), at: 0).arrows
+        }
+        var coarsely = Trackpad(at: hold, edges: nil)
+        _ = coarsely.move(to: point(right: 32), at: 0)
+        let atOnce = coarsely.move(to: CGPoint(x: hold.x + 32, y: hold.y + 64), at: 0).arrows
+
+        XCTAssertEqual(finely.direction, .down)
+        XCTAssertEqual(down, 4)
+        XCTAssertEqual(atOnce, down)
     }
 
     // MARK: Repeating past the reach
