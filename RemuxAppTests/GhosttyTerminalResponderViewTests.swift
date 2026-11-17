@@ -823,6 +823,45 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testFloatingCursorInAWindowFollowsTheCursorPointFromTheSpaceBar() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
+        window.addSubview(view)
+        var receivedEvents: [GhosttySurfaceKeyEvent] = []
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: false,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: {
+                receivedEvents.append($0)
+                return true
+            }
+        )
+
+        // Only the cursor point's change counts, from wherever iOS starts it.
+        view.beginFloatingCursor(at: CGPoint(x: 120, y: 40))
+        view.updateFloatingCursor(at: CGPoint(x: 136, y: 40))
+        XCTAssertEqual(receivedEvents.map(\.keyCode), [.arrowRight, .arrowRight])
+        view.endFloatingCursor()
+        XCTAssertEqual(driver.feedback.state, .hidden)
+
+        // The thumb starts at the space bar, near the window's bottom, so a slide down reaches the edge and repeats.
+        receivedEvents = []
+        view.beginFloatingCursor(at: CGPoint(x: 120, y: 40))
+        view.updateFloatingCursor(at: CGPoint(x: 120, y: 70))
+        XCTAssertTrue(driver.feedback.state.isRepeating)
+        let byTravel = receivedEvents.count
+        driver.repeatTick(at: .greatestFiniteMagnitude)
+        XCTAssertEqual(receivedEvents.count, byTravel + 1)
+        XCTAssertEqual(receivedEvents.last?.keyCode, .arrowDown)
+        view.endFloatingCursor()
+        XCTAssertEqual(driver.feedback.state, .hidden)
+    }
+
+    @MainActor
     func testFloatingCursorWobbleSendsNothing() {
         let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
         let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
