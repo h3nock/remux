@@ -1650,9 +1650,10 @@ final class RemuxAppUITests: XCTestCase {
         // The command prints its own run count, so only the arrow-up re-run
         // prints RUN_2. No `clear` in between: it also erases the scrollback.
         sendTerminalCommand(
-            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs"
+            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs",
+            keepingInHistory: true
         )
-        sendTerminalCommand("true")
+        sendTerminalCommand("true", keepingInHistory: true)
         arrowUp.tap()
         arrowUp.tap()
         waitForLiveTerminalInputReady(timeout: 10)
@@ -5394,8 +5395,7 @@ final class RemuxAppUITests: XCTestCase {
     /// list redraws its selection. When the keys stop it prints REMUX_<name>_D…_U…_L…_R…_SPAN… (milliseconds from the
     /// first key to the last), and REMUX_<name>_OK when `passes`, a zsh arithmetic test over d, u, l, r and span,
     /// holds. The typed command stays in the pane the harness checks, so the marker is built at run time and the
-    /// command's own text can't satisfy the check. It starts with a space, which keeps it out of a shell history that
-    /// ignores such commands, so later runs' suggestions don't fill it in while it is typed.
+    /// command's own text can't satisfy the check.
     private func arrowKeyCollector(name: String, passes: String) -> String {
         let script = [
             #"zmodload zsh/datetime"#,
@@ -5410,7 +5410,7 @@ final class RemuxAppUITests: XCTestCase {
             "print -r -- REMUX_\(name)_D${d}_U${u}_L${l}_R${r}_SPAN${span}",
             "if (( \(passes) )); then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
         ].joined(separator: "; ")
-        return " zsh -fc '\(script)'"
+        return "zsh -fc '\(script)'"
     }
 
     func testLiveTmuxPrefixEntersCopyModeWhenConfigured() throws {
@@ -7208,7 +7208,11 @@ final class RemuxAppUITests: XCTestCase {
         tapPickerButton(identifier: confirmIdentifier, fallbackLabel: confirmLabel)
     }
 
-    private func sendTerminalCommand(_ command: String) {
+    /// Types a command and Return. The live server's shell can be the developer's own, so the command starts with a
+    /// space, which a shell that ignores such commands keeps out of its history: otherwise every test command lands
+    /// there and comes back as a suggestion while later tests type. A test that recalls a command with the arrow keys
+    /// keeps it in history, as a left-out command would leave the arrows to recall one of the developer's.
+    private func sendTerminalCommand(_ command: String, keepingInHistory: Bool = false) {
         waitForLiveTerminalInputReady(timeout: 10)
 
         if !app.keyboards.firstMatch.exists {
@@ -7218,7 +7222,7 @@ final class RemuxAppUITests: XCTestCase {
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
         }
 
-        app.typeText("\(command)\n")
+        app.typeText("\(keepingInHistory ? "" : " ")\(command)\n")
     }
 
     private func hideKeyboardIfPresent() {

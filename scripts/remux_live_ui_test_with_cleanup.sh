@@ -476,7 +476,7 @@ dense_mixed_fixture() {
     echo 'dense mixed fixture did not create pane 4' >&2
     exit 1
   fi
-  "$tmux_bin" send-keys -t "$pane4" "printf 'REMUX_DENSE_MIXED_READY_P4\n'" C-m
+  "$tmux_bin" send-keys -t "$pane4" " printf 'REMUX_DENSE_MIXED_READY_P4\n'" C-m
   "$tmux_bin" select-window -t "$session:1"
 }
 
