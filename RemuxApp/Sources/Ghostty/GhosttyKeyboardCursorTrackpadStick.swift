@@ -15,11 +15,12 @@ struct GhosttyKeyboardCursorTrackpadStick: View {
             if let anchor = state.anchor ?? lastAnchor {
                 GhosttyKeyboardCursorTrackpadStickDisc(state: state)
                     .scaleEffect(state.isVisible ? 1 : 0.9)
-                    .opacity(state.isVisible ? 1 : 0)
+                    .opacity(state.isVisible && state.fadeOut == nil ? 1 : 0)
                     .animation(
                         state.isVisible ? .spring(response: 0.22, dampingFraction: 0.78) : .easeOut(duration: 0.2),
                         value: state.isVisible
                     )
+                    .animation(state.fadeOut.map { .linear(duration: $0) } ?? .easeOut(duration: 0.12), value: state.fadeOut)
                     .position(Self.center(
                         for: anchor,
                         windowOrigin: proxy.frame(in: .global).origin,

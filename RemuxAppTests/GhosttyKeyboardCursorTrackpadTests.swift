@@ -177,18 +177,6 @@ final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
     }
 
     @MainActor
-    func testADragLetGoEndsSteered() {
-        let recorder = Recorder()
-        let driver = recorder.driver()
-        let owner = NSObject()
-        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
-        driver.update(owner: owner, at: point(down: 20), now: 1)
-
-        XCTAssertEqual(driver.end(owner: owner), .steered)
-        XCTAssertEqual(driver.feedback.state, .hidden)
-    }
-
-    @MainActor
     func testAHoldLetGoInPlaceIsStationary() {
         let recorder = Recorder()
         let driver = recorder.driver()
@@ -197,6 +185,63 @@ final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
 
         XCTAssertEqual(driver.end(owner: owner), .stationary)
         XCTAssertEqual(driver.feedback.state, .hidden)
+        XCTAssertFalse(driver.canRegrip(owner: owner))
+    }
+
+    @MainActor
+    func testATerminalDragCarriesOnFromATouchInsideTheRegripWindow() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+        driver.update(owner: owner, at: point(down: 64), now: 1)
+
+        XCTAssertEqual(driver.end(owner: owner, now: 2), .steered)
+        XCTAssertEqual(driver.feedback.state.fadeOut, GhosttyKeyboardCursorTrackpadDriver.regripWindow)
+        XCTAssertTrue(driver.canRegrip(owner: owner, at: 2.9))
+        XCTAssertFalse(driver.canRegrip(owner: owner, at: 3.01))
+        XCTAssertFalse(driver.canRegrip(owner: NSObject(), at: 2.5))
+
+        let regrip = CGPoint(x: 120, y: 200)
+        driver.regrip(owner: owner, at: regrip, now: 2.5)
+        driver.update(owner: owner, at: CGPoint(x: 120, y: 216), now: 2.6)
+
+        XCTAssertEqual(recorder.keys.count, 5)
+        XCTAssertEqual(driver.feedback.state.anchor, .thumb(hold))
+        XCTAssertNil(driver.feedback.state.fadeOut)
+        XCTAssertEqual(recorder.haptics.filter { $0 == .holdStarted }.count, 1)
+    }
+
+    @MainActor
+    func testATapInsideTheRegripWindowEndsItAndSendsNothing() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .terminal, sendKeyEvent: recorder.send)
+        driver.update(owner: owner, at: point(down: 16), now: 1)
+        driver.end(owner: owner, now: 2)
+
+        driver.regrip(owner: owner, at: hold, now: 2.2)
+        driver.update(owner: owner, at: point(down: 3), now: 2.3)
+
+        XCTAssertEqual(driver.end(owner: owner, now: 2.4), .endedRegrip)
+        XCTAssertEqual(recorder.keys.count, 1)
+        XCTAssertEqual(driver.feedback.state, .hidden)
+        XCTAssertFalse(driver.canRegrip(owner: owner, at: 2.5))
+    }
+
+    @MainActor
+    func testASpaceBarDragHasNoRegripWindow() {
+        let recorder = Recorder()
+        let driver = recorder.driver()
+        let owner = NSObject()
+        driver.begin(owner: owner, at: hold, edges: nil, source: .spaceBar, sendKeyEvent: recorder.send)
+        XCTAssertEqual(driver.feedback.state.anchor, .keyboard)
+        driver.update(owner: owner, at: point(right: 20), now: 1)
+
+        XCTAssertEqual(driver.end(owner: owner, now: 2), .steered)
+        XCTAssertEqual(driver.feedback.state, .hidden)
+        XCTAssertFalse(driver.canRegrip(owner: owner, at: 2.1))
     }
 
     @MainActor

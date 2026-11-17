@@ -279,6 +279,8 @@ extension GhosttyKeyboardCursorTrackpad {
         var isRepeating = false
         /// Counts the arrows sent since the hold, so each one can be shown as it goes.
         var arrowsSent = 0
+        /// Set after a drag is let go: the stick fades out over this long, the re-grip window.
+        var fadeOut: TimeInterval?
 
         var isVisible: Bool { anchor != nil }
 
@@ -293,7 +295,8 @@ final class GhosttyKeyboardCursorTrackpadFeedback {
     fileprivate(set) var state = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
 }
 
-/// Owns the one arrow-key gesture: its sending, repeats, haptics and the stick's state.
+/// Owns the one arrow-key gesture: its sending, repeats, haptics, the re-grip window after a terminal drag, and
+/// the stick's state.
 @MainActor
 final class GhosttyKeyboardCursorTrackpadDriver {
     enum Source: Equatable {
@@ -306,6 +309,8 @@ final class GhosttyKeyboardCursorTrackpadDriver {
         case steered
         /// Nothing was sent: a terminal hold left in place goes on to select, as before.
         case stationary
+        /// A touch inside the re-grip window lifted without moving: it ends the window and does nothing else.
+        case endedRegrip
     }
 
     enum HapticCue: Equatable {
@@ -314,19 +319,27 @@ final class GhosttyKeyboardCursorTrackpadDriver {
         case repeatStarted
     }
 
+    /// After a terminal drag that sent arrows is let go, a new touch within this long carries on without the hold.
+    static let regripWindow: TimeInterval = 1
     private static let arrowHapticSpacing: TimeInterval = 0.03
 
     let feedback = GhosttyKeyboardCursorTrackpadFeedback()
 
     private let playHaptic: (HapticCue) -> Void
     private weak var owner: AnyObject?
+    private var source = Source.terminal
+    private var edges: CGRect?
     private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
-    /// Where the stick sits, from the hold until the gesture ends.
+    /// Where the stick sits, from the hold until the gesture and its re-grip window end.
     private var anchor: FeedbackState.Anchor?
     /// Present while a touch is down.
     private var trackpad: GhosttyKeyboardCursorTrackpad?
     private var arrowsSent = 0
     private var didSteer = false
+    /// The touch down is a re-grip: lifted before it moves, it is a tap that ends the window.
+    private var isRegripTouch = false
+    private var regripDeadline: Task<Void, Never>?
+    private var regripUntil: TimeInterval?
     private var repeatLink: CADisplayLink?
     private var lastArrowHapticAt: TimeInterval = -.infinity
 
@@ -357,11 +370,30 @@ final class GhosttyKeyboardCursorTrackpadDriver {
     ) {
         cancelCurrentGesture()
         self.owner = owner
+        self.source = source
+        self.edges = edges
         self.sendKeyEvent = sendKeyEvent
         anchor = source == .terminal ? .thumb(point) : .keyboard
         trackpad = GhosttyKeyboardCursorTrackpad(at: point, edges: edges)
         publish()
         playHaptic(.holdStarted)
+    }
+
+    /// Whether a touch now, on `owner`, carries on the drag just let go.
+    func canRegrip(owner: AnyObject, at now: TimeInterval = CACurrentMediaTime()) -> Bool {
+        self.owner === owner && trackpad == nil && regripUntil.map { now < $0 } == true
+    }
+
+    /// Carries on the drag from a touch inside the re-grip window: the stick stays where it is, and the arrows go
+    /// to the same terminal.
+    func regrip(owner: AnyObject, at point: CGPoint, now: TimeInterval = CACurrentMediaTime()) {
+        guard canRegrip(owner: owner, at: now) else { return }
+        regripDeadline?.cancel()
+        regripDeadline = nil
+        regripUntil = nil
+        isRegripTouch = true
+        trackpad = GhosttyKeyboardCursorTrackpad(at: point, edges: edges)
+        publish()
     }
 
     func update(owner: AnyObject, at point: CGPoint, now: TimeInterval = CACurrentMediaTime()) {
@@ -389,14 +421,34 @@ final class GhosttyKeyboardCursorTrackpadDriver {
 
     /// Ends the touch. A non-owner gets nil, so a terminal hold it doesn't own still goes on to select.
     @discardableResult
-    func end(owner: AnyObject) -> Ending? {
-        guard self.owner === owner, trackpad != nil else { return nil }
-        let ending: Ending = didSteer ? .steered : .stationary
-        cancelCurrentGesture()
-        return ending
+    func end(owner: AnyObject, now: TimeInterval = CACurrentMediaTime()) -> Ending? {
+        guard self.owner === owner, let trackpad else { return nil }
+        if isRegripTouch, !trackpad.hasMoved {
+            cancelCurrentGesture()
+            return .endedRegrip
+        }
+        guard didSteer else {
+            cancelCurrentGesture()
+            return .stationary
+        }
+        guard source == .terminal else {
+            cancelCurrentGesture()
+            return .steered
+        }
+        self.trackpad = nil
+        isRegripTouch = false
+        updateRepeatLink()
+        regripUntil = now + Self.regripWindow
+        publish()
+        regripDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.regripWindow))
+            guard !Task.isCancelled, let self, self.trackpad == nil else { return }
+            self.cancelCurrentGesture()
+        }
+        return .steered
     }
 
-    /// Ends the gesture without anything further.
+    /// Ends the gesture, or the re-grip window after it, without anything further.
     @discardableResult
     func cancel(owner: AnyObject) -> Bool {
         guard self.owner === owner else { return false }
@@ -420,14 +472,15 @@ final class GhosttyKeyboardCursorTrackpadDriver {
         return true
     }
 
-    /// The stick's state, built from the gesture's own.
+    /// The stick's state, built from the gesture's own: while the re-grip window is open it fades.
     private func publish() {
         let state = FeedbackState(
             anchor: anchor,
             direction: trackpad?.direction,
             progress: trackpad?.progress ?? 0,
             isRepeating: trackpad?.isRepeating ?? false,
-            arrowsSent: arrowsSent
+            arrowsSent: arrowsSent,
+            fadeOut: regripUntil == nil ? nil : Self.regripWindow
         )
         guard feedback.state != state else { return }
         feedback.state = state
@@ -448,8 +501,13 @@ final class GhosttyKeyboardCursorTrackpadDriver {
     private func cancelCurrentGesture() {
         trackpad = nil
         updateRepeatLink()
+        regripDeadline?.cancel()
+        regripDeadline = nil
+        regripUntil = nil
+        isRegripTouch = false
         owner = nil
         sendKeyEvent = nil
+        edges = nil
         anchor = nil
         arrowsSent = 0
         didSteer = false

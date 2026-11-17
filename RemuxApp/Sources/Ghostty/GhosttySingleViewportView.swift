@@ -127,6 +127,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private weak var localSelectionSurface: GhosttyManagedSurface?
     private weak var localSelectionControlSurface: GhosttyKitControlSurface?
     private var longPressOriginalPoint: CGPoint?
+    /// The pane a terminal drag sends arrows to, through its re-grip window.
+    private weak var arrowSurface: GhosttyManagedSurface?
     private var selectionSnapshot = GhosttyLocalSelectionSnapshot.inactive
     private var previewSelectionContext = TerminalPreviewSelectionContext()
     private var selectionMenuPreparation: Task<Void, Never>?
@@ -184,6 +186,19 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         return recognizer
     }()
 
+    /// Inside the re-grip window after a drag that sent arrows, a touch carries on at once, without the hold, so it
+    /// begins on touch-down and keeps scrolling and the tap out of it.
+    private lazy var arrowRegripRecognizer: UILongPressGestureRecognizer = {
+        let recognizer = UILongPressGestureRecognizer(
+            target: self,
+            action: #selector(handleArrowRegrip(_:))
+        )
+        recognizer.minimumPressDuration = 0
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        return recognizer
+    }()
+
     private lazy var selectionEditMenuInteraction = UIEditMenuInteraction(delegate: self)
 
     override init(frame: CGRect) {
@@ -192,8 +207,10 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         addSubview(linesView)
         panRecognizer.delegate = self
         surfaceTapRecognizer.require(toFail: selectionLongPressRecognizer)
+        surfaceTapRecognizer.require(toFail: arrowRegripRecognizer)
         addGestureRecognizer(panRecognizer)
         addGestureRecognizer(selectionLongPressRecognizer)
+        addGestureRecognizer(arrowRegripRecognizer)
         addGestureRecognizer(surfaceTapRecognizer)
         addInteraction(selectionEditMenuInteraction)
         addSubview(startSelectionHandle)
@@ -258,6 +275,9 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             resetActivePanState()
         }
         syncVisibleSurfaces()
+        if let arrowSurface, !isShown(arrowSurface) {
+            cancelArrowGesture()
+        }
         if localSelectionSurface != nil {
             if exactLocalSelectionSurface() == nil {
                 cancelLocalSelectionInteraction()
@@ -284,6 +304,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
 
     private func disableInteractions() {
+        cancelArrowGesture()
         cancelLocalSelectionInteraction()
         onSurfaceTap = nil
         onPreviewSelection = nil
@@ -457,10 +478,12 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         case .ended:
             endTerminalLongPress()
         case .cancelled, .failed:
+            cancelArrowGesture()
             reconcileLocalSelectionAfterLongPress()
         case .possible:
             break
         @unknown default:
+            cancelArrowGesture()
             cancelLocalSelectionInteraction()
         }
     }
@@ -479,20 +502,22 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         surface.onLocalSelectionGeometryChange = { [weak self] in
             self?.refreshLocalSelectionGeometry()
         }
+        arrowSurface = surface
         driver.begin(
             owner: self,
             at: recognizer.location(in: nil),
             edges: window.map(GhosttyKeyboardCursorTrackpadDriver.edges(of:)),
             source: .terminal,
-            sendKeyEvent: { [weak self] event in
-                guard self?.exactLocalSelectionSurface() != nil else { return false }
-                return self?.sendKeyEventToSurface?(event, surface.id) == true
+            sendKeyEvent: { [weak self, weak surface] event in
+                guard let self, let surface, self.isShown(surface) else { return false }
+                return self.sendKeyEventToSurface?(event, surface.id) == true
             }
         )
     }
 
     private func updateTerminalLongPress(_ recognizer: UILongPressGestureRecognizer) {
         guard let driver = trackpadDriver, exactLocalSelectionSurface() != nil else {
+            cancelArrowGesture()
             cancelLocalSelectionInteraction()
             return
         }
@@ -736,12 +761,40 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
 
     private func projectedLocalSelectionSurface() -> GhosttyManagedSurface? {
-        guard let recordedSurface = localSelectionSurface,
-              shownContainer(for: recordedSurface.id) != nil,
-              surfaceLookup.managedSurface(for: recordedSurface.id) === recordedSurface,
-              recordedSurface.view.isDescendant(of: self)
-        else { return nil }
+        guard let recordedSurface = localSelectionSurface, isShown(recordedSurface) else { return nil }
         return recordedSurface
+    }
+
+    /// The surface is still the one this viewport shows for its pane.
+    private func isShown(_ surface: GhosttyManagedSurface) -> Bool {
+        shownContainer(for: surface.id) != nil
+            && surfaceLookup.managedSurface(for: surface.id) === surface
+            && surface.view.isDescendant(of: self)
+    }
+
+    private func cancelArrowGesture() {
+        _ = trackpadDriver?.cancel(owner: self)
+        arrowSurface = nil
+    }
+
+    @objc
+    private func handleArrowRegrip(_ recognizer: UILongPressGestureRecognizer) {
+        guard let driver = trackpadDriver else { return }
+        let point = recognizer.location(in: nil)
+        switch recognizer.state {
+        case .began:
+            driver.regrip(owner: self, at: point)
+        case .changed:
+            driver.update(owner: self, at: point)
+        case .ended:
+            driver.end(owner: self)
+        case .cancelled, .failed:
+            cancelArrowGesture()
+        case .possible:
+            break
+        @unknown default:
+            cancelArrowGesture()
+        }
     }
 
     private func refreshLocalSelectionGeometry() {
@@ -756,7 +809,6 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
 
     private func reconcileLocalSelectionAfterLongPress() {
-        _ = trackpadDriver?.cancel(owner: self)
         longPressOriginalPoint = nil
         guard let surface = projectedLocalSelectionSurface() else {
             cancelLocalSelectionInteraction()
@@ -808,7 +860,6 @@ private final class GhosttyCompositeViewportContainerView: UIView,
 
     private func cancelLocalSelectionInteraction() {
         invalidateSelectionMenu()
-        _ = trackpadDriver?.cancel(owner: self)
         localSelectionSurface?.onLocalSelectionGeometryChange = nil
         selectionEditMenuInteraction.dismissMenu()
         localSelectionSurface = nil
@@ -917,6 +968,9 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === arrowRegripRecognizer {
+            return trackpadDriver?.canRegrip(owner: self) == true
+        }
         guard gestureRecognizer === panRecognizer else { return true }
         return projection.canNavigateWindows && GhosttySurfacePanGesture.surfaceContainerPanShouldBegin(
             topLevelCount: projection.windowCount,
