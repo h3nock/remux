@@ -5391,7 +5391,8 @@ final class RemuxAppUITests: XCTestCase {
     /// A program for the pane that reads arrow keys for as long as they keep coming and prints a dot for each, as a
     /// list redraws its selection. When the keys stop it prints REMUX_<name>_D…_U…_L…_R…_SPAN… (milliseconds from the
     /// first key to the last), and REMUX_<name>_OK when `passes`, a zsh arithmetic test over d, u, l, r and span,
-    /// holds.
+    /// holds. The typed command stays in the pane the harness checks, so the marker is built at run time and the
+    /// command's own text can't satisfy the check.
     private func arrowKeyCollector(name: String, passes: String) -> String {
         let script = [
             #"zmodload zsh/datetime"#,
@@ -5404,7 +5405,7 @@ final class RemuxAppUITests: XCTestCase {
             #"stty $saved <$tty; trap - EXIT"#,
             #"span=0; [[ -n $first ]] && span=$(( (last - first) * 1000 )); span=${span%.*}"#,
             "print -r -- REMUX_\(name)_D${d}_U${u}_L${l}_R${r}_SPAN${span}",
-            "if (( \(passes) )); then print -r -- REMUX_\(name)_OK; fi",
+            "if (( \(passes) )); then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
         ].joined(separator: "; ")
         return "zsh -fc '\(script)'"
     }
