@@ -5394,7 +5394,8 @@ final class RemuxAppUITests: XCTestCase {
     /// list redraws its selection. When the keys stop it prints REMUX_<name>_D…_U…_L…_R…_SPAN… (milliseconds from the
     /// first key to the last), and REMUX_<name>_OK when `passes`, a zsh arithmetic test over d, u, l, r and span,
     /// holds. The typed command stays in the pane the harness checks, so the marker is built at run time and the
-    /// command's own text can't satisfy the check.
+    /// command's own text can't satisfy the check. It starts with a space, which keeps it out of a shell history that
+    /// ignores such commands, so later runs' suggestions don't fill it in while it is typed.
     private func arrowKeyCollector(name: String, passes: String) -> String {
         let script = [
             #"zmodload zsh/datetime"#,
@@ -5409,7 +5410,7 @@ final class RemuxAppUITests: XCTestCase {
             "print -r -- REMUX_\(name)_D${d}_U${u}_L${l}_R${r}_SPAN${span}",
             "if (( \(passes) )); then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
         ].joined(separator: "; ")
-        return "zsh -fc '\(script)'"
+        return " zsh -fc '\(script)'"
     }
 
     func testLiveTmuxPrefixEntersCopyModeWhenConfigured() throws {
