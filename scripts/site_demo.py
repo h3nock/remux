@@ -180,7 +180,9 @@ def setup(args):
 
 class Recording:
     """The simulator's screen, recorded to a file. `started` is the wall-clock time the recorder says it started,
-    which is the video's time zero, so render can place the touch and step logs in the video."""
+    which is the video's time zero, so render can place the touch and step logs in the video; `stopped` is when it was
+    asked to stop. The recorder writes a frame only when the screen changes, so the screen shows the last frame until
+    then."""
 
     def __init__(self, udid, path, codec='h264'):
         self.process = subprocess.Popen(['xcrun', 'simctl', 'io', udid, 'recordVideo', f'--codec={codec}', '--force',
@@ -194,6 +196,7 @@ class Recording:
         sys.exit('the screen recording did not start:\n' + ''.join(self.output))
 
     def stop(self):
+        self.stopped = time.time()
         self.process.send_signal(signal.SIGINT)
         try:
             self.process.communicate(timeout=60)
@@ -209,7 +212,8 @@ def new_take(name):
 
 
 def write_take(take, udid, name, recording, **extra):
-    info = {'name': name, 'simulator': udid, 'video_started': recording.started, **extra}
+    info = {'name': name, 'simulator': udid, 'video_started': recording.started, 'video_stopped': recording.stopped,
+            **extra}
     (take / 'take.json').write_text(json.dumps(info, indent=2) + '\n')
 
 
@@ -316,7 +320,10 @@ def render(args):
             sys.exit(f'no mark "{value}" in this take (marks: {", ".join(marks) or "none"})')
 
     start = max(times[0], when(args.start, marks.get('start', touches[0] - 0.5 if touches else times[0])))
-    end = min(times[-1], when(args.end, marks.get('end', touches[-1] + 1.5 if touches else times[-1])))
+    # A still ending, such as a last screen held for a moment, has no frames of its own: the last one shows until the
+    # recording stopped.
+    end = min(info.get('video_stopped', times[-1]),
+              when(args.end, marks.get('end', touches[-1] + 1.5 if touches else times[-1])))
     if end <= start:
         sys.exit(f'the cut is empty: from {start - started:.2f}s to {end - started:.2f}s')
     out = (args.out or take / 'site').resolve()
