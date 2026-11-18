@@ -31,7 +31,8 @@ each typing step (default 1). Steps:
                                          until the screen shows this text, read with text recognition (a
                                          terminal draws its own text, which XCUITest can't see)
   {"tapText": "Yes"}, {"pressText": "http://localhost", "for": 0.8}
-                                         a tap or a long-press on that text, wherever it is on screen
+                                         a tap or a long-press on that text, wherever it is on screen; the
+                                         highest match, or the lowest (a terminal's newest) with "last": true
   {"stroke": TARGET, "points": [[x, y], ...], "over": 0.6}
                                          one touch drawn along a smooth curve through the points (fractions of
                                          the element), as a finger draws a circle or an arrow on a picture
@@ -39,6 +40,10 @@ each typing step (default 1). Steps:
   {"waitFor": TARGET, "timeout": 30}     until it is on screen
   {"shot": "agents"}                     saves the screen as shots/agents.png
   {"mark": "start"}                      render cuts from mark "start" to mark "end"
+  {"cue": "notes"}                       writes cues/notes in the take's folder, for a script beside the take
+                                         (one that gives an agent its task at that moment, say)
+  {"waitCue": "claude-done", "timeout": 60}
+                                         until cues/claude-done appears, written by a script beside the take
 
 TARGET is an element's accessibility identifier or label, such as "terminal.screen" or "Agents" (a row's label
 starts with its name, so "web" is the row "web, tmux, ..."), with "at": [x, y] for a point in it (fractions of its width and height from the top left; the middle by default), or a point on the

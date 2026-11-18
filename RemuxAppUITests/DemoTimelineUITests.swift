@@ -73,13 +73,17 @@ enum DemoStep {
     case swipe(DemoSwipeDirection, from: DemoTarget, length: CGFloat, speed: CGFloat, count: Int, gap: TimeInterval)
     case type(String, clear: Bool, speed: Double)
     /// Text read off the screen: a terminal draws its text itself, so XCUITest can't see it.
-    case waitForText(String, timeout: TimeInterval)
-    case tapText(String, timeout: TimeInterval)
-    case pressText(String, duration: TimeInterval, timeout: TimeInterval)
+    case waitForText(String, last: Bool, timeout: TimeInterval)
+    case tapText(String, last: Bool, timeout: TimeInterval)
+    case pressText(String, last: Bool, duration: TimeInterval, timeout: TimeInterval)
     /// One touch drawn through points in an element, as a finger draws on a picture.
     case stroke(DemoTarget, points: [CGVector], over: TimeInterval)
     case shot(String)
     case mark(String)
+    /// Tells whatever runs beside the take that the timeline got here: a file, cues/<name>, in the take's folder.
+    case cue(String)
+    /// Waits for cues/<name>, which something beside the take writes, as when an agent it watches has finished.
+    case waitCue(String, timeout: TimeInterval)
 
     var action: String {
         switch self {
@@ -96,6 +100,8 @@ enum DemoStep {
         case .stroke: "stroke"
         case .shot: "shot"
         case .mark: "mark"
+        case .cue: "cue"
+        case .waitCue: "waitCue"
         }
     }
 
@@ -103,7 +109,7 @@ enum DemoStep {
     var isAction: Bool {
         switch self {
         case .tap, .press, .drag, .swipe, .type, .tapText, .pressText, .stroke: true
-        case .wait, .waitFor, .waitForText, .shot, .mark: false
+        case .wait, .waitFor, .waitForText, .shot, .mark, .cue, .waitCue: false
         }
     }
 }
@@ -134,8 +140,8 @@ struct DemoTimeline {
     private static let options: [String: Set<String>] = [
         "wait": [], "waitFor": ["at", "timeout"], "tap": ["at"], "press": ["at", "for"],
         "drag": ["at", "to", "hold", "speed", "end"], "swipe": ["on", "at", "length", "speed", "count", "gap"],
-        "type": ["clear", "speed"], "waitForText": ["timeout"], "tapText": ["timeout"],
-        "pressText": ["for", "timeout"], "stroke": ["at", "points", "over"], "shot": [], "mark": [],
+        "type": ["clear", "speed"], "waitForText": ["last", "timeout"], "tapText": ["last", "timeout"],
+        "pressText": ["last", "for", "timeout"], "waitCue": ["timeout"], "stroke": ["at", "points", "over"], "shot": [], "mark": [], "cue": [],
     ]
 
     private static func step(_ json: [String: Any]) throws -> DemoStep {
@@ -190,11 +196,18 @@ struct DemoTimeline {
         case "waitForText", "tapText", "pressText":
             guard let text = value as? String, !text.isEmpty else { throw DemoTimelineError("\(action) takes the text") }
             let timeout = try number(json["timeout"], "timeout") ?? 20
+            // The newest of several, as a terminal's latest output is the lowest.
+            let last = try flag(json["last"], "last") ?? false
             switch action {
-            case "waitForText": return .waitForText(text, timeout: timeout)
-            case "tapText": return .tapText(text, timeout: timeout)
-            default: return .pressText(text, duration: try number(json["for"], "for") ?? 0.8, timeout: timeout)
+            case "waitForText": return .waitForText(text, last: last, timeout: timeout)
+            case "tapText": return .tapText(text, last: last, timeout: timeout)
+            default: return .pressText(text, last: last, duration: try number(json["for"], "for") ?? 0.8, timeout: timeout)
             }
+        case "waitCue":
+            guard let name = value as? String, !name.isEmpty, !name.contains("/") else {
+                throw DemoTimelineError("waitCue takes a name")
+            }
+            return .waitCue(name, timeout: try number(json["timeout"], "timeout") ?? 60)
         case "stroke":
             guard let pairs = json["points"] as? [Any], pairs.count >= 2 else {
                 throw DemoTimelineError("stroke needs \"points\": [[x, y], ...], at least two")
@@ -204,11 +217,11 @@ struct DemoTimeline {
                 points: try pairs.map { try point($0, "points") ?? CGVector() },
                 over: try number(json["over"], "over") ?? 0.6
             )
-        case "shot", "mark":
+        case "shot", "mark", "cue":
             guard let name = value as? String, !name.isEmpty, !name.contains("/") else {
                 throw DemoTimelineError("\(action) takes a name")
             }
-            return action == "shot" ? .shot(name) : .mark(name)
+            return action == "shot" ? .shot(name) : action == "mark" ? .mark(name) : .cue(name)
         default:
             throw DemoTimelineError("unknown step")
         }
@@ -340,12 +353,19 @@ final class DemoPlayer {
                 let next = started.addingTimeInterval(Double(typed) / speed).timeIntervalSinceNow
                 if next > 0 { wait(next) }
             }
-        case .waitForText(let text, let timeout):
-            _ = try point(ofText: text, timeout: timeout)
-        case .tapText(let text, let timeout):
-            try DemoGesture.tap(at: point(ofText: text, timeout: timeout))
-        case .pressText(let text, let duration, let timeout):
-            try DemoGesture.press(at: point(ofText: text, timeout: timeout), for: duration)
+        case .waitForText(let text, let last, let timeout):
+            _ = try point(ofText: text, last: last, timeout: timeout)
+        case .tapText(let text, let last, let timeout):
+            try DemoGesture.tap(at: point(ofText: text, last: last, timeout: timeout))
+        case .pressText(let text, let last, let duration, let timeout):
+            try DemoGesture.press(at: point(ofText: text, last: last, timeout: timeout), for: duration)
+        case .waitCue(let name, let timeout):
+            let file = take.appendingPathComponent("cues", isDirectory: true).appendingPathComponent(name)
+            let deadline = Date().addingTimeInterval(timeout)
+            while !FileManager.default.fileExists(atPath: file.path) {
+                guard Date() < deadline else { throw DemoTimelineError("no cue \"\(name)\" after \(Int(timeout)) s") }
+                wait(0.2)
+            }
         case .stroke(let target, let points, let over):
             let frame = try target.element.map { try element(named: $0, timeout: Self.elementTimeout).frame } ?? app.frame
             try DemoGesture.stroke(
@@ -359,12 +379,17 @@ final class DemoPlayer {
                 .write(to: folder.appendingPathComponent("\(name).png"))
         case .mark:
             break
+        case .cue(let name):
+            let folder = take.appendingPathComponent("cues", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data().write(to: folder.appendingPathComponent(name))
         }
     }
 
     /// Where `text` is on screen, read with Vision's text recognition, checked every half second until `timeout`.
-    /// The first line holding it counts, case aside, and the point is the middle of the text itself.
-    private func point(ofText text: String, timeout: TimeInterval) throws -> CGPoint {
+    /// The highest line holding it counts, or the lowest with `last`, case aside, and the point is the middle of the
+    /// text itself.
+    private func point(ofText text: String, last: Bool, timeout: TimeInterval) throws -> CGPoint {
         let deadline = Date().addingTimeInterval(timeout)
         var seen: [String] = []
         repeat {
@@ -375,13 +400,17 @@ final class DemoPlayer {
                 request.usesLanguageCorrection = false
                 try VNImageRequestHandler(cgImage: image).perform([request])
                 seen = []
+                var found: [CGRect] = []
                 for observation in request.results ?? [] {
                     guard let candidate = observation.topCandidates(1).first else { continue }
                     seen.append(candidate.string)
                     guard let range = candidate.string.range(of: text, options: .caseInsensitive),
                           let box = try candidate.boundingBox(for: range)?.boundingBox
                     else { continue }
-                    // Vision's box is a fraction of the image from its bottom left.
+                    found.append(box)
+                }
+                // Vision's boxes are fractions of the image from its bottom left, so the highest has the largest y.
+                if let box = last ? found.min(by: { $0.midY < $1.midY }) : found.max(by: { $0.midY < $1.midY }) {
                     let screen = app.frame
                     return CGPoint(x: screen.minX + box.midX * screen.width, y: screen.minY + (1 - box.midY) * screen.height)
                 }
