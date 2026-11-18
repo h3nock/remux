@@ -17,6 +17,9 @@ struct GhosttyTerminalSelectionSource {
 struct GhosttyCompositeViewportView: View {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
+    /// The terminal's size when it is taller than the area shown, as while the keyboard covers its bottom
+    /// with the keyboard pan; nil when the terminal fills the area.
+    var canvasSize: CGSize? = nil
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -33,6 +36,7 @@ struct GhosttyCompositeViewportView: View {
         GhosttyCompositeViewportRepresentable(
             surfaceLookup: surfaceLookup,
             projection: projection,
+            canvasSize: canvasSize,
             terminalTheme: terminalTheme,
             trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
@@ -52,6 +56,7 @@ struct GhosttyCompositeViewportView: View {
 private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
+    let canvasSize: CGSize?
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -64,14 +69,18 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let selectionSource: GhosttyTerminalSelectionSource?
 
-    func makeUIView(context: Context) -> GhosttyCompositeViewportContainerView {
-        let view = GhosttyCompositeViewportContainerView()
-        view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
-        return view
+    func makeUIView(context: Context) -> GhosttyCompositeViewportHostView {
+        let host = GhosttyCompositeViewportHostView()
+        host.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        host.viewport.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        host.viewport.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
+        return host
     }
 
-    func updateUIView(_ view: GhosttyCompositeViewportContainerView, context: Context) {
+    func updateUIView(_ host: GhosttyCompositeViewportHostView, context: Context) {
+        host.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        host.canvasSize = canvasSize
+        let view = host.viewport
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
         view.update(
@@ -91,10 +100,86 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     }
 
     static func dismantleUIView(
-        _ view: GhosttyCompositeViewportContainerView,
+        _ host: GhosttyCompositeViewportHostView,
         coordinator: ()
     ) {
-        view.dismantle()
+        host.viewport.dismantle()
+    }
+}
+
+/// Shows the composite viewport in the terminal area, which clips it. Without a canvas size the viewport fills
+/// the area. With one taller than the area, as while the keyboard covers the bottom of the terminal under the
+/// keyboard pan, the viewport keeps the canvas size and moves up just far enough that the focused pane's cursor
+/// row stays above the area's bottom edge, together with the margin below the grid when the cursor is on the
+/// last row. While the pane shows scrollback above its cursor, the bottom of the canvas stays in view.
+///
+/// The move is set in this view's layout, which runs inside the keyboard's animation when the area's size
+/// follows the keyboard, so the viewport moves with the keyboard and the toolbar on it. A move for the cursor
+/// alone, as output arrives, is immediate, as a terminal scrolls.
+private final class GhosttyCompositeViewportHostView: UIView {
+    let viewport = GhosttyCompositeViewportContainerView()
+    /// Set before the viewport's update, which then starts or stops following the cursor's frames.
+    var canvasSize: CGSize? {
+        didSet {
+            guard canvasSize != oldValue else { return }
+            if (canvasSize == nil) != (oldValue == nil) {
+                viewport.onFocusedFramePublished = canvasSize == nil ? nil : { [weak self] in
+                    self?.followCursor()
+                }
+            }
+            setNeedsLayout()
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        addSubview(viewport)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let size = canvasSize.map {
+            CGSize(width: $0.width, height: max($0.height, bounds.height))
+        } ?? bounds.size
+        // Set inside an animation the size change runs in, the keyboard's, and so moves with it.
+        let pan = pan(canvasHeight: size.height)
+        tracePan("layout", pan: pan, canvasHeight: size.height)
+        viewport.frame = CGRect(origin: CGPoint(x: 0, y: -pan), size: size)
+    }
+
+    private func followCursor() {
+        let pan = pan(canvasHeight: viewport.bounds.height)
+        guard viewport.frame.minY != -pan else { return }
+        tracePan("cursor", pan: pan, canvasHeight: viewport.bounds.height)
+        UIView.performWithoutAnimation {
+            viewport.frame.origin.y = -pan
+        }
+    }
+
+    private func tracePan(_ reason: String, pan: CGFloat, canvasHeight: CGFloat) {
+        guard GhosttyRuntimeTrace.tmuxViewportEnabled, canvasSize != nil else { return }
+        GhosttyRuntimeTrace.tmuxViewport(
+            "viewport.pan reason=\(reason) area=\(bounds.height) canvas=\(canvasHeight) pan=\(pan) previous=\(-viewport.frame.minY) animation=\(UIView.inheritedAnimationDuration)"
+        )
+    }
+
+    /// How far the canvas moves up: none while the area shows all of it; otherwise just enough that the
+    /// focused cursor's line (`GhosttyCompositeViewportContainerView.cursorFollowLine`) is above the area's
+    /// bottom edge, at most the height covered; all of it without a cursor line. On whole pixels, so the
+    /// picture is not resampled.
+    private func pan(canvasHeight: CGFloat) -> CGFloat {
+        let covered = canvasHeight - bounds.height
+        guard covered > 0 else { return 0 }
+        let line = viewport.cursorFollowLine(canvasHeight: canvasHeight) ?? canvasHeight
+        let pan = min(max(line - bounds.height, 0), covered)
+        let scale = max(window?.screen.scale ?? UIScreen.main.scale, 1)
+        return (pan * scale).rounded() / scale
     }
 }
 
@@ -121,6 +206,10 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private var submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     private var submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     private var selectionSource: GhosttyTerminalSelectionSource?
+
+    /// Called on the main thread for each frame the focused pane's (or the popup's) renderer publishes.
+    var onFocusedFramePublished: (() -> Void)?
+    private var focusedFrameObservation: (layer: CALayer, observation: NSKeyValueObservation)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
     private var didNavigateForActivePan = false
@@ -294,6 +383,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     func dismantle() {
         disableInteractions()
         resetActivePanState()
+        focusedFrameObservation = nil
+        onFocusedFramePublished = nil
         for container in containersBySurfaceID.values {
             retire(container: container)
         }
@@ -372,6 +463,69 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         syncPopup()
         bringSubviewToFront(startSelectionHandle)
         bringSubviewToFront(endSelectionHandle)
+        observeFocusedFramePublications()
+    }
+
+    /// The surface that takes the terminal's input and shows its cursor: the popup's while one shows,
+    /// otherwise the focused pane's.
+    private var inputSurface: GhosttyManagedSurface? {
+        guard let id = projection.popup?.id ?? projection.focusedSurfaceID else { return nil }
+        guard let surface = surfaceLookup.managedSurface(for: id), isShown(surface) else { return nil }
+        return surface
+    }
+
+    private func observeFocusedFramePublications() {
+        guard onFocusedFramePublished != nil,
+              let layer = inputSurface.flatMap({ GhosttyIOSurfaceFrame.rendererLayer(in: $0.view.layer) })
+        else {
+            focusedFrameObservation = nil
+            return
+        }
+        guard focusedFrameObservation?.layer !== layer else { return }
+        let relay = FocusedFrameRelay(viewport: self, layer: layer)
+        let observation = layer.observe(\.contents, options: [.new]) { _, _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { relay.publish() }
+            }
+        }
+        focusedFrameObservation = (layer, observation)
+    }
+
+    /// Carries a frame publication from the renderer layer's observation to the main thread, for as long as
+    /// the viewport still observes that layer.
+    private final class FocusedFrameRelay: @unchecked Sendable {
+        weak var viewport: GhosttyCompositeViewportContainerView?
+        weak var layer: CALayer?
+
+        init(viewport: GhosttyCompositeViewportContainerView, layer: CALayer) {
+            self.viewport = viewport
+            self.layer = layer
+        }
+
+        @MainActor
+        func publish() {
+            guard let viewport, let layer, viewport.focusedFrameObservation?.layer === layer else { return }
+            viewport.onFocusedFramePublished?()
+        }
+    }
+
+    /// The line the keyboard pan keeps above the bottom of the area shown, in this view's coordinates for a
+    /// canvas `canvasHeight` high: the bottom of the input surface's cursor row, lowered by the margin between
+    /// the grid's last row and the canvas's bottom, so a cursor on the last row keeps the whole canvas in view.
+    /// Nil without a cursor on screen, as while the pane shows scrollback above it.
+    func cursorFollowLine(canvasHeight: CGFloat) -> CGFloat? {
+        guard let surface = inputSurface,
+              let cursor = surface.controlSurface.cursorGeometry(),
+              let grid = projection.windowGrid,
+              let cell = projection.cellMetrics,
+              let layout = GhosttyCompositeViewportLayout(
+                  bounds: CGRect(x: 0, y: 0, width: bounds.width, height: canvasHeight),
+                  grid: grid,
+                  cellMetrics: cell
+              )
+        else { return nil }
+        let bottomMargin = max(canvasHeight - layout.origin.y - layout.canvasSize.height, 0)
+        return surface.view.convert(cursor, to: self).maxY + bottomMargin
     }
 
     private func retire(container: GhosttyPaneScrollContainerView) {

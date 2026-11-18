@@ -261,10 +261,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         awaitingSystemKeyboard: isAwaitingSystemKeyboardPresentation
                     )
 
+                    // With the keyboard pan the terminal keeps its resting size, and the area shown follows the
+                    // keyboard: the composite viewport takes the area and shows the terminal inside it.
+                    let pansForKeyboard = terminalViewportCoordinator.keepsRestingSize
+                    let compositeFrameSize = pansForKeyboard ? liveTerminalViewportSize : terminalViewportSize
+
                     ZStack(alignment: .topLeading) {
                         GhosttyCompositeViewportView(
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
+                            canvasSize: pansForKeyboard ? terminalViewportSize : nil,
                             terminalTheme: presentation.terminalTheme,
                             trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
@@ -299,8 +305,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             )
                         )
                             .frame(
-                                width: terminalViewportSize.width,
-                                height: terminalViewportSize.height,
+                                width: compositeFrameSize.width,
+                                height: compositeFrameSize.height,
                                 alignment: .topLeading
                             )
                             .background(presentation.terminalTheme.terminalSurfaceBackground)
