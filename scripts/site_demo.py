@@ -27,6 +27,14 @@ each typing step (default 1). Steps:
   {"type": "git status\\n"}               types into whatever has the keyboard, 10 characters a
                                          second ("speed"); \\n is Return. With "clear": true, first
                                          deletes what the field holds
+  {"waitForText": "localhost:8000", "timeout": 20}
+                                         until the screen shows this text, read with text recognition (a
+                                         terminal draws its own text, which XCUITest can't see)
+  {"tapText": "Yes"}, {"pressText": "http://localhost", "for": 0.8}
+                                         a tap or a long-press on that text, wherever it is on screen
+  {"stroke": TARGET, "points": [[x, y], ...], "over": 0.6}
+                                         one touch drawn along a smooth curve through the points (fractions of
+                                         the element), as a finger draws a circle or an arrow on a picture
   {"wait": 2}                            seconds
   {"waitFor": TARGET, "timeout": 30}     until it is on screen
   {"shot": "agents"}                     saves the screen as shots/agents.png

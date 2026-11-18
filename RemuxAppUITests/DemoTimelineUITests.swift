@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Vision
 import XCTest
 
 /// Plays a demo timeline on Remux as it is set up on this simulator, for `scripts/site_demo.py play`, which records
@@ -71,6 +72,12 @@ enum DemoStep {
     case drag(DemoTarget, to: DemoTarget, hold: TimeInterval, speed: CGFloat, end: TimeInterval)
     case swipe(DemoSwipeDirection, from: DemoTarget, length: CGFloat, speed: CGFloat, count: Int, gap: TimeInterval)
     case type(String, clear: Bool, speed: Double)
+    /// Text read off the screen: a terminal draws its text itself, so XCUITest can't see it.
+    case waitForText(String, timeout: TimeInterval)
+    case tapText(String, timeout: TimeInterval)
+    case pressText(String, duration: TimeInterval, timeout: TimeInterval)
+    /// One touch drawn through points in an element, as a finger draws on a picture.
+    case stroke(DemoTarget, points: [CGVector], over: TimeInterval)
     case shot(String)
     case mark(String)
 
@@ -83,6 +90,10 @@ enum DemoStep {
         case .drag: "drag"
         case .swipe: "swipe"
         case .type: "type"
+        case .waitForText: "waitForText"
+        case .tapText: "tapText"
+        case .pressText: "pressText"
+        case .stroke: "stroke"
         case .shot: "shot"
         case .mark: "mark"
         }
@@ -91,8 +102,8 @@ enum DemoStep {
     /// A gesture or typing, after which the timeline's pause lets the screen settle and the viewer take it in.
     var isAction: Bool {
         switch self {
-        case .tap, .press, .drag, .swipe, .type: true
-        case .wait, .waitFor, .shot, .mark: false
+        case .tap, .press, .drag, .swipe, .type, .tapText, .pressText, .stroke: true
+        case .wait, .waitFor, .waitForText, .shot, .mark: false
         }
     }
 }
@@ -123,7 +134,8 @@ struct DemoTimeline {
     private static let options: [String: Set<String>] = [
         "wait": [], "waitFor": ["at", "timeout"], "tap": ["at"], "press": ["at", "for"],
         "drag": ["at", "to", "hold", "speed", "end"], "swipe": ["on", "at", "length", "speed", "count", "gap"],
-        "type": ["clear", "speed"], "shot": [], "mark": [],
+        "type": ["clear", "speed"], "waitForText": ["timeout"], "tapText": ["timeout"],
+        "pressText": ["for", "timeout"], "stroke": ["at", "points", "over"], "shot": [], "mark": [],
     ]
 
     private static func step(_ json: [String: Any]) throws -> DemoStep {
@@ -175,6 +187,23 @@ struct DemoTimeline {
             let speed = try number(json["speed"], "speed") ?? 10
             guard speed > 0 else { throw DemoTimelineError("speed is characters a second, more than 0") }
             return .type(text, clear: try flag(json["clear"], "clear") ?? false, speed: speed)
+        case "waitForText", "tapText", "pressText":
+            guard let text = value as? String, !text.isEmpty else { throw DemoTimelineError("\(action) takes the text") }
+            let timeout = try number(json["timeout"], "timeout") ?? 20
+            switch action {
+            case "waitForText": return .waitForText(text, timeout: timeout)
+            case "tapText": return .tapText(text, timeout: timeout)
+            default: return .pressText(text, duration: try number(json["for"], "for") ?? 0.8, timeout: timeout)
+            }
+        case "stroke":
+            guard let pairs = json["points"] as? [Any], pairs.count >= 2 else {
+                throw DemoTimelineError("stroke needs \"points\": [[x, y], ...], at least two")
+            }
+            return .stroke(
+                try target(value, at: nil),
+                points: try pairs.map { try point($0, "points") ?? CGVector() },
+                over: try number(json["over"], "over") ?? 0.6
+            )
         case "shot", "mark":
             guard let name = value as? String, !name.isEmpty, !name.contains("/") else {
                 throw DemoTimelineError("\(action) takes a name")
@@ -311,6 +340,18 @@ final class DemoPlayer {
                 let next = started.addingTimeInterval(Double(typed) / speed).timeIntervalSinceNow
                 if next > 0 { wait(next) }
             }
+        case .waitForText(let text, let timeout):
+            _ = try point(ofText: text, timeout: timeout)
+        case .tapText(let text, let timeout):
+            try DemoGesture.tap(at: point(ofText: text, timeout: timeout))
+        case .pressText(let text, let duration, let timeout):
+            try DemoGesture.press(at: point(ofText: text, timeout: timeout), for: duration)
+        case .stroke(let target, let points, let over):
+            let frame = try target.element.map { try element(named: $0, timeout: Self.elementTimeout).frame } ?? app.frame
+            try DemoGesture.stroke(
+                through: points.map { CGPoint(x: frame.minX + $0.dx * frame.width, y: frame.minY + $0.dy * frame.height) },
+                over: over
+            )
         case .shot(let name):
             let folder = take.appendingPathComponent("shots", isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -319,6 +360,35 @@ final class DemoPlayer {
         case .mark:
             break
         }
+    }
+
+    /// Where `text` is on screen, read with Vision's text recognition, checked every half second until `timeout`.
+    /// The first line holding it counts, case aside, and the point is the middle of the text itself.
+    private func point(ofText text: String, timeout: TimeInterval) throws -> CGPoint {
+        let deadline = Date().addingTimeInterval(timeout)
+        var seen: [String] = []
+        repeat {
+            let screenshot = XCUIScreen.main.screenshot().image
+            if let image = screenshot.cgImage {
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = false
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                seen = []
+                for observation in request.results ?? [] {
+                    guard let candidate = observation.topCandidates(1).first else { continue }
+                    seen.append(candidate.string)
+                    guard let range = candidate.string.range(of: text, options: .caseInsensitive),
+                          let box = try candidate.boundingBox(for: range)?.boundingBox
+                    else { continue }
+                    // Vision's box is a fraction of the image from its bottom left.
+                    let screen = app.frame
+                    return CGPoint(x: screen.minX + box.midX * screen.width, y: screen.minY + (1 - box.midY) * screen.height)
+                }
+            }
+            wait(0.5)
+        } while Date() < deadline
+        throw DemoTimelineError("no \"\(text)\" on screen after \(Int(timeout)) s; read: \(seen.suffix(30).map { "\"\($0)\"" }.joined(separator: ", "))")
     }
 
     private func coordinate(_ target: DemoTarget, timeout: TimeInterval = DemoPlayer.elementTimeout) throws -> XCUICoordinate {
@@ -423,6 +493,47 @@ enum DemoGesture {
             from: start,
             [.hold(0.03)] + stroke(from: start, to: end, duration: duration, bow: 0.02) { pow($0, flickExponent) }
         )
+    }
+
+    /// One touch along a smooth curve through `points` (Catmull-Rom), at an eased pace over `over` seconds, lifting at
+    /// the last point: how a finger draws a circle or an arrow on a picture.
+    @MainActor
+    static func stroke(through points: [CGPoint], over duration: TimeInterval) throws {
+        guard let first = points.first else { return }
+        // The curve, finely sampled, then walked by distance so the pace doesn't depend on how the points are spaced.
+        var curve: [CGPoint] = [first]
+        for index in 0..<(points.count - 1) {
+            let p0 = points[max(index - 1, 0)], p1 = points[index], p2 = points[index + 1]
+            let p3 = points[min(index + 2, points.count - 1)]
+            for step in 1...12 {
+                let t = CGFloat(step) / 12, t2 = t * t, t3 = t2 * t
+                curve.append(CGPoint(
+                    x: 0.5 * (2 * p1.x + (p2.x - p0.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2
+                        + (3 * p1.x - p0.x - 3 * p2.x + p3.x) * t3),
+                    y: 0.5 * (2 * p1.y + (p2.y - p0.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
+                        + (3 * p1.y - p0.y - 3 * p2.y + p3.y) * t3)
+                ))
+            }
+        }
+        var lengths: [CGFloat] = [0]
+        for index in 1..<curve.count {
+            lengths.append(lengths[index - 1] + hypot(curve[index].x - curve[index - 1].x, curve[index].y - curve[index - 1].y))
+        }
+        let total = max(lengths.last ?? 0, 1)
+        let steps = max(1, Int((duration / frame).rounded()))
+        var segments: [TouchPath.Segment] = [.hold(0.04)]
+        var cursor = 0
+        for step in 1...steps {
+            let t = Double(step) / Double(steps)
+            // Gentler than a drag's easing at the ends, as a hand drawing keeps moving.
+            let along = total * CGFloat(0.5 - 0.5 * cos(.pi * t))
+            while cursor < lengths.count - 2, lengths[cursor + 1] < along { cursor += 1 }
+            let span = max(lengths[cursor + 1] - lengths[cursor], 0.0001)
+            let f = min(max((along - lengths[cursor]) / span, 0), 1)
+            let a = curve[cursor], b = curve[cursor + 1]
+            segments.append(.move(to: CGPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f), over: duration / Double(steps)))
+        }
+        try TouchPath.play(from: first, segments)
     }
 
     /// One point a frame along `ease`, bowed to one side by `bow` of the stroke's length at its middle.
