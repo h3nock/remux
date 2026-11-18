@@ -288,10 +288,7 @@ protocol GhosttyTerminalSelectionModeling: ObservableObject {
 
     /// The window sheet's previews of `leafIDs`; nil for a backend whose sheet lists its windows as rows
     /// saying what each holds.
-    func makePanePreviewSession(
-        leafIDs: [UUID],
-        pixelBudget: GhosttyPanePreviewSession.PixelBudget
-    ) -> GhosttyPanePreviewSession?
+    func makePanePreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession?
 
     // MARK: Selection sheets
 

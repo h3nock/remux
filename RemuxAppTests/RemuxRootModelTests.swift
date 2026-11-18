@@ -5691,6 +5691,8 @@ private final class RecordingAttachmentTransferServiceFactory: @unchecked Sendab
 }
 
 private struct FailingGhosttyAttachmentTransferService: GhosttyAttachmentTransferService {
+    func prepare() async {}
+
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
         progress: @escaping GhosttyAttachmentTransferProgressHandler

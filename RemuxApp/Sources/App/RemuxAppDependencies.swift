@@ -39,6 +39,8 @@ struct RemuxAppDependencies: Sendable {
     /// a time.
     let herdrZoomKeepers: HerdrZoomKeepers
     private let sshRootService: RemuxSSHRootService
+    /// The SFTP sessions previews and attachments share, one per server transfer connection.
+    private let sftpSessions: RemuxTransferSFTPSessions
     private let transportFactory: @Sendable (
         _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
@@ -98,6 +100,7 @@ struct RemuxAppDependencies: Sendable {
         publicKeyInstaller: SSHPublicKeyInstaller,
         herdrOwnedZoomStore: any HerdrOwnedZoomStore = InMemoryHerdrOwnedZoomStore(),
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
+        sftpSessions: RemuxTransferSFTPSessions = RemuxTransferSFTPSessions(),
         transportFactory: @escaping @Sendable (
             _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
@@ -112,16 +115,18 @@ struct RemuxAppDependencies: Sendable {
             _ reason: String,
             _ sshRootService: RemuxSSHRootService
         ) async -> Void = { reason, sshRootService in await sshRootService.checkConnections(reason: reason) },
-        attachmentTransferServiceFactory: @escaping @Sendable (
+        // nil: the live service, on `sftpSessions`.
+        attachmentTransferServiceFactory: (@Sendable (
             _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
-        ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
-        terminalPreviewClientFactory: @escaping @Sendable (
+        ) -> any GhosttyAttachmentTransferService)? = nil,
+        // nil: the live client, on `sftpSessions`.
+        terminalPreviewClientFactory: (@Sendable (
             _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
-        ) -> TerminalPreviewClient? = RemuxAppDependencies.liveTerminalPreviewClient,
+        ) -> TerminalPreviewClient?)? = nil,
         tmuxSessionDiscoverer: @escaping @Sendable (
             _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
@@ -156,11 +161,26 @@ struct RemuxAppDependencies: Sendable {
         self.publicKeyInstaller = publicKeyInstaller
         self.herdrZoomKeepers = HerdrZoomKeepers(store: herdrOwnedZoomStore)
         self.sshRootService = sshRootService
+        self.sftpSessions = sftpSessions
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
         self.sshConnectionChecker = sshConnectionChecker
-        self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
-        self.terminalPreviewClientFactory = terminalPreviewClientFactory
+        self.attachmentTransferServiceFactory = attachmentTransferServiceFactory ?? { target, trustedHostStore, sshRootService in
+            Self.liveAttachmentTransferService(
+                target: target,
+                trustedHostStore: trustedHostStore,
+                sshRootService: sshRootService,
+                sftpSessions: sftpSessions
+            )
+        }
+        self.terminalPreviewClientFactory = terminalPreviewClientFactory ?? { target, trustedHostStore, sshRootService in
+            Self.liveTerminalPreviewClient(
+                target: target,
+                trustedHostStore: trustedHostStore,
+                sshRootService: sshRootService,
+                sftpSessions: sftpSessions
+            )
+        }
         self.tmuxSessionDiscoverer = tmuxSessionDiscoverer
         self.herdrSessionDiscoverer = herdrSessionDiscoverer
         self.sshAccessVerifier = sshAccessVerifier
@@ -280,7 +300,9 @@ struct RemuxAppDependencies: Sendable {
     }
 
     func closeIdleSSHConnections(forServerID serverID: SavedServer.ID) {
-        Task {
+        Task { [sftpSessions, sshRootService] in
+            // An open SFTP session holds its connection, so it closes first.
+            await sftpSessions.closeIdleSessions { $0.serverID == serverID }
             await sshRootService.closeIdleConnections(forServerID: serverID)
         }
     }
@@ -377,7 +399,8 @@ struct RemuxAppDependencies: Sendable {
     private static func liveAttachmentTransferService(
         target: SessionTarget,
         trustedHostStore: TrustedHostStore,
-        sshRootService: RemuxSSHRootService
+        sshRootService: RemuxSSHRootService,
+        sftpSessions: RemuxTransferSFTPSessions
     ) -> any GhosttyAttachmentTransferService {
         let rootConfiguration = transferSSHRootConfiguration(
             for: target,
@@ -386,6 +409,7 @@ struct RemuxAppDependencies: Sendable {
         )
         let provider = RemuxCitadelSFTPClientProvider(
             sshRootService: sshRootService,
+            sessions: sftpSessions,
             rootKey: RemuxSSHRootKey(target: target, purpose: .transfer),
             rootConfiguration: rootConfiguration,
             operationTimeout: RemuxConnectionTimeouts.sftpOperation
@@ -393,12 +417,13 @@ struct RemuxAppDependencies: Sendable {
         return GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
     }
 
-    /// Each preview claims a place on the server's transfer connection, as attachments do: a file while it
+    /// Previews share the server's transfer connection and its SFTP session with attachments: a file while it
     /// downloads, a page while it is open. Terminal traffic stays on the interactive connection.
     private static func liveTerminalPreviewClient(
         target: SessionTarget,
         trustedHostStore: TrustedHostStore,
-        sshRootService: RemuxSSHRootService
+        sshRootService: RemuxSSHRootService,
+        sftpSessions: RemuxTransferSFTPSessions
     ) -> TerminalPreviewClient? {
         let rootKey = RemuxSSHRootKey(target: target, purpose: .transfer)
         let rootConfiguration = transferSSHRootConfiguration(
@@ -409,6 +434,7 @@ struct RemuxAppDependencies: Sendable {
         return TerminalPreviewClient(
             sftpProvider: RemuxCitadelSFTPClientProvider(
                 sshRootService: sshRootService,
+                sessions: sftpSessions,
                 rootKey: rootKey,
                 rootConfiguration: rootConfiguration,
                 operationTimeout: RemuxConnectionTimeouts.sftpOperation
@@ -776,19 +802,28 @@ struct RemuxAppDependencies: Sendable {
         guard ProcessInfo.processInfo.environment["REMUX_UI_TEST_INPUT_READY"] == "1" else {
             return []
         }
+        return [uiTestingTmuxTranscript()]
+    }
 
-        // Answers GhosttyKit's `list-panes -s -F` request. The line needs every
-        // field of that format, through pane_current_command and
-        // pane_current_path, or the client rejects the attach.
-        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/home/demo\n"
+    /// What the simulated server's tmux sends an attaching client with one
+    /// pane, at a prompt.
+    static func uiTestingTmuxTranscript() -> Data {
+        // tmux answers commands in the order they are sent: the version,
+        // refresh-client, list-windows, the session controller's zoom-marks
+        // query (its topology callback sends it ahead of the panes' loading),
+        // then GhosttyKit's `list-panes -s -F` and its four captures. The pane
+        // line needs every field of that format, through pane_current_command
+        // and pane_current_path, or the client rejects the attach.
+        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;0;0;43;8,16;zsh;/home/demo\n"
         let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
         let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
             + "%begin 2 2 1\n3.1\n%end 2 2 1\n"
             + "%begin 3 3 1\n%end 3 3 1\n"
             + "%begin 4 4 1\n\(window)%end 4 4 1\n"
-            + "%begin 5 5 1\n\(paneState)%end 5 5 1\n"
-            + (6...9).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
-        return [Data(transcript.utf8)]
+            + "%begin 5 5 1\n@0 0 \n%end 5 5 1\n"
+            + "%begin 6 6 1\n\(paneState)%end 6 6 1\n"
+            + (7...10).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
+        return Data(transcript.utf8)
     }
 #endif
 

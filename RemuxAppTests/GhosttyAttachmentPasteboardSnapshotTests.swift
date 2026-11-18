@@ -24,25 +24,13 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
     }
 
     @MainActor
-    func testCurrentImagePreviewDataLoadsImageThroughItemProvider() async throws {
+    func testAPastedImageStagesItsUploadFileAndPreviewData() async throws {
         let pasteboard = UIPasteboard.withUniqueName()
         let imageData = try makeJPEGData(width: 1_600, height: 900)
         pasteboard.setData(imageData, forPasteboardType: UTType.jpeg.identifier)
 
-        let loadedPreviewData = await GhosttyAttachmentPasteboardSnapshot.currentImagePreviewData(pasteboard)
-        let previewData = try XCTUnwrap(loadedPreviewData)
-        let size = try XCTUnwrap(imagePixelSize(previewData))
-
-        XCTAssertLessThanOrEqual(max(size.width, size.height), CGFloat(GhosttyAttachmentImagePreviewData.maxPixelDimension))
-    }
-
-    @MainActor
-    func testCurrentImageAttachmentStagesUploadFileAndPreviewData() async throws {
-        let pasteboard = UIPasteboard.withUniqueName()
-        let imageData = try makeJPEGData(width: 1_600, height: 900)
-        pasteboard.setData(imageData, forPasteboardType: UTType.jpeg.identifier)
-
-        let loadedAttachment = await GhosttyAttachmentPasteboardSnapshot.currentImageAttachment(pasteboard)
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+        let loadedAttachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(from: image)
         let attachment = try XCTUnwrap(loadedAttachment)
         XCTAssertEqual(attachment.kind, .pasteboardImage)
 
@@ -64,6 +52,112 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
 
         let size = try XCTUnwrap(imagePixelSize(previewData))
         XCTAssertLessThanOrEqual(max(size.width, size.height), CGFloat(GhosttyAttachmentImagePreviewData.maxPixelDimension))
+    }
+
+    @MainActor
+    func testAPastedImageIsReadWhenThePasteIsHandled() async throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        pasteboard.setData(try makeJPEGData(width: 400, height: 300), forPasteboardType: UTType.jpeg.identifier)
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+        // The pasteboard soon stops serving what was pasted; preparation must not need it any more.
+        pasteboard.items = []
+        let loadedAttachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(from: image)
+
+        guard case .file(let stagedURL) = try XCTUnwrap(loadedAttachment).payload else {
+            return XCTFail("Expected file-backed image payload")
+        }
+        GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+    }
+
+    @MainActor
+    func testAnAnimationOfferedWithAStillOfItsFirstFrameIsPastedAsTheAnimation() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let animation = try makeGIFData(frameCount: 2)
+        pasteboard.items = [[
+            UTType.png.identifier: try makePNGData(width: 40, height: 30),
+            UTType.gif.identifier: animation
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.data, animation)
+    }
+
+    @MainActor
+    func testAStillGIFOfferedWithAPNGIsPastedAsThePNG() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makePNGData(width: 40, height: 30)
+        pasteboard.items = [[
+            UTType.gif.identifier: try makeGIFData(frameCount: 1),
+            UTType.png.identifier: picture
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
+    func testAPNGIsPastedAheadOfAJPEGOfTheSamePicture() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makePNGData(width: 40, height: 30)
+        pasteboard.items = [[
+            UTType.jpeg.identifier: try makeJPEGData(width: 40, height: 30),
+            UTType.png.identifier: picture
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
+    func testAFormatThatCannotBeReadAsAPictureIsPassedOver() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makeJPEGData(width: 40, height: 30)
+        XCTAssertTrue(UTType.svg.conforms(to: .image))
+        pasteboard.items = [[
+            UTType.svg.identifier: Data(#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"/>"#.utf8),
+            UTType.jpeg.identifier: picture
+        ]]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
+    func testAPictureAfterTextOnTheClipboardIsPasted() throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        let picture = try makePNGData(width: 40, height: 30)
+        pasteboard.items = [
+            [UTType.utf8PlainText.identifier: "a caption"],
+            [UTType.png.identifier: picture]
+        ]
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+
+        XCTAssertEqual(image.data, picture)
+    }
+
+    @MainActor
+    func testAPastedPhotoIsSentTheWayAPickedPhotoIs() async throws {
+        let pasteboard = UIPasteboard.withUniqueName()
+        // Points; the renderer multiplies by the screen's scale, so this is larger than the limit on every simulator.
+        pasteboard.setData(try makeJPEGData(width: 1_200, height: 900), forPasteboardType: UTType.jpeg.identifier)
+
+        let image = try XCTUnwrap(GhosttyAttachmentPasteboardSnapshot.currentImage(pasteboard))
+        let loadedAttachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(from: image)
+        guard case .file(let stagedURL) = try XCTUnwrap(loadedAttachment).payload else {
+            return XCTFail("Expected file-backed image payload")
+        }
+        defer {
+            GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+        }
+
+        let size = try XCTUnwrap(imagePixelSize(try Data(contentsOf: stagedURL)))
+        XCTAssertEqual(size, CGSize(width: 2_000, height: 1_500))
     }
 
     func testURLWinsOverStringWhenBothAreReadable() {
@@ -186,6 +280,29 @@ final class GhosttyAttachmentPasteboardSnapshotTests: XCTestCase {
             UIColor.systemBlue.setFill()
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         }
+    }
+
+    private func makePNGData(width: Int, height: Int) throws -> Data {
+        UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).pngData { context in
+            UIColor.systemRed.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    private func makeGIFData(frameCount: Int) throws -> Data {
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithData(data as CFMutableData, UTType.gif.identifier as CFString, frameCount, nil)
+        )
+        for index in 0..<frameCount {
+            let frame = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30)).image { context in
+                UIColor(hue: CGFloat(index) / CGFloat(frameCount), saturation: 1, brightness: 1, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+            }
+            CGImageDestinationAddImage(destination, try XCTUnwrap(frame.cgImage), nil)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
     }
 
     private func imagePixelSize(_ data: Data) -> CGSize? {

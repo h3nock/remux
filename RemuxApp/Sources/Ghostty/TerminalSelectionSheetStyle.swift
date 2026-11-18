@@ -8,12 +8,9 @@ enum TerminalSelectionSheetPalette {
     static let controlPressedFill = Color.primary.opacity(0.08)
     static let controlGroupGlassTint = Color.primary.opacity(0.035)
     static let primary = Color.primary.opacity(0.92)
-    static let secondary = Color.secondary.opacity(0.78)
+    static let secondary = Color.secondary
     static let tertiary = Color.secondary.opacity(0.56)
-
-    static func selectedStroke(_ chromeStyle: GhosttyTerminalChromeStyle) -> Color {
-        chromeStyle.selectedStroke
-    }
+    static let selectedStroke = RemuxAccent.selectedStroke
 }
 
 /// Selector-sheet layout below the system navigation bar. The sheet's height
@@ -123,10 +120,11 @@ struct TerminalSelectionSheetContent<Header: View, Content: View, Actions: View>
                         TerminalSelectionSheetLayout.horizontalContentPadding
                     )
 
+                // Content that scrolls takes the height its sheet has; other content has its own.
                 content
-                    .frame(maxWidth: .infinity, alignment: .top)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .frame(maxWidth: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             actions
                 .padding(
@@ -184,7 +182,55 @@ struct TerminalSelectionSheetActionButton: View {
     }
 }
 
+/// Fades a scroll view's content out at an edge it continues past, so a cut row reads as more to
+/// scroll to rather than as an edge.
+private struct TerminalSelectionSheetScrollFades: ViewModifier {
+    private struct Edges: Equatable {
+        var top = false
+        var bottom = false
+    }
+
+    private static let length: CGFloat = 20
+
+    @State private var continues = Edges()
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: Edges.self) { geometry in
+                Edges(
+                    top: geometry.contentOffset.y + geometry.contentInsets.top > 1,
+                    bottom: geometry.contentOffset.y + geometry.containerSize.height
+                        - geometry.contentInsets.bottom < geometry.contentSize.height - 1
+                )
+            } action: { _, edges in
+                continues = edges
+            }
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [continues.top ? .clear : .black, .black],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: Self.length)
+                    Color.black
+                    LinearGradient(
+                        colors: [.black, continues.bottom ? .clear : .black],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: Self.length)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: continues)
+    }
+}
+
 extension View {
+    func terminalSelectionSheetScrollFades() -> some View {
+        modifier(TerminalSelectionSheetScrollFades())
+    }
+
     @ViewBuilder
     func terminalSelectionSheetControlGroupSurface() -> some View {
         let shape = Capsule()
@@ -215,25 +261,5 @@ extension View {
                     )
                 }
         }
-    }
-
-    func terminalSelectionTileChrome(
-        isSelected: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        return background(TerminalSelectionSheetPalette.row)
-            .clipShape(shape)
-            .overlay {
-                shape.strokeBorder(
-                    isSelected
-                        ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
-                        : TerminalSelectionSheetPalette.stroke,
-                    lineWidth: isSelected ? 1.25 : 1
-                )
-            }
-            // Clipping only hides what is drawn past the tile, such as a preview filling it, which would
-            // otherwise take the touches meant for the tile beside it.
-            .contentShape(shape)
     }
 }

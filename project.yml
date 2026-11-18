@@ -10,7 +10,7 @@ settings:
     PRODUCT_BUNDLE_IDENTIFIER: dev.remux.app
     PRODUCT_NAME: Remux
     MARKETING_VERSION: 0.1.0
-    CURRENT_PROJECT_VERSION: 14
+    CURRENT_PROJECT_VERSION: 18
     SWIFT_VERSION: 6.0
     IPHONEOS_DEPLOYMENT_TARGET: 18.0
     TARGETED_DEVICE_FAMILY: 1
@@ -58,6 +58,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: Remux uses the camera so you can attach a photo you take.
         NSMicrophoneUsageDescription: Remux uses the microphone so you can dictate messages.
         NSSpeechRecognitionUsageDescription: Remux uses on-device speech recognition to turn your dictation into text.
         UILaunchScreen: {}

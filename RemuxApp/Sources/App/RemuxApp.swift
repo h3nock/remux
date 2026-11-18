@@ -27,6 +27,7 @@ enum GhosttyKitBuildModePolicy {
 @main
 struct RemuxApp: App {
     init() {
+        GhosttyKeyboardWindowTracker.shared.start()
         #if !DEBUG
         if let failure = GhosttyKitBuildModePolicy.releaseValidationFailure(
             for: ghostty_info().build_mode

@@ -76,8 +76,6 @@ struct GhosttyWindowRowList: View {
 }
 
 private struct GhosttyWindowRow: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let window: GhosttyWindowSelectionSheetRenderProjection.Window
     let topLevelNoun: GhosttyTopLevelNoun
 
@@ -104,7 +102,7 @@ private struct GhosttyWindowRow: View {
             if window.isSelected {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(chromeStyle.accent)
+                    .foregroundStyle(RemuxAccent.fill)
                     .accessibilityHidden(true)
             }
         }

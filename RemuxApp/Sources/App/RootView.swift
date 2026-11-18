@@ -232,16 +232,10 @@ private struct RemuxWorkspaceShell: View {
                 herdrWorkspaceCloseConfirmation: model.herdrWorkspaceCloseConfirmation(_:in:),
                 onCloseHerdrWorkspace: model.closeHerdrWorkspace(confirmed:in:),
                 herdrScreen: model.herdrScreen(of:),
-                herdrAgents: model.herdrAgents(of:),
-                onOpenHerdrAgent: { workspaceID, paneID, bootID in
-                    model.openHerdrSession(workspaceID, atPane: paneID, bootID: bootID)
-                }
+                herdrAgents: model.herdrAgents(of:)
             )
             .remuxSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                model.terminalSettings.theme.terminalChromeColorScheme,
-                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
-            )
+            .ghosttyTerminalChromePresentation(model.terminalSettings.theme.terminalChromeColorScheme)
             .tailscaleSSHCheckAlert(
                 request: $tailscaleSSHCheckRequest,
                 isActive: true
@@ -382,9 +376,6 @@ private struct RemuxWorkspaceShell: View {
                 }
             }
             .remuxSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
-            )
             .alert(
                 setupSubmissionIssueTitle(setup.submissionIssue),
                 isPresented: setupSubmissionIssueIsPresented(setup.submissionIssue),
@@ -693,7 +684,8 @@ private struct RemuxWorkspaceShell: View {
                         // The terminal gives up the keyboard once Home replaces it, as the screen decides;
                         // a resign here as well would be taken back while the terminal is still on screen.
                         Task { await model.showLibrary() }
-                    }
+                    },
+                    waitingAgentStatus: { model.waitingAgentStatus }
                 )
                 .id(entry.instanceID)
                 .opacity(isVisible ? 1 : 0)
@@ -763,6 +755,10 @@ private struct RemuxWorkspaceShell: View {
                     model.showActiveSession(workspaceID)
                 },
                 onDisconnectActiveSession: model.disconnectActiveSession,
+                herdrAgents: model.herdrAgents(of:),
+                onOpenHerdrAgent: { workspaceID, paneID, bootID in
+                    model.openHerdrSession(workspaceID, atPane: paneID, bootID: bootID)
+                },
                 onMoveServers: model.moveServers,
                 onDeleteServer: { serverID in
                     Task { await model.deleteServer(serverID) }
@@ -931,6 +927,7 @@ private struct ActiveTerminalSessionView: View {
     let onTrustHostKey: () -> Void
     let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
+    let waitingAgentStatus: () -> TerminalAgentStatus?
 
     @StateObject private var previewSession: TerminalPreviewSession
 
@@ -947,7 +944,8 @@ private struct ActiveTerminalSessionView: View {
         onEditServer: @escaping () -> Void,
         onTrustHostKey: @escaping () -> Void,
         onShowSessions: @escaping () -> Void,
-        onShowLibrary: @escaping () -> Void
+        onShowLibrary: @escaping () -> Void,
+        waitingAgentStatus: @escaping () -> TerminalAgentStatus?
     ) {
         self.entry = entry
         self.isSelected = isSelected
@@ -962,6 +960,7 @@ private struct ActiveTerminalSessionView: View {
         self.onTrustHostKey = onTrustHostKey
         self.onShowSessions = onShowSessions
         self.onShowLibrary = onShowLibrary
+        self.waitingAgentStatus = waitingAgentStatus
         _previewSession = StateObject(
             wrappedValue: TerminalPreviewSession(
                 client: entry.terminalPreviewClientFactory(),
@@ -1004,6 +1003,7 @@ private struct ActiveTerminalSessionView: View {
             onRestartSession: onRestartSession,
             onShowSessions: onShowSessions,
             onShowLibrary: onShowLibrary,
+            waitingAgentStatus: waitingAgentStatus,
             onUpdateCredentials: onUpdateCredentials,
             onEditServer: onEditServer,
             onTrustHostKey: onTrustHostKey
@@ -1088,10 +1088,15 @@ private struct ConnectionLibraryView: View {
     let onTrustDiscoveryHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
+    /// An open Herdr session's agents, which Home follows as they change.
+    let herdrAgents: (SavedWorkspace.ID) -> HerdrAgentPresentation?
+    /// Opens a Herdr session at an agent's pane: the session, the pane and the server boot its id is from.
+    let onOpenHerdrAgent: (SavedWorkspace.ID, String, String?) -> Void
     let onMoveServers: (IndexSet, Int) -> Void
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
 
+    @State private var showsAgents = false
     @State private var showsAllConnectedSessions = false
     @State private var showsAllRecentSessions = false
     @State private var serverEditMode: EditMode = .inactive
@@ -1105,17 +1110,21 @@ private struct ConnectionLibraryView: View {
             selectedSessionID: nil
         )
 
+        let agents = SessionAgentsProjection(activeSessions: sessionProjection.activeSessions, agents: herdrAgents)
+
         Group {
             if snapshot.servers.isEmpty {
                 LibraryEmptyState(onAddServer: onAddServer)
             } else {
                 List {
+                    agentsSection(agents)
                     activeSessionsSection
                     recentSessionsSection
                     serversSection(sessionProjection: sessionProjection)
                 }
                 .listStyle(.insetGrouped)
                 .environment(\.editMode, $serverEditMode)
+                .animation(.default, value: agents.homeEntries.map(\.id))
                 .accessibilityIdentifier("library.list")
             }
         }
@@ -1166,6 +1175,9 @@ private struct ConnectionLibraryView: View {
                 .accessibilityIdentifier("library.add-server")
             }
         }
+        .navigationDestination(isPresented: $showsAgents) {
+            SessionAgentsList(projection: agents, onOpen: openAgent)
+        }
         .navigationDestination(isPresented: presentedServerIsActive) {
             if let presentedServerID,
                let server = snapshot.server(id: presentedServerID) {
@@ -1193,6 +1205,25 @@ private struct ConnectionLibraryView: View {
             terminalSettings.theme.rawValue,
             terminalSettings.fontSize.map(String.init(describing:)) ?? "default",
         ].joined(separator: ":")
+    }
+
+    /// The agents of the open Herdr sessions, above the sessions themselves: an agent that needs the user is
+    /// what they came for. Without agents the section isn't there.
+    @ViewBuilder
+    private func agentsSection(_ agents: SessionAgentsProjection) -> some View {
+        if !agents.entries.isEmpty {
+            Section {
+                SessionAgentsHomeRows(projection: agents, onOpen: openAgent) {
+                    showsAgents = true
+                }
+            } header: {
+                LibraryHomeSectionHeader("Agents")
+            }
+        }
+    }
+
+    private func openAgent(_ session: SessionAgentsProjection.Session, _ agent: HerdrAgentPresentation.Agent) {
+        onOpenHerdrAgent(session.id, agent.paneID, session.bootID)
     }
 
     @ViewBuilder

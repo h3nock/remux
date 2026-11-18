@@ -72,62 +72,6 @@ struct GhosttyBottomChromeReservation: Equatable {
     }
 }
 
-struct GhosttyTerminalChromeStyle {
-    let accent: Color
-    let accentForeground: Color
-
-    var toolbarButtonActiveFill: Color {
-        accent.opacity(0.16)
-    }
-
-    var selectedFill: Color {
-        accent.opacity(0.18)
-    }
-
-    var selectedStroke: Color {
-        accent.opacity(0.76)
-    }
-
-    static let ghosttyDefault = GhosttyTerminalChromeStyle(
-        accent: Color(uiColor: .ghosttyDefaultTerminalChromeAccent),
-        accentForeground: Color(uiColor: .terminalChromeAccentForegroundForDarkAccent)
-    )
-
-    static let catppuccinMocha = GhosttyTerminalChromeStyle(
-        accent: Color(uiColor: .catppuccinMochaTerminalChromeAccent),
-        accentForeground: Color(uiColor: .terminalChromeAccentForegroundForDarkAccent)
-    )
-
-    static let catppuccinLatte = GhosttyTerminalChromeStyle(
-        accent: Color(uiColor: .catppuccinLatteTerminalChromeAccent),
-        accentForeground: Color(uiColor: .terminalChromeAccentForegroundForLightAccent)
-    )
-}
-
-private struct GhosttyTerminalChromeStyleKey: EnvironmentKey {
-    static let defaultValue = GhosttyTerminalChromeStyle.ghosttyDefault
-}
-
-extension EnvironmentValues {
-    var ghosttyTerminalChromeStyle: GhosttyTerminalChromeStyle {
-        get { self[GhosttyTerminalChromeStyleKey.self] }
-        set { self[GhosttyTerminalChromeStyleKey.self] = newValue }
-    }
-}
-
-extension TerminalTheme {
-    var terminalChromeStyle: GhosttyTerminalChromeStyle {
-        switch self {
-        case .ghosttyDefault:
-            .ghosttyDefault
-        case .remuxDark:
-            .catppuccinMocha
-        case .remuxLight:
-            .catppuccinLatte
-        }
-    }
-}
-
 enum GhosttyKeyboardChromeAnimation {
     static let composerTransition = Animation.spring(
         response: 0.34,
@@ -137,8 +81,6 @@ enum GhosttyKeyboardChromeAnimation {
 }
 
 struct GhosttyKeyboardChrome<ComposerContent: View>: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let keyboardMode: GhosttyKeyboardChromeMode
     let isEnabled: Bool
     let isInteractionLocked: Bool
@@ -155,6 +97,9 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isComposerPresented: Bool
     let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
+    /// The state of the agents waiting out of sight, which the Home button's dot shows. Read as the toolbar
+    /// is drawn, so the dot follows both the agents and the tab on screen.
+    var waitingAgentStatus: () -> TerminalAgentStatus? = { nil }
     let onShowWindows: () -> Void
     let onShowPanes: () -> Void
     let onOpenComposer: () -> Void
@@ -212,13 +157,11 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                 GhosttyKeyboardChromeDockButton(
                     systemName: "rectangle.stack",
                     badge: nil,
-                    chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: "Sessions",
                     accessibilityHint: "Switch active sessions, resume recent or available sessions, or create a new session.",
                     accessibilityIdentifier: "terminal.sessions",
-                    isActive: false,
                     isEnabled: !isInteractionLocked,
                     action: onShowSessions
                 )
@@ -226,13 +169,11 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                 GhosttyKeyboardChromeDockButton(
                     systemName: "rectangle.on.rectangle",
                     badge: windowBadge,
-                    chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: windowAccessibilityLabel,
                     accessibilityHint: navigation.tabsHint,
                     accessibilityIdentifier: "terminal.windows",
-                    isActive: false,
                     isEnabled: navigation.isTabsEnabled,
                     action: onShowWindows
                 )
@@ -240,13 +181,11 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                 GhosttyKeyboardChromeDockButton(
                     systemName: "square.split.2x1",
                     badge: paneBadge,
-                    chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: paneAccessibilityLabel,
                     accessibilityHint: navigation.panesHint,
                     accessibilityIdentifier: "terminal.panes",
-                    isActive: false,
                     isEnabled: navigation.isPanesEnabled,
                     action: onShowPanes
                 )
@@ -264,7 +203,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                         accessibilityHint: toolbarKeyAccessibilityHint(key),
                         accessibilityIdentifier: "terminal.toolbar-key.\(index)",
                         accessibilityValue: key == .control && isControlArmed ? "Armed" : nil,
-                        isActive: key == .control && isControlArmed,
+                        isArmed: key == .control && isControlArmed,
                         onLongPress: index == 0 ? onShowShortcuts : nil
                     ) {
                         activateToolbarKey(key)
@@ -277,16 +216,17 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var inputControls: some View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
+                let waiting = waitingAgentStatus()
                 GhosttyKeyboardChromeDockButton(
                     systemName: "house",
                     badge: nil,
-                    chromeStyle: chromeStyle,
+                    dot: waiting,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
                     accessibilityLabel: "Home",
+                    accessibilityValue: waiting.map { "An agent is \($0.word)" },
                     accessibilityHint: "Open the Remux library.",
                     accessibilityIdentifier: "terminal.home",
-                    isActive: false,
                     isEnabled: !isInteractionLocked,
                     action: onShowLibrary
                 )
@@ -301,29 +241,27 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         GhosttyKeyboardChromeDockButton(
             systemName: "square.and.pencil",
             badge: nil,
-            chromeStyle: chromeStyle,
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             accessibilityLabel: "Open composer",
             accessibilityHint: "Prepare an editable message before sending it to the terminal.",
             accessibilityIdentifier: "terminal.composer.toggle",
-            isActive: false,
             isEnabled: !isInteractionLocked,
             action: onOpenComposer
         )
     }
 
+    /// The icon shows what a tap does, using iOS's own hide-keyboard symbol while the keyboard is up. The active fill
+    /// stays with armed keys such as Control, so an open keyboard doesn't light the toolbar.
     private var keyboardToggleButton: some View {
         GhosttyKeyboardChromeDockButton(
-            systemName: "keyboard",
+            systemName: keyboardMode == .hidden ? "keyboard" : "keyboard.chevron.compact.down",
             badge: nil,
-            chromeStyle: chromeStyle,
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
             accessibilityHint: nil,
             accessibilityIdentifier: "terminal.keyboard",
-            isActive: keyboardMode != .hidden,
             isEnabled: isEnabled,
             action: onToggleKeyboard
         )
@@ -342,7 +280,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         accessibilityHint: String? = nil,
         accessibilityIdentifier: String,
         accessibilityValue: String? = nil,
-        isActive: Bool = false,
+        isArmed: Bool = false,
         onLongPress: (() -> Void)? = nil,
         action: @escaping () -> Bool
     ) -> some View {
@@ -352,11 +290,10 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             accessibilityHint: accessibilityHint,
             accessibilityIdentifier: accessibilityIdentifier,
             accessibilityValue: accessibilityValue,
-            chromeStyle: chromeStyle,
             fontSize: 12,
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-            isActive: isActive,
+            isArmed: isArmed,
             isEnabled: isEnabled && allowsTerminalKeys && !isInteractionLocked,
             onLongPress: onLongPress,
             action: action
@@ -441,40 +378,63 @@ struct GhosttyKeyboardChromeNavigation: Equatable {
 }
 
 private struct GhosttyKeyboardChromeDockButton: View {
+    /// The dot is the size of the agent dot on a tab's tile, in the place of a button's count.
+    private static let dotDiameter: CGFloat = 7
+    private static let dotBox: CGFloat = 12.5
+    /// What is cut from the symbol around the dot, so the two don't touch.
+    private static let dotClearance: CGFloat = 1.5
+
     let systemName: String
     let badge: String?
-    let chromeStyle: GhosttyTerminalChromeStyle
+    /// An agent's state, shown as its dot where a count would be.
+    var dot: TerminalAgentStatus?
     let width: CGFloat
     let height: CGFloat
     let accessibilityLabel: String
+    var accessibilityValue: String?
     let accessibilityHint: String?
     let accessibilityIdentifier: String
-    let isActive: Bool
     let isEnabled: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             ZStack {
-                Image(systemName: systemName)
-                    .font(.system(size: 16.5, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .contentTransition(.symbolEffect(.replace))
+                ZStack {
+                    Image(systemName: systemName)
+                        .font(.system(size: 16.5, weight: .semibold))
+                        .symbolRenderingMode(.monochrome)
+                        .contentTransition(.symbolEffect(.replace))
+
+                    if dot != nil {
+                        Circle()
+                            .frame(
+                                width: Self.dotDiameter + 2 * Self.dotClearance,
+                                height: Self.dotDiameter + 2 * Self.dotClearance
+                            )
+                            .dockCorner(box: Self.dotBox)
+                            .blendMode(.destinationOut)
+                    }
+                }
+                .compositingGroup()
 
                 if let badge {
                     dockBadge(badge)
                 }
+                if let dot {
+                    TerminalAgentDot(status: dot, size: Self.dotDiameter)
+                        .dockCorner(box: Self.dotBox)
+                }
             }
         }
         .buttonStyle(GhosttyChromeDockButtonStyle(
-            isActive: isActive,
             isEnabled: isEnabled,
-            chromeStyle: chromeStyle,
             width: width,
             height: height
         ))
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue ?? "")
         .accessibilityHint(accessibilityHint ?? "")
         .accessibilityIdentifier(accessibilityIdentifier)
     }
@@ -486,10 +446,21 @@ private struct GhosttyKeyboardChromeDockButton: View {
             .font(.system(size: 8, weight: .semibold).monospacedDigit())
             .lineLimit(1)
             .minimumScaleFactor(0.75)
-            .foregroundStyle(chromeStyle.accentForeground)
+            .foregroundStyle(RemuxAccent.onFill)
             .frame(minWidth: 12.5, minHeight: 12.5)
             .padding(.horizontal, horizontalPadding)
-            .background(chromeStyle.accent.opacity(0.88), in: Capsule())
+            .background(RemuxAccent.fill.opacity(0.88), in: Capsule())
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(.top, 4)
+            .padding(.trailing, 4)
+    }
+}
+
+private extension View {
+    /// Centres the view where a dock button's count sits: in a box of `box` points, 4 points in from the
+    /// button's top and trailing edges.
+    func dockCorner(box: CGFloat) -> some View {
+        frame(width: box, height: box)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(.top, 4)
             .padding(.trailing, 4)
@@ -502,11 +473,10 @@ private struct GhosttyKeyboardKeyButton: View {
     let accessibilityHint: String?
     let accessibilityIdentifier: String
     let accessibilityValue: String?
-    let chromeStyle: GhosttyTerminalChromeStyle
     var fontSize: CGFloat = 13
     var width: CGFloat = GhosttyKeyboardChromeSizing.dockButtonWidth
     var height: CGFloat = GhosttyKeyboardChromeSizing.dockButtonHeight
-    var isActive = false
+    var isArmed = false
     let isEnabled: Bool
     var onLongPress: (() -> Void)?
     let action: () -> Bool
@@ -518,14 +488,14 @@ private struct GhosttyKeyboardKeyButton: View {
             .font(.system(size: fontSize, weight: .semibold))
             .lineLimit(1)
             .minimumScaleFactor(0.8)
-            .foregroundStyle(isActive ? chromeStyle.accent : GhosttyPhoneChromePalette.chromeForeground)
+            .foregroundStyle(isArmed ? GhosttyPhoneChromePalette.armedKeyLabel : GhosttyPhoneChromePalette.chromeForeground)
             .frame(width: width, height: height)
-            .ghosttyToolbarButtonSurface(
-                isActive: isActive,
-                isPressed: isPressed,
-                isEnabled: isEnabled,
-                chromeStyle: chromeStyle
-            )
+            .background {
+                if isArmed {
+                    Circle().fill(GhosttyPhoneChromePalette.armedKeyFill)
+                }
+            }
+            .ghosttyToolbarButtonSurface(isPressed: isPressed, isEnabled: isEnabled)
             .scaleEffect(isPressed && isEnabled ? 0.96 : 1)
             // Dimmed as one image, so a disabled button's symbol doesn't show through its badge or surface.
             .compositingGroup()
@@ -589,9 +559,7 @@ private struct GhosttyChromePressBody<Content: View>: View {
 }
 
 private struct GhosttyChromeDockButtonStyle: ButtonStyle {
-    let isActive: Bool
     let isEnabled: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
     let width: CGFloat
     let height: CGFloat
 
@@ -602,33 +570,25 @@ private struct GhosttyChromeDockButtonStyle: ButtonStyle {
             onPressDown: { Haptic.chromeControlPress() }
         ) {
             configuration.label
-                .foregroundStyle(isActive ? chromeStyle.accent : GhosttyPhoneChromePalette.chromeForeground)
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: width, height: height)
-                .ghosttyToolbarButtonSurface(
-                    isActive: isActive,
-                    isPressed: configuration.isPressed,
-                    isEnabled: isEnabled,
-                    chromeStyle: chromeStyle
-                )
+                .ghosttyToolbarButtonSurface(isPressed: configuration.isPressed, isEnabled: isEnabled)
                 .contentShape(Rectangle())
         }
     }
 }
 
-private extension View {
+extension View {
+    /// The toolbar's glass: tinted Liquid Glass with its hairline and shadow, or a solid fill before iOS 26.
+    /// `isInteractive` lets the glass answer touches, as the toolbar's buttons do.
     @ViewBuilder
-    func ghosttyToolbarGroupSurface() -> some View {
-        ghosttyToolbarSurface(in: Capsule())
-    }
-
-    @ViewBuilder
-    private func ghosttyToolbarSurface<S: InsettableShape>(in shape: S) -> some View {
+    func ghosttyChromeGlass<S: InsettableShape>(in shape: S, isInteractive: Bool) -> some View {
         if #available(iOS 26.0, *) {
             self
                 .glassEffect(
                     .regular
                         .tint(GhosttyPhoneChromePalette.toolbarGlassTint)
-                        .interactive(),
+                        .interactive(isInteractive),
                     in: shape
                 )
                 .overlay {
@@ -650,31 +610,17 @@ private extension View {
                 .shadow(color: GhosttyPhoneChromePalette.toolbarShadow, radius: 8, y: 4)
         }
     }
+}
 
-    @ViewBuilder
-    func ghosttyToolbarButtonSurface(
-        isActive: Bool,
-        isPressed: Bool,
-        isEnabled: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        let shape = Circle()
+private extension View {
+    func ghosttyToolbarGroupSurface() -> some View {
+        ghosttyChromeGlass(in: Capsule(), isInteractive: true)
+    }
 
-        if #available(iOS 26.0, *) {
-            self
-                .background(isActive ? chromeStyle.toolbarButtonActiveFill : Color.clear, in: shape)
-                .overlay {
-                    shape.fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
-                }
-        } else {
-            let activeFill = isActive ? chromeStyle.toolbarButtonActiveFill : Color.clear
-            let pressedFill = isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear
-
-            self
-                .background(activeFill, in: shape)
-                .overlay {
-                    shape.fill(pressedFill)
-                }
+    /// The press feedback every toolbar button shares: a faint disc while a finger is down.
+    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool) -> some View {
+        overlay {
+            Circle().fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
         }
     }
 }
@@ -698,6 +644,14 @@ enum GhosttyPhoneChromePalette {
     static let toolbarStroke = Color.primary.opacity(0.12)
     static let toolbarShadow = Color.black.opacity(0.18)
     static let toolbarButtonPressedFill = Color.primary.opacity(0.08)
+    /// An armed key reads like the keyboard's latched Shift: a light disc with a dark label in dark, the reverse in
+    /// light.
+    static let armedKeyFill = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? .white : UIColor(white: 0.11, alpha: 1)
+    })
+    static let armedKeyLabel = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(white: 0.11, alpha: 1) : .white
+    })
 
     static let uiBackground = UIColor(
         red: 0.18,
@@ -707,29 +661,8 @@ enum GhosttyPhoneChromePalette {
     )
 }
 
-private extension UIColor {
-    static let ghosttyDefaultTerminalChromeAccent = UIColor(red: 0.38, green: 0.69, blue: 0.94, alpha: 1.0)
-    static let catppuccinMochaTerminalChromeAccent = UIColor(red: 0.54, green: 0.71, blue: 0.98, alpha: 1.0)
-    static let catppuccinLatteTerminalChromeAccent = UIColor(red: 0.12, green: 0.40, blue: 0.96, alpha: 1.0)
-    static let terminalChromeAccentForegroundForDarkAccent = UIColor.black.withAlphaComponent(0.74)
-    static let terminalChromeAccentForegroundForLightAccent = UIColor.white
-}
-
 extension View {
-    @ViewBuilder
-    func ghosttyTerminalChromePresentation(
-        _ colorScheme: ColorScheme? = nil,
-        chromeStyle: GhosttyTerminalChromeStyle? = nil
-    ) -> some View {
-        if let colorScheme, let chromeStyle {
-            preferredColorScheme(colorScheme)
-                .environment(\.ghosttyTerminalChromeStyle, chromeStyle)
-        } else if let colorScheme {
-            preferredColorScheme(colorScheme)
-        } else if let chromeStyle {
-            environment(\.ghosttyTerminalChromeStyle, chromeStyle)
-        } else {
-            self
-        }
+    func ghosttyTerminalChromePresentation(_ colorScheme: ColorScheme) -> some View {
+        preferredColorScheme(colorScheme)
     }
 }

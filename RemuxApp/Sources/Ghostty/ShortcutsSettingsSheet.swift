@@ -120,7 +120,6 @@ struct ShortcutsSettingsView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .remuxSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation()
         }
         .sheet(item: $editorRequest) { request in
             ShortcutEditorSheet(request: request) { shortcut, favorite in
@@ -134,7 +133,6 @@ struct ShortcutsSettingsView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .remuxSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation()
         }
     }
 
@@ -633,8 +631,6 @@ private struct ShortcutCollectionEditorIconSummaryRow: View {
 }
 
 private struct ShortcutCollectionIconSuggestionButton: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let icon: ShortcutCollectionIcon
     let isSelected: Bool
     let action: () -> Void
@@ -645,7 +641,7 @@ private struct ShortcutCollectionIconSuggestionButton: View {
             action()
         } label: {
             ShortcutCollectionIconView(icon: icon)
-                .foregroundStyle(isSelected ? chromeStyle.accent : GhosttySheetPalette.secondary)
+                .foregroundStyle(isSelected ? RemuxAccent.fill : GhosttySheetPalette.secondary)
                 .frame(width: 32, height: 38)
                 .contentShape(Rectangle())
         }
@@ -987,8 +983,6 @@ private struct ShortcutEditorSection<Content: View>: View {
 }
 
 private struct ShortcutEditorTextFieldRow: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     private let title: String
     private let text: Binding<String>
     private let axis: Axis
@@ -1003,7 +997,7 @@ private struct ShortcutEditorTextFieldRow: View {
         TextField(title, text: text, axis: axis)
             .font(GhosttyShortcutTypography.rowText)
             .foregroundStyle(GhosttySheetPalette.primary)
-            .tint(chromeStyle.accent)
+            .tint(RemuxAccent.fill)
             .textFieldStyle(.plain)
             .padding(.horizontal, 18)
             .frame(minHeight: 56, alignment: .center)
@@ -1036,8 +1030,6 @@ private struct ShortcutEditorValueRow<Accessory: View>: View {
 }
 
 private struct ShortcutEditorModePicker: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     @Binding var selection: ShortcutEditorMode
 
     var body: some View {
@@ -1052,7 +1044,7 @@ private struct ShortcutEditorModePicker: View {
                         .frame(maxWidth: .infinity, minHeight: 32)
                         .background(
                             selection == mode
-                                ? GhosttyShortcutSurfacePalette.embeddedSelectedFill(chromeStyle)
+                                ? GhosttyShortcutSurfacePalette.embeddedSelectedFill
                                 : Color.clear,
                             in: Capsule()
                         )
@@ -1073,8 +1065,6 @@ private struct ShortcutEditorModePicker: View {
 }
 
 private struct ShortcutEditorToggleRow: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let title: String
     let isOn: Binding<Bool>
 
@@ -1087,7 +1077,7 @@ private struct ShortcutEditorToggleRow: View {
         Toggle(title, isOn: isOn)
             .font(GhosttyShortcutTypography.rowText)
             .foregroundStyle(GhosttySheetPalette.primary)
-            .tint(chromeStyle.accent)
+            .tint(RemuxAccent.fill)
             .padding(.horizontal, 18)
             .frame(minHeight: 56, alignment: .center)
     }

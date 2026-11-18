@@ -1685,7 +1685,6 @@ final class HerdrPopupTests: XCTestCase {
             onPreviewSelection: nil,
             onWindowSwipe: nil,
             sendKeyEventToSurface: { _, _ in false },
-            onTrackpadFeedbackChange: { _ in },
             isMouseCaptured: { _ in false },
             submitMouseButton: nil,
             submitMousePosition: nil,

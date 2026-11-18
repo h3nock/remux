@@ -121,49 +121,9 @@ struct GhosttyIOSurfaceFrame: Sendable {
         )
     }
 
-    static func sourceRect(
-        width: Int,
-        height: Int,
-        centeredOn anchor: CGRect,
-        maxWidth: UInt32,
-        maxHeight: UInt32
-    ) -> CGRect? {
-        guard width > 0, height > 0,
-              maxWidth > 0, maxHeight > 0,
-              anchor.origin.x.isFinite, anchor.origin.y.isFinite,
-              anchor.width.isFinite, anchor.height.isFinite,
-              anchor.width > 0, anchor.height > 0
-        else { return nil }
-
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        guard anchor.intersects(bounds) else { return nil }
-
-        let aspectRatio = Double(maxWidth) / Double(maxHeight)
-        var cropWidth = min(Double(width), Double(maxWidth))
-        var cropHeight = min(Double(height), Double(maxHeight))
-        if cropWidth / cropHeight > aspectRatio {
-            cropWidth = cropHeight * aspectRatio
-        } else {
-            cropHeight = cropWidth / aspectRatio
-        }
-
-        let integralWidth = max(1, min(width, Int(cropWidth.rounded(.down))))
-        let integralHeight = max(1, min(height, Int(cropHeight.rounded(.down))))
-        let x = min(
-            max(0, Int((anchor.midX - CGFloat(integralWidth) / 2).rounded(.down))),
-            width - integralWidth
-        )
-        let y = min(
-            max(0, Int((anchor.midY - CGFloat(integralHeight) / 2).rounded(.down))),
-            height - integralHeight
-        )
-        return CGRect(x: x, y: y, width: integralWidth, height: integralHeight)
-    }
-
-    func image(maxWidth: UInt32, maxHeight: UInt32) throws -> CGImage {
-        guard maxWidth > 0, maxHeight > 0,
-              let provider = CGDataProvider(data: bytes as CFData),
-              let source = CGImage(
+    func image() throws -> CGImage {
+        guard let provider = CGDataProvider(data: bytes as CFData),
+              let image = CGImage(
                 width: width,
                 height: height,
                 bitsPerComponent: 8,
@@ -173,35 +133,10 @@ struct GhosttyIOSurfaceFrame: Sendable {
                 bitmapInfo: Self.bitmapInfo,
                 provider: provider,
                 decode: nil,
-                shouldInterpolate: false,
+                shouldInterpolate: true,
                 intent: .defaultIntent
               )
         else { throw ReadError.imageCreationFailed }
-
-        let scale = min(
-            1,
-            min(
-                Double(maxWidth) / Double(source.width),
-                Double(maxHeight) / Double(source.height)
-            )
-        )
-        guard scale < 1 else { return source }
-
-        let targetWidth = max(1, Int((Double(source.width) * scale).rounded(.down)))
-        let targetHeight = max(1, Int((Double(source.height) * scale).rounded(.down)))
-        let targetBytesPerRow = targetWidth * 4
-        guard let context = CGContext(
-            data: nil,
-            width: targetWidth,
-            height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: targetBytesPerRow,
-            space: Self.colorSpace,
-            bitmapInfo: Self.bitmapInfo.rawValue
-        ) else { throw ReadError.imageCreationFailed }
-        context.interpolationQuality = .medium
-        context.draw(source, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        guard let image = context.makeImage() else { throw ReadError.imageCreationFailed }
         return image
     }
 

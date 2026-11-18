@@ -1,11 +1,13 @@
 import Foundation
+import ImageIO
 import UIKit
 import UniformTypeIdentifiers
 
 struct GhosttyAttachmentPasteboardSnapshot: Equatable {
-    struct ImageProviderRequest {
-        let provider: NSItemProvider
-        let typeIdentifier: String
+    /// A picture's bytes, read while its paste is handled: the pasteboard stops serving what was pasted soon after,
+    /// so a read left for later can fail or come back empty.
+    struct PastedImage {
+        let data: Data
     }
 
     let hasImages: Bool
@@ -41,75 +43,43 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         )
     }
 
+    /// The first picture on `pasteboard`, in whichever of its items holds one, read now. Call it from the paste itself.
+    ///
+    /// An item can offer one picture in several formats. One that really moves is taken first, so an animation offered
+    /// with a still of its first frame keeps its frames. Otherwise PNG, which keeps every pixel as it is, goes ahead of
+    /// the other formats, which follow in the item's order. A format Image I/O can't read, such as SVG, is passed over.
     @MainActor
-    static func currentImagePreviewData(_ pasteboard: UIPasteboard = .general) async -> Data? {
-        guard let request = imageProviderRequest(in: pasteboard) else {
-            return nil
-        }
-
-        if let fileURL = await loadImageFileCopy(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) {
-            defer {
-                removeTemporaryImageFileCopy(fileURL)
+    static func currentImage(_ pasteboard: UIPasteboard = .general) -> PastedImage? {
+        for index in 0..<pasteboard.numberOfItems {
+            let item = IndexSet(integer: index)
+            let pictureTypes = (pasteboard.types(forItemSet: item)?.first ?? [])
+                .compactMap(UTType.init)
+                .filter { $0.conforms(to: .image) }
+            var still: PastedImage?
+            for type in pictureTypes.filter({ $0.conforms(to: .png) }) + pictureTypes.filter({ !$0.conforms(to: .png) }) {
+                let canMove = GhosttyAttachmentPhotoPreparation.animationTypes.contains { type.conforms(to: $0) }
+                // Once there is a still, only a format that can move could be better.
+                guard still == nil || canMove,
+                      let data = pasteboard.data(forPasteboardType: type.identifier, inItemSet: item)?.first,
+                      let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      CGImageSourceGetCount(source) > 0 else {
+                    continue
+                }
+                let picture = PastedImage(data: data)
+                if GhosttyAttachmentPhotoPreparation.isAnimated(source, type: type) {
+                    return picture
+                }
+                still = still ?? picture
             }
-
-            return await GhosttyAttachmentImagePreviewData.makePreviewData(fromFileAt: fileURL)
-        }
-
-        guard let data = await loadImageData(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) else {
-            return nil
-        }
-
-        return await GhosttyAttachmentImagePreviewData.makePreviewData(from: data)
-    }
-
-    @MainActor
-    static func currentImageAttachment(_ pasteboard: UIPasteboard = .general) async -> GhosttyPendingAttachment? {
-        guard let request = imageProviderRequest(in: pasteboard) else {
-            return nil
-        }
-
-        return await imageAttachment(from: request)
-    }
-
-    @MainActor
-    static func currentImageProviderRequest(
-        _ pasteboard: UIPasteboard = .general
-    ) -> ImageProviderRequest? {
-        imageProviderRequest(in: pasteboard)
-    }
-
-    @MainActor
-    static func imageAttachment(
-        from request: ImageProviderRequest
-    ) async -> GhosttyPendingAttachment? {
-        if let fileURL = await loadImageFileCopy(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) {
-            defer {
-                removeTemporaryImageFileCopy(fileURL)
+            if let still {
+                return still
             }
-
-            return await makeImageAttachment(fromFileAt: fileURL)
         }
+        return nil
+    }
 
-        guard let data = await loadImageData(
-            from: request.provider,
-            typeIdentifier: request.typeIdentifier
-        ) else {
-            return nil
-        }
-
-        return await makeImageAttachment(
-            from: data,
-            contentType: UTType(request.typeIdentifier)
-        )
+    static func imageAttachment(from image: PastedImage) async -> GhosttyPendingAttachment? {
+        await makeImageAttachment(from: image.data)
     }
 
     var pendingAttachments: [GhosttyPendingAttachment] {
@@ -170,135 +140,16 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         return true
     }
 
-    @MainActor
-    private static func imageProviderRequest(in pasteboard: UIPasteboard) -> ImageProviderRequest? {
-        for provider in pasteboard.itemProviders {
-            guard let typeIdentifier = imageTypeIdentifier(for: provider) else {
-                continue
-            }
-
-            return ImageProviderRequest(provider: provider, typeIdentifier: typeIdentifier)
-        }
-
-        return nil
-    }
-
-    private static func imageTypeIdentifier(for provider: NSItemProvider) -> String? {
-        imagePasteboardTypes.first { provider.hasItemConformingToTypeIdentifier($0) }
-    }
-
-    @MainActor
-    private static func loadImageFileCopy(
-        from provider: NSItemProvider,
-        typeIdentifier: String
-    ) async -> URL? {
-        await withCheckedContinuation { continuation in
-            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
-                guard let url else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: copyTemporaryImageFile(url, typeIdentifier: typeIdentifier))
-            }
-        }
-    }
-
-    @MainActor
-    private static func loadImageData(
-        from provider: NSItemProvider,
-        typeIdentifier: String
-    ) async -> Data? {
-        await withCheckedContinuation { continuation in
-            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
-                guard let data, !data.isEmpty else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: data)
-            }
-        }
-    }
-
-    private static func copyTemporaryImageFile(_ sourceURL: URL, typeIdentifier: String) -> URL? {
-        let fileManager = FileManager.default
-        let directory = fileManager.temporaryDirectory
-            .appendingPathComponent("RemuxPasteboardImage-\(UUID().uuidString)", isDirectory: true)
-
-        do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent(
-                "Image.\(fileExtension(for: sourceURL, typeIdentifier: typeIdentifier))"
-            )
-            try fileManager.copyItem(at: sourceURL, to: destination)
-            return destination
-        } catch {
-            try? fileManager.removeItem(at: directory)
+    /// A pasted picture is sent the way a picked photo is. It is prepared from the bytes read at the paste, and only
+    /// what is sent is staged.
+    private static func makeImageAttachment(from data: Data) async -> GhosttyPendingAttachment? {
+        guard let prepared = try? await GhosttyAttachmentPhotoPreparation.preparePastedPicture(
+            data,
+            title: "Pasted image"
+        ) else {
             return nil
         }
+
+        return .pasteboardImage(fileURL: prepared.url, previewData: prepared.previewData)
     }
-
-    private static func removeTemporaryImageFileCopy(_ url: URL) {
-        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
-    }
-
-    private static func makeImageAttachment(fromFileAt fileURL: URL) async -> GhosttyPendingAttachment? {
-        async let previewData = GhosttyAttachmentImagePreviewData.makePreviewData(fromFileAt: fileURL)
-
-        do {
-            let stagedURL = try await GhosttyAttachmentStagingStore.stageFileURL(fileURL)
-            guard let previewData = await previewData else {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                return nil
-            }
-
-            return .pasteboardImage(fileURL: stagedURL, previewData: previewData)
-        } catch {
-            return nil
-        }
-    }
-
-    private static func makeImageAttachment(
-        from data: Data,
-        contentType: UTType?
-    ) async -> GhosttyPendingAttachment? {
-        async let previewData = GhosttyAttachmentImagePreviewData.makePreviewData(from: data)
-
-        do {
-            let stagedURL = try await GhosttyAttachmentStagingStore.stageImageData(
-                data,
-                title: "Pasted image",
-                contentTypes: contentType.map { [$0] } ?? []
-            )
-            guard let previewData = await previewData else {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                return nil
-            }
-
-            return .pasteboardImage(fileURL: stagedURL, previewData: previewData)
-        } catch {
-            return nil
-        }
-    }
-
-    private static func fileExtension(for url: URL, typeIdentifier: String) -> String {
-        let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !pathExtension.isEmpty {
-            return pathExtension
-        }
-
-        return UTType(typeIdentifier)?.preferredFilenameExtension ?? "image"
-    }
-
-    private static var imagePasteboardTypes: [String] {
-        [
-            UTType.png.identifier,
-            UTType.jpeg.identifier,
-            UTType.tiff.identifier,
-            "public.heic",
-            "public.image"
-        ]
-    }
-
 }

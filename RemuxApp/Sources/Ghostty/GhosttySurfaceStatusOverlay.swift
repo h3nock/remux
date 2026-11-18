@@ -1,8 +1,6 @@
 import SwiftUI
 
 struct GhosttySurfaceStatusOverlay: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-
     let projection: GhosttyTerminalStatusOverlayProjection
     let loadingTitle: String
     let sessionName: String
@@ -170,7 +168,6 @@ struct GhosttySurfaceStatusOverlay: View {
                         title: action.title,
                         systemName: action.systemImage,
                         accessibilityIdentifier: action.accessibilityIdentifier,
-                        chromeStyle: chromeStyle,
                         isPrimary: action.isPrimary,
                         action: handler(for: action.kind)
                     )
@@ -204,7 +201,6 @@ private struct GhosttyRepairActionButton: View {
     let title: String
     let systemName: String
     let accessibilityIdentifier: String
-    let chromeStyle: GhosttyTerminalChromeStyle
     var isPrimary = false
     let action: () -> Void
 
@@ -222,7 +218,7 @@ private struct GhosttyRepairActionButton: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             }
-            .foregroundStyle(isPrimary ? chromeStyle.accent : GhosttySheetPalette.primary)
+            .foregroundStyle(isPrimary ? RemuxAccent.fill : GhosttySheetPalette.primary)
             .padding(.horizontal, 16)
             .frame(height: 38)
         }

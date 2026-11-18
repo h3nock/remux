@@ -10,139 +10,58 @@ enum GhosttyAttachmentSurfaceStyle {
     static let fallbackShadow = Color.black.opacity(0.20)
 }
 
-struct GhosttyAttachmentPreviewCloseButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(GhosttySheetPalette.primary)
-            .ghosttyAttachmentPreviewCloseButtonSurface(isPressed: configuration.isPressed)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-struct GhosttyAttachmentPreviewChipButtonStyle: ButtonStyle {
-    let isSelected: Bool
-    let chromeStyle: GhosttyTerminalChromeStyle
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(isSelected ? chromeStyle.accent : GhosttySheetPalette.primary)
-            .ghosttyAttachmentPreviewChipSurface(
-                isSelected: isSelected,
-                isPressed: configuration.isPressed,
-                chromeStyle: chromeStyle
-            )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-struct GhosttyAttachmentPreviewActionButtonStyle: ButtonStyle {
-    let foreground: Color
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(foreground)
-            .ghosttyAttachmentPreviewActionSurface(isPressed: configuration.isPressed)
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
 enum GhosttyAttachmentPreviewStyle {
     static let contentFill = GhosttySheetPalette.row
-    static let mediaFill = Color.black.opacity(0.84)
     static let contentStroke = GhosttySheetPalette.stroke
     static let controlFill = GhosttySheetPalette.controlFill
     static let controlPressedFill = Color(uiColor: .tertiarySystemFill)
     static let controlStroke = GhosttySheetPalette.stroke
     static let contentCornerRadius: CGFloat = 16
-    static let chipTitleMaxWidth: CGFloat = 220
     static let contentPadding = EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
+    /// Around a file, text or link page. A picture page has none: it runs edge to edge.
+    static let pagePadding = EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
+    /// The band under the page that holds the thumbnails: 48 pt thumbnails, their selection ring, and room.
+    static let thumbnailBandHeight: CGFloat = 68
+}
+
+/// A preview picture filling a square `side` points across, decoded at that size: a chip or a thumbnail shows a small
+/// square, not the whole preview. Used with `.equatable()`, it is decoded again only when the preview changes, not each
+/// time the view around it is drawn.
+struct GhosttyAttachmentPreviewSquare: View, Equatable {
+    let imageData: Data
+    let side: CGFloat
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        let pixels = Int((side * displayScale).rounded(.up))
+        if let image = GhosttyAttachmentImagePreviewData.thumbnail(from: imageData, filling: pixels) {
+            Image(uiImage: UIImage(cgImage: image, scale: displayScale, orientation: .up))
+                .resizable()
+                .scaledToFill()
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(GhosttySheetPalette.secondary)
+        }
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.side == rhs.side && lhs.imageData == rhs.imageData
+    }
 }
 
 extension View {
-    func ghosttyAttachmentPreviewCloseButtonSurface(isPressed: Bool) -> some View {
-        let shape = Capsule()
-
-        return self
-            .background(
-                isPressed
-                    ? GhosttyAttachmentPreviewStyle.controlPressedFill
-                    : GhosttyAttachmentPreviewStyle.controlFill,
-                in: shape
-            )
-            .overlay {
-                shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 1)
-            }
-            .contentShape(shape)
-    }
-
-    func ghosttyAttachmentPreviewChipSurface(
-        isSelected: Bool,
-        isPressed: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        let shape = Capsule()
-        let fill = attachmentPreviewChipFill(
-            isSelected: isSelected,
-            isPressed: isPressed,
-            chromeStyle: chromeStyle
-        )
-        let stroke = isSelected ? GhosttySheetPalette.selectedStroke(chromeStyle) : GhosttyAttachmentPreviewStyle.controlStroke
-
-        return self
-            .background(fill, in: shape)
-            .overlay {
-                shape.strokeBorder(stroke, lineWidth: isSelected ? 1 : 0.75)
-            }
-            .contentShape(shape)
-    }
-
-    private func attachmentPreviewChipFill(
-        isSelected: Bool,
-        isPressed: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> Color {
-        if isSelected {
-            return chromeStyle.selectedFill
-        }
-
-        return isPressed
-            ? GhosttyAttachmentPreviewStyle.controlPressedFill
-            : GhosttyAttachmentPreviewStyle.controlFill
-    }
-
     @ViewBuilder
-    func ghosttyAttachmentPreviewContentSurface(
-        fill: Color = GhosttyAttachmentPreviewStyle.contentFill
-    ) -> some View {
+    func ghosttyAttachmentPreviewContentSurface() -> some View {
         let shape = RoundedRectangle(
             cornerRadius: GhosttyAttachmentPreviewStyle.contentCornerRadius,
             style: .continuous
         )
 
         self
-            .background(fill, in: shape)
+            .background(GhosttyAttachmentPreviewStyle.contentFill, in: shape)
             .clipShape(shape)
             .overlay {
                 shape.strokeBorder(GhosttyAttachmentPreviewStyle.contentStroke, lineWidth: 1)
-            }
-            .contentShape(shape)
-    }
-
-    func ghosttyAttachmentPreviewActionSurface(isPressed: Bool) -> some View {
-        let shape = Circle()
-
-        return self
-            .background(
-                isPressed
-                    ? GhosttyAttachmentPreviewStyle.controlPressedFill
-                    : GhosttyAttachmentPreviewStyle.controlFill,
-                in: shape
-            )
-            .overlay {
-                shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 1)
             }
             .contentShape(shape)
     }
