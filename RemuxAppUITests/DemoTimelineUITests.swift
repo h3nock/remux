@@ -111,8 +111,9 @@ enum DemoStep {
     /// A gesture or typing, after which the timeline's pause lets the screen settle and the viewer take it in.
     var isAction: Bool {
         switch self {
-        case .tap, .press, .drag, .swipe, .type, .tapText, .pressText, .stroke, .replay: true
-        case .wait, .waitFor, .waitForText, .shot, .mark, .cue, .waitCue: false
+        case .tap, .press, .drag, .swipe, .type, .tapText, .pressText, .stroke: true
+        // A recorded gesture keeps its own timing, and the timeline says what follows it.
+        case .wait, .waitFor, .waitForText, .shot, .mark, .cue, .waitCue, .replay: false
         }
     }
 }
@@ -605,22 +606,46 @@ enum DemoGesture {
         try TouchPath.play(from: first, segments)
     }
 
-    /// A person's gesture, point for point at its own times, from `start`.
+    /// A person's gesture from `start`, along its own path at its own pace. A phone reports a finger up to 240 times a
+    /// second; replayed at that rate, flicks neither scrolled nor switched windows, and at 60 a second they do, so the
+    /// path is resampled at 60 a second, ending at the lift. Where the finger rests, it rests.
     @MainActor
     static func replay(_ gesture: DemoRecordedGesture, from start: CGPoint) throws {
-        var segments: [TouchPath.Segment] = []
-        var previous = gesture.samples[0].t
+        // A resting finger reports nothing, so a long gap between two samples is a rest at the first, until just before
+        // the second: drawn straight across, the rest would be a slow creep instead.
+        var samples = [gesture.samples[0]]
         for sample in gesture.samples.dropFirst() {
-            let gap = sample.t - previous
-            previous = sample.t
-            let point = CGPoint(x: start.x + sample.offset.dx, y: start.y + sample.offset.dy)
-            // A resting finger sends nothing, so a long gap is a rest, then the step that ended it.
-            if gap > 0.03 {
-                segments += [.hold(gap - 0.008), .move(to: point, over: 0.008)]
-            } else {
-                segments.append(.move(to: point, over: max(gap, 0.001)))
+            if let previous = samples.last, sample.t - previous.t > 0.03 {
+                samples.append((sample.t - frame, previous.offset))
             }
+            samples.append(sample)
         }
+        guard let duration = samples.last?.t, duration > 0 else { return }
+        func offset(at t: TimeInterval) -> CGVector {
+            guard let after = samples.firstIndex(where: { $0.t >= t }), after > 0 else {
+                return t <= 0 ? samples[0].offset : samples[samples.count - 1].offset
+            }
+            let a = samples[after - 1], b = samples[after]
+            let f = b.t > a.t ? CGFloat((t - a.t) / (b.t - a.t)) : 1
+            return CGVector(dx: a.offset.dx + (b.offset.dx - a.offset.dx) * f, dy: a.offset.dy + (b.offset.dy - a.offset.dy) * f)
+        }
+        var segments: [TouchPath.Segment] = []
+        var last = samples[0].offset
+        var resting: TimeInterval = 0
+        let steps = max(1, Int((duration / frame).rounded(.up)))
+        for step in 1...steps {
+            let t = min(duration, Double(step) * frame)
+            let here = offset(at: t)
+            let span = t - Double(step - 1) * frame
+            if hypot(here.dx - last.dx, here.dy - last.dy) < 0.01, step < steps {
+                resting += span
+                continue
+            }
+            if resting > 0 { segments.append(.hold(resting)); resting = 0 }
+            segments.append(.move(to: CGPoint(x: start.x + here.dx, y: start.y + here.dy), over: span))
+            last = here
+        }
+        if resting > 0 { segments.append(.hold(resting)) }
         try TouchPath.play(from: start, segments)
     }
 
