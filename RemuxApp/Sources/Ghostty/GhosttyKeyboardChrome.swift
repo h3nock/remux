@@ -80,7 +80,14 @@ enum GhosttyKeyboardChromeAnimation {
     )
 }
 
+extension EnvironmentValues {
+    /// Whether Home is in a sidebar beside the terminal, as in a wide iPad window, where the sidebar's own button
+    /// shows and hides it, so the terminal's toolbar has no Home button.
+    @Entry var terminalHomeIsInSidebar = false
+}
+
 struct GhosttyKeyboardChrome<ComposerContent: View>: View {
+    @Environment(\.terminalHomeIsInSidebar) private var homeIsInSidebar
     let keyboardMode: GhosttyKeyboardChromeMode
     let isEnabled: Bool
     let isInteractionLocked: Bool
@@ -216,20 +223,22 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     private var inputControls: some View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
-                let waiting = waitingAgentStatus()
-                GhosttyKeyboardChromeDockButton(
-                    systemName: "house",
-                    badge: nil,
-                    dot: waiting,
-                    width: dockButtonWidth,
-                    height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    accessibilityLabel: "Home",
-                    accessibilityValue: waiting.map { "An agent is \($0.word)" },
-                    accessibilityHint: "Open the Remux library.",
-                    accessibilityIdentifier: "terminal.home",
-                    isEnabled: !isInteractionLocked,
-                    action: onShowLibrary
-                )
+                if !homeIsInSidebar {
+                    let waiting = waitingAgentStatus()
+                    GhosttyKeyboardChromeDockButton(
+                        systemName: "house",
+                        badge: nil,
+                        dot: waiting,
+                        width: dockButtonWidth,
+                        height: GhosttyKeyboardChromeSizing.dockButtonHeight,
+                        accessibilityLabel: "Home",
+                        accessibilityValue: waiting.map { "An agent is \($0.word)" },
+                        accessibilityHint: "Open the Remux library.",
+                        accessibilityIdentifier: "terminal.home",
+                        isEnabled: !isInteractionLocked,
+                        action: onShowLibrary
+                    )
+                }
 
                 composerButton
                 keyboardToggleButton

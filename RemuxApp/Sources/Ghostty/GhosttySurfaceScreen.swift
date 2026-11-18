@@ -65,6 +65,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.terminalHomeIsInSidebar) private var homeIsInSidebar
     @ObservedObject private var model: Model
     private let composer: GhosttyComposerModel
     private let presentation: GhosttySurfaceScreenPresentation
@@ -460,6 +461,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                wideWindowTabRow(screenProjection)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
@@ -2237,6 +2241,34 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let effect = model.createTopLevelInteractionEffect()
         performTopologyActionInteraction(effect) {
             model.createTopLevelGroup(from: shownWindowGroupID)
+        }
+    }
+
+    /// A wide iPad window's tabs, under the toolbar. Every session's screen has the row, shown or not, so a session
+    /// shown next keeps the size it has now.
+    @ViewBuilder
+    private func wideWindowTabRow(_ screenProjection: GhosttyTerminalScreenPresentationProjection) -> some View {
+        if homeIsInSidebar {
+            TerminalTabRow(
+                windows: model.windowSelectionSheetRenderProjection(group: nil).windows,
+                noun: model.topLevelNoun,
+                theme: presentation.terminalTheme,
+                isEnabled: !composer.isSubmitting && screenProjection.viewport.popup == nil,
+                onSelect: selectTopLevelFromTabRow,
+                onCreate: createTopLevelFromTabRow
+            )
+        }
+    }
+
+    private func selectTopLevelFromTabRow(_ id: UUID) {
+        guard model.focusTopLevel(id).isHandled else { return }
+        refocusSystemKeyboardIfActive()
+    }
+
+    private func createTopLevelFromTabRow() {
+        let effect = model.createTopLevelInteractionEffect()
+        performTopologyActionInteraction(effect) {
+            model.createTopLevel(inGroup: nil)
         }
     }
 

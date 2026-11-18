@@ -96,6 +96,27 @@ private struct RemuxRootContentView: View {
 /// The setup the connection setup sheet keeps showing while it closes, after
 /// the model has let go of it. A reference, so keeping it current on every
 /// draft change doesn't redraw the shell.
+/// The title of a wide iPad window's terminal: the session shown, with its server under it, as Home's rows name it.
+private struct ShownSessionTitle: ViewModifier {
+    let session: ActiveTerminalSession?
+
+    func body(content: Content) -> some View {
+        let name = session?.target.workspace.sessionName ?? ""
+        let server = session?.target.server.displayName ?? ""
+        if #available(iOS 26.0, *) {
+            content
+                .navigationTitle(name)
+                .navigationSubtitle(server)
+                .navigationBarTitleDisplayMode(.inline)
+        } else {
+            // iPadOS 18 has no subtitle, so the server follows the name.
+            content
+                .navigationTitle(session == nil ? "" : "\(name) · \(server)")
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
 private final class LastConnectionSetup {
     var setup: RemuxRootModel.ConnectionSetupState?
 }
@@ -122,11 +143,113 @@ private struct RemuxWorkspaceShell: View {
     @State private var setupDiscardQuestion = SetupDiscardQuestion()
     @State private var lastConnectionSetup = LastConnectionSetup()
 
-    var body: some View {
-        ZStack {
-            activeTerminalLayer
-            routeLayer
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The sidebar beside the terminal in a wide iPad window. It shows by default once the window is wide enough to
+    /// keep the terminal roomy beside it, as in landscape, and hides by default below that, as in portrait, where it
+    /// would squeeze the panes; the person's own toggle holds until the window crosses that width again.
+    @State private var sidebarVisibility = NavigationSplitViewVisibility.automatic
+    @State private var isWideEnoughForSidebar: Bool?
+    private static let sidebarBesideTerminalWidth: CGFloat = 1000
+    /// A narrow iPad window always shows the detail, which then holds the phone's layout.
+    @State private var compactColumn = NavigationSplitViewColumn.detail
+
+    /// The iPad shows Home as a sidebar beside the terminal in a wide window, and the phone's layout in a narrow one,
+    /// in one split view at every width. The split view adapts to the window's width by itself and the terminal stays
+    /// where it is in it, so resizing never replaces the terminal's view: its state and connection go on. (Crossing
+    /// between narrow and wide, UIKit moves the detail between containers, taking the terminal out of the window for
+    /// a moment.)
+    private static let showsHomeAsSidebar = UIDevice.current.userInterfaceIdiom == .pad
+
+    private var isWideWindow: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    @ViewBuilder
+    private var workspaceContent: some View {
+        if Self.showsHomeAsSidebar {
+            NavigationSplitView(
+                columnVisibility: $sidebarVisibility,
+                preferredCompactColumn: $compactColumn
+            ) {
+                if isWideWindow {
+                    libraryStack
+                }
+            } detail: {
+                ZStack {
+                    activeTerminalLayer
+                    if isWideWindow {
+                        if selectedActiveSession == nil {
+                            noSessionShown
+                        }
+                    } else {
+                        // As on the phone, Home covers the terminal, which stays in the window behind it. A collapsed
+                        // split view's own sidebar would take the terminal out of the window instead.
+                        routeLayer
+                    }
+                }
+                .toolbar(isWideWindow ? .automatic : .hidden, for: .navigationBar)
+                .modifier(ShownSessionTitle(session: isWideWindow ? selectedActiveSession : nil))
+                .environment(\.terminalHomeIsInSidebar, isWideWindow)
+            }
+            .onChange(of: compactColumn) { _, column in
+                if column != .detail { compactColumn = .detail }
+            }
+            .onGeometryChange(for: Bool.self) { proxy in
+                proxy.size.width >= Self.sidebarBesideTerminalWidth
+            } action: { wideEnough in
+                guard wideEnough != isWideEnoughForSidebar else { return }
+                isWideEnoughForSidebar = wideEnough
+                sidebarVisibility = wideEnough || selectedTerminalID == nil ? .all : .detailOnly
+            }
+            .onChange(of: selectedTerminalID) { _, shownID in
+                // With no session shown, the sidebar is where to choose one. Where it would squeeze the panes, it
+                // gives way once a session is chosen; where there is room, it stays as the person left it.
+                let visibility: NavigationSplitViewVisibility
+                if shownID == nil {
+                    visibility = .all
+                } else if isWideEnoughForSidebar == false {
+                    visibility = .detailOnly
+                } else {
+                    return
+                }
+                guard visibility != sidebarVisibility else { return }
+                withAnimation { sidebarVisibility = visibility }
+            }
+        } else {
+            ZStack {
+                activeTerminalLayer
+                routeLayer
+            }
         }
+    }
+
+    /// The detail of a wide window when no session is shown. It covers the last terminal, which stays alive behind it
+    /// as it does behind Home on the phone.
+    private var noSessionShown: some View {
+        ContentUnavailableView(
+            "No Session Open",
+            systemImage: "apple.terminal",
+            description: Text("Choose a session in the sidebar.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+        .accessibilityIdentifier("workspace.no-session")
+    }
+
+    /// Home from the terminal. A wide iPad window shows Home in the sidebar beside the session, which stays shown;
+    /// elsewhere Home replaces the session, as on the phone.
+    private func showHome() {
+        if Self.showsHomeAsSidebar, isWideWindow {
+            withAnimation { sidebarVisibility = .all }
+            return
+        }
+        // The terminal gives up the keyboard once Home replaces it, as the screen decides; a resign here as well
+        // would be taken back while the terminal is still on screen.
+        Task { await model.showLibrary() }
+    }
+
+    var body: some View {
+        workspaceContent
         .background {
             HerdrNotificationBannerWindow(
                 center: model.herdrNotifications,
@@ -680,11 +803,7 @@ private struct RemuxWorkspaceShell: View {
                     onShowSessions: {
                         isSessionSwitcherPresented = true
                     },
-                    onShowLibrary: {
-                        // The terminal gives up the keyboard once Home replaces it, as the screen decides;
-                        // a resign here as well would be taken back while the terminal is still on screen.
-                        Task { await model.showLibrary() }
-                    },
+                    onShowLibrary: showHome,
                     waitingAgentStatus: { model.waitingAgentStatus }
                 )
                 .id(entry.instanceID)
