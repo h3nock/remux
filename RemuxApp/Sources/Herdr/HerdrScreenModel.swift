@@ -991,7 +991,22 @@ final class HerdrScreenModel {
     /// A release is accepted without being sent: Herdr's client sends none from a plain terminal.
     func sendKey(_ key: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
         if popup.takesInput { return popup.sendKey(key) }
-        guard let target = inputTarget else { return .transportUnavailable }
+        return sendKey(key, to: inputTarget)
+    }
+
+    /// A key for `paneID`, focused or not, as Herdr takes input for any pane of the tab on screen while it isn't
+    /// zoomed: the arrows a drag on that pane sends, which don't wait for the focus the hold asked for.
+    func sendKey(_ key: GhosttySurfaceKeyEvent, toPane paneID: String) -> FocusedTerminalInputSubmissionResult {
+        // Herdr drops pane input while a popup is open over the tab.
+        guard popup.popup == nil else { return .surfaceRejected }
+        return sendKey(key, to: inputTarget(forPane: paneID))
+    }
+
+    private func sendKey(
+        _ key: GhosttySurfaceKeyEvent,
+        to target: (attempt: Attempt, paneID: String)?
+    ) -> FocusedTerminalInputSubmissionResult {
+        guard let target else { return .transportUnavailable }
         guard let event = HerdrInputTranslator.event(for: key) else {
             return key.action == .release ? .accepted : .surfaceRejected
         }

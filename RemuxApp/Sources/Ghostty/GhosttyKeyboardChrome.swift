@@ -578,20 +578,17 @@ private struct GhosttyChromeDockButtonStyle: ButtonStyle {
     }
 }
 
-private extension View {
+extension View {
+    /// The toolbar's glass: tinted Liquid Glass with its hairline and shadow, or a solid fill before iOS 26.
+    /// `isInteractive` lets the glass answer touches, as the toolbar's buttons do.
     @ViewBuilder
-    func ghosttyToolbarGroupSurface() -> some View {
-        ghosttyToolbarSurface(in: Capsule())
-    }
-
-    @ViewBuilder
-    private func ghosttyToolbarSurface<S: InsettableShape>(in shape: S) -> some View {
+    func ghosttyChromeGlass<S: InsettableShape>(in shape: S, isInteractive: Bool) -> some View {
         if #available(iOS 26.0, *) {
             self
                 .glassEffect(
                     .regular
                         .tint(GhosttyPhoneChromePalette.toolbarGlassTint)
-                        .interactive(),
+                        .interactive(isInteractive),
                     in: shape
                 )
                 .overlay {
@@ -612,6 +609,12 @@ private extension View {
                 }
                 .shadow(color: GhosttyPhoneChromePalette.toolbarShadow, radius: 8, y: 4)
         }
+    }
+}
+
+private extension View {
+    func ghosttyToolbarGroupSurface() -> some View {
+        ghosttyChromeGlass(in: Capsule(), isInteractive: true)
     }
 
     /// The press feedback every toolbar button shares: a faint disc while a finger is down.

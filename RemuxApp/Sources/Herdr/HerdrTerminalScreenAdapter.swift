@@ -437,10 +437,11 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return await model.sendPasteAwaitingDelivery(text, toPane: paneID)
     }
 
+    /// A key for the pane on `surfaceID`, focused or not: Herdr takes input for any pane of the tab on screen.
     func sendKeyEvent(_ event: GhosttySurfaceKeyEvent, to surfaceID: UUID) -> FocusedTerminalInputSubmissionResult {
         if popupTerminalID(for: surfaceID) != nil { return model?.popup.sendKey(event) ?? .transportUnavailable }
-        guard isFocusedPane(surfaceID) else { return .noFocusedSurface }
-        return sendKeyEventToFocusedSurface(event)
+        guard let model, let paneID = paneID(for: surfaceID) else { return .noFocusedSurface }
+        return model.sendKey(event, toPane: paneID)
     }
 
     func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent, to surfaceID: UUID) async -> Bool {
