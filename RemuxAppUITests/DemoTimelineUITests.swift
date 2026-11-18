@@ -19,6 +19,11 @@ final class DemoTimelineUITests: XCTestCase {
         let take = URL(fileURLWithPath: takePath, isDirectory: true)
 
         let app = XCUIApplication()
+        // The app's debug settings pass through, as for a rehearsal against a private test server
+        // (TEST_RUNNER_REMUX_DEBUG_… in xcodebuild's environment arrives here without the prefix).
+        for (name, value) in environment where name.hasPrefix("REMUX_DEBUG_") {
+            app.launchEnvironment[name] = value
+        }
         app.launchEnvironment["REMUX_DEBUG_SHOW_TOUCHES"] = "1"
         app.launchEnvironment["REMUX_DEBUG_TOUCH_LOG"] = take.appendingPathComponent("touches.jsonl").path
         app.launch()
