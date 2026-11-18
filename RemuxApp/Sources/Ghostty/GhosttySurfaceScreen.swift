@@ -1410,6 +1410,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func openAttachmentCamera() {
+        if let photo = GhosttyAttachmentCameraPicker.debugPhoto {
+            handleAttachmentCameraCapture(photo)
+            return
+        }
         Task { @MainActor in
             // Asked here so a refusal gets an explanation; the camera would otherwise open on a black screen.
             guard await AVCaptureDevice.requestAccess(for: .video) else {
