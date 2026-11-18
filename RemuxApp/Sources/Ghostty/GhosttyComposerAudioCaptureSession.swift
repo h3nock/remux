@@ -133,6 +133,9 @@ struct GhosttyComposerAudioCaptureBoundary {
 final class GhosttyComposerAudioCaptureSession: @unchecked Sendable {
     typealias VoidHandler = @Sendable () -> Void
 
+    /// How much sound each buffer from the microphone holds.
+    static let bufferDuration: TimeInterval = 0.1
+
     private enum State {
         case idle
         case capturing
@@ -191,7 +194,7 @@ final class GhosttyComposerAudioCaptureSession: @unchecked Sendable {
                 installNotifications(for: engine)
                 inputNode.installTap(
                     onBus: 0,
-                    bufferSize: AVAudioFrameCount(format.sampleRate * 0.1),
+                    bufferSize: AVAudioFrameCount(format.sampleRate * Self.bufferDuration),
                     format: format
                 ) { [weak self] buffer, time in
                     self?.accept(buffer, at: time)
