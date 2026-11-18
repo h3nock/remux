@@ -261,6 +261,7 @@
 		9C712FFD570281CAAA1F034C /* SSHPublicKeyInstallCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6571D859285B5A3938DC43B /* SSHPublicKeyInstallCoordinator.swift */; };
 		9C8A6153FD7153DF85AF353C /* herdr-14-input-A.s2c.bin in Resources */ = {isa = PBXBuildFile; fileRef = 0BAEE616FC7A13F707A56A06 /* herdr-14-input-A.s2c.bin */; };
 		9D4A57264269B97C768C6CA1 /* HerdrSurfaceDecoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A7B796DB1F72A4F6D1F1F88 /* HerdrSurfaceDecoderTests.swift */; };
+		9D73B95277FC4BA7CC7A0401 /* GhosttyHostWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10CC5956173700F3B1A6CC99 /* GhosttyHostWindow.swift */; };
 		9DFCAA9DF3EF505BC8112CEF /* TerminalPreviewStaticHTML.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F2491CD3904DEC7B49DDCC /* TerminalPreviewStaticHTML.swift */; };
 		9F68505D8B1F53461464A30F /* HerdrModelTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 106E4825FBE14F546980E96A /* HerdrModelTestSupport.swift */; };
 		A02D220BEBF97CAF5A9825B0 /* RemuxOperationTimeout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CB7DF5ABCAAEAB82DFF1BC2 /* RemuxOperationTimeout.swift */; };
@@ -480,6 +481,7 @@
 		0F0382609316E8A933DB5C50 /* HerdrPopupController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrPopupController.swift; sourceTree = "<group>"; };
 		0F0F72BD893CB5432182C6A6 /* Remux.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Remux.icon; sourceTree = "<group>"; };
 		106E4825FBE14F546980E96A /* HerdrModelTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrModelTestSupport.swift; sourceTree = "<group>"; };
+		10CC5956173700F3B1A6CC99 /* GhosttyHostWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyHostWindow.swift; sourceTree = "<group>"; };
 		12398BF9373F42BEB01C099E /* TmuxIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxIdentity.swift; sourceTree = "<group>"; };
 		1356EA036D03B39B6861B039 /* HerdrWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrWire.swift; sourceTree = "<group>"; };
 		1643BC65F62CA9668005EEF8 /* GhosttyTerminalResponderFocusPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalResponderFocusPolicy.swift; sourceTree = "<group>"; };
@@ -1397,6 +1399,7 @@
 				65F7D40090293C627F8A1800 /* GhosttyComposerModel.swift */,
 				2C034CA49D392AB2574E8403 /* GhosttyComposerSubmissionController.swift */,
 				A6E17D3CFD2103F3148C1EA6 /* GhosttyDebugComposerDictationBackend.swift */,
+				10CC5956173700F3B1A6CC99 /* GhosttyHostWindow.swift */,
 				A7D47826A3796D23B6B88804 /* GhosttyIOSurfaceFrame.swift */,
 				96F24A0810E927B327E82D59 /* GhosttyKeyboardChrome.swift */,
 				B4C7136948AF9803FAAD6F82 /* GhosttyKeyboardCursorTrackpad.swift */,
@@ -1745,6 +1748,7 @@
 				87A3C40BA75A75592A482867 /* GhosttyComposerModel.swift in Sources */,
 				ED6093ABA6E192BEB2219157 /* GhosttyComposerSubmissionController.swift in Sources */,
 				D5510B89C4BE9205DC25104C /* GhosttyDebugComposerDictationBackend.swift in Sources */,
+				9D73B95277FC4BA7CC7A0401 /* GhosttyHostWindow.swift in Sources */,
 				94A57D3CB3FD2BC74E023697 /* GhosttyIOSurfaceFrame.swift in Sources */,
 				7726730DFA9B5E99BF5686EA /* GhosttyKeyboardChrome.swift in Sources */,
 				1F97978A518B2AD52F9A556A /* GhosttyKeyboardCursorTrackpad.swift in Sources */,
@@ -2150,7 +2154,7 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -2263,7 +2267,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -2284,7 +2288,7 @@
 				);
 				SDKROOT = iphoneos;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -2325,7 +2329,7 @@
 				);
 				SDKROOT = iphoneos;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};

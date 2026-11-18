@@ -13,10 +13,12 @@ final class GhosttyKeyboardWindowTracker {
     private(set) weak var window: UIWindow?
     private var observer: NSObjectProtocol?
 
-    /// The iOS versions showing a view over the keyboard has been checked on: 26 and 27. UIKit changes the keyboard's
+    /// Where showing a view over the keyboard has been checked: on iPhone, iOS 26 and 27. UIKit changes the keyboard's
     /// window from one release to the next (before iOS 26 it claims every touch on a view added to it), so a newer
-    /// release stays off until it has been checked.
+    /// release stays off until it has been checked. So does the iPad, where the app's window needn't fill the screen
+    /// the keyboard's window covers.
     static var isSupported: Bool {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return false }
         if #available(iOS 28.0, *) { return false }
         if #available(iOS 26.0, *) { return true }
         return false

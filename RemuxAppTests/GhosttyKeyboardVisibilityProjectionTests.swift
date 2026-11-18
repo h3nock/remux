@@ -3,7 +3,7 @@ import XCTest
 @testable import Remux
 
 final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
-    private let screenBounds = CGRect(x: 0, y: 0, width: 390, height: 844)
+    private let windowFrame = CGRect(x: 0, y: 0, width: 390, height: 844)
 
     private func performKeyboardToggleTransaction(
         _ projection: GhosttyKeyboardToggleProjection,
@@ -30,7 +30,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testVisibleOverlappingKeyboardBeginsShownTransitionInSystemMode() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 544.4, width: 390, height: 299.6),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: 0.42,
             keyboardMode: .system,
             isDismissSystemKeyboardRequested: false
@@ -47,7 +47,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testZeroHeightKeyboardFrameIsHiddenWithZeroOverlap() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 844, width: 390, height: 0),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: 0.25,
             keyboardMode: .system,
             isDismissSystemKeyboardRequested: false
@@ -62,7 +62,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testBottomEdgeNonOverlappingKeyboardFrameIsHidden() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 844, width: 390, height: 300),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: 0.25,
             keyboardMode: .hidden,
             isDismissSystemKeyboardRequested: false
@@ -77,7 +77,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testHiddenNotificationWithoutExplicitSystemDismissDoesNotBeginTransition() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 844, width: 390, height: 300),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: 0.25,
             keyboardMode: .system,
             isDismissSystemKeyboardRequested: false
@@ -90,7 +90,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testRequestedHideBeginsHiddenTransition() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 844, width: 390, height: 300),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: 0.25,
             keyboardMode: .hidden,
             isDismissSystemKeyboardRequested: true
@@ -103,7 +103,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testShownNotificationWhileKeyboardModeIsHiddenDoesNotBeginTransition() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 544, width: 390, height: 300),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: 0.25,
             keyboardMode: .hidden,
             isDismissSystemKeyboardRequested: false
@@ -117,7 +117,7 @@ final class GhosttyKeyboardVisibilityProjectionTests: XCTestCase {
     func testDefaultAnimationDurationFeedsFallbackDelay() {
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: CGRect(x: 0, y: 544, width: 390, height: 300),
-            screenBounds: screenBounds,
+            windowFrame: windowFrame,
             animationDuration: nil,
             keyboardMode: .system,
             isDismissSystemKeyboardRequested: false

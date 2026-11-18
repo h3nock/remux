@@ -54,7 +54,7 @@ struct GhosttyKeyboardViewportTransitionCompletionResult: Equatable {
 
 struct GhosttyKeyboardVisibilityProjection: Equatable {
     let frameEnd: CGRect
-    let screenBounds: CGRect
+    let windowFrame: CGRect
     let isVisible: Bool
     let overlapHeight: CGFloat
     let animationDuration: TimeInterval
@@ -64,18 +64,18 @@ struct GhosttyKeyboardVisibilityProjection: Equatable {
 
     init(
         frameEnd: CGRect,
-        screenBounds: CGRect,
+        windowFrame: CGRect,
         animationDuration: TimeInterval?,
         keyboardMode: GhosttyKeyboardChromeMode,
         isDismissSystemKeyboardRequested: Bool
     ) {
         self.frameEnd = frameEnd
-        self.screenBounds = screenBounds
+        self.windowFrame = windowFrame
 
         let visibleOverlapHeight = GhosttyViewportSizing.normalizedHeight(
             GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
                 frameEnd: frameEnd,
-                screenBounds: screenBounds
+                windowFrame: windowFrame
             )
         )
         let resolvedAnimationDuration =

@@ -86,6 +86,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var bottomChromeReservation = GhosttyBottomChromeReservation()
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
+    /// The keyboard covers the terminal only where it lies over this screen's window.
+    @State private var hostWindow = GhosttyHostWindowReference()
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
     @State private var terminalCoverPhase = GhosttyTerminalCoverPhase.visible
     @State private var isTerminalResponderFirstResponder = false
@@ -528,6 +530,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onChange(of: presentation.toolbarKeys) { _, toolbarKeys in
                 terminalInputController.reconcileToolbarKeys(toolbarKeys)
             }
+            .background(GhosttyHostWindowReader(reference: hostWindow))
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 guard shouldHandleTerminalKeyboardNotification else { return }
                 GhosttyRuntimeTrace.perf("kbd.willChangeFrame")
@@ -1851,18 +1854,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func updateKeyboardVisibility(with notification: Notification) {
+        // Until this screen is in a window, the whole screen stands in for it.
+        let windowFrame = hostWindow.frameOnScreen ?? UIScreen.main.bounds
         let frameEnd = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?
             .cgRectValue
             ?? CGRect(
-                x: 0,
-                y: UIScreen.main.bounds.maxY,
-                width: UIScreen.main.bounds.width,
+                x: windowFrame.minX,
+                y: windowFrame.maxY,
+                width: windowFrame.width,
                 height: 0
             )
 
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: frameEnd,
-            screenBounds: UIScreen.main.bounds,
+            windowFrame: windowFrame,
             animationDuration: (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
                 .doubleValue,
             keyboardMode: inputCoordinator.keyboardMode,
@@ -2721,22 +2726,24 @@ struct GhosttyPhoneChromeLayout: Equatable {
     }
 }
 
+/// How much of a window the software keyboard covers. Both frames are in the screen's coordinates: on an iPhone the
+/// window is the screen, while an iPad window can sit above the keyboard or beside it, uncovered.
 struct GhosttySoftwareKeyboardVisibility {
     static func isVisible(
         frameEnd: CGRect,
-        screenBounds: CGRect
+        windowFrame: CGRect
     ) -> Bool {
-        visibleOverlapHeight(frameEnd: frameEnd, screenBounds: screenBounds) > 0
+        visibleOverlapHeight(frameEnd: frameEnd, windowFrame: windowFrame) > 0
     }
 
     static func visibleOverlapHeight(
         frameEnd: CGRect,
-        screenBounds: CGRect
+        windowFrame: CGRect
     ) -> CGFloat {
         guard frameEnd.width > 0, frameEnd.height > 0 else { return 0 }
-        guard frameEnd.minY < screenBounds.maxY - 1 else { return 0 }
+        guard frameEnd.minY < windowFrame.maxY - 1 else { return 0 }
 
-        let overlap = frameEnd.intersection(screenBounds)
+        let overlap = frameEnd.intersection(windowFrame)
         guard !overlap.isNull, overlap.height.isFinite, overlap.height > 0 else {
             return 0
         }
