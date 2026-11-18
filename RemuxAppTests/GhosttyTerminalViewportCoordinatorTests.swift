@@ -3,6 +3,47 @@ import XCTest
 @testable import Remux
 
 final class GhosttyTerminalViewportCoordinatorTests: XCTestCase {
+    func testRestingSizeKeepsTallestHeightWhileKeyboardCoversTerminal() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        coordinator.keepsRestingSize = true
+        let full = CGSize(width: 402, height: 726)
+        let keyboard = CGSize(width: 402, height: 452)
+
+        XCTAssertEqual(coordinator.observeLiveSize(full).outcome, .appliedStableSize)
+        let covered = coordinator.observeLiveSize(keyboard)
+        XCTAssertEqual(covered.outcome, .observedWithoutStableUpdate)
+        XCTAssertEqual(covered.effectiveSize, full)
+        let uncovered = coordinator.observeLiveSize(full)
+        XCTAssertEqual(uncovered.outcome, .observedWithoutStableUpdate)
+        XCTAssertEqual(uncovered.effectiveSize, full)
+    }
+
+    func testRestingSizeFollowsWidthChange() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        coordinator.keepsRestingSize = true
+        let portrait = CGSize(width: 402, height: 726)
+        let landscape = CGSize(width: 874, height: 300)
+
+        XCTAssertEqual(coordinator.observeLiveSize(portrait).outcome, .appliedStableSize)
+        let rotated = coordinator.observeLiveSize(landscape)
+        XCTAssertEqual(rotated.outcome, .appliedStableSize)
+        XCTAssertEqual(rotated.effectiveSize, landscape)
+    }
+
+    func testRestingSizeSurvivesSheetReleaseOverRaisedKeyboard() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        coordinator.keepsRestingSize = true
+        let full = CGSize(width: 402, height: 726)
+        let keyboard = CGSize(width: 402, height: 452)
+
+        coordinator.observeLiveSize(full)
+        coordinator.setSheetPresented(true, liveSize: full)
+        coordinator.observeLiveSize(keyboard)
+        coordinator.setSheetPresented(false, liveSize: keyboard)
+
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: keyboard), full)
+    }
+
     func testLiveSizeObservationReportsAppliedStableSizeTransaction() {
         var coordinator = GhosttyTerminalViewportCoordinator()
         let full = CGSize(width: 402, height: 726)

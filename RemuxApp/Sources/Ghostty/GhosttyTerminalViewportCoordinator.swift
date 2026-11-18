@@ -58,11 +58,24 @@ struct GhosttyTerminalViewportLiveSizeObservation: Equatable {
     }
 }
 
+/// Experiment, on with `REMUX_KEYBOARD_PAN=1` at launch: the software keyboard and the bottom chrome cover
+/// the bottom of the terminal instead of resizing it. The terminal keeps its resting size, so nothing is sent
+/// to the server when the keyboard moves, and the terminal view slides up just far enough to keep the focused
+/// pane's cursor row in view (`GhosttyCompositeViewportHostView`).
+enum GhosttyKeyboardPanExperiment {
+    static let isEnabled = ProcessInfo.processInfo.environment["REMUX_KEYBOARD_PAN"] == "1"
+}
+
 struct GhosttyTerminalViewportCoordinator: Equatable {
     enum ReleasePolicy: Equatable {
         case adoptLatestLive
         case preserveCurrentEffective
     }
+
+    /// With the keyboard pan, the size the terminal keeps is its resting size, the tallest live size seen
+    /// at the current width, instead of the live size.
+    var keepsRestingSize = GhosttyKeyboardPanExperiment.isEnabled
+    private var tallestLiveSize: CGSize?
 
     private(set) var lastLiveSize = CGSize(width: 1, height: 1)
     private(set) var lastStableSize = CGSize(width: 1, height: 1)
@@ -164,12 +177,13 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
                 releasePolicy: .adoptLatestLive
             )
         }
+        let resting = restingSize(for: normalizedSize)
         guard !isGeometryFrozen else {
             return observation(
                 outcome: didChangeLiveSize ? .observedWithoutStableUpdate : .unchanged
             )
         }
-        guard lastStableSize != normalizedSize else {
+        guard lastStableSize != resting else {
             return observation(
                 outcome: didReleaseUnsizedInitialLayout
                     ? .appliedStableSize
@@ -177,8 +191,22 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
             )
         }
 
-        lastStableSize = normalizedSize
+        lastStableSize = resting
         return observation(outcome: .appliedStableSize)
+    }
+
+    /// The size the terminal keeps for a usable live size: the live size itself, or with `keepsRestingSize`
+    /// the tallest live size at its width. A layout pass that reports a size reduced by the keyboard then
+    /// changes nothing, whatever order it arrives in relative to the keyboard's notifications.
+    private mutating func restingSize(for liveSize: CGSize) -> CGSize {
+        guard keepsRestingSize else { return liveSize }
+        if let tallestLiveSize,
+           tallestLiveSize.width == liveSize.width,
+           tallestLiveSize.height >= liveSize.height {
+            return tallestLiveSize
+        }
+        tallestLiveSize = liveSize
+        return liveSize
     }
 
     @discardableResult
@@ -329,7 +357,7 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
         switch finalReleasePolicy {
         case .adoptLatestLive:
             if Self.isUsable(normalizedSize) {
-                lastStableSize = normalizedSize
+                lastStableSize = restingSize(for: normalizedSize)
             } else if let frozenSize, Self.isUsable(frozenSize) {
                 lastStableSize = frozenSize
             }
