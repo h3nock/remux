@@ -4492,7 +4492,8 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testLiveComposerTypingPerfWhenConfigured() throws {
-        let transcript = "Profile the composer hypothesis path"
+        // It starts the submitted line, so it starts with a space, as typed commands do, to stay out of the history.
+        let transcript = " Profile the composer hypothesis path"
         // Enables the body-eval probe and its accessibility marker without
         // REMUX_UI_TESTING, which would swap in the fake UI-testing
         // transport and break the live SSH connection.
