@@ -84,6 +84,8 @@ enum DemoStep {
     case cue(String)
     /// Waits for cues/<name>, which something beside the take writes, as when an agent it watches has finished.
     case waitCue(String, timeout: TimeInterval)
+    /// A person's recorded gesture played point for point from a target, or from text on screen.
+    case replay(DemoRecordedGesture, from: DemoTarget?, text: String?, last: Bool, timeout: TimeInterval)
 
     var action: String {
         switch self {
@@ -102,16 +104,23 @@ enum DemoStep {
         case .mark: "mark"
         case .cue: "cue"
         case .waitCue: "waitCue"
+        case .replay: "replay"
         }
     }
 
     /// A gesture or typing, after which the timeline's pause lets the screen settle and the viewer take it in.
     var isAction: Bool {
         switch self {
-        case .tap, .press, .drag, .swipe, .type, .tapText, .pressText, .stroke: true
+        case .tap, .press, .drag, .swipe, .type, .tapText, .pressText, .stroke, .replay: true
         case .wait, .waitFor, .waitForText, .shot, .mark, .cue, .waitCue: false
         }
     }
+}
+
+/// A gesture as a person made it: its points as offsets from where the finger came down, in points, each with its time
+/// from the touch-down, in seconds.
+struct DemoRecordedGesture {
+    var samples: [(t: TimeInterval, offset: CGVector)]
 }
 
 struct DemoTimeline {
@@ -123,14 +132,15 @@ struct DemoTimeline {
         guard let root = object as? [String: Any], let steps = root["steps"] as? [[String: Any]] else {
             throw DemoTimelineError("\(url.lastPathComponent): expected {\"steps\": [ ... ]}")
         }
-        let unknown = Set(root.keys).subtracting(["steps", "pause"])
+        let unknown = Set(root.keys).subtracting(["steps", "pause", "gestures"])
         guard unknown.isEmpty else {
             throw DemoTimelineError("\(url.lastPathComponent): unknown keys \(unknown.sorted())")
         }
         pause = try Self.number(root["pause"], "pause") ?? 1.0
+        let gestures = try Self.gestures(root["gestures"])
         self.steps = try steps.enumerated().map { index, json in
             do {
-                return try Self.step(json)
+                return try Self.step(json, gestures: gestures)
             } catch let error as DemoTimelineError {
                 throw DemoTimelineError("step \(index + 1) \(Self.describe(json)): \(error.description)")
             }
@@ -141,10 +151,26 @@ struct DemoTimeline {
         "wait": [], "waitFor": ["at", "timeout"], "tap": ["at"], "press": ["at", "for"],
         "drag": ["at", "to", "hold", "speed", "end"], "swipe": ["on", "at", "length", "speed", "count", "gap"],
         "type": ["clear", "speed"], "waitForText": ["last", "timeout"], "tapText": ["last", "timeout"],
-        "pressText": ["last", "for", "timeout"], "waitCue": ["timeout"], "stroke": ["at", "points", "over"], "shot": [], "mark": [], "cue": [],
+        "pressText": ["last", "for", "timeout"], "waitCue": ["timeout"], "replay": ["at", "on", "atText", "last", "timeout"], "stroke": ["at", "points", "over"], "shot": [], "mark": [], "cue": [],
     ]
 
-    private static func step(_ json: [String: Any]) throws -> DemoStep {
+    /// {"name": [[t, dx, dy], ...]}: each gesture's samples, starting at the touch-down, [0, 0, 0].
+    private static func gestures(_ value: Any?) throws -> [String: DemoRecordedGesture] {
+        guard let value else { return [:] }
+        guard let table = value as? [String: [[NSNumber]]] else {
+            throw DemoTimelineError("gestures is {\"name\": [[t, dx, dy], ...]}")
+        }
+        return try table.mapValues { rows in
+            let samples = try rows.map { row -> (t: TimeInterval, offset: CGVector) in
+                guard row.count == 3 else { throw DemoTimelineError("a gesture's sample is [t, dx, dy]") }
+                return (row[0].doubleValue, CGVector(dx: row[1].doubleValue, dy: row[2].doubleValue))
+            }
+            guard samples.count >= 2 else { throw DemoTimelineError("a gesture needs at least two samples") }
+            return DemoRecordedGesture(samples: samples)
+        }
+    }
+
+    private static func step(_ json: [String: Any], gestures: [String: DemoRecordedGesture] = [:]) throws -> DemoStep {
         let actions = json.keys.filter { options[$0] != nil }
         guard actions.count == 1, let action = actions.first, let value = json[action] else {
             throw DemoTimelineError("needs exactly one of \(options.keys.sorted())")
@@ -203,6 +229,17 @@ struct DemoTimeline {
             case "tapText": return .tapText(text, last: last, timeout: timeout)
             default: return .pressText(text, last: last, duration: try number(json["for"], "for") ?? 0.8, timeout: timeout)
             }
+        case "replay":
+            guard let name = value as? String, let gesture = gestures[name] else {
+                throw DemoTimelineError("replay takes the name of one of the timeline's gestures (\(gestures.keys.sorted()))")
+            }
+            let text = json["atText"] as? String
+            let from: DemoTarget? = text != nil ? nil
+                : try json["on"].map { try target($0, at: json["at"]) }
+                    ?? (try point(json["at"], "at")).map { DemoTarget(element: nil, point: $0) }
+            guard from != nil || text != nil else { throw DemoTimelineError("replay needs \"at\", \"on\" or \"atText\"") }
+            return .replay(gesture, from: from, text: text, last: try flag(json["last"], "last") ?? false,
+                           timeout: try number(json["timeout"], "timeout") ?? 20)
         case "waitCue":
             guard let name = value as? String, !name.isEmpty, !name.contains("/") else {
                 throw DemoTimelineError("waitCue takes a name")
@@ -359,6 +396,9 @@ final class DemoPlayer {
             try DemoGesture.tap(at: point(ofText: text, last: last, timeout: timeout))
         case .pressText(let text, let last, let duration, let timeout):
             try DemoGesture.press(at: point(ofText: text, last: last, timeout: timeout), for: duration)
+        case .replay(let gesture, let from, let text, let last, let timeout):
+            let start = try text.map { try point(ofText: $0, last: last, timeout: timeout) } ?? coordinate(from!).screenPoint
+            try DemoGesture.replay(gesture, from: start)
         case .waitCue(let name, let timeout):
             let file = take.appendingPathComponent("cues", isDirectory: true).appendingPathComponent(name)
             let deadline = Date().addingTimeInterval(timeout)
@@ -563,6 +603,25 @@ enum DemoGesture {
             segments.append(.move(to: CGPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f), over: duration / Double(steps)))
         }
         try TouchPath.play(from: first, segments)
+    }
+
+    /// A person's gesture, point for point at its own times, from `start`.
+    @MainActor
+    static func replay(_ gesture: DemoRecordedGesture, from start: CGPoint) throws {
+        var segments: [TouchPath.Segment] = []
+        var previous = gesture.samples[0].t
+        for sample in gesture.samples.dropFirst() {
+            let gap = sample.t - previous
+            previous = sample.t
+            let point = CGPoint(x: start.x + sample.offset.dx, y: start.y + sample.offset.dy)
+            // A resting finger sends nothing, so a long gap is a rest, then the step that ended it.
+            if gap > 0.03 {
+                segments += [.hold(gap - 0.008), .move(to: point, over: 0.008)]
+            } else {
+                segments.append(.move(to: point, over: max(gap, 0.001)))
+            }
+        }
+        try TouchPath.play(from: start, segments)
     }
 
     /// One point a frame along `ease`, bowed to one side by `bow` of the stroke's length at its middle.
