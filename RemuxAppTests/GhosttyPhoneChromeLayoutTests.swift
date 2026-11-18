@@ -38,7 +38,7 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         XCTAssertTrue(
             GhosttySoftwareKeyboardVisibility.isVisible(
                 frameEnd: CGRect(x: 0, y: 544, width: 390, height: 300),
-                windowFrame: CGRect(x: 0, y: 0, width: 390, height: 844)
+                screenBounds: CGRect(x: 0, y: 0, width: 390, height: 844)
             )
         )
     }
@@ -57,7 +57,7 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         XCTAssertFalse(
             GhosttySoftwareKeyboardVisibility.isVisible(
                 frameEnd: CGRect(x: 0, y: 844, width: 390, height: 300),
-                windowFrame: CGRect(x: 0, y: 0, width: 390, height: 844)
+                screenBounds: CGRect(x: 0, y: 0, width: 390, height: 844)
             )
         )
     }
@@ -76,30 +76,32 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         XCTAssertFalse(
             GhosttySoftwareKeyboardVisibility.isVisible(
                 frameEnd: CGRect(x: 0, y: 844, width: 390, height: 0),
-                windowFrame: CGRect(x: 0, y: 0, width: 390, height: 844)
+                screenBounds: CGRect(x: 0, y: 0, width: 390, height: 844)
             )
         )
     }
 
-    func testKeyboardFrameVisibilityUsesWindowMaxYForRotation() {
+    func testKeyboardFrameVisibilityUsesScreenBoundsMaxYForRotation() {
         XCTAssertTrue(
             GhosttySoftwareKeyboardVisibility.isVisible(
                 frameEnd: CGRect(x: 0, y: 190, width: 844, height: 200),
-                windowFrame: CGRect(x: 0, y: 0, width: 844, height: 390)
+                screenBounds: CGRect(x: 0, y: 0, width: 844, height: 390)
             )
         )
     }
 
     // An iPad window needn't fill its screen. Both frames are in the screen's coordinates, and only the part of the
-    // keyboard over the window counts. The keyboard is the 11-inch iPad's in landscape: 428 of 834 points, from 406.
+    // keyboard over the window covers the terminal. The keyboard is the 11-inch iPad's in landscape: 428 of 834
+    // points, from 406.
     private let iPadLandscapeKeyboard = CGRect(x: 0, y: 406, width: 1210, height: 428)
 
-    func testKeyboardUnderAWindowThatEndsAboveItIsHidden() {
-        XCTAssertFalse(
-            GhosttySoftwareKeyboardVisibility.isVisible(
+    func testKeyboardCoversNoneOfAWindowThatEndsAboveIt() {
+        XCTAssertEqual(
+            GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
                 frameEnd: iPadLandscapeKeyboard,
                 windowFrame: CGRect(x: 100, y: 24, width: 700, height: 360)
-            )
+            ),
+            0
         )
     }
 
@@ -114,12 +116,13 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         )
     }
 
-    func testKeyboardBesideAWindowIsHidden() {
-        XCTAssertFalse(
-            GhosttySoftwareKeyboardVisibility.isVisible(
+    func testKeyboardBesideAWindowCoversNoneOfIt() {
+        XCTAssertEqual(
+            GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
                 frameEnd: CGRect(x: 820, y: 500, width: 320, height: 250),
                 windowFrame: CGRect(x: 0, y: 0, width: 800, height: 834)
-            )
+            ),
+            0
         )
     }
 

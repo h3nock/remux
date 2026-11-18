@@ -1022,8 +1022,10 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(isSoftwareKeyboardOnScreen(keyboard), "Closing the menu leaves the keyboard down.")
     }
 
-    /// The iOS versions on which the app draws its own attachment menu (`GhosttyKeyboardWindowTracker.isSupported`).
+    /// Where the app draws its own attachment menu (`GhosttyKeyboardWindowTracker.isSupported`): on iPhone, from iOS 26
+    /// to 27.
     private static var showsTheAppsOwnAttachmentMenu: Bool {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return false }
         if #available(iOS 28.0, *) { return false }
         if #available(iOS 26.0, *) { return true }
         return false

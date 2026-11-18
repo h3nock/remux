@@ -52,26 +52,38 @@ struct GhosttyKeyboardViewportTransitionCompletionResult: Equatable {
     let target: GhosttyKeyboardViewportTransitionTarget?
 }
 
+/// What a keyboard notification says. Whether the keyboard is up is a question about the screen, and decides the
+/// terminal's input state; how much of the terminal it covers is one about the window, which on an iPad can be
+/// smaller than the screen and sit above the keyboard or beside it. On an iPhone the two are the same.
 struct GhosttyKeyboardVisibilityProjection: Equatable {
     let frameEnd: CGRect
+    let screenBounds: CGRect
     let windowFrame: CGRect
     let isVisible: Bool
+    /// How much of the window the keyboard covers.
     let overlapHeight: CGFloat
     let animationDuration: TimeInterval
     let transitionTarget: GhosttyKeyboardViewportTransitionTarget
     let fallbackDelay: TimeInterval
     let shouldBeginViewportTransition: Bool
 
+    /// Both frames are in the screen's coordinates, as UIKit gives `frameEnd`.
     init(
         frameEnd: CGRect,
+        screenBounds: CGRect,
         windowFrame: CGRect,
         animationDuration: TimeInterval?,
         keyboardMode: GhosttyKeyboardChromeMode,
         isDismissSystemKeyboardRequested: Bool
     ) {
         self.frameEnd = frameEnd
+        self.screenBounds = screenBounds
         self.windowFrame = windowFrame
 
+        let isVisible = GhosttySoftwareKeyboardVisibility.isVisible(
+            frameEnd: frameEnd,
+            screenBounds: screenBounds
+        )
         let visibleOverlapHeight = GhosttyViewportSizing.normalizedHeight(
             GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
                 frameEnd: frameEnd,
@@ -80,10 +92,9 @@ struct GhosttyKeyboardVisibilityProjection: Equatable {
         )
         let resolvedAnimationDuration =
             animationDuration ?? GhosttyKeyboardViewportTransitionTiming.defaultAnimationDuration
-        let target: GhosttyKeyboardViewportTransitionTarget =
-            visibleOverlapHeight > 0 ? .shown : .hidden
+        let target: GhosttyKeyboardViewportTransitionTarget = isVisible ? .shown : .hidden
 
-        self.isVisible = visibleOverlapHeight > 0
+        self.isVisible = isVisible
         self.overlapHeight = visibleOverlapHeight
         self.animationDuration = resolvedAnimationDuration
         self.transitionTarget = target

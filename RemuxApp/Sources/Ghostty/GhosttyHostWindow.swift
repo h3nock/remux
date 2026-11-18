@@ -13,6 +13,11 @@ final class GhosttyHostWindowReference {
         guard let window else { return nil }
         return window.convert(window.bounds, to: window.screen.coordinateSpace)
     }
+
+    /// The bounds of the screen the window is on.
+    var screenBounds: CGRect? {
+        window?.screen.bounds
+    }
 }
 
 /// Put behind a view to fill `reference` with the window the view is in.

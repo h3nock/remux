@@ -1854,19 +1854,21 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func updateKeyboardVisibility(with notification: Notification) {
-        // Until this screen is in a window, the whole screen stands in for it.
-        let windowFrame = hostWindow.frameOnScreen ?? UIScreen.main.bounds
+        // Until this view is in a window, the main screen stands in for both.
+        let screenBounds = hostWindow.screenBounds ?? UIScreen.main.bounds
+        let windowFrame = hostWindow.frameOnScreen ?? screenBounds
         let frameEnd = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?
             .cgRectValue
             ?? CGRect(
-                x: windowFrame.minX,
-                y: windowFrame.maxY,
-                width: windowFrame.width,
+                x: 0,
+                y: screenBounds.maxY,
+                width: screenBounds.width,
                 height: 0
             )
 
         let projection = GhosttyKeyboardVisibilityProjection(
             frameEnd: frameEnd,
+            screenBounds: screenBounds,
             windowFrame: windowFrame,
             animationDuration: (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
                 .doubleValue,
@@ -2726,24 +2728,29 @@ struct GhosttyPhoneChromeLayout: Equatable {
     }
 }
 
-/// How much of a window the software keyboard covers. Both frames are in the screen's coordinates: on an iPhone the
-/// window is the screen, while an iPad window can sit above the keyboard or beside it, uncovered.
+/// Where the software keyboard is, from its frame in the screen's coordinates: whether it is up at all, on the screen,
+/// and how much of a window it covers. On an iPhone the window is the screen; an iPad window can sit above the
+/// keyboard or beside it, uncovered while the keyboard is up.
 struct GhosttySoftwareKeyboardVisibility {
     static func isVisible(
         frameEnd: CGRect,
-        windowFrame: CGRect
+        screenBounds: CGRect
     ) -> Bool {
-        visibleOverlapHeight(frameEnd: frameEnd, windowFrame: windowFrame) > 0
+        coveredHeight(of: screenBounds, by: frameEnd) > 0
     }
 
     static func visibleOverlapHeight(
         frameEnd: CGRect,
         windowFrame: CGRect
     ) -> CGFloat {
-        guard frameEnd.width > 0, frameEnd.height > 0 else { return 0 }
-        guard frameEnd.minY < windowFrame.maxY - 1 else { return 0 }
+        coveredHeight(of: windowFrame, by: frameEnd)
+    }
 
-        let overlap = frameEnd.intersection(windowFrame)
+    private static func coveredHeight(of frame: CGRect, by frameEnd: CGRect) -> CGFloat {
+        guard frameEnd.width > 0, frameEnd.height > 0 else { return 0 }
+        guard frameEnd.minY < frame.maxY - 1 else { return 0 }
+
+        let overlap = frameEnd.intersection(frame)
         guard !overlap.isNull, overlap.height.isFinite, overlap.height > 0 else {
             return 0
         }
