@@ -43,6 +43,24 @@ final class RemuxAppUITests: XCTestCase {
         var stepDirectory: String?
     }
 
+    /// The keyboard pan experiment's configuration, a JSON file named by REMUX_LIVE_KEYBOARD_PAN_CONFIG (pass
+    /// it to `xcodebuild test` as TEST_RUNNER_REMUX_LIVE_KEYBOARD_PAN_CONFIG). The tmux session must already
+    /// exist, on a tmux server of the harness's own; the app reads the credential from the same file.
+    private struct LiveKeyboardPanConfiguration: Decodable {
+        var displayName: String?
+        let host: String
+        var port: String?
+        let username: String
+        let sessionName: String
+        let tmuxExecutablePath: String
+        /// The host key Remux shows when it first meets the server, as "<type> <SHA256 fingerprint>".
+        let expectedHostKey: String
+        /// A text file of a few hundred lines on the server, for the vim scenarios.
+        let vimFile: String
+        /// A session whose pane runs an agent idle at its prompt, for the agent scenario.
+        var agentSessionName: String?
+    }
+
     private struct LiveSSHCleanupHarnessError: Error, CustomStringConvertible {
         let description: String
     }
@@ -4029,6 +4047,120 @@ final class RemuxAppUITests: XCTestCase {
         guard let directory = configuration.captureDirectory else { return }
         let url = URL(fileURLWithPath: directory).appendingPathComponent("herdr-\(name).png")
         XCTAssertNoThrow(try screenshot.pngRepresentation.write(to: url))
+    }
+
+    /// The keyboard pan experiment's scenarios, for a screen recording the harness makes: text above the
+    /// prompt, the prompt on the last row, the prompt after `clear`, vim mid-file, vim on line 1 and vim with
+    /// its command line open, each with three keyboard hides and shows. The harness gives REMUX_KEYBOARD_PAN
+    /// (as TEST_RUNNER_REMUX_KEYBOARD_PAN), so the same build runs with the pan and without it. Each scenario
+    /// prints its start, in seconds since 1970, for the recording's analysis.
+    func testLiveKeyboardPanScenariosWhenConfigured() throws {
+        let configuration = try launchLiveKeyboardPanApp(agent: false)
+        let keyboard = try showLiveKeyboardPanKeyboard()
+
+        func pause(_ seconds: TimeInterval) {
+            RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+        }
+        func scenario(_ label: String, typing text: String) {
+            pause(1.0)
+            app.typeText(text)
+            pause(1.5)
+            toggleLiveKeyboardPanKeyboard(keyboard, scenario: label)
+        }
+
+        // vim opens the file by a short name, so its file message fits on one line and it starts without a
+        // hit-enter prompt.
+        let vimFile = URL(fileURLWithPath: configuration.vimFile)
+        let vim = " cd \(vimFile.deletingLastPathComponent().path); vim -u NONE -i NONE -c 'set nu'"
+        scenario("blank-rows-below", typing: " clear; for n in $(seq 1 16); do echo KBD_ROW_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r")
+        scenario("prompt-at-bottom", typing: " clear; seq -f 'KBD_LINE_%03g' 1 120\r")
+        scenario("after-clear", typing: " clear\r")
+        scenario("vim-mid-file", typing: "\(vim) +100 \(vimFile.lastPathComponent)\r")
+        scenario("vim-line-1", typing: "gg")
+        scenario("vim-command-line", typing: ":")
+        // The toolbar's Escape: typeText doesn't deliver an escape.
+        let escape = app.buttons["terminal.toolbar-key.1"]
+        XCTAssertEqual(escape.label, "Escape")
+        escape.tap()
+        pause(1.5)
+        print(String(format: "KBDPAN command line closed=%.3f", Date().timeIntervalSince1970))
+        app.typeText(":q!\r")
+        pause(1.0)
+    }
+
+    /// The keyboard pan experiment's agent scenario: the agent session's pane runs an agent idle at its
+    /// prompt, and the keyboard hides and shows three times; nothing is typed.
+    func testLiveKeyboardPanAgentWhenConfigured() throws {
+        _ = try launchLiveKeyboardPanApp(agent: true)
+        let keyboard = try showLiveKeyboardPanKeyboard()
+        RunLoop.current.run(until: Date().addingTimeInterval(2.0))
+        toggleLiveKeyboardPanKeyboard(keyboard, scenario: "agent-idle")
+    }
+
+    /// Launches the app on the keyboard pan configuration's server, attached to its session or its agent
+    /// session, with REMUX_KEYBOARD_PAN as the harness gives it.
+    private func launchLiveKeyboardPanApp(agent: Bool) throws -> LiveKeyboardPanConfiguration {
+        guard let path = ProcessInfo.processInfo.environment["REMUX_LIVE_KEYBOARD_PAN_CONFIG"], !path.isEmpty else {
+            throw XCTSkip("Set REMUX_LIVE_KEYBOARD_PAN_CONFIG to run the keyboard pan scenarios.")
+        }
+        let configuration = try JSONDecoder().decode(
+            LiveKeyboardPanConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: path))
+        )
+        let sessionName: String
+        if agent {
+            guard let agentSessionName = configuration.agentSessionName else {
+                throw XCTSkip("Set agentSessionName in the keyboard pan configuration to run the agent scenario.")
+            }
+            sessionName = agentSessionName
+        } else {
+            sessionName = configuration.sessionName
+        }
+        app.launchEnvironment["REMUX_DEBUG_SEED_CONNECTION"] = "1"
+        app.launchEnvironment["REMUX_DEBUG_SERVER_NAME"] = configuration.displayName ?? "Keyboard pan"
+        app.launchEnvironment["REMUX_DEBUG_SERVER_HOST"] = configuration.host
+        app.launchEnvironment["REMUX_DEBUG_SERVER_PORT"] = configuration.port ?? "22"
+        app.launchEnvironment["REMUX_DEBUG_SERVER_USERNAME"] = configuration.username
+        app.launchEnvironment["REMUX_DEBUG_CREDENTIALS_FILE"] = path
+        app.launchEnvironment["REMUX_DEBUG_TMUX_SESSION"] = sessionName
+        app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = configuration.tmuxExecutablePath
+        app.launchEnvironment["REMUX_DEBUG_HERDR_EXECUTABLE_PATH"] = "/nonexistent/herdr"
+        app.launchEnvironment["REMUX_DEBUG_EPHEMERAL_STORAGE"] = "1"
+        app.launchEnvironment["REMUX_TRACE_TMUX_VIEWPORT"] = "1"
+        app.launchEnvironment["REMUX_TRACE_PERF"] = "1"
+        app.launchEnvironment["REMUX_KEYBOARD_PAN"] = ProcessInfo.processInfo.environment["REMUX_KEYBOARD_PAN"] ?? "0"
+        launchedLiveSSHApp = true
+        app.launch()
+
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
+        return configuration
+    }
+
+    /// Brings up the software keyboard on the terminal and returns the toolbar's keyboard button.
+    private func showLiveKeyboardPanKeyboard() throws -> XCUIElement {
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        terminal.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "terminal tap show"))
+        waitForLiveTerminalInputReady(timeout: 10)
+        let keyboard = app.buttons["terminal.keyboard"]
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        return keyboard
+    }
+
+    /// Hides and shows the keyboard three times, printing the scenario's start and end in seconds since 1970.
+    private func toggleLiveKeyboardPanKeyboard(_ keyboard: XCUIElement, scenario label: String) {
+        print(String(format: "KBDPAN scenario %@ start=%.3f", label, Date().timeIntervalSince1970))
+        for index in 0..<3 {
+            keyboard.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "\(label) hide \(index)"))
+            RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+            keyboard.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(true, label: "\(label) show \(index)"))
+            RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+        }
+        print(String(format: "KBDPAN scenario %@ end=%.3f", label, Date().timeIntervalSince1970))
     }
 
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
