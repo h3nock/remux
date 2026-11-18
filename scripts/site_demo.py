@@ -74,6 +74,10 @@ SHOT_SIZES = ((600, '', 90), (900, '-900', 90), (None, '-{width}', 85))
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--sim', default='remux-demo', help='the demo simulator, by name (default: remux-demo)')
+    # HEVC keeps more of the screen's detail: a still frame of terminal text kept 85% of a screenshot's edge energy in
+    # HEVC and 79% in H.264, at a lower bitrate.
+    parser.add_argument('--codec', choices=('h264', 'hevc'), default='hevc',
+                        help='what the simulator records the screen in (default: hevc)')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('setup', help='create and boot the demo simulator, build Remux, install it there')
     play_parser = commands.add_parser('play', help='play a timeline, recording the screen')
@@ -165,8 +169,8 @@ class Recording:
     """The simulator's screen, recorded to a file. `started` is the wall-clock time the recorder says it started,
     which is the video's time zero, so render can place the touch and step logs in the video."""
 
-    def __init__(self, udid, path):
-        self.process = subprocess.Popen(['xcrun', 'simctl', 'io', udid, 'recordVideo', '--codec=h264', '--force',
+    def __init__(self, udid, path, codec='h264'):
+        self.process = subprocess.Popen(['xcrun', 'simctl', 'io', udid, 'recordVideo', f'--codec={codec}', '--force',
                                          str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.output = []
         for line in self.process.stdout:
@@ -209,7 +213,7 @@ def play(args):
     tidy_status_bar(udid)
     take = new_take(flow.stem)
     shutil.copy(flow, take / 'flow.json')
-    recording = Recording(udid, take / 'screen.mp4')
+    recording = Recording(udid, take / 'screen.mp4', args.codec)
     print(f'playing {flow.name} into {take.relative_to(REPO)} ...')
     try:
         with open(take / 'test.log', 'w') as log:
@@ -241,7 +245,7 @@ def record(args):
     env = {**os.environ, 'SIMCTL_CHILD_REMUX_DEBUG_SHOW_TOUCHES': '1',
            'SIMCTL_CHILD_REMUX_DEBUG_TOUCH_LOG': str(take / 'touches.jsonl')}
     run(['xcrun', 'simctl', 'launch', '--terminate-running-process', udid, BUNDLE_ID], env=env)
-    recording = Recording(udid, take / 'screen.mp4')
+    recording = Recording(udid, take / 'screen.mp4', args.codec)
     try:
         input('Recording, with your touches drawn. Use the app in the Simulator, then press Return to stop. ')
     except (KeyboardInterrupt, EOFError):
@@ -331,13 +335,21 @@ def render(args):
     decoder = subprocess.Popen(['ffmpeg', '-loglevel', 'fatal', '-i', str(video), '-vf',
                                 f'{EVERY_FRAME},scale={args.width}:{height}:flags=lanczos', '-fps_mode', 'passthrough',
                                 '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-'], stdout=subprocess.PIPE)
-    encoder = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', *raw, '-r', '60', '-i', '-',
-                                # The recorder tags its video Display P3, but the pixels are the screen's sRGB values
-                                # (a frame matches the screenshot of the same moment; converting from P3 darkened
-                                # it), so the frames are tagged sRGB.
-                                '-vf', 'setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709',
-                                '-an', '-c:v', 'libx264', '-preset', 'slow', '-crf', '20', '-pix_fmt', 'yuv420p',
-                                '-movflags', '+faststart', str(out / f'{name}.mp4')], stdin=subprocess.PIPE)
+    # Two encodings of the same frames: AV1 for the browsers that play it, at the same quality in well under half the
+    # size, and H.264 for the rest. On five seconds of terminal scrolling at 900 px, against a lossless copy: AV1 CRF
+    # 32 46 dB at 2.0 Mbit/s; H.264 CRF 18 tuned for flat screens 44 dB at 5.5 Mbit/s (CRF 20, 41 dB at 4.8).
+    encodings = {
+        f'{name}-av1.mp4': ['-c:v', 'libsvtav1', '-preset', '6', '-crf', '32', '-svtav1-params', 'enable-stat-report=0'],
+        f'{name}.mp4': ['-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-tune', 'animation'],
+    }
+    encoders = [subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', *raw, '-r', '60', '-i', '-',
+                                  # The recorder tags its video Display P3, but the pixels are the screen's sRGB values
+                                  # (a frame matches the screenshot of the same moment; converting from P3 darkened
+                                  # it), so the frames are tagged sRGB.
+                                  '-vf', 'setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709',
+                                  '-an', *codec, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out / file)],
+                                 stdin=subprocess.PIPE, stderr=subprocess.DEVNULL if 'libsvtav1' in codec else None)
+                for file, codec in encodings.items()]
     frame, index = None, -1
     for slot, due in enumerate(dues):
         while index + 1 < len(times) and (frame is None or times[index + 1] <= due):
@@ -345,21 +357,24 @@ def render(args):
             frame = decoder.stdout.read(size)
             if len(frame) < size:
                 decoder.kill()
-                encoder.kill()
+                for encoder in encoders:
+                    encoder.kill()
                 sys.exit(f'decoding the recording stopped at frame {index} of {len(times)}')
-        encoder.stdin.write(frame)
+        for encoder in encoders:
+            encoder.stdin.write(frame)
         if slot == poster_slot:
             ffmpeg(*raw, '-i', '-', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', '-compression_level', '6',
                    str(out / f'{name}-poster.webp'), input=frame)
     # The frames after the cut aren't needed.
     decoder.kill()
     decoder.wait()
-    encoder.stdin.close()
-    if encoder.wait():
+    for encoder in encoders:
+        encoder.stdin.close()
+    if any(encoder.wait() for encoder in encoders):
         sys.exit('encoding the video failed')
-    print(f'{name}.mp4: {start - started:.2f}s to {end - started:.2f}s of the recording, {slots / 60:.1f}s at '
-          f'{args.speed:g}x, {args.width}x{height}, {(out / f"{name}.mp4").stat().st_size // 1024} KB; '
-          f'poster {name}-poster.webp')
+    sizes = ', '.join(f'{file} {(out / file).stat().st_size // 1024} KB' for file in encodings)
+    print(f'{start - started:.2f}s to {end - started:.2f}s of the recording, {slots / 60:.1f}s at {args.speed:g}x, '
+          f'{args.width}x{height}: {sizes}; poster {name}-poster.webp')
 
     for shot in sorted((take / 'shots').glob('*.png')):
         shot_width = int(run(['ffprobe', '-v', 'error', '-show_entries', 'stream=width', '-of', 'csv=p=0',
