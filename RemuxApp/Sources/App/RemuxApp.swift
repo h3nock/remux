@@ -35,7 +35,7 @@ struct RemuxApp: App {
             fatalError(failure)
         }
         #endif
-        #if DEBUG || REMUX_LIVE_UI_TESTING
+        #if DEBUG || REMUX_LIVE_UI_TESTING || REMUX_RECORD_TOUCHES
         DebugTouchVisualizer.installIfRequested()
         #endif
     }

@@ -1,4 +1,4 @@
-#if DEBUG || REMUX_LIVE_UI_TESTING
+#if DEBUG || REMUX_LIVE_UI_TESTING || REMUX_RECORD_TOUCHES
 import UIKit
 
 /// Draws every touch the app receives, for demo recordings, with as little as reads at a glance: a soft circle under
@@ -7,20 +7,43 @@ import UIKit
 /// sits in a window above everything else and takes no touches, so the app behaves exactly as without it, and a screen
 /// recording shows what the finger did whether a test or a person is driving.
 ///
-/// Off unless the launch environment has REMUX_DEBUG_SHOW_TOUCHES=1. With REMUX_DEBUG_TOUCH_LOG=<path>, each
-/// touch's start and end are appended there as one JSON object a line (wall-clock seconds and the point), so a
-/// recording can be lined up with its touches.
+/// Off unless the launch environment has REMUX_DEBUG_SHOW_TOUCHES=1. With REMUX_DEBUG_TOUCH_LOG=<path>, every touch
+/// is appended there as one JSON object a line: its start and end with wall-clock seconds, and each point it passed
+/// through, the screen's in-between samples included, with the touch's own timestamp (`ts`, seconds since boot) and a
+/// number for the finger (`id`). A recording lines up with its touches by the wall clock, and a person's gesture can be
+/// replayed point for point by its timestamps. A build with REMUX_RECORD_TOUCHES records every launch to its own file
+/// in Documents/touches without drawing anything, to capture how a person really swipes and scrolls.
 @MainActor
 final class DebugTouchVisualizer {
     private static var shared: DebugTouchVisualizer?
 
     static func installIfRequested(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        guard shared == nil, environment["REMUX_DEBUG_SHOW_TOUCHES"] == "1" else { return }
-        shared = DebugTouchVisualizer(logPath: environment["REMUX_DEBUG_TOUCH_LOG"])
+        guard shared == nil else { return }
+        let shows = environment["REMUX_DEBUG_SHOW_TOUCHES"] == "1"
+        var logPath = environment["REMUX_DEBUG_TOUCH_LOG"]
+        #if REMUX_RECORD_TOUCHES
+        if logPath == nil { logPath = recordingPath() }
+        #endif
+        guard shows || logPath != nil else { return }
+        shared = DebugTouchVisualizer(logPath: logPath, shows: shows)
     }
 
+    #if REMUX_RECORD_TOUCHES
+    private static func recordingPath() -> String? {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+        let folder = documents.appendingPathComponent("touches", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        return folder.appendingPathComponent("touches-\(stamp.string(from: Date())).jsonl").path
+    }
+    #endif
+
     private let log: FileHandle?
+    private let shows: Bool
     private var overlay: OverlayWindow?
+    private var fingers: [ObjectIdentifier: Int] = [:]
+    private var nextFinger = 1
     /// Fingers that are down, and spots whose finger has lifted but which are still fading or pulling in their trail.
     private var down: [ObjectIdentifier: TouchSpot] = [:]
     private var lifted: [TouchSpot] = []
@@ -28,7 +51,8 @@ final class DebugTouchVisualizer {
     private var frames: CADisplayLink?
     private lazy var frameTarget = FrameTarget { [weak self] in self?.frame() }
 
-    private init(logPath: String?) {
+    private init(logPath: String?, shows: Bool) {
+        self.shows = shows
         if let logPath {
             FileManager.default.createFile(atPath: logPath, contents: nil)
             log = FileHandle(forWritingAtPath: logPath)
@@ -57,7 +81,7 @@ final class DebugTouchVisualizer {
               !(window.gestureRecognizers ?? []).contains(where: { $0 is TouchObserver })
         else { return }
         window.addGestureRecognizer(TouchObserver(visualizer: self))
-        if overlay == nil, let scene = window.windowScene {
+        if shows, overlay == nil, let scene = window.windowScene {
             let overlay = OverlayWindow(windowScene: scene)
             overlay.isHidden = false
             self.overlay = overlay
@@ -65,35 +89,37 @@ final class DebugTouchVisualizer {
     }
 
     fileprivate func touchesBegan(_ touches: Set<UITouch>) {
-        guard let overlay else { return }
         let now = CACurrentMediaTime()
         for touch in touches {
-            let point = touch.location(in: overlay)
-            let spot = TouchSpot(at: point, time: now, bounds: overlay.bounds)
+            fingers[ObjectIdentifier(touch)] = nextFinger
+            nextFinger += 1
+            write("began", touch)
+            guard let overlay else { continue }
+            let spot = TouchSpot(at: touch.location(in: overlay), time: now, bounds: overlay.bounds)
             overlay.layer.addSublayer(spot)
             down[ObjectIdentifier(touch)] = spot
-            write("began", point)
         }
-        runFrames()
+        if overlay != nil { runFrames() }
     }
 
-    fileprivate func touchesMoved(_ touches: Set<UITouch>) {
-        guard let overlay else { return }
+    fileprivate func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         for touch in touches {
-            down[ObjectIdentifier(touch)]?.target = touch.location(in: overlay)
+            for sample in event.coalescedTouches(for: touch) ?? [touch] {
+                write("moved", sample, finger: fingers[ObjectIdentifier(touch)])
+            }
+            if let overlay { down[ObjectIdentifier(touch)]?.target = touch.location(in: overlay) }
         }
     }
 
     fileprivate func touchesEnded(_ touches: Set<UITouch>, cancelled: Bool) {
-        guard let overlay else { return }
         let now = CACurrentMediaTime()
         for touch in touches {
-            let point = touch.location(in: overlay)
-            guard let spot = down.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-            spot.target = point
+            write(cancelled ? "cancelled" : "ended", touch)
+            fingers.removeValue(forKey: ObjectIdentifier(touch))
+            guard let overlay, let spot = down.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            spot.target = touch.location(in: overlay)
             spot.lift(at: now)
             lifted.append(spot)
-            write(cancelled ? "cancelled" : "ended", point)
         }
     }
 
@@ -124,13 +150,20 @@ final class DebugTouchVisualizer {
         frames = link
     }
 
-    private func write(_ phase: String, _ point: CGPoint) {
+    /// One line: the wall clock, the touch's own timestamp, which finger, and the point in its window, plus the
+    /// window's size where a touch begins, so a gesture recorded on one screen size can be scaled to another.
+    private func write(_ phase: String, _ touch: UITouch, finger: Int? = nil) {
         guard let log else { return }
-        let line = String(
-            format: "{\"t\":%.3f,\"phase\":\"%@\",\"x\":%.1f,\"y\":%.1f}\n",
-            Date().timeIntervalSince1970, phase, point.x, point.y
+        let point = touch.location(in: nil)
+        var line = String(
+            format: "{\"t\":%.3f,\"ts\":%.4f,\"id\":%d,\"phase\":\"%@\",\"x\":%.1f,\"y\":%.1f",
+            Date().timeIntervalSince1970, touch.timestamp, finger ?? fingers[ObjectIdentifier(touch)] ?? 0, phase,
+            point.x, point.y
         )
-        log.write(Data(line.utf8))
+        if phase == "began", let window = touch.window {
+            line += String(format: ",\"w\":%.0f,\"h\":%.0f", window.bounds.width, window.bounds.height)
+        }
+        log.write(Data((line + "}\n").utf8))
     }
 }
 
@@ -184,7 +217,7 @@ private final class TouchObserver: UIGestureRecognizer {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        visualizer?.touchesMoved(touches)
+        visualizer?.touchesMoved(touches, with: event)
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
