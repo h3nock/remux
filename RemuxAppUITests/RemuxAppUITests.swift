@@ -1650,9 +1650,10 @@ final class RemuxAppUITests: XCTestCase {
         // The command prints its own run count, so only the arrow-up re-run
         // prints RUN_2. No `clear` in between: it also erases the scrollback.
         sendTerminalCommand(
-            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs"
+            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs",
+            keepingInHistory: true
         )
-        sendTerminalCommand("true")
+        sendTerminalCommand("true", keepingInHistory: true)
         arrowUp.tap()
         arrowUp.tap()
         waitForLiveTerminalInputReady(timeout: 10)
@@ -3707,6 +3708,7 @@ final class RemuxAppUITests: XCTestCase {
             app.buttons["terminal.keyboard"].tap()
             XCTAssertNotNil(waitForKeyboardPresence(false, label: "popup keyboard hide", timeout: 8))
         }
+        /// Shell commands start with a space, as `sendTerminalCommand`'s do, to stay out of the shell's history.
         func typeIntoPopup(_ text: String) {
             showKeyboard()
             app.typeText(text)
@@ -3736,7 +3738,7 @@ final class RemuxAppUITests: XCTestCase {
         }
         /// Asks the popup's shell for its size, typing with the keyboard up, and checks it says `grid`.
         func assertSttySays(_ grid: Grid, _ context: String) throws {
-            typeIntoPopup("clear; stty size\n")
+            typeIntoPopup(" clear; stty size\n")
             XCTAssertTrue(try screen(containing: "\(grid.rows) \(grid.columns)"), "stty didn't say \(grid.rows) \(grid.columns) \(context).")
         }
         /// The numbers on the other client's screen, which shows the popup's terminal.
@@ -3800,13 +3802,13 @@ final class RemuxAppUITests: XCTestCase {
         // A quiet popup keeps its attach past Herdr's minute for an idle background bridge.
         RunLoop.current.run(until: Date().addingTimeInterval(65))
         XCTAssertNotNil(try popupGrid("after a quiet minute") { $0 == full })
-        typeIntoPopup("clear; echo still-$((6*7))\n")
+        typeIntoPopup(" clear; echo still-$((6*7))\n")
         XCTAssertTrue(try screen(containing: "still-42"), "Typing after a quiet minute didn't reach the popup.")
         hideKeyboard()
 
         // A long press selects a word of the popup's terminal, as on a pane, and Copy copies it.
         UIPasteboard.general.string = "REMUX_HERDR_POPUP_COPY_SENTINEL"
-        typeIntoPopup("clear; echo popupword-$((6*7))\n")
+        typeIntoPopup(" clear; echo popupword-$((6*7))\n")
         XCTAssertTrue(try screen(containing: "popupword-42"), "echo didn't run in the popup.")
         hideKeyboard()
         content.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 20, dy: 8)).press(forDuration: 0.7)
@@ -3821,7 +3823,7 @@ final class RemuxAppUITests: XCTestCase {
 
         // Herdr encodes the phone's keys for the program's modes: an arrow reaches a program asking for
         // application cursor keys as one.
-        typeIntoPopup("clear; python3 -I ~/key_probe.py decckm ~/decckm.log\n")
+        typeIntoPopup(" clear; python3 -I ~/key_probe.py decckm ~/decckm.log\n")
         XCTAssertTrue(try screen(containing: "probe decckm ready"), "The key probe didn't start.")
         app.typeKey(.upArrow, modifierFlags: [])
         XCTAssertTrue(try screen(containing: #"b'\x1bOA'"#), "An arrow didn't reach the program as an application cursor key.")
@@ -3829,7 +3831,7 @@ final class RemuxAppUITests: XCTestCase {
         hideKeyboard()
 
         // A swipe scrolls the shell's history, and back.
-        typeIntoPopup("clear; seq 1 200\n")
+        typeIntoPopup(" clear; seq 1 200\n")
         XCTAssertTrue(try screen(containing: "199"), "seq didn't run in the popup.")
         hideKeyboard()
         let bottom = try XCTUnwrap(try numbersOnScreen().min())
@@ -3848,7 +3850,7 @@ final class RemuxAppUITests: XCTestCase {
         let composerField = app.textViews["terminal.composer.field"]
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
         composerField.tap()
-        composerField.typeText("clear; echo from-the-$((6*7))-composer")
+        composerField.typeText(" clear; echo from-the-$((6*7))-composer")
         app.buttons["terminal.composer.send"].tap()
         XCTAssertTrue(try screen(containing: "from-the-42-composer"), "The composer's message didn't reach the popup.")
         if composerField.exists { app.buttons["terminal.composer.toggle"].tap() }
@@ -3879,7 +3881,7 @@ final class RemuxAppUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
         backToSession()
         XCTAssertTrue(popup.waitForExistence(timeout: 20))
-        typeIntoPopup("clear; ls /\n")
+        typeIntoPopup(" clear; ls /\n")
         capture("f4k-popup-light-keyboard")
         hideKeyboard()
         capture("f4-popup-light")
@@ -3900,7 +3902,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(try popupGrid("back in portrait") { $0 == full })
 
         // The shell exits, the popup closes, and the panes come back with Tabs and Panes.
-        typeIntoPopup("exit\n")
+        typeIntoPopup(" exit\n")
         XCTAssertTrue(popup.waitForNonExistence(timeout: 15), "The popup stayed after its program exited.")
         hideKeyboard()
         assertNavigationHeld(false, "once the popup closed")
@@ -4050,7 +4052,7 @@ final class RemuxAppUITests: XCTestCase {
 
         waitForLiveTerminalInputReady(timeout: 10)
         app.typeText(
-            "for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r"
+            " for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r"
         )
         assertLiveTerminalScreenshotContainsRenderedContent()
 
@@ -4490,7 +4492,8 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testLiveComposerTypingPerfWhenConfigured() throws {
-        let transcript = "Profile the composer hypothesis path"
+        // It starts the submitted line, so it starts with a space, as typed commands do, to stay out of the history.
+        let transcript = " Profile the composer hypothesis path"
         // Enables the body-eval probe and its accessibility marker without
         // REMUX_UI_TESTING, which would swap in the fake UI-testing
         // transport and break the live SSH connection.
@@ -5394,8 +5397,7 @@ final class RemuxAppUITests: XCTestCase {
     /// list redraws its selection. When the keys stop it prints REMUX_<name>_D…_U…_L…_R…_SPAN… (milliseconds from the
     /// first key to the last), and REMUX_<name>_OK when `passes`, a zsh arithmetic test over d, u, l, r and span,
     /// holds. The typed command stays in the pane the harness checks, so the marker is built at run time and the
-    /// command's own text can't satisfy the check. It starts with a space, which keeps it out of a shell history that
-    /// ignores such commands, so later runs' suggestions don't fill it in while it is typed.
+    /// command's own text can't satisfy the check.
     private func arrowKeyCollector(name: String, passes: String) -> String {
         let script = [
             #"zmodload zsh/datetime"#,
@@ -5410,7 +5412,7 @@ final class RemuxAppUITests: XCTestCase {
             "print -r -- REMUX_\(name)_D${d}_U${u}_L${l}_R${r}_SPAN${span}",
             "if (( \(passes) )); then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
         ].joined(separator: "; ")
-        return " zsh -fc '\(script)'"
+        return "zsh -fc '\(script)'"
     }
 
     func testLiveTmuxPrefixEntersCopyModeWhenConfigured() throws {
@@ -7208,7 +7210,11 @@ final class RemuxAppUITests: XCTestCase {
         tapPickerButton(identifier: confirmIdentifier, fallbackLabel: confirmLabel)
     }
 
-    private func sendTerminalCommand(_ command: String) {
+    /// Types a command and Return. The live server's shell can be the developer's own, so the command starts with a
+    /// space, which a shell that ignores such commands keeps out of its history: otherwise every test command lands
+    /// there and comes back as a suggestion while later tests type. A test that recalls a command with the arrow keys
+    /// keeps it in history, as a left-out command would leave the arrows to recall one of the developer's.
+    private func sendTerminalCommand(_ command: String, keepingInHistory: Bool = false) {
         waitForLiveTerminalInputReady(timeout: 10)
 
         if !app.keyboards.firstMatch.exists {
@@ -7218,7 +7224,7 @@ final class RemuxAppUITests: XCTestCase {
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
         }
 
-        app.typeText("\(command)\n")
+        app.typeText("\(keepingInHistory ? "" : " ")\(command)\n")
     }
 
     private func hideKeyboardIfPresent() {
