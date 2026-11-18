@@ -1016,7 +1016,8 @@ enum GhosttyTerminalHardwareCommandMapping {
             return nil
         }
 
-        return .text(translated)
+        // Option with Control is Meta: ESC before the control character, as a terminal sends Ctrl+Alt+letter.
+        return .text(modifiers.contains(.alternate) ? "\u{1B}" + translated : translated)
     }
 
     static func resolveHardwarePress(
@@ -1050,8 +1051,7 @@ enum GhosttyTerminalHardwareCommandMapping {
     }
 
     private static func supportsControlTextTranslation(modifiers: UIKeyModifierFlags) -> Bool {
-        guard modifiers.contains(.control) else { return false }
-        return !modifiers.contains(.command) && !modifiers.contains(.alternate)
+        modifiers.contains(.control) && !modifiers.contains(.command)
     }
 
     private static func ghosttyModifiers(from modifiers: UIKeyModifierFlags) -> GhosttySurfaceKeyEvent.Mods {

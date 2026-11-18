@@ -480,6 +480,17 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         )
     }
 
+    func testHardwareCommandMappingSendsControlOptionLetterAsMeta() {
+        XCTAssertEqual(
+            GhosttyTerminalHardwareCommandMapping.resolveHardwareKey(
+                keyCode: .keyboardX,
+                modifiers: [.control, .alternate],
+                charactersIgnoringModifiers: "x"
+            ),
+            .text("\u{1B}\u{18}")
+        )
+    }
+
     func testHardwareCommandMappingRejectsControlTextWhenCommandIsHeld() {
         XCTAssertNil(
             GhosttyTerminalHardwareCommandMapping.resolveHardwareKey(
