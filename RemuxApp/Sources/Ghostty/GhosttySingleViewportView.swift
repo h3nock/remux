@@ -110,12 +110,13 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
 /// Shows the composite viewport in the terminal area, which clips it. Without a canvas size the viewport fills
 /// the area. With one taller than the area, as while the keyboard covers the bottom of the terminal under the
 /// keyboard pan, the viewport keeps the canvas size and moves up just far enough that the focused pane's cursor
-/// row stays above the area's bottom edge, together with the margin below the grid when the cursor is on the
-/// last row. While the pane shows scrollback above its cursor, the bottom of the canvas stays in view.
+/// row and anything drawn below it, such as an agent's footer, stay above the area's bottom edge, together with
+/// the margin below the grid when the last row is in use; but never so far that the cursor's row leaves the top.
+/// While the pane shows scrollback above its cursor, the bottom of the canvas stays in view.
 ///
-/// The move is set in this view's layout, which runs inside the keyboard's animation when the area's size
-/// follows the keyboard, so the viewport moves with the keyboard and the toolbar on it. A move for the cursor
-/// alone, as output arrives, is immediate, as a terminal scrolls.
+/// The move is set in this view's layout, run as soon as the area's size is set, so inside the keyboard's
+/// animation that sets it: the viewport moves with the keyboard and the toolbar on it. A move for output alone,
+/// as it arrives, is immediate, as a terminal scrolls.
 private final class GhosttyCompositeViewportHostView: UIView {
     let viewport = GhosttyCompositeViewportContainerView()
     /// Set before the viewport's update, which then starts or stops following the cursor's frames.
@@ -125,7 +126,7 @@ private final class GhosttyCompositeViewportHostView: UIView {
             if (canvasSize == nil) != (oldValue == nil) {
                 viewport.onFocusedFramePublished = canvasSize == nil ? nil : { [weak self] in
                     self?.frameRecord?.notePublishedFrame()
-                    self?.followCursor()
+                    self?.followContent()
                 }
                 frameRecord = canvasSize != nil && GhosttyRuntimeTrace.tmuxViewportEnabled
                     ? GhosttyKeyboardPanFrameRecord(host: self)
@@ -180,16 +181,16 @@ private final class GhosttyCompositeViewportHostView: UIView {
         }
     }
 
-    /// The cursor's line (`GhosttyCompositeViewportContainerView.cursorFollowLine`) in the canvas, for the frame
-    /// record.
-    var cursorLine: CGFloat? {
-        viewport.cursorFollowLine(canvasHeight: viewport.bounds.height)
+    /// The line the pan keeps in view (`GhosttyCompositeViewportContainerView.keyboardPanLines`) in the canvas,
+    /// for the frame record.
+    var panLine: CGFloat? {
+        viewport.keyboardPanLines(canvasHeight: viewport.bounds.height)?.line
     }
 
-    private func followCursor() {
+    private func followContent() {
         let pan = pan(canvasHeight: viewport.bounds.height)
         guard viewport.frame.minY != -pan else { return }
-        tracePan("cursor", pan: pan, canvasHeight: viewport.bounds.height)
+        tracePan("content", pan: pan, canvasHeight: viewport.bounds.height)
         UIView.performWithoutAnimation {
             viewport.frame.origin.y = -pan
         }
@@ -203,14 +204,16 @@ private final class GhosttyCompositeViewportHostView: UIView {
     }
 
     /// How far the canvas moves up: none while the area shows all of it; otherwise just enough that the
-    /// focused cursor's line (`GhosttyCompositeViewportContainerView.cursorFollowLine`) is above the area's
-    /// bottom edge, at most the height covered; all of it without a cursor line. On whole pixels, so the
-    /// picture is not resampled.
+    /// focused pane's cursor and what is drawn below it (`GhosttyCompositeViewportContainerView.keyboardPanLines`)
+    /// are above the area's bottom edge, but never so far that the cursor's row leaves the top, and at most the
+    /// height covered; all of it when the pane shows nothing. On whole pixels, so the picture is not resampled.
     private func pan(canvasHeight: CGFloat) -> CGFloat {
         let covered = canvasHeight - bounds.height
         guard covered > 0 else { return 0 }
-        let line = viewport.cursorFollowLine(canvasHeight: canvasHeight) ?? canvasHeight
-        let pan = min(max(line - bounds.height, 0), covered)
+        let lines = viewport.keyboardPanLines(canvasHeight: canvasHeight)
+        let line = lines?.line ?? canvasHeight
+        let limit = min(covered, lines?.cursorRoom ?? covered)
+        let pan = min(max(line - bounds.height, 0), limit)
         let scale = max(window?.screen.scale ?? UIScreen.main.scale, 1)
         return (pan * scale).rounded() / scale
     }
@@ -218,7 +221,7 @@ private final class GhosttyCompositeViewportHostView: UIView {
 
 /// The keyboard pan experiment's frame record, with REMUX_TRACE_TMUX_VIEWPORT. From each keyboard notification or
 /// change of the area's height until a second after it, it traces every display frame's on-screen positions as Core
-/// Animation shows them: the area's top and bottom, the canvas's top, the cursor's line, and the keyboard's top. It
+/// Animation shows them: the area's top and bottom, the canvas's top, the line the pan keeps in view, and the keyboard's top. It
 /// also traces each keyboard notification and each frame the focused pane publishes, so a run on a phone, which
 /// can't record its screen, can still be read frame by frame.
 @MainActor
@@ -275,7 +278,7 @@ private final class GhosttyKeyboardPanFrameRecord: NSObject {
         let windowLayer = window.layer.presentation() ?? window.layer
         let area = Self.shownFrame(of: host.layer, in: windowLayer)
         let canvas = Self.shownFrame(of: host.viewport.layer, in: windowLayer)
-        let line = host.cursorLine.map { canvas.minY + $0 }
+        let line = host.panLine.map { canvas.minY + $0 }
         let keyboard = keyboardTop(in: window.windowScene)
         GhosttyRuntimeTrace.tmuxViewport(
             "viewport.frame ca=\(Self.format(CACurrentMediaTime())) t=\(Self.format(link.timestamp)) target=\(Self.format(link.targetTimestamp)) areaTop=\(Self.format(area.minY)) areaBottom=\(Self.format(area.maxY)) canvasTop=\(Self.format(canvas.minY)) line=\(line.map { Self.format($0) } ?? "-") keyboardTop=\(keyboard.map { Self.format($0) } ?? "-") modelArea=\(Self.format(host.bounds.height)) modelPan=\(Self.format(-host.viewport.frame.minY)) published=\(publishedFrames)"
@@ -637,13 +640,15 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         }
     }
 
-    /// The line the keyboard pan keeps above the bottom of the area shown, in this view's coordinates for a
-    /// canvas `canvasHeight` high: the bottom of the input surface's cursor row, lowered by the margin between
-    /// the grid's last row and the canvas's bottom, so a cursor on the last row keeps the whole canvas in view.
-    /// Nil without a cursor on screen, as while the pane shows scrollback above it.
-    func cursorFollowLine(canvasHeight: CGFloat) -> CGFloat? {
+    /// What the keyboard pan keeps in view of the input surface, in this view's coordinates for a canvas
+    /// `canvasHeight` high. `line` is the bottom of the cursor's row or of the lowest row with anything drawn on it,
+    /// whichever is lower, lowered by the margin between the grid's last row and the canvas's bottom, so a last
+    /// row in use keeps the whole canvas in view. `cursorRoom` is how far the cursor's row is below the grid's
+    /// top, which a move up must not exceed, so the cursor's row stays in view; nil without a cursor on screen, as
+    /// while the pane shows scrollback above it. Nil when the pane shows nothing.
+    func keyboardPanLines(canvasHeight: CGFloat) -> (line: CGFloat, cursorRoom: CGFloat?)? {
         guard let surface = inputSurface,
-              let cursor = surface.controlSurface.cursorGeometry(),
+              let geometry = surface.controlSurface.contentGeometry(),
               let grid = projection.windowGrid,
               let cell = projection.cellMetrics,
               let layout = GhosttyCompositeViewportLayout(
@@ -652,8 +657,11 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                   cellMetrics: cell
               )
         else { return nil }
+        let cursor = geometry.cursor.map { surface.view.convert($0, to: self) }
+        let contentBottom = geometry.contentBottom.map { surface.view.convert($0, to: self) }
+        guard let lowest = [cursor, contentBottom].compactMap({ $0?.maxY }).max() else { return nil }
         let bottomMargin = max(canvasHeight - layout.origin.y - layout.canvasSize.height, 0)
-        return surface.view.convert(cursor, to: self).maxY + bottomMargin
+        return (lowest + bottomMargin, cursor.map { max($0.minY - layout.origin.y, 0) })
     }
 
     private func retire(container: GhosttyPaneScrollContainerView) {

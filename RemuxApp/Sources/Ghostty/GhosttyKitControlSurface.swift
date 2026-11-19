@@ -373,6 +373,19 @@ final class GhosttyKitControlSurface {
         return ghosttyTerminalCellFrame(geometry, scaleFactor: scaleFactor)
     }
 
+    /// The cursor's cell and the first cell of the lowest row with anything drawn on it, read together; each is
+    /// nil while not in view.
+    func contentGeometry() -> (cursor: CGRect?, contentBottom: CGRect?)? {
+        guard !invalidated else { return nil }
+        var geometry = ghostty_terminal_surface_content_geometry_s()
+        let result = ghostty_terminal_surface_content_geometry(handle, &geometry)
+        guard report(result) else { return nil }
+        return (
+            ghosttyTerminalCellFrame(geometry.cursor, scaleFactor: scaleFactor),
+            ghosttyTerminalCellFrame(geometry.content_bottom, scaleFactor: scaleFactor)
+        )
+    }
+
     /// Draws an input method's unfinished text over the cursor; nil clears it. It is display
     /// only: nothing reaches the terminal.
     @discardableResult
