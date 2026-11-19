@@ -264,3 +264,9 @@ html { scroll-padding-top: var(--bar); }
   -webkit-mask-composite: source-in;
   mask: var(--shape) 0 0 / 100% 100% no-repeat, linear-gradient(transparent, #000 22px);
   mask-composite: intersect; }
+
+/* setup's steps are a real sequence, numbered in the top line's key boxes */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: calc(var(--lh) / 2); counter-reset: step; }
+.steps li { display: grid; grid-template-columns: 4ch minmax(0, 1fr); counter-increment: step; }
+.steps li::before { content: counter(step); justify-self: start; align-self: start; padding: 0 .6ch; font-weight: 500;
+  background: var(--sel); }

@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap">
-  <link rel="stylesheet" href="./styles.css?v=20261118">
+  <link rel="stylesheet" href="./styles.css?v=20261119">
   <script src="./script.js?v=20261119" defer></script>
 </head>
 <body>
@@ -191,10 +191,12 @@
         <div class="body">
           <div class="copy">
             <p>Remux works with the tmux or herdr you already have on your server. It connects directly over SSH, without a relay or an account.</p>
-            <ul role="list">
-              <li><span>Sign in with a password, a private key, Tailscale SSH or a Secure Enclave key that never leaves your iPhone.</span></li>
-              <li><span>Remux doesn't collect analytics or crash reports.</span></li>
-            </ul>
+            <ol class="steps" role="list">
+              <li><span><b>Add your server:</b> its address and your user name.</span></li>
+              <li><span><b>Sign in</b> with a password, a private key, Tailscale SSH or a Secure Enclave key that never leaves your iPhone.</span></li>
+              <li><span><b>Pick a session.</b> Remux lists the sessions on your server, or starts a new one.</span></li>
+            </ol>
+            <p>Remux doesn't collect analytics or crash reports.</p>
           </div>
           <div class="strip-wrap">
             <div class="pair">
