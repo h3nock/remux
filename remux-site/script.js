@@ -46,14 +46,16 @@
   };
   const release = () => { if (picked) { picked = null; schedule(); } };
   addEventListener('popstate', release);
-  // A pick leaves its section at the top of the window, below the top line, or the page at its end. A scroll that ends
-  // anywhere else, as after dragging the scrollbar, was the reader's, and the position decides again.
+  // A pick leaves its section at the top of the window, below the top line, or, for a section that can't scroll up that
+  // far, the page at its end with the section still below the line. A scroll that ends anywhere else, as after dragging
+  // the scrollbar, was the reader's, and the position decides again.
   addEventListener('scrollend', () => {
     if (!picked) return;
     const root = document.documentElement;
-    if (innerHeight + scrollY >= root.scrollHeight - 2) return;
-    const top = parseFloat(getComputedStyle(root).scrollPaddingTop) + parseFloat(getComputedStyle(picked.target).scrollMarginTop);
-    if (Math.abs(picked.target.getBoundingClientRect().top - top) > 2) release();
+    const line = parseFloat(getComputedStyle(root).scrollPaddingTop) + parseFloat(getComputedStyle(picked.target).scrollMarginTop);
+    const top = picked.target.getBoundingClientRect().top;
+    const atEnd = innerHeight + scrollY >= root.scrollHeight - 2;
+    if (Math.abs(top - line) > 2 && !(atEnd && top > line)) release();
   });
 
   for (const section of sections) {
