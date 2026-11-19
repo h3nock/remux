@@ -38,7 +38,7 @@ Remux connects to your servers over SSH and attaches to the tmux and herdr sessi
 
 ## Install
 
-Remux is in public beta on TestFlight: [join the beta](https://testflight.apple.com/join/fHqG1ruE). It's open source under the MIT license, so you can also build it yourself.
+Remux is in public beta on TestFlight: [join the beta](https://testflight.apple.com/join/fHqG1ruE).
 
 ## Building from source
 
