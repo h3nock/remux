@@ -143,7 +143,9 @@
   };
   // the button acts on what the video is doing, so when a browser refused to start it, the first tap plays it
   toggle.addEventListener('click', () => { paused = !video.paused; sync(); });
-  new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; sync(); }, { threshold: 0.25 }).observe(video);
+  // Turning Reduce Motion on stops the loop; turning it off leaves it to the visitor.
+  reduce.addEventListener('change', () => { if (reduce.matches) { paused = true; sync(); } });
+  new IntersectionObserver(([entry]) => { visible = entry.isIntersecting && entry.intersectionRatio >= 0.25; sync(); }, { threshold: 0.25 }).observe(video);
   show();
   sync();
 })();
