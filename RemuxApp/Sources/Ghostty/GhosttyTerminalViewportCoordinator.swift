@@ -63,7 +63,16 @@ struct GhosttyTerminalViewportLiveSizeObservation: Equatable {
 /// to the server when the keyboard moves, and the terminal view slides up just far enough to keep the focused
 /// pane's cursor row in view (`GhosttyCompositeViewportHostView`).
 enum GhosttyKeyboardPanExperiment {
-    static let isEnabled = ProcessInfo.processInfo.environment["REMUX_KEYBOARD_PAN"] == "1"
+    /// On when launched with REMUX_KEYBOARD_PAN=1. A review build compiled with REMUX_KEYBOARD_PAN_ON is on
+    /// from its icon too, and off only when launched with REMUX_KEYBOARD_PAN=0.
+    static let isEnabled: Bool = {
+        let value = ProcessInfo.processInfo.environment["REMUX_KEYBOARD_PAN"]
+        #if REMUX_KEYBOARD_PAN_ON
+        return value != "0"
+        #else
+        return value == "1"
+        #endif
+    }()
 }
 
 struct GhosttyTerminalViewportCoordinator: Equatable {
