@@ -45,7 +45,9 @@
     update();
   };
   const release = () => { if (picked) { picked = null; schedule(); } };
-  addEventListener('popstate', release);
+  // The address names the pick, on load and after Back or Forward, as it does after a key.
+  const fromHash = () => sections.find((s) => s.link.getAttribute('href') === location.hash) || null;
+  addEventListener('popstate', () => { picked = fromHash(); schedule(); });
   // A pick leaves its section at the top of the window, below the top line, or, for a section that can't scroll up that
   // far, the page at its end with the section still below the line. A scroll that ends anywhere else, as after dragging
   // the scrollbar, was the reader's, and the position decides again.
@@ -72,7 +74,7 @@
   addEventListener('scroll', schedule, { passive: true });
   addEventListener('resize', schedule);
 
-  picked = sections.find((s) => s.link.getAttribute('href') === location.hash) || null;
+  picked = fromHash();
   update();
 })();
 
