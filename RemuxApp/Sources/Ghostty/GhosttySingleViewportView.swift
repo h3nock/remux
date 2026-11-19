@@ -187,8 +187,13 @@ private final class GhosttyCompositeViewportHostView: UIView {
         viewport.keyboardPanLines(canvasHeight: viewport.bounds.height)?.line
     }
 
+    /// Follows output while the keyboard stays up. Output that reaches lower moves the canvas up; output that
+    /// leaves the bottom doesn't move it back down, since rows that come and go there, such as an agent's hints
+    /// under its input, would move the whole picture a row each time. Only the cursor's row reaching the top
+    /// (as after `clear`) brings it down. The next change of the area's size starts afresh.
     private func followContent() {
-        let pan = pan(canvasHeight: viewport.bounds.height)
+        let target = panTarget(canvasHeight: viewport.bounds.height)
+        let pan = max(target.pan, min(-viewport.frame.minY, target.limit))
         guard viewport.frame.minY != -pan else { return }
         tracePan("content", pan: pan, canvasHeight: viewport.bounds.height)
         UIView.performWithoutAnimation {
@@ -208,14 +213,20 @@ private final class GhosttyCompositeViewportHostView: UIView {
     /// are above the area's bottom edge, but never so far that the cursor's row leaves the top, and at most the
     /// height covered; all of it when the pane shows nothing. On whole pixels, so the picture is not resampled.
     private func pan(canvasHeight: CGFloat) -> CGFloat {
+        panTarget(canvasHeight: canvasHeight).pan
+    }
+
+    /// The move `pan(canvasHeight:)` describes, and the most the canvas may move up at all: the height covered,
+    /// or less, so the cursor's row stays in view.
+    private func panTarget(canvasHeight: CGFloat) -> (pan: CGFloat, limit: CGFloat) {
         let covered = canvasHeight - bounds.height
-        guard covered > 0 else { return 0 }
+        guard covered > 0 else { return (0, 0) }
         let lines = viewport.keyboardPanLines(canvasHeight: canvasHeight)
         let line = lines?.line ?? canvasHeight
-        let limit = min(covered, lines?.cursorRoom ?? covered)
-        let pan = min(max(line - bounds.height, 0), limit)
         let scale = max(window?.screen.scale ?? UIScreen.main.scale, 1)
-        return (pan * scale).rounded() / scale
+        let limit = (min(covered, lines?.cursorRoom ?? covered) * scale).rounded(.down) / scale
+        let pan = (min(max(line - bounds.height, 0), limit) * scale).rounded() / scale
+        return (min(pan, limit), limit)
     }
 }
 
