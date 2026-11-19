@@ -4172,7 +4172,13 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment["REMUX_TRACE_PERF"] = "1"
         app.launchEnvironment["REMUX_KEYBOARD_PAN"] = ProcessInfo.processInfo.environment["REMUX_KEYBOARD_PAN"] ?? "0"
         launchedLiveSSHApp = true
-        app.launch()
+        // REMUX_LIVE_KEYBOARD_PAN_ATTACH=1: Instruments launched the app, with this environment and without the traces,
+        // so its profile has the app's markers; the test drives that process instead of relaunching it.
+        if environment["REMUX_LIVE_KEYBOARD_PAN_ATTACH"] == "1" {
+            app.activate()
+        } else {
+            app.launch()
+        }
 
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60, expectedHostKey: configuration.expectedHostKey)
