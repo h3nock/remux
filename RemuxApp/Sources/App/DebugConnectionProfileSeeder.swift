@@ -41,7 +41,8 @@ enum DebugConnectionProfileSeeder {
     /// A JSON file holding the credential, such as the live UI tests' SSH
     /// configuration. When given, it replaces REMUX_DEBUG_SERVER_PASSWORD. A
     /// private key is only read from a file, because XCTest records the app's
-    /// launch environment in every result bundle.
+    /// launch environment in every result bundle. A relative path is read from
+    /// the app's home directory, where a run on a phone copies the file.
     private struct CredentialsFile: Decodable {
         var password: String?
         var privateKeyPEM: String?
@@ -83,7 +84,10 @@ enum DebugConnectionProfileSeeder {
         let credentials = try environment[Key.credentialsFile].map {
             try JSONDecoder().decode(
                 CredentialsFile.self,
-                from: Data(contentsOf: URL(fileURLWithPath: $0))
+                from: Data(contentsOf: URL(
+                    fileURLWithPath: $0,
+                    relativeTo: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                ))
             )
         } ?? CredentialsFile(password: environment[Key.password])
         let existingProfile = try await profileRepository.loadProfile()

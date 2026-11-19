@@ -43,9 +43,10 @@ final class RemuxAppUITests: XCTestCase {
         var stepDirectory: String?
     }
 
-    /// The keyboard pan experiment's configuration, a JSON file named by REMUX_LIVE_KEYBOARD_PAN_CONFIG (pass
-    /// it to `xcodebuild test` as TEST_RUNNER_REMUX_LIVE_KEYBOARD_PAN_CONFIG). The tmux session must already
-    /// exist, on a tmux server of the harness's own; the app reads the credential from the same file.
+    /// The keyboard pan experiment's configuration: a JSON file named by REMUX_LIVE_KEYBOARD_PAN_CONFIG, or, on a
+    /// phone, which can't read the Mac's files, the JSON itself in REMUX_LIVE_KEYBOARD_PAN_CONFIG_JSON (pass either
+    /// to `xcodebuild test` with the TEST_RUNNER_ prefix). The tmux session must already exist, on a tmux server of
+    /// the harness's own. The app reads the credential from the configuration file, or from `credentialsFile`.
     private struct LiveKeyboardPanConfiguration: Decodable {
         var displayName: String?
         let host: String
@@ -59,6 +60,9 @@ final class RemuxAppUITests: XCTestCase {
         let vimFile: String
         /// A session whose pane runs an agent idle at its prompt, for the agent scenario.
         var agentSessionName: String?
+        /// The file holding the credential, for the app to read. A relative path is in the app's home directory,
+        /// where a phone run copies it; the private key stays out of the launch environment.
+        var credentialsFile: String?
     }
 
     private struct LiveSSHCleanupHarnessError: Error, CustomStringConvertible {
@@ -4088,6 +4092,33 @@ final class RemuxAppUITests: XCTestCase {
         pause(1.0)
     }
 
+    /// The keyboard pan experiment's profiling run, for Instruments on a phone: the prompt on the last row, the
+    /// keyboard hidden and shown eight times, then a short command typed with it up. The app marks each move in
+    /// Instruments; KBDPAN lines give the run's start and end in seconds since 1970.
+    func testLiveKeyboardPanProfileWhenConfigured() throws {
+        _ = try launchLiveKeyboardPanApp(agent: false)
+        let keyboard = try showLiveKeyboardPanKeyboard()
+        func pause(_ seconds: TimeInterval) {
+            RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+        }
+        pause(1.0)
+        app.typeText(" clear; seq -f 'KBD_LINE_%03g' 1 120\r")
+        pause(2.0)
+        print(String(format: "KBDPAN profile toggles start=%.3f", Date().timeIntervalSince1970))
+        for index in 0..<8 {
+            keyboard.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "profile hide \(index)"))
+            pause(1.5)
+            keyboard.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(true, label: "profile show \(index)"))
+            pause(1.5)
+        }
+        print(String(format: "KBDPAN profile toggles end=%.3f", Date().timeIntervalSince1970))
+        app.typeText(" ls\r")
+        pause(2.0)
+        print(String(format: "KBDPAN profile end=%.3f", Date().timeIntervalSince1970))
+    }
+
     /// The keyboard pan experiment's agent scenario: the agent session's pane runs an agent idle at its
     /// prompt, and the keyboard hides and shows three times; nothing is typed.
     func testLiveKeyboardPanAgentWhenConfigured() throws {
@@ -4100,13 +4131,24 @@ final class RemuxAppUITests: XCTestCase {
     /// Launches the app on the keyboard pan configuration's server, attached to its session or its agent
     /// session, with REMUX_KEYBOARD_PAN as the harness gives it.
     private func launchLiveKeyboardPanApp(agent: Bool) throws -> LiveKeyboardPanConfiguration {
-        guard let path = ProcessInfo.processInfo.environment["REMUX_LIVE_KEYBOARD_PAN_CONFIG"], !path.isEmpty else {
+        let environment = ProcessInfo.processInfo.environment
+        let configuration: LiveKeyboardPanConfiguration
+        let credentialsFile: String
+        if let json = environment["REMUX_LIVE_KEYBOARD_PAN_CONFIG_JSON"], !json.isEmpty {
+            configuration = try JSONDecoder().decode(LiveKeyboardPanConfiguration.self, from: Data(json.utf8))
+            credentialsFile = try XCTUnwrap(
+                configuration.credentialsFile,
+                "An inline keyboard pan configuration names the app's credentials file."
+            )
+        } else if let path = environment["REMUX_LIVE_KEYBOARD_PAN_CONFIG"], !path.isEmpty {
+            configuration = try JSONDecoder().decode(
+                LiveKeyboardPanConfiguration.self,
+                from: Data(contentsOf: URL(fileURLWithPath: path))
+            )
+            credentialsFile = configuration.credentialsFile ?? path
+        } else {
             throw XCTSkip("Set REMUX_LIVE_KEYBOARD_PAN_CONFIG to run the keyboard pan scenarios.")
         }
-        let configuration = try JSONDecoder().decode(
-            LiveKeyboardPanConfiguration.self,
-            from: Data(contentsOf: URL(fileURLWithPath: path))
-        )
         let sessionName: String
         if agent {
             guard let agentSessionName = configuration.agentSessionName else {
@@ -4121,7 +4163,7 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment["REMUX_DEBUG_SERVER_HOST"] = configuration.host
         app.launchEnvironment["REMUX_DEBUG_SERVER_PORT"] = configuration.port ?? "22"
         app.launchEnvironment["REMUX_DEBUG_SERVER_USERNAME"] = configuration.username
-        app.launchEnvironment["REMUX_DEBUG_CREDENTIALS_FILE"] = path
+        app.launchEnvironment["REMUX_DEBUG_CREDENTIALS_FILE"] = credentialsFile
         app.launchEnvironment["REMUX_DEBUG_TMUX_SESSION"] = sessionName
         app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = configuration.tmuxExecutablePath
         app.launchEnvironment["REMUX_DEBUG_HERDR_EXECUTABLE_PATH"] = "/nonexistent/herdr"
