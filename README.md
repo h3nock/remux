@@ -8,7 +8,7 @@
   </a>
 </p>
 
-https://github.com/user-attachments/assets/e7482322-15f8-4f7d-aca4-83368fddd07c
+https://github.com/user-attachments/assets/b1c690b0-6306-4f1f-9d54-adb57e296e16
 
 <p align="center">
   <a href="https://testflight.apple.com/join/fHqG1ruE">Join the beta on TestFlight</a>
