@@ -110,6 +110,9 @@ def main():
                                'phone on a 3x display)')
     render_parser.add_argument('--poster', type=float, default=0.0, help='the poster frame, in seconds into the cut '
                                '(default 0, the first frame, so playing it starts without a jump)')
+    render_parser.add_argument('--loop-fade', type=float, default=0.0, metavar='SECONDS',
+                               help='for a video that loops: its last SECONDS dissolve into its first frame, so it '
+                                    'starts over without a jump (default 0: no dissolve)')
     render_parser.add_argument('--name', help="the video's file name (default: the take's)")
     render_parser.add_argument('--out', type=Path, help="where the files go (default: the take's site/ folder)")
     args = parser.parse_args()
@@ -373,7 +376,10 @@ def render(args):
                                   '-an', *codec, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out / file)],
                                  stdin=subprocess.PIPE, stderr=subprocess.DEVNULL if 'libsvtav1' in codec else None)
                 for file, codec in encodings.items()]
-    frame, index = None, -1
+    fade_slots = min(slots - 1, round(args.loop_fade * 60))
+    if fade_slots:
+        import numpy
+    frame, index, opening = None, -1, None
     for slot, due in enumerate(dues):
         while index + 1 < len(times) and (frame is None or times[index + 1] <= due):
             index += 1
@@ -383,8 +389,18 @@ def render(args):
                 for encoder in encoders:
                     encoder.kill()
                 sys.exit(f'decoding the recording stopped at frame {index} of {len(times)}')
+        shown = frame
+        if fade_slots:
+            if opening is None:
+                opening = numpy.frombuffer(frame, numpy.uint8).astype(numpy.float32)
+            fading = slot - (slots - fade_slots) + 1
+            if fading > 0:
+                # The mix leans toward the opening frame step by step; the loop's next frame is the opening itself.
+                share = fading / (fade_slots + 1)
+                shown = (numpy.frombuffer(frame, numpy.uint8) * (1 - share) + opening * share).round().astype(
+                    numpy.uint8).tobytes()
         for encoder in encoders:
-            encoder.stdin.write(frame)
+            encoder.stdin.write(shown)
         if slot == poster_slot:
             ffmpeg(*raw, '-i', '-', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', '-compression_level', '6',
                    str(out / f'{name}-poster.webp'), input=frame)
