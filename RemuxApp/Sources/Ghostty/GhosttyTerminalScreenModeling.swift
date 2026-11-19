@@ -300,6 +300,10 @@ protocol GhosttyTerminalSelectionModeling: ObservableObject {
     ) -> GhosttyPaneSelectionSheetTopologyProjection
     /// The windows of `group`, or of the group on screen, for a backend that groups its top-levels.
     func windowSelectionSheetRenderProjection(group: UUID?) -> GhosttyWindowSelectionSheetRenderProjection
+    /// The windows of the group on screen as a tab row shows them: names, positions, the one selected and each one's
+    /// agent. A tab row draws with every change to the screen, so it leaves out what the window sheet adds: what each
+    /// window holds, and how to close or rename it.
+    func tabRowWindows() -> [GhosttyWindowSelectionSheetRenderProjection.Window]
     func paneSelectionSheetRenderProjection(
         topLevelID: UUID
     ) -> GhosttyPaneSelectionSheetRenderProjection

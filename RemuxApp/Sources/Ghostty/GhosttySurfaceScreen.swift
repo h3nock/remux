@@ -2250,7 +2250,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func wideWindowTabRow(_ screenProjection: GhosttyTerminalScreenPresentationProjection) -> some View {
         if homeIsInSidebar {
             TerminalTabRow(
-                windows: model.windowSelectionSheetRenderProjection(group: nil).windows,
+                windows: model.tabRowWindows(),
                 noun: model.topLevelNoun,
                 theme: presentation.terminalTheme,
                 isEnabled: !composer.isSubmitting && screenProjection.viewport.popup == nil,

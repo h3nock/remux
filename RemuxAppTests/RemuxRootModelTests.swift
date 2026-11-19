@@ -3922,6 +3922,60 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNil(credential)
     }
 
+    /// A wide iPad window shows Home beside the session, so a session can be deleted there while another is shown;
+    /// the one shown stays.
+    func testDeleteAnotherWorkspaceKeepsTheShownSession() async throws {
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder"
+        )
+        let base = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let logs = SavedWorkspace(serverID: server.id, sessionName: "logs")
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [base, logs],
+            terminalScreenModelFactory: RecordingTerminalScreenModelFactory().factory
+        )
+        try await harness.credentialHelper.savePassword("secret", for: server.id)
+
+        await harness.model.load()
+        await harness.model.connect(to: base.id)
+        await harness.model.connect(to: logs.id)
+        XCTAssertEqual(harness.model.state, .terminal(logs.id))
+
+        await harness.model.deleteWorkspace(base.id)
+
+        XCTAssertEqual(harness.model.state, .terminal(logs.id))
+        XCTAssertEqual(harness.model.activeSessions.map(\.id), [logs.id])
+    }
+
+    func testDeleteAnotherServerKeepsTheShownSession() async throws {
+        let other = makePasswordBackedServer(displayName: "Other Host", host: "other.example.test")
+        let shown = makePasswordBackedServer()
+        let otherWorkspace = SavedWorkspace(serverID: other.server.id, sessionName: "base")
+        let shownWorkspace = SavedWorkspace(serverID: shown.server.id, sessionName: "api")
+        let harness = makeHarness(
+            servers: [other.server, shown.server],
+            workspaces: [otherWorkspace, shownWorkspace],
+            identities: [other.identity, shown.identity],
+            terminalScreenModelFactory: RecordingTerminalScreenModelFactory().factory
+        )
+        for identity in [other.identity, shown.identity] {
+            try await harness.credentialStore.saveCredential(.password("secret"), identityID: identity.id)
+        }
+
+        await harness.model.load()
+        await harness.model.connect(to: otherWorkspace.id)
+        await harness.model.connect(to: shownWorkspace.id)
+        XCTAssertEqual(harness.model.state, .terminal(shownWorkspace.id))
+
+        await harness.model.deleteServer(other.server.id)
+
+        XCTAssertEqual(harness.model.state, .terminal(shownWorkspace.id))
+        XCTAssertEqual(harness.model.activeSessions.map(\.id), [shownWorkspace.id])
+    }
+
     func testFailedSettingsSaveKeepsActiveTerminalAndPreviousSettings() async throws {
         let server = SavedServer(
             displayName: "Build Host",

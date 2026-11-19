@@ -850,6 +850,10 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     var topLevelNoun: GhosttyTopLevelNoun { .window }
 
     /// The windows, each asking before it closes with its panes.
+    func tabRowWindows() -> [GhosttyWindowSelectionSheetRenderProjection.Window] {
+        GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(snapshot: topologySnapshot).windows
+    }
+
     func windowSelectionSheetRenderProjection(group: UUID?) -> GhosttyWindowSelectionSheetRenderProjection {
         let projection = GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(
             snapshot: topologySnapshot

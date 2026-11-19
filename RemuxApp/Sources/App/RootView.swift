@@ -96,6 +96,37 @@ private struct RemuxRootContentView: View {
 /// The setup the connection setup sheet keeps showing while it closes, after
 /// the model has let go of it. A reference, so keeping it current on every
 /// draft change doesn't redraw the shell.
+extension EnvironmentValues {
+    /// Whether Home opens its pages (Settings, Agents, a server) as sheets, as it does as a wide iPad window's sidebar,
+    /// where a page opened from the sidebar would take the terminal's place.
+    @Entry var homeOpensPagesAsSheets = false
+}
+
+/// A page Home opens: pushed onto Home's own stack, or, when Home is a sidebar, a sheet over the terminal.
+private struct HomePage<Page: View>: ViewModifier {
+    let asSheet: Bool
+    @Binding var isPresented: Bool
+    @ViewBuilder let page: () -> Page
+
+    func body(content: Content) -> some View {
+        if asSheet {
+            content.sheet(isPresented: $isPresented) {
+                NavigationStack {
+                    page()
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { isPresented = false }
+                                    .accessibilityIdentifier("library.page.done")
+                            }
+                        }
+                }
+            }
+        } else {
+            content.navigationDestination(isPresented: $isPresented, destination: page)
+        }
+    }
+}
+
 /// The title of a wide iPad window's terminal: the session shown, with its server under it, as Home's rows name it.
 private struct ShownSessionTitle: ViewModifier {
     let session: ActiveTerminalSession?
@@ -172,24 +203,29 @@ private struct RemuxWorkspaceShell: View {
                 preferredCompactColumn: $compactColumn
             ) {
                 if isWideWindow {
+                    // A page opened from a split view's sidebar would take the terminal's place, so Home opens its
+                    // pages as sheets over it.
                     libraryStack
+                        .environment(\.homeOpensPagesAsSheets, true)
                 }
             } detail: {
                 ZStack {
                     activeTerminalLayer
-                    if isWideWindow {
-                        if selectedActiveSession == nil {
-                            noSessionShown
-                        }
-                    } else {
-                        // As on the phone, Home covers the terminal, which stays in the window behind it. A collapsed
-                        // split view's own sidebar would take the terminal out of the window instead.
-                        routeLayer
+                    if isWideWindow, selectedActiveSession == nil {
+                        noSessionShown
                     }
                 }
                 .toolbar(isWideWindow ? .automatic : .hidden, for: .navigationBar)
                 .modifier(ShownSessionTitle(session: isWideWindow ? selectedActiveSession : nil))
                 .environment(\.terminalHomeIsInSidebar, isWideWindow)
+            }
+            .overlay {
+                // Narrow, Home covers the terminal as on the phone, which stays in the window behind it; a collapsed
+                // split view's own sidebar would take the terminal out of the window instead. Home is laid over the
+                // split view, not inside its detail, so it keeps a navigation bar of its own.
+                if !isWideWindow {
+                    routeLayer
+                }
             }
             .onChange(of: compactColumn) { _, column in
                 if column != .detail { compactColumn = .detail }
@@ -1215,7 +1251,10 @@ private struct ConnectionLibraryView: View {
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
 
+    @Environment(\.homeOpensPagesAsSheets) private var opensPagesAsSheets
     @State private var showsAgents = false
+    /// Settings as a sheet; pushed, it opens from its own link.
+    @State private var showsSettings = false
     @State private var showsAllConnectedSessions = false
     @State private var showsAllRecentSessions = false
     @State private var serverEditMode: EditMode = .inactive
@@ -1275,15 +1314,25 @@ private struct ConnectionLibraryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                NavigationLink {
-                    TerminalSettingsView(
-                        settings: $terminalSettings,
-                        shortcutStore: shortcutStore
-                    )
-                } label: {
-                    Image(systemName: "gearshape")
+                if opensPagesAsSheets {
+                    Button {
+                        showsSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                    .accessibilityIdentifier("library.settings")
+                } else {
+                    NavigationLink {
+                        TerminalSettingsView(
+                            settings: $terminalSettings,
+                            shortcutStore: shortcutStore
+                        )
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityIdentifier("library.settings")
                 }
-                .accessibilityIdentifier("library.settings")
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -1294,10 +1343,16 @@ private struct ConnectionLibraryView: View {
                 .accessibilityIdentifier("library.add-server")
             }
         }
-        .navigationDestination(isPresented: $showsAgents) {
+        .modifier(HomePage(asSheet: opensPagesAsSheets, isPresented: $showsSettings) {
+            TerminalSettingsView(
+                settings: $terminalSettings,
+                shortcutStore: shortcutStore
+            )
+        })
+        .modifier(HomePage(asSheet: opensPagesAsSheets, isPresented: $showsAgents) {
             SessionAgentsList(projection: agents, onOpen: openAgent)
-        }
-        .navigationDestination(isPresented: presentedServerIsActive) {
+        })
+        .modifier(HomePage(asSheet: opensPagesAsSheets, isPresented: presentedServerIsActive) {
             if let presentedServerID,
                let server = snapshot.server(id: presentedServerID) {
                 serverDetail(
@@ -1305,7 +1360,7 @@ private struct ConnectionLibraryView: View {
                     availableSessions: sessionProjection.availableSessions(on: server.id)
                 )
             }
-        }
+        })
     }
 
     private var presentedServerIsActive: Binding<Bool> {
@@ -1343,6 +1398,8 @@ private struct ConnectionLibraryView: View {
 
     private func openAgent(_ session: SessionAgentsProjection.Session, _ agent: HerdrAgentPresentation.Agent) {
         onOpenHerdrAgent(session.id, agent.paneID, session.bootID)
+        // As a sheet over the terminal, the list makes way for the agent's pane.
+        if opensPagesAsSheets { showsAgents = false }
     }
 
     @ViewBuilder
@@ -1453,19 +1510,36 @@ private struct ConnectionLibraryView: View {
                     discoveries[server.id]?.unavailableReason(of: $0.locator)
                 }
 
-                NavigationLink {
-                    serverDetail(
-                        for: server,
-                        availableSessions: sessionProjection.availableSessions(on: server.id)
-                    )
-                } label: {
-                    ServerLibraryRow(
-                        server: server,
-                        sessionCount: workspaces.count,
-                        connectedSessionCount: connectedSessionCount(for: server.id),
-                        latestWorkspace: latest
-                    )
-                    .padding(.vertical, 4)
+                let row = ServerLibraryRow(
+                    server: server,
+                    sessionCount: workspaces.count,
+                    connectedSessionCount: connectedSessionCount(for: server.id),
+                    latestWorkspace: latest
+                )
+                .padding(.vertical, 4)
+                Group {
+                    if opensPagesAsSheets {
+                        Button {
+                            presentedServerID = server.id
+                        } label: {
+                            HStack {
+                                row
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .foregroundStyle(.primary)
+                    } else {
+                        NavigationLink {
+                            serverDetail(
+                                for: server,
+                                availableSessions: sessionProjection.availableSessions(on: server.id)
+                            )
+                        } label: {
+                            row
+                        }
+                    }
                 }
                 .accessibilityIdentifier("library.server.row")
                 .contextMenu {

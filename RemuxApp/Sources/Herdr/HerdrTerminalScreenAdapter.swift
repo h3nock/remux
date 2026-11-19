@@ -768,6 +768,11 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     /// The tabs of the workspace `group` names, or of the workspace on screen, with the workspaces most
     /// recent first, each with its most urgent agent. Each tab is a row saying what it holds.
+    /// The tabs of the workspace on screen.
+    func tabRowWindows() -> [GhosttyWindowSelectionSheetRenderProjection.Window] {
+        GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(snapshot: topologySnapshot).windows
+    }
+
     func windowSelectionSheetRenderProjection(group: UUID?) -> GhosttyWindowSelectionSheetRenderProjection {
         let topology = topologySnapshot
         let onScreen = GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(snapshot: topology)

@@ -2018,7 +2018,7 @@ final class RemuxRootModel: ObservableObject {
             stopTerminalRuntimes(serverID: id)
             RemuxActiveSessionCollection.removeServer(id, from: &activeSessions)
             updateLibrary(snapshot)
-            state = .library
+            showLibraryUnlessShownSessionRemains()
             scheduleLibrarySSHPrewarm(snapshot: library)
         } catch {
             transitionToFailed(error)
@@ -2032,11 +2032,20 @@ final class RemuxRootModel: ObservableObject {
             stopTerminalRuntimes(workspaceID: id)
             RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
             updateLibrary(try await dependencies.profileRepository.loadSnapshot())
-            state = .library
+            showLibraryUnlessShownSessionRemains()
             scheduleLibrarySSHPrewarm(snapshot: library)
         } catch {
             transitionToFailed(error)
         }
+    }
+
+    /// After a deletion, the session on screen stays unless it went with what was deleted. Home deletes, and a wide
+    /// iPad window shows Home beside a session, so the session shown need not be the one deleted.
+    private func showLibraryUnlessShownSessionRemains() {
+        if case .terminal(let id) = state, RemuxActiveSessionCollection.containsWorkspace(id, in: activeSessions) {
+            return
+        }
+        state = .library
     }
 
     func updateTerminalSettings(_ mutation: (inout TerminalSettings) -> Void) async {
