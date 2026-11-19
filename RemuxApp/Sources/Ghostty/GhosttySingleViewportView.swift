@@ -148,6 +148,23 @@ private final class GhosttyCompositeViewportHostView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    // The area's size is set inside the keyboard's animation, but on a phone the layout pass it asks for runs
+    // later, outside it, where the canvas's move would be a jump. So the canvas is laid out at once, inside the
+    // animation the size change runs in, as UIKit resizes autoresizing subviews.
+    override var frame: CGRect {
+        didSet { layOutForSizeChange(from: oldValue.size, to: frame.size) }
+    }
+
+    override var bounds: CGRect {
+        didSet { layOutForSizeChange(from: oldValue.size, to: bounds.size) }
+    }
+
+    private func layOutForSizeChange(from oldSize: CGSize, to newSize: CGSize) {
+        guard canvasSize != nil, oldSize != newSize else { return }
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let size = canvasSize.map {
