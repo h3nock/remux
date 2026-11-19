@@ -124,12 +124,18 @@ private final class GhosttyCompositeViewportHostView: UIView {
             guard canvasSize != oldValue else { return }
             if (canvasSize == nil) != (oldValue == nil) {
                 viewport.onFocusedFramePublished = canvasSize == nil ? nil : { [weak self] in
+                    self?.frameRecord?.notePublishedFrame()
                     self?.followCursor()
                 }
+                frameRecord = canvasSize != nil && GhosttyRuntimeTrace.tmuxViewportEnabled
+                    ? GhosttyKeyboardPanFrameRecord(host: self)
+                    : nil
             }
             setNeedsLayout()
         }
     }
+    private var frameRecord: GhosttyKeyboardPanFrameRecord?
+    private var lastLaidOutHeight: CGFloat?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -151,6 +157,16 @@ private final class GhosttyCompositeViewportHostView: UIView {
         let pan = pan(canvasHeight: size.height)
         tracePan("layout", pan: pan, canvasHeight: size.height)
         viewport.frame = CGRect(origin: CGPoint(x: 0, y: -pan), size: size)
+        if lastLaidOutHeight != bounds.height {
+            lastLaidOutHeight = bounds.height
+            frameRecord?.record()
+        }
+    }
+
+    /// The cursor's line (`GhosttyCompositeViewportContainerView.cursorFollowLine`) in the canvas, for the frame
+    /// record.
+    var cursorLine: CGFloat? {
+        viewport.cursorFollowLine(canvasHeight: viewport.bounds.height)
     }
 
     private func followCursor() {
@@ -165,7 +181,7 @@ private final class GhosttyCompositeViewportHostView: UIView {
     private func tracePan(_ reason: String, pan: CGFloat, canvasHeight: CGFloat) {
         guard GhosttyRuntimeTrace.tmuxViewportEnabled, canvasSize != nil else { return }
         GhosttyRuntimeTrace.tmuxViewport(
-            "viewport.pan reason=\(reason) area=\(bounds.height) canvas=\(canvasHeight) pan=\(pan) previous=\(-viewport.frame.minY) animation=\(UIView.inheritedAnimationDuration)"
+            "viewport.pan reason=\(reason) ca=\(String(format: "%.4f", CACurrentMediaTime())) area=\(bounds.height) canvas=\(canvasHeight) pan=\(pan) previous=\(-viewport.frame.minY) animation=\(UIView.inheritedAnimationDuration)"
         )
     }
 
@@ -181,6 +197,101 @@ private final class GhosttyCompositeViewportHostView: UIView {
         let scale = max(window?.screen.scale ?? UIScreen.main.scale, 1)
         return (pan * scale).rounded() / scale
     }
+}
+
+/// The keyboard pan experiment's frame record, with REMUX_TRACE_TMUX_VIEWPORT. From each keyboard notification or
+/// change of the area's height until a second after it, it traces every display frame's on-screen positions as Core
+/// Animation shows them: the area's top and bottom, the canvas's top, the cursor's line, and the keyboard's top. It
+/// also traces each keyboard notification and each frame the focused pane publishes, so a run on a phone, which
+/// can't record its screen, can still be read frame by frame.
+@MainActor
+private final class GhosttyKeyboardPanFrameRecord: NSObject {
+    private weak var host: GhosttyCompositeViewportHostView?
+    private var displayLink: CADisplayLink?
+    private var recordsUntil: CFTimeInterval = 0
+    private weak var keyboardView: UIView?
+    private var publishedFrames = 0
+
+    init(host: GhosttyCompositeViewportHostView) {
+        self.host = host
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+    }
+
+    func record() {
+        recordsUntil = CACurrentMediaTime() + 1.0
+        guard displayLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(displayFrame(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    func notePublishedFrame() {
+        guard displayLink != nil else { return }
+        publishedFrames += 1
+    }
+
+    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+        let info = notification.userInfo ?? [:]
+        let begin = (info[UIResponder.keyboardFrameBeginUserInfoKey] as? NSValue)?.cgRectValue ?? .null
+        let end = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .null
+        let duration = (info[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? -1
+        let curve = (info[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.intValue ?? -1
+        GhosttyRuntimeTrace.tmuxViewport(
+            "viewport.kbd ca=\(Self.format(CACurrentMediaTime())) begin=\(Self.format(begin.minY)) end=\(Self.format(end.minY)) height=\(Self.format(end.height)) duration=\(duration) curve=\(curve) inherited=\(UIView.inheritedAnimationDuration)"
+        )
+        record()
+    }
+
+    @objc private func displayFrame(_ link: CADisplayLink) {
+        guard let host, let window = host.window, link.timestamp < recordsUntil else {
+            link.invalidate()
+            displayLink = nil
+            return
+        }
+        let windowLayer = window.layer.presentation() ?? window.layer
+        let area = Self.shownFrame(of: host.layer, in: windowLayer)
+        let canvas = Self.shownFrame(of: host.viewport.layer, in: windowLayer)
+        let line = host.cursorLine.map { canvas.minY + $0 }
+        let keyboard = keyboardTop(in: window.windowScene)
+        GhosttyRuntimeTrace.tmuxViewport(
+            "viewport.frame ca=\(Self.format(CACurrentMediaTime())) t=\(Self.format(link.timestamp)) target=\(Self.format(link.targetTimestamp)) areaTop=\(Self.format(area.minY)) areaBottom=\(Self.format(area.maxY)) canvasTop=\(Self.format(canvas.minY)) line=\(line.map { Self.format($0) } ?? "-") keyboardTop=\(keyboard.map { Self.format($0) } ?? "-") modelArea=\(Self.format(host.bounds.height)) modelPan=\(Self.format(-host.viewport.frame.minY)) published=\(publishedFrames)"
+        )
+    }
+
+    /// A layer's frame on screen as Core Animation shows it this frame, mid-animation included.
+    private static func shownFrame(of layer: CALayer, in windowLayer: CALayer) -> CGRect {
+        let shown = layer.presentation() ?? layer
+        return shown.convert(shown.bounds, to: windowLayer)
+    }
+
+    /// The top of the keyboard's host view, as shown this frame, in its window, which covers the screen.
+    private func keyboardTop(in scene: UIWindowScene?) -> CGFloat? {
+        if keyboardView?.window == nil {
+            keyboardView = scene?.windows.lazy.compactMap { Self.view(named: "UIInputSetHostView", in: $0) }.first
+        }
+        guard let keyboardView, let window = keyboardView.window else { return nil }
+        let windowLayer = window.layer.presentation() ?? window.layer
+        let frame = Self.shownFrame(of: keyboardView.layer, in: windowLayer)
+        return frame.height > 0 ? frame.minY : nil
+    }
+
+    private static func view(named className: String, in view: UIView) -> UIView? {
+        if NSStringFromClass(type(of: view)) == className { return view }
+        for subview in view.subviews {
+            if let found = Self.view(named: className, in: subview) { return found }
+        }
+        return nil
+    }
+
+    private static func format(_ value: CGFloat) -> String { String(format: "%.2f", value) }
+    private static func format(_ value: Double) -> String { String(format: "%.4f", value) }
 }
 
 private final class GhosttyCompositeViewportContainerView: UIView,
