@@ -46,6 +46,15 @@
   };
   const release = () => { if (picked) { picked = null; schedule(); } };
   addEventListener('popstate', release);
+  // A pick leaves its section at the top of the window, below the top line, or the page at its end. A scroll that ends
+  // anywhere else, as after dragging the scrollbar, was the reader's, and the position decides again.
+  addEventListener('scrollend', () => {
+    if (!picked) return;
+    const root = document.documentElement;
+    if (innerHeight + scrollY >= root.scrollHeight - 2) return;
+    const top = parseFloat(getComputedStyle(root).scrollPaddingTop) + parseFloat(getComputedStyle(picked.target).scrollMarginTop);
+    if (Math.abs(picked.target.getBoundingClientRect().top - top) > 2) release();
+  });
 
   for (const section of sections) {
     section.link.addEventListener('click', (event) => { event.preventDefault(); go(section); });
@@ -141,11 +150,15 @@
   const sync = () => {
     if (!paused && visible) video.play().catch(show); else video.pause();
   };
-  // the button acts on what the video is doing, so when a browser refused to start it, the first tap plays it
-  toggle.addEventListener('click', () => { paused = !video.paused; sync(); });
+  // The button acts on what the video is doing, so the first tap plays it after a browser refused to, and it plays
+  // or pauses wherever the video is on the page; scrolling the video away still pauses it.
+  toggle.addEventListener('click', () => {
+    paused = !video.paused;
+    if (paused) video.pause(); else video.play().catch(show);
+  });
   // Turning Reduce Motion on stops the loop; turning it off leaves it to the visitor.
   reduce.addEventListener('change', () => { if (reduce.matches) { paused = true; sync(); } });
-  new IntersectionObserver(([entry]) => { visible = entry.isIntersecting && entry.intersectionRatio >= 0.25; sync(); }, { threshold: 0.25 }).observe(video);
+  new IntersectionObserver(([entry]) => { visible = entry.isIntersecting && entry.intersectionRatio >= 0.25; sync(); }, { threshold: [0, 0.25] }).observe(video);
   show();
   sync();
 })();
