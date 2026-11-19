@@ -357,10 +357,13 @@ def render(args):
                                 '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-'], stdout=subprocess.PIPE)
     # Two encodings of the same frames: AV1 for the browsers that play it, at the same quality in well under half the
     # size, and H.264 for the rest. On five seconds of terminal scrolling at 900 px, against a lossless copy: AV1 CRF
-    # 32 46 dB at 2.0 Mbit/s; H.264 CRF 18 tuned for flat screens 44 dB at 5.5 Mbit/s (CRF 20, 41 dB at 4.8).
+    # 32 46 dB at 2.0 Mbit/s; H.264 CRF 18 tuned for flat screens 44 dB at 5.5 Mbit/s (CRF 20, 41 dB at 4.8). H.264 is
+    # capped at 6 Mbit/s over a 24 Mbit buffer: dense text spiked to 13 Mbit/s, and the cap takes a 51 s cut from 9.2
+    # to 8.6 MB with its densest frames unchanged to the eye (worst frame SSIM 0.994 against no cap). A 4 Mbit/s cap
+    # (6.7 MB) smeared small text in dense screens while they moved.
     encodings = {
         f'{name}-av1.mp4': ['-c:v', 'libsvtav1', '-preset', '6', '-crf', '32', '-svtav1-params', 'enable-stat-report=0'],
-        f'{name}.mp4': ['-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-tune', 'animation'],
+        f'{name}.mp4': ['-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-tune', 'animation', '-maxrate', '6M', '-bufsize', '24M'],
     }
     encoders = [subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', *raw, '-r', '60', '-i', '-',
                                   # The recorder tags its video Display P3, but the pixels are the screen's sRGB values
