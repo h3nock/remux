@@ -178,6 +178,12 @@ private final class GhosttyCompositeViewportHostView: UIView {
         if lastLaidOutHeight != bounds.height {
             lastLaidOutHeight = bounds.height
             frameRecord?.record()
+            if canvasSize != nil {
+                GhosttyKeyboardPanExperiment.signposter.emitEvent(
+                    "keyboard slide",
+                    "pan \(Double(pan), privacy: .public) animation \(UIView.inheritedAnimationDuration, privacy: .public)"
+                )
+            }
         }
     }
 

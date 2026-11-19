@@ -537,6 +537,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 guard shouldHandleTerminalKeyboardNotification else { return }
                 GhosttyRuntimeTrace.perf("kbd.willChangeFrame")
+                let frameEnd = ($0.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+                GhosttyKeyboardPanExperiment.signposter.emitEvent(
+                    "keyboard move",
+                    "top \(Double(frameEnd?.minY ?? -1), privacy: .public) pan \(GhosttyKeyboardPanExperiment.isEnabled, privacy: .public)"
+                )
                 updateKeyboardVisibility(with: $0)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in

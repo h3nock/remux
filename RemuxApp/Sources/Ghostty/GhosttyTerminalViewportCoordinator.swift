@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import os
 
 enum GhosttyTerminalViewportHoldReason: Hashable {
     case sheet
@@ -63,6 +64,10 @@ struct GhosttyTerminalViewportLiveSizeObservation: Equatable {
 /// to the server when the keyboard moves, and the terminal view slides up just far enough to keep the focused
 /// pane's cursor row in view (`GhosttyCompositeViewportHostView`).
 enum GhosttyKeyboardPanExperiment {
+    /// Marks each keyboard move and each slide in Instruments' Points of Interest, with the slide on or off, so a
+    /// profile taken on a phone can tell a move's frames from the rest. Free while nothing records.
+    static let signposter = OSSignposter(subsystem: "dev.remux.app", category: .pointsOfInterest)
+
     /// On when launched with REMUX_KEYBOARD_PAN=1. A review build compiled with REMUX_KEYBOARD_PAN_ON is on
     /// from its icon too, and off only when launched with REMUX_KEYBOARD_PAN=0.
     static let isEnabled: Bool = {
