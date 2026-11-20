@@ -1338,8 +1338,7 @@ final class RemuxAppUITests: XCTestCase {
         let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
         XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
         for slot in 0..<3 {
-            let start = keys[slot].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -90, dy: 0)))
+            swipeToolbarKeys(from: keys[slot], toLeft: true)
             XCTAssertTrue(waitUntilOnShownPage(keys[3]), "A swipe from key \(slot) didn't turn the page")
             XCTAssertNotEqual(keys[0].value as? String, "Armed", "A swipe from key \(slot) armed ctrl")
             swipeToolbarKeys(from: keys[4], toLeft: false)
@@ -6198,9 +6197,12 @@ final class RemuxAppUITests: XCTestCase {
         return travel
     }
 
+    /// A quick flick from the key's centre. It stops short of the screen's edge: the first key sits near it, and a
+    /// drag that runs off the screen doesn't always reach the scroll view.
     private func swipeToolbarKeys(from key: XCUIElement, toLeft: Bool) {
         let start = key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let end = start.withOffset(CGVector(dx: toLeft ? -90 : 90, dy: 0))
+        let distance = toLeft ? min(90, key.frame.midX - 8) : 90
+        let end = start.withOffset(CGVector(dx: toLeft ? -distance : distance, dy: 0))
         start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
     }
 
