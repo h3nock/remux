@@ -30,6 +30,23 @@ struct GhosttyIOSurfaceFrame: Sendable {
         return layers.count == 1 ? layers[0] : nil
     }
 
+    /// The rows GhosttyKit published with the frame this layer shows: the cursor's row and the bottom of the lowest
+    /// row holding anything, in the layer's points from its top edge; each nil when the frame has none. Nil before
+    /// the first frame. GhosttyKit sets them on the layer in the same main-thread step that sets `contents`.
+    static func publishedRows(in layer: CALayer) -> (cursor: ClosedRange<CGFloat>?, contentBottom: CGFloat?)? {
+        guard let data = layer.value(forKey: "remuxFrameRows") as? Data, data.count >= 16 else { return nil }
+        let values = data.withUnsafeBytes { raw in
+            (raw.load(fromByteOffset: 0, as: Float32.self), raw.load(fromByteOffset: 4, as: Float32.self),
+             raw.load(fromByteOffset: 8, as: Float32.self), raw.load(fromByteOffset: 12, as: UInt32.self))
+        }
+        guard values.3 != 0 else { return nil }
+        let scale = max(layer.contentsScale, 1)
+        let cursor: ClosedRange<CGFloat>? = values.0 >= 0 && values.1 > values.0
+            ? CGFloat(values.0) / scale...CGFloat(values.1) / scale
+            : nil
+        return (cursor, values.2 >= 0 ? CGFloat(values.2) / scale : nil)
+    }
+
     static func dimensions(in layer: CALayer) -> (width: Int, height: Int)? {
         guard let surface = iosurface(from: layer) else { return nil }
         return (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface))

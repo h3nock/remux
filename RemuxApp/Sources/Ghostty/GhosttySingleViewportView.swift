@@ -665,7 +665,6 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     /// while the pane shows scrollback above it. Nil when the pane shows nothing.
     func keyboardPanLines(canvasHeight: CGFloat) -> (line: CGFloat, cursorRoom: CGFloat?)? {
         guard let surface = inputSurface,
-              let geometry = surface.controlSurface.contentGeometry(),
               let grid = projection.windowGrid,
               let cell = projection.cellMetrics,
               let layout = GhosttyCompositeViewportLayout(
@@ -674,8 +673,25 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                   cellMetrics: cell
               )
         else { return nil }
-        let cursor = geometry.cursor.map { surface.view.convert($0, to: self) }
-        let contentBottom = geometry.contentBottom.map { surface.view.convert($0, to: self) }
+        // The rows of the frame on screen, published with it; REMUX_KEYBOARD_PAN_ROWS=live reads the terminal's
+        // live state instead, for comparing the two.
+        let cursor: CGRect?
+        let contentBottom: CGRect?
+        if GhosttyKeyboardPanExperiment.readsLiveRows {
+            guard let geometry = surface.controlSurface.contentGeometry() else { return nil }
+            cursor = geometry.cursor.map { surface.view.convert($0, to: self) }
+            contentBottom = geometry.contentBottom.map { surface.view.convert($0, to: self) }
+        } else {
+            guard let layer = GhosttyIOSurfaceFrame.rendererLayer(in: surface.view.layer),
+                  let rows = GhosttyIOSurfaceFrame.publishedRows(in: layer)
+            else { return nil }
+            cursor = rows.cursor.map {
+                layer.convert(CGRect(x: 0, y: $0.lowerBound, width: 1, height: $0.upperBound - $0.lowerBound), to: self.layer)
+            }
+            contentBottom = rows.contentBottom.map {
+                layer.convert(CGRect(x: 0, y: $0 - 1, width: 1, height: 1), to: self.layer)
+            }
+        }
         guard let lowest = [cursor, contentBottom].compactMap({ $0?.maxY }).max() else { return nil }
         let bottomMargin = max(canvasHeight - layout.origin.y - layout.canvasSize.height, 0)
         return (lowest + bottomMargin, cursor.map { max($0.minY - layout.origin.y, 0) })

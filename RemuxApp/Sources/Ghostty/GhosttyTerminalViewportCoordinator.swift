@@ -68,6 +68,10 @@ enum GhosttyKeyboardPanExperiment {
     /// profile taken on a phone can tell a move's frames from the rest. Free while nothing records.
     static let signposter = OSSignposter(subsystem: "dev.remux.app", category: .pointsOfInterest)
 
+    /// REMUX_KEYBOARD_PAN_ROWS=live: the slide reads the terminal's live state (`contentGeometry`) instead of the
+    /// rows GhosttyKit publishes with each frame, for comparing the two.
+    static let readsLiveRows = ProcessInfo.processInfo.environment["REMUX_KEYBOARD_PAN_ROWS"] == "live"
+
     /// On when launched with REMUX_KEYBOARD_PAN=1. A review build compiled with REMUX_KEYBOARD_PAN_ON is on
     /// from its icon too, and off only when launched with REMUX_KEYBOARD_PAN=0.
     static let isEnabled: Bool = {
