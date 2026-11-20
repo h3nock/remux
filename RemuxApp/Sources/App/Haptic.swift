@@ -116,6 +116,23 @@ enum Haptic {
         UINotificationFeedbackGenerator().notificationOccurred(.error)
     }
 
+    // MARK: - Holding a key
+
+    private static let keyHoldImpact = UIImpactFeedbackGenerator(style: .medium)
+
+    /// Readies a hold's feedback while a finger is down on a key that can be held, so it plays as the hold takes
+    /// effect rather than after the haptic engine wakes.
+    static func prepareKeyHold() {
+        guard rules.allows(.keysAndButtons) else { return }
+        keyHoldImpact.prepare()
+    }
+
+    /// A hold on a key taking effect: firmer than the key's own click at touch-down.
+    static func keyHold() {
+        guard rules.allows(.keysAndButtons) else { return }
+        keyHoldImpact.impactOccurred()
+    }
+
     // MARK: - Chrome press feedback (long-lived prepared generators)
 
     private static var keyboardImpact: UIImpactFeedbackGenerator?

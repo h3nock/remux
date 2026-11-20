@@ -1289,6 +1289,133 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "settings-shortcuts-shared-chrome")
     }
 
+    func testToolbarKeyPagesSwipeArmAndOpenShortcuts() {
+        launchSeededSimulatorTerminal()
+
+        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        XCTAssertEqual(keys.prefix(3).map { $0.label }, ["Control", "Escape", "Tab"])
+        XCTAssertTrue(isOnShownKeyPage(keys[0]))
+        XCTAssertFalse(isOnShownKeyPage(keys[3]))
+        attachScreenshot(named: "toolbar-key-pages-1-keyboard-hidden")
+
+        // A swipe that starts on a key changes page instead of pressing it.
+        swipeToolbarKeys(from: keys[1], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        XCTAssertEqual(keys.suffix(3).map { $0.label }, ["Shift-Tab", "Shift", "Alt"])
+        XCTAssertFalse(isOnShownKeyPage(keys[0]))
+        attachScreenshot(named: "toolbar-key-pages-2-keyboard-hidden")
+
+        keys[4].tap()
+        XCTAssertEqual(keys[4].value as? String, "Armed")
+        attachScreenshot(named: "toolbar-key-pages-2-shift-armed")
+        swipeToolbarKeys(from: keys[3], toLeft: false)
+        XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+        swipeToolbarKeys(from: keys[0], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        keys[4].tap()
+        XCTAssertNotEqual(keys[4].value as? String, "Armed")
+
+        // Alt brings the keyboard up, as Control does.
+        keys[5].tap()
+        XCTAssertEqual(keys[5].value as? String, "Armed")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        keys[5].tap()
+        swipeToolbarKeys(from: keys[4], toLeft: false)
+        XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+
+        // Every page's first key opens Shortcuts when held.
+        swipeToolbarKeys(from: keys[1], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+        attachScreenshot(named: "toolbar-key-pages-2-first-key-shortcuts")
+    }
+
+    /// A swipe that starts on any key of the page turns the page and presses nothing: the key's press feedback starts
+    /// at touch-down, and the swipe still belongs to the page scroll view.
+    func testToolbarSwipeFromEveryKeyTurnsPage() {
+        launchSeededSimulatorTerminal()
+        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
+        for slot in 0..<3 {
+            swipeToolbarKeys(from: keys[slot], toLeft: true)
+            XCTAssertTrue(waitUntilOnShownPage(keys[3]), "A swipe from key \(slot) didn't turn the page")
+            XCTAssertNotEqual(keys[0].value as? String, "Armed", "A swipe from key \(slot) armed ctrl")
+            swipeToolbarKeys(from: keys[4], toLeft: false)
+            XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+        }
+    }
+
+    /// A key answers anywhere in its frame, not only inside its smaller armed disc: its corners, outside the disc, arm
+    /// and disarm it.
+    func testToolbarKeyCornersOutsideTheDiscStillTap() {
+        launchSeededSimulatorTerminal()
+        let ctrl = app.buttons["terminal.toolbar-key.0"]
+        XCTAssertTrue(ctrl.waitForExistence(timeout: 5))
+        let frame = ctrl.frame
+        let inset: CGFloat = 1.5
+        XCTAssertGreaterThan(hypot(frame.width / 2 - inset, frame.height / 2 - inset), 16, "The corners aren't outside the disc")
+        let origin = ctrl.coordinate(withNormalizedOffset: .zero)
+
+        origin.withOffset(CGVector(dx: inset, dy: inset)).tap()
+        XCTAssertEqual(ctrl.value as? String, "Armed")
+        origin.withOffset(CGVector(dx: frame.width - inset, dy: frame.height - inset)).tap()
+        XCTAssertNotEqual(ctrl.value as? String, "Armed")
+    }
+
+    /// The first time the keys have a second page they glide toward it and back, or stay still under Reduce Motion
+    /// (REMUX_EXPECT_REDUCE_MOTION=1, with Reduce Motion set on the simulator beforehand).
+    func testToolbarFirstTimeGlide() {
+        let reduceMotion = ProcessInfo.processInfo.environment["REMUX_EXPECT_REDUCE_MOTION"] == "1"
+        // As on a first run: the glide hasn't played.
+        app.launchArguments = ["-terminal.toolbar.pagesGlideShown", "NO"]
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TEST_TOOLBAR_GLIDE": "1",
+                "REMUX_UI_TEST_INPUT_READY": "1",
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+                "REMUX_DEBUG_TMUX_SESSION": "ui-test",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        let session = app.descendants(matching: .any)["library.session.resume"].firstMatch
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        session.tap()
+
+        // Sampled from the tap on, with no waits, which would let the glide pass unseen; it starts once the
+        // session's keys are usable.
+        let travel = sideTravel(of: app.buttons["terminal.toolbar-key.0"], for: 6)
+        if reduceMotion {
+            XCTAssertLessThan(travel, 1, "The keys moved under Reduce Motion")
+        } else {
+            XCTAssertGreaterThan(travel, 15, "The keys didn't glide")
+        }
+    }
+
+    /// Finds how long the first key must be held before Shortcuts opens, by pressing for longer each time.
+    func testFirstKeyHoldThresholdSweep() {
+        launchSeededSimulatorTerminal()
+        let durations = ProcessInfo.processInfo.environment["REMUX_HOLD_SWEEP_FINE"] == "1"
+            ? [0.34, 0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.50]
+            : [0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70]
+        let lines = sweepFirstKeyHold(durations)
+        if durations.contains(0.30) {
+            XCTAssertTrue(lines.contains("0.30 s: no"), "a 0.3 s press opened Shortcuts")
+        }
+        XCTAssertTrue(lines.contains("0.50 s: opened"), "a 0.5 s hold didn't open Shortcuts")
+        let note = XCTAttachment(string: lines.joined(separator: "\n"))
+        note.name = "hold-sweep"
+        note.lifetime = .keepAlways
+        add(note)
+        print("HOLD_SWEEP\n" + lines.joined(separator: "\n"))
+    }
+
     func testSettingsConfigureAndResetToolbarKeys() {
         launchSimulatorApp()
         XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
@@ -1299,7 +1426,7 @@ final class RemuxAppUITests: XCTestCase {
             settingsForm.swipeUp()
         }
         XCTAssertTrue(toolbarKeys.waitForExistence(timeout: 2))
-        XCTAssertEqual(toolbarKeys.value as? String, "Control, Escape, Tab")
+        XCTAssertEqual(toolbarKeys.value as? String, "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt")
         attachScreenshot(named: "settings-toolbar-keys-row-default")
         toolbarKeys.tap()
 
@@ -1552,6 +1679,69 @@ final class RemuxAppUITests: XCTestCase {
             paneIndex: 1,
             marker: "REMUXS"
         )
+    }
+
+    /// The bytes the second key page sends, read raw in the pane: a swipe that starts on a key sends nothing, and
+    /// Shift-Tab, Alt, Shift and Alt+Return send what a terminal sends for them.
+    func testLiveToolbarKeyPagesSendTheirBytesWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("key-pages")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
+
+        // Each check reads what arrives within a few seconds in raw mode and prints a marker it builds at run
+        // time, which the harness then finds in the pane.
+        func expectBytes(_ marker: String, _ expected: String, seconds: Int = 6, then act: () -> Void) {
+            sendTerminalCommand(
+                "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); "
+                    + "tty.setraw(f); r=select.select([f],[],[],\(seconds))[0]; b=os.read(f,16) if r else b\"\"; "
+                    + "termios.tcsetattr(f,termios.TCSADRAIN,o); "
+                    + "print(\"REMUX_\(marker)_\" + (\"OK\" if b==\(expected) else \"BAD_\"+b.hex()))'"
+            )
+            // Raw mode discards what arrived before it, so the key waits until Python has had time to start.
+            RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+            act()
+            RunLoop.current.run(until: Date().addingTimeInterval(Double(seconds) + 0.5))
+            recordLiveTmuxPaneCaptureExpectation(
+                sessionName: sessionName,
+                paneIndex: 1,
+                marker: "REMUX_\(marker)_OK",
+                includingHistory: true
+            )
+        }
+
+        expectBytes("SWIPE_SENDS_NOTHING", "b\"\"") {
+            swipeToolbarKeys(from: keys[1], toLeft: true)
+            XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        }
+        expectBytes("SHIFT_TAB", "b\"\\x1b[Z\"") {
+            keys[3].tap()
+        }
+        expectBytes("ALT_B", "b\"\\x1bb\"") {
+            keys[5].tap()
+            app.typeText("b")
+        }
+        expectBytes("SHIFT_A", "b\"A\"") {
+            keys[4].tap()
+            app.typeText("a")
+        }
+        expectBytes("ALT_RETURN", "b\"\\x1b\\r\"") {
+            keys[5].tap()
+            app.typeText("\n")
+        }
+        expectBytes("HOLD_SENDS_NOTHING", "b\"\"") {
+            keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+            XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
+            app.otherElements["terminal.screen"]
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+                .tap()
+        }
     }
 
     func testLiveCustomizedToolbarKeysExecuteAndRetainSessionWhenConfigured() throws {
@@ -5961,8 +6151,76 @@ final class RemuxAppUITests: XCTestCase {
 
     private func selectToolbarKey(_ title: String) {
         let option = app.collectionViews.buttons[title].firstMatch
-        XCTAssertTrue(option.waitForExistence(timeout: 2))
+        var swipes = 0
+        while !(option.waitForExistence(timeout: 1) && option.isHittable), swipes < 3 {
+            app.collectionViews.firstMatch.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(option.isHittable)
         option.tap()
+    }
+
+    /// Presses the first key for each duration and notes whether Shortcuts opened, closing it again each time.
+    private func sweepFirstKeyHold(_ durations: [Double]) -> [String] {
+        let first = app.buttons["terminal.toolbar-key.0"]
+        var lines: [String] = []
+        for duration in durations {
+            first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: duration)
+            let opened = app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 0.8)
+            lines.append(String(format: "%.2f s: %@", duration, opened ? "opened" : "no"))
+            if opened {
+                app.otherElements["terminal.screen"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+                _ = app.buttons["terminal.shortcuts.settings"].waitForNonExistence(timeout: 2)
+            } else if first.value as? String == "Armed" {
+                first.tap()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
+        return lines
+    }
+
+    /// How far `element` moves sideways from where it first shows, sampled for `duration` seconds.
+    private func sideTravel(of element: XCUIElement, for duration: TimeInterval) -> CGFloat {
+        var rest: CGFloat?
+        var travel: CGFloat = 0
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            guard element.exists else { continue }
+            let x = element.frame.minX
+            if let rest {
+                travel = max(travel, abs(x - rest))
+            } else {
+                rest = x
+            }
+        }
+        XCTAssertNotNil(rest, "\(element) never showed")
+        return travel
+    }
+
+    /// A quick flick from the key's centre. It stops short of the screen's edge: the first key sits near it, and a
+    /// drag that runs off the screen doesn't always reach the scroll view.
+    private func swipeToolbarKeys(from key: XCUIElement, toLeft: Bool) {
+        let start = key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let distance = toLeft ? min(90, key.frame.midX - 8) : 90
+        let end = start.withOffset(CGVector(dx: toLeft ? -distance : distance, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+    }
+
+    /// XCUITest counts a key clipped by the key group as hittable, so a key is on show when its centre is
+    /// inside the group.
+    private func isOnShownKeyPage(_ key: XCUIElement) -> Bool {
+        let group = app.scrollViews["terminal.toolbar-keys"]
+        guard key.exists, group.exists else { return false }
+        return group.frame.contains(CGPoint(x: key.frame.midX, y: key.frame.midY))
+    }
+
+    private func waitUntilOnShownPage(_ key: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isOnShownKeyPage(key) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return false
     }
 
     private func launchLiveSSHAppIfConfigured(

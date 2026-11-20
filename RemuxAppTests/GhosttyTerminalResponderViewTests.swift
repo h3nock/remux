@@ -480,6 +480,17 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         )
     }
 
+    func testHardwareCommandMappingSendsControlOptionLetterAsMeta() {
+        XCTAssertEqual(
+            GhosttyTerminalHardwareCommandMapping.resolveHardwareKey(
+                keyCode: .keyboardX,
+                modifiers: [.control, .alternate],
+                charactersIgnoringModifiers: "x"
+            ),
+            .text("\u{1B}\u{18}")
+        )
+    }
+
     func testHardwareCommandMappingRejectsControlTextWhenCommandIsHeld() {
         XCTAssertNil(
             GhosttyTerminalHardwareCommandMapping.resolveHardwareKey(
@@ -820,6 +831,34 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
         XCTAssertEqual(receivedEvents.map(\.keyCode), [.arrowRight, .arrowRight])
         XCTAssertEqual(driver.feedback.state, .hidden)
+    }
+
+    @MainActor
+    func testFloatingCursorArrowsGoToTheCursorSenderNotTheKeySender() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
+        var cursorEvents: [GhosttySurfaceKeyEvent] = []
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in
+                XCTFail("The space bar's arrows went to the key sender, which applies armed modifiers")
+                return true
+            },
+            sendCursorKeyEvent: {
+                cursorEvents.append($0)
+                return true
+            }
+        )
+
+        view.beginFloatingCursor(at: .zero)
+        view.updateFloatingCursor(at: .init(x: 16, y: 0))
+        view.endFloatingCursor()
+
+        XCTAssertEqual(cursorEvents.map(\.keyCode), [.arrowRight, .arrowRight])
     }
 
     @MainActor

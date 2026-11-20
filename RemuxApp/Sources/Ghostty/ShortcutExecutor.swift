@@ -63,7 +63,7 @@ struct ShortcutExecutor {
     }
 }
 
-private extension ShortcutModifiers {
+extension ShortcutModifiers {
     var ghosttyModifiers: GhosttySurfaceKeyEvent.Mods {
         var result: GhosttySurfaceKeyEvent.Mods = []
         if contains(.control) { result.insert(.ctrl) }

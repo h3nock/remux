@@ -1,36 +1,56 @@
 import Foundation
 
 struct GhosttyModifierState: Equatable {
-    private(set) var controlArmed = false
+    /// The toolbar modifiers armed for the next key, each applied once.
+    private(set) var armed: ShortcutModifiers = []
 
     var isControlArmed: Bool {
-        controlArmed
+        armed.contains(.control)
     }
 
-    mutating func toggleControl() {
-        controlArmed.toggle()
+    mutating func toggle(_ modifier: ShortcutModifiers) {
+        armed.formSymmetricDifference(modifier)
     }
 
-    mutating func clearControl() {
-        controlArmed = false
+    mutating func clear(_ modifiers: ShortcutModifiers = [.control, .option, .shift]) {
+        armed.subtract(modifiers)
     }
 
+    /// Text that is one key takes every armed modifier: Shift capitalizes a letter, Control makes its
+    /// control character, and Alt puts ESC before it, as a terminal sends Meta. Longer text, such as an
+    /// input method's commit, goes as it is. Either way the modifiers are used up.
     mutating func apply(to text: String) -> String {
-        guard controlArmed else { return text }
-        defer { controlArmed = false }
-        return Self.controlText(for: text) ?? text
+        guard !armed.isEmpty else { return text }
+        defer { armed = [] }
+        guard text.unicodeScalars.count == 1 else { return text }
+
+        var output = text
+        if armed.contains(.shift) {
+            // A letter takes its capital when that is one character too; a digit, a symbol or ß stays as it is.
+            let capital = output.uppercased()
+            if capital.unicodeScalars.count == 1 {
+                output = capital
+            }
+        }
+        if armed.contains(.control) {
+            output = Self.controlText(for: output) ?? output
+        }
+        if armed.contains(.option) {
+            output = "\u{1B}" + output
+        }
+        return output
     }
 
     mutating func apply(to event: GhosttySurfaceKeyEvent) -> GhosttySurfaceKeyEvent {
-        guard controlArmed else { return event }
-        defer { controlArmed = false }
+        guard !armed.isEmpty else { return event }
+        defer { armed = [] }
 
         return GhosttySurfaceKeyEvent(
             action: event.action,
             keyCode: event.keyCode,
             text: event.text,
             composing: event.composing,
-            mods: event.mods.union(.ctrl),
+            mods: event.mods.union(armed.ghosttyModifiers),
             consumedMods: event.consumedMods,
             unshiftedCodepoint: event.unshiftedCodepoint
         )

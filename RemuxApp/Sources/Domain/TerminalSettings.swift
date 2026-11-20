@@ -133,8 +133,11 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
 
 enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     case control
+    case shift
+    case alt
     case escape
     case tab
+    case shiftTab
     case enter
     case backspace
     case delete
@@ -147,14 +150,25 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     case pageUp
     case pageDown
 
+    /// Control, Shift and Alt, which apply to the next key instead of sending anything.
+    static let modifierKeys = allCases.filter { $0.modifier != nil }
+    /// The keys that send themselves.
+    static let sendingKeys = allCases.filter { $0.modifier == nil }
+
     var settingsTitle: String {
         switch self {
         case .control:
             "Control"
+        case .shift:
+            "Shift"
+        case .alt:
+            "Alt"
         case .escape:
             "Escape"
         case .tab:
             "Tab"
+        case .shiftTab:
+            "Shift-Tab"
         case .enter:
             "Enter"
         case .backspace:
@@ -184,10 +198,16 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
         switch self {
         case .control:
             "ctrl"
+        case .shift:
+            "shift"
+        case .alt:
+            "alt"
         case .escape:
             "esc"
         case .tab:
             "tab"
+        case .shiftTab:
+            "⇧tab"
         case .enter:
             "enter"
         case .backspace:
@@ -213,19 +233,40 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// The modifier this key arms for the next key, or nil for a key that sends itself.
+    var modifier: ShortcutModifiers? {
+        switch self {
+        case .control:
+            .control
+        case .shift:
+            .shift
+        case .alt:
+            .option
+        default:
+            nil
+        }
+    }
+
+    /// The key this sends, or nil for a modifier.
     var shortcutKey: ShortcutKey? {
-        guard self != .control else { return nil }
-        return ShortcutKey(rawValue: rawValue)
+        switch self {
+        case .control, .shift, .alt:
+            nil
+        case .shiftTab:
+            .tab
+        default:
+            ShortcutKey(rawValue: rawValue)
+        }
+    }
+
+    /// The modifiers this key always sends with `shortcutKey`.
+    var shortcutModifiers: ShortcutModifiers {
+        self == .shiftTab ? .shift : []
     }
 }
 
-struct TerminalToolbarKeys: Equatable, Codable, Sendable {
-    static let `default` = Self(
-        first: .control,
-        second: .escape,
-        third: .tab
-    )
-
+/// Three toolbar keys shown together.
+struct TerminalToolbarKeyPage: Equatable, Codable, Sendable {
     var first: TerminalToolbarKey
     var second: TerminalToolbarKey
     var third: TerminalToolbarKey
@@ -241,9 +282,85 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
     var compactSummary: String {
         values.map(\.toolbarTitle).joined(separator: " · ")
     }
+}
 
-    var containsControl: Bool {
-        values.contains(.control)
+/// The toolbar's key pages, swiped through three keys at a time. Never empty.
+struct TerminalToolbarKeys: Equatable, Codable, Sendable {
+    static let `default` = Self(pages: [
+        TerminalToolbarKeyPage(first: .control, second: .escape, third: .tab),
+        TerminalToolbarKeyPage(first: .shiftTab, second: .shift, third: .alt),
+    ])
+
+    private(set) var pages: [TerminalToolbarKeyPage]
+
+    init(pages: [TerminalToolbarKeyPage]) {
+        self.pages = pages.isEmpty ? Self.default.pages : pages
+    }
+
+    /// A single page.
+    init(first: TerminalToolbarKey, second: TerminalToolbarKey, third: TerminalToolbarKey) {
+        self.init(pages: [TerminalToolbarKeyPage(first: first, second: second, third: third)])
+    }
+
+    subscript(page index: Int) -> TerminalToolbarKeyPage {
+        get { pages[index] }
+        set { pages[index] = newValue }
+    }
+
+    /// Every key, page by page.
+    var values: [TerminalToolbarKey] {
+        pages.flatMap(\.values)
+    }
+
+    var summary: String {
+        guard pages.count > 1 else { return pages[0].summary }
+        return pages.enumerated()
+            .map { "Page \($0.offset + 1): \($0.element.summary)" }
+            .joined(separator: ". ")
+    }
+
+    /// The first page, which the toolbar shows until it is swiped.
+    var compactSummary: String {
+        pages[0].compactSummary
+    }
+
+    /// The modifiers some key on the toolbar can arm.
+    var modifiers: ShortcutModifiers {
+        values.reduce(into: []) { modifiers, key in
+            if let modifier = key.modifier {
+                modifiers.formUnion(modifier)
+            }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pages
+    }
+
+    /// Settings from before pages hold one page's three keys; they keep those keys as the first page
+    /// and gain the default second page. A page with a key this build doesn't know is left out, so a
+    /// newer build's settings still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.pages) {
+            let pages = try container.decode([DecodedPage].self, forKey: .pages).compactMap(\.page)
+            self.init(pages: pages)
+        } else {
+            self.init(pages: [try TerminalToolbarKeyPage(from: decoder)] + Self.default.pages.dropFirst())
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(pages, forKey: .pages)
+    }
+
+    private struct DecodedPage: Decodable {
+        let page: TerminalToolbarKeyPage?
+
+        init(from decoder: Decoder) throws {
+            page = try? TerminalToolbarKeyPage(from: decoder)
+        }
     }
 }
 
@@ -265,8 +382,8 @@ struct TerminalSettings: Equatable, Codable, Sendable {
     /// or this global preference changes.
     var zoomMultipaneWindowsByDefault: Bool
 
-    /// The three configurable keys shown on the leading side of the terminal
-    /// toolbar. The first key owns the long-press shortcut-palette gesture.
+    /// The configurable key pages shown on the leading side of the terminal
+    /// toolbar. The first key of each page owns the long-press shortcut-palette gesture.
     var toolbarKeys: TerminalToolbarKeys
 
     /// Vibrate when a program rings the bell, or an agent needs the user or finishes.
