@@ -1341,7 +1341,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        isShortcutPalettePresented = false
+                        withAnimation(.easeOut(duration: 0.18)) { isShortcutPalettePresented = false }
                     }
 
                 ShortcutPalette(
@@ -1371,7 +1371,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 8)
             }
-            .transition(.opacity)
+            // Grows out of the bottom leading corner, where the first key sits, as an iOS menu grows out of the
+            // button touched.
+            .transition(.scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity))
         }
     }
 
@@ -1547,7 +1549,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func showShortcutPalette() {
         terminalInputController.clearModifiers()
-        isShortcutPalettePresented = true
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { isShortcutPalettePresented = true }
     }
 
     private func executeShortcut(_ shortcut: Shortcut) {

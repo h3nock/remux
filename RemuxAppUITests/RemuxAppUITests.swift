@@ -1364,6 +1364,24 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotEqual(ctrl.value as? String, "Armed")
     }
 
+    /// Finds how long the first key must be held before Shortcuts opens, by pressing for longer each time.
+    func testFirstKeyHoldThresholdSweep() {
+        launchSeededSimulatorTerminal()
+        let durations = ProcessInfo.processInfo.environment["REMUX_HOLD_SWEEP_FINE"] == "1"
+            ? [0.34, 0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.50]
+            : [0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70]
+        let lines = sweepFirstKeyHold(durations)
+        if durations.contains(0.30) {
+            XCTAssertTrue(lines.contains("0.30 s: no"), "a 0.3 s press opened Shortcuts")
+        }
+        XCTAssertTrue(lines.contains("0.50 s: opened"), "a 0.5 s hold didn't open Shortcuts")
+        let note = XCTAttachment(string: lines.joined(separator: "\n"))
+        note.name = "hold-sweep"
+        note.lifetime = .keepAlways
+        add(note)
+        print("HOLD_SWEEP\n" + lines.joined(separator: "\n"))
+    }
+
     func testSettingsConfigureAndResetToolbarKeys() {
         launchSimulatorApp()
         XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
@@ -6106,6 +6124,25 @@ final class RemuxAppUITests: XCTestCase {
         }
         XCTAssertTrue(option.isHittable)
         option.tap()
+    }
+
+    /// Presses the first key for each duration and notes whether Shortcuts opened, closing it again each time.
+    private func sweepFirstKeyHold(_ durations: [Double]) -> [String] {
+        let first = app.buttons["terminal.toolbar-key.0"]
+        var lines: [String] = []
+        for duration in durations {
+            first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: duration)
+            let opened = app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 0.8)
+            lines.append(String(format: "%.2f s: %@", duration, opened ? "opened" : "no"))
+            if opened {
+                app.otherElements["terminal.screen"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+                _ = app.buttons["terminal.shortcuts.settings"].waitForNonExistence(timeout: 2)
+            } else if first.value as? String == "Armed" {
+                first.tap()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
+        return lines
     }
 
     private func swipeToolbarKeys(from key: XCUIElement, toLeft: Bool) {

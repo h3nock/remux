@@ -566,6 +566,10 @@ private extension View {
 }
 
 private struct GhosttyKeyboardKeyButton: View {
+    /// How long a key is held to open Shortcuts: as long as iOS's own controls that act on a tap and open a menu on a
+    /// hold, such as a button with a menu.
+    static let holdDuration = 0.4
+
     let title: String
     let accessibilityLabel: String
     let accessibilityHint: String?
@@ -580,6 +584,8 @@ private struct GhosttyKeyboardKeyButton: View {
     let action: () -> Bool
 
     @State private var isPressed = false
+    /// Set when the hold fired, so lifting the finger afterwards isn't also a tap.
+    @State private var didHold = false
     private let discDiameter = GhosttyKeyboardChromeSizing.keyDiscDiameter
 
     var body: some View {
@@ -619,6 +625,10 @@ private struct GhosttyKeyboardKeyButton: View {
             .onTapGesture {
                 guard isEnabled else { return }
                 isPressed = false
+                if didHold {
+                    didHold = false
+                    return
+                }
                 _ = action()
             }
             // The press feedback comes from a UIKit recognizer: in the page scroll view a SwiftUI press would report
@@ -632,16 +642,26 @@ private struct GhosttyKeyboardKeyButton: View {
                         return
                     }
                     if pressing {
+                        didHold = false
                         Haptic.keyboardPress()
+                        if onLongPress != nil {
+                            Haptic.prepareKeyHold()
+                        }
                     }
                     isPressed = pressing
                 }
             )
-            .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 18) {
-                guard isEnabled, let onLongPress else { return }
-                Haptic.tap(.medium)
-                onLongPress()
-            }
+            // The hold runs beside the tap rather than after it: chained after a tap, SwiftUI holds a long press back
+            // about a quarter of a second longer than its own duration.
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: Self.holdDuration, maximumDistance: 18)
+                    .onEnded { _ in
+                        guard isEnabled, let onLongPress else { return }
+                        didHold = true
+                        Haptic.keyHold()
+                        onLongPress()
+                    }
+            )
             .disabled(!isEnabled)
     }
 }
