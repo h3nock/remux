@@ -675,6 +675,11 @@ private struct GhosttyKeyboardKeyButton: View {
                     didHold = false
                     return
                 }
+                // A key that opens Shortcuts when held clicks as its tap lands, not at touch-down, so a hold plays a
+                // single beat as Shortcuts opens, the way iOS's own tap-or-hold buttons give nothing at touch-down.
+                if onLongPress != nil {
+                    Haptic.keyboardPress()
+                }
                 _ = action()
             }
             // The press feedback comes from a UIKit recognizer: in the page scroll view a SwiftUI press would report
@@ -689,8 +694,9 @@ private struct GhosttyKeyboardKeyButton: View {
                     }
                     if pressing {
                         didHold = false
-                        Haptic.keyboardPress()
-                        if onLongPress != nil {
+                        if onLongPress == nil {
+                            Haptic.keyboardPress()
+                        } else {
                             Haptic.prepareKeyHold()
                         }
                     }
