@@ -36,6 +36,14 @@ enum GhosttyKeyboardChromeSizing {
     static let compactDockButtonWidth: CGFloat = 35
     /// Toolbar key labels, sized so every label fits a compact key without shrinking.
     static let keyLabelFontSize: CGFloat = 12
+    /// The disc behind an armed or pressed key, smaller than the key at either width: it stays clear of the page
+    /// dots under the keys, of a neighbouring armed key, and of the group's rounded ends.
+    static let keyDiscDiameter: CGFloat = 32
+    static let pageDotSize: CGFloat = 5
+    static let pageDotSpacing: CGFloat = 6
+    /// Lifts the dots so they sit one dot above the group's edge and further below the labels, a descender's
+    /// worth further for one like "pgup": nearer the edge for every label, so they read as the group's.
+    static let pageDotsOffset: CGFloat = -4.0 / 3
     static let controlGroupVerticalPadding: CGFloat = 4
 
     /// Fallback reservation before the bottom chrome reports its intrinsic
@@ -89,6 +97,8 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isCompact: Bool
     let armedModifiers: ShortcutModifiers
     let toolbarKeys: TerminalToolbarKeys
+    /// The key page on show; the key group swipes between pages when there is more than one.
+    @Binding var toolbarKeyPage: Int
     let topLevelNoun: GhosttyTopLevelNoun
     let selectedWindowIndex: Int?
     let windowCount: Int
@@ -195,25 +205,110 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         }
     }
 
+    @ViewBuilder
     private var terminalKeyControls: some View {
-        controlGroup {
-            HStack(spacing: isCompact ? 1 : 2) {
-                ForEach(Array(toolbarKeys.values.enumerated()), id: \.offset) { index, key in
-                    let isArmed = key.modifier.map(armedModifiers.contains) ?? false
-                    accessoryKey(
-                        title: key.toolbarTitle,
-                        accessibilityLabel: key.settingsTitle,
-                        accessibilityHint: toolbarKeyAccessibilityHint(key),
-                        accessibilityIdentifier: "terminal.toolbar-key.\(index)",
-                        accessibilityValue: isArmed ? "Armed" : nil,
-                        isArmed: isArmed,
-                        onLongPress: index == 0 ? onShowShortcuts : nil
-                    ) {
-                        activateToolbarKey(key)
+        let pages = toolbarKeys.pages
+        if pages.count == 1 {
+            controlGroup {
+                keyPage(pages[0], index: 0)
+            }
+        } else {
+            // The dots are part of the group's content, under the keys in its bottom padding: drawn outside the
+            // glass, the glass container leaves them out.
+            controlGroup {
+                pagedKeys(pages)
+                    // While a key on the page on show is armed the dots step aside, so its disc has the room.
+                    .overlay(alignment: .bottom) {
+                        keyPageDots(pages)
+                            .offset(y: GhosttyKeyboardChromeSizing.pageDotsOffset)
+                            .opacity(shownPageHoldsArmedKey(pages) ? 0 : 1)
+                            .animation(.easeOut(duration: 0.15), value: armedModifiers)
                     }
+            }
+        }
+    }
+
+    private func shownPageIndex(_ pages: [TerminalToolbarKeyPage]) -> Int {
+        min(max(toolbarKeyPage, 0), pages.count - 1)
+    }
+
+    private func shownPageHoldsArmedKey(_ pages: [TerminalToolbarKeyPage]) -> Bool {
+        pages[shownPageIndex(pages)].values.contains { key in key.modifier.map(armedModifiers.contains) ?? false }
+    }
+
+    /// One page's keys. The first key of every page opens Shortcuts when held, so that stays one place
+    /// whichever page is on show.
+    private func keyPage(_ page: TerminalToolbarKeyPage, index pageIndex: Int) -> some View {
+        HStack(spacing: keySpacing) {
+            ForEach(Array(page.values.enumerated()), id: \.offset) { slot, key in
+                let isArmed = key.modifier.map(armedModifiers.contains) ?? false
+                accessoryKey(
+                    title: key.toolbarTitle,
+                    accessibilityLabel: key.settingsTitle,
+                    accessibilityHint: toolbarKeyAccessibilityHint(key),
+                    accessibilityIdentifier: "terminal.toolbar-key.\(pageIndex * page.values.count + slot)",
+                    accessibilityValue: isArmed ? "Armed" : nil,
+                    isArmed: isArmed,
+                    onLongPress: slot == 0 ? onShowShortcuts : nil
+                ) {
+                    activateToolbarKey(key)
                 }
             }
         }
+    }
+
+    /// The pages side by side, one on show; a swipe moves a whole page and stops on it.
+    private func pagedKeys(_ pages: [TerminalToolbarKeyPage]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 0) {
+                ForEach(pages.indices, id: \.self) { index in
+                    keyPage(pages[index], index: index)
+                        .frame(width: keyPageWidth)
+                        .id(index)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollIndicators(.hidden)
+        .scrollPosition(id: shownKeyPage(count: pages.count))
+        .frame(width: keyPageWidth)
+        .accessibilityIdentifier("terminal.toolbar-keys")
+    }
+
+    private func shownKeyPage(count: Int) -> Binding<Int?> {
+        Binding(
+            get: { min(max(toolbarKeyPage, 0), count - 1) },
+            set: { page in
+                guard let page, page != toolbarKeyPage else { return }
+                toolbarKeyPage = page
+                Haptic.selection()
+            }
+        )
+    }
+
+    /// A dot per page under the keys, in the proportions of iOS's page dots, the page on show brighter, both
+    /// quieter than the labels.
+    private func keyPageDots(_ pages: [TerminalToolbarKeyPage]) -> some View {
+        let shown = shownPageIndex(pages)
+        let size = GhosttyKeyboardChromeSizing.pageDotSize
+        return HStack(spacing: GhosttyKeyboardChromeSizing.pageDotSpacing) {
+            ForEach(pages.indices, id: \.self) { index in
+                Circle()
+                    .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(index == shown ? 0.75 : 0.75 * 0.45))
+                    .frame(width: size, height: size)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var keySpacing: CGFloat {
+        isCompact ? 1 : 2
+    }
+
+    private var keyPageWidth: CGFloat {
+        dockButtonWidth * 3 + keySpacing * 2
     }
 
     private var inputControls: some View {
@@ -485,6 +580,7 @@ private struct GhosttyKeyboardKeyButton: View {
     let action: () -> Bool
 
     @State private var isPressed = false
+    private let discDiameter = GhosttyKeyboardChromeSizing.keyDiscDiameter
 
     var body: some View {
         Text(title)
@@ -495,10 +591,16 @@ private struct GhosttyKeyboardKeyButton: View {
             .frame(width: width, height: height)
             .background {
                 if isArmed {
-                    Circle().fill(GhosttyPhoneChromePalette.armedKeyFill)
+                    Circle()
+                        .fill(GhosttyPhoneChromePalette.armedKeyFill)
+                        .frame(width: discDiameter, height: discDiameter)
                 }
             }
-            .ghosttyToolbarButtonSurface(isPressed: isPressed, isEnabled: isEnabled)
+            .ghosttyToolbarButtonSurface(
+                isPressed: isPressed,
+                isEnabled: isEnabled,
+                diameter: discDiameter
+            )
             .scaleEffect(isPressed && isEnabled ? 0.96 : 1)
             // Dimmed as one image, so a disabled button's symbol doesn't show through its badge or surface.
             .compositingGroup()
@@ -519,23 +621,83 @@ private struct GhosttyKeyboardKeyButton: View {
                 isPressed = false
                 _ = action()
             }
-            .onLongPressGesture(
-                minimumDuration: 0.5,
-                maximumDistance: 18,
-                pressing: { pressing in
-                    guard isEnabled else { return }
-                    if pressing, !isPressed {
+            // The press feedback comes from a UIKit recognizer: in the page scroll view a SwiftUI press would report
+            // the finger only after the scroll view's touch delay, and only on lifting for a quick tap, so the click
+            // and the pressed look would trail the touch. A recognizer sees the touch at once, and a swipe still
+            // turns the page.
+            .gesture(
+                GhosttyKeyPressGesture(maximumDistance: 18) { pressing in
+                    guard isEnabled else {
+                        isPressed = false
+                        return
+                    }
+                    if pressing {
                         Haptic.keyboardPress()
                     }
                     isPressed = pressing
-                },
-                perform: {
-                    guard isEnabled, let onLongPress else { return }
-                    Haptic.tap(.medium)
-                    onLongPress()
                 }
             )
+            .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 18) {
+                guard isEnabled, let onLongPress else { return }
+                Haptic.tap(.medium)
+                onLongPress()
+            }
             .disabled(!isEnabled)
+    }
+}
+
+/// Reports a finger going down on the view at once, and lifting or travelling past `maximumDistance`. Other gestures,
+/// the page scroll view's swipe among them, recognize alongside it.
+private struct GhosttyKeyPressGesture: UIGestureRecognizerRepresentable {
+    let maximumDistance: CGFloat
+    let onChange: (Bool) -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var start: CGPoint = .zero
+        var isPressed = false
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UILongPressGestureRecognizer {
+        let recognizer = UILongPressGestureRecognizer()
+        recognizer.minimumPressDuration = 0
+        recognizer.allowableMovement = .greatestFiniteMagnitude
+        recognizer.cancelsTouchesInView = false
+        recognizer.delaysTouchesEnded = false
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UILongPressGestureRecognizer, context: Context) {
+        let coordinator = context.coordinator
+        let point = recognizer.location(in: nil)
+        switch recognizer.state {
+        case .began:
+            coordinator.start = point
+            coordinator.isPressed = true
+            onChange(true)
+        case .changed:
+            let distance = hypot(point.x - coordinator.start.x, point.y - coordinator.start.y)
+            if coordinator.isPressed, distance > maximumDistance {
+                coordinator.isPressed = false
+                onChange(false)
+            }
+        default:
+            if coordinator.isPressed {
+                coordinator.isPressed = false
+                onChange(false)
+            }
+        }
     }
 }
 
@@ -620,10 +782,13 @@ private extension View {
         ghosttyChromeGlass(in: Capsule(), isInteractive: true)
     }
 
-    /// The press feedback every toolbar button shares: a faint disc while a finger is down.
-    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool) -> some View {
+    /// The press feedback every toolbar button shares: a faint disc while a finger is down, filling the button
+    /// unless `diameter` sizes it.
+    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool, diameter: CGFloat? = nil) -> some View {
         overlay {
-            Circle().fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
+            Circle()
+                .fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
+                .frame(width: diameter, height: diameter)
         }
     }
 }

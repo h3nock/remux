@@ -2388,32 +2388,20 @@ private struct TerminalToolbarKeysSettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                toolbarKeyPicker(
-                    "First Key",
-                    selection: binding(for: \.first),
-                    identifier: "settings.toolbar-keys.slot.0"
-                )
-                toolbarKeyPicker(
-                    "Second Key",
-                    selection: binding(for: \.second),
-                    identifier: "settings.toolbar-keys.slot.1"
-                )
-                toolbarKeyPicker(
-                    "Third Key",
-                    selection: binding(for: \.third),
-                    identifier: "settings.toolbar-keys.slot.2"
-                )
-            } header: {
-                Text("Key Layout")
-            } footer: {
-                Text(
-                    "These keys appear on the left side of the terminal toolbar. "
-                        + "Touch and hold the first key to open Shortcuts. "
-                        + "Control, Shift and Alt apply to the next key you press."
-                )
+            ForEach(toolbarKeys.pages.indices, id: \.self) { page in
+                Section {
+                    toolbarKeyPicker("First Key", page: page, slot: \.first, index: 0)
+                    toolbarKeyPicker("Second Key", page: page, slot: \.second, index: 1)
+                    toolbarKeyPicker("Third Key", page: page, slot: \.third, index: 2)
+                } header: {
+                    Text(toolbarKeys.pages.count > 1 ? "Page \(page + 1)" : "Key Layout")
+                } footer: {
+                    if page == toolbarKeys.pages.count - 1 {
+                        Text(footer)
+                    }
+                }
+                .libraryHomeListRowSurface()
             }
-            .libraryHomeListRowSurface()
 
             if toolbarKeys != .default {
                 Section {
@@ -2431,12 +2419,23 @@ private struct TerminalToolbarKeysSettingsView: View {
         .accessibilityIdentifier("settings.toolbar-keys.form")
     }
 
+    private var footer: String {
+        let layout = toolbarKeys.pages.count > 1
+            ? "These keys appear on the left side of the terminal toolbar, a page at a time; swipe them to change "
+                + "page. Touch and hold a page's first key to open Shortcuts."
+            : "These keys appear on the left side of the terminal toolbar. Touch and hold the first key to open "
+                + "Shortcuts."
+        return layout + " Control, Shift and Alt apply to the next key you press."
+    }
+
+    /// Slots are numbered across pages, so the first page keeps the identifiers it had alone.
     private func toolbarKeyPicker(
         _ title: String,
-        selection: Binding<TerminalToolbarKey>,
-        identifier: String
+        page: Int,
+        slot: WritableKeyPath<TerminalToolbarKeyPage, TerminalToolbarKey>,
+        index: Int
     ) -> some View {
-        Picker(title, selection: selection) {
+        Picker(title, selection: binding(page: page, slot: slot)) {
             Section("Modifiers") {
                 ForEach(TerminalToolbarKey.modifierKeys, id: \.self) { key in
                     Text(key.settingsTitle).tag(key)
@@ -2449,16 +2448,17 @@ private struct TerminalToolbarKeysSettingsView: View {
             }
         }
         .pickerStyle(.navigationLink)
-        .accessibilityIdentifier(identifier)
+        .accessibilityIdentifier("settings.toolbar-keys.slot.\(page * 3 + index)")
     }
 
     private func binding(
-        for keyPath: WritableKeyPath<TerminalToolbarKeys, TerminalToolbarKey>
+        page: Int,
+        slot: WritableKeyPath<TerminalToolbarKeyPage, TerminalToolbarKey>
     ) -> Binding<TerminalToolbarKey> {
         Binding(
-            get: { toolbarKeys[keyPath: keyPath] },
+            get: { toolbarKeys[page: page][keyPath: slot] },
             set: { value in
-                toolbarKeys[keyPath: keyPath] = value
+                toolbarKeys[page: page][keyPath: slot] = value
             }
         )
     }

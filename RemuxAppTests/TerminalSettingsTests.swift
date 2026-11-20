@@ -104,6 +104,46 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertEqual(keys.compactSummary, "esc · esc · pgdn")
     }
 
+    func testDefaultToolbarHasTwoPages() {
+        XCTAssertEqual(TerminalToolbarKeys.default.pages.map(\.values), [
+            [.control, .escape, .tab],
+            [.shiftTab, .shift, .alt],
+        ])
+        XCTAssertEqual(TerminalToolbarKeys.default.compactSummary, "ctrl · esc · tab")
+        XCTAssertEqual(
+            TerminalToolbarKeys.default.summary,
+            "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt"
+        )
+        XCTAssertEqual(TerminalToolbarKeys.default.modifiers, [.control, .shift, .option])
+    }
+
+    func testToolbarKeysSavedBeforePagesKeepTheirKeysAndGainTheSecondPage() throws {
+        let data = Data(#"{"first":"escape","second":"control","third":"home"}"#.utf8)
+
+        let keys = try JSONDecoder().decode(TerminalToolbarKeys.self, from: data)
+
+        XCTAssertEqual(keys.pages.map(\.values), [
+            [.escape, .control, .home],
+            [.shiftTab, .shift, .alt],
+        ])
+    }
+
+    func testToolbarKeyPagesRoundTripAndSkipAPageWithAnUnknownKey() throws {
+        let keys = TerminalToolbarKeys(pages: [
+            TerminalToolbarKeyPage(first: .alt, second: .pageUp, third: .pageDown),
+            TerminalToolbarKeyPage(first: .shift, second: .tab, third: .enter),
+        ])
+        XCTAssertEqual(try JSONDecoder().decode(TerminalToolbarKeys.self, from: JSONEncoder().encode(keys)), keys)
+
+        let newer = Data(#"{"pages":[{"first":"control","second":"meta","third":"tab"},{"first":"alt","second":"escape","third":"tab"}]}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(TerminalToolbarKeys.self, from: newer).pages.map(\.values), [
+            [.alt, .escape, .tab],
+        ])
+
+        let unreadable = Data(#"{"pages":[{"first":"meta","second":"escape","third":"tab"}]}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(TerminalToolbarKeys.self, from: unreadable), .default)
+    }
+
     func testModifierKeysArmAndShiftTabSendsTabWithShift() {
         XCTAssertEqual(TerminalToolbarKey.modifierKeys, [.control, .shift, .alt])
         XCTAssertEqual(TerminalToolbarKey.control.modifier, .control)

@@ -73,6 +73,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let shortcutStore: ShortcutStore
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
+    /// The toolbar key page on show, kept while the keyboard, composer or find bar come and go.
+    @State private var toolbarKeyPage = 0
     @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
     @State private var isFindPresented = false
@@ -477,6 +479,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     isCompact: chrome.isCompact,
                                     armedModifiers: terminalInputController.armedModifiers,
                                     toolbarKeys: presentation.toolbarKeys,
+                                    toolbarKeyPage: $toolbarKeyPage,
                                     topLevelNoun: model.topLevelNoun,
                                     selectedWindowIndex: interactionProjection.selectedWindowIndex,
                                     windowCount: interactionProjection.windowCount,

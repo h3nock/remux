@@ -265,13 +265,8 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     }
 }
 
-struct TerminalToolbarKeys: Equatable, Codable, Sendable {
-    static let `default` = Self(
-        first: .control,
-        second: .escape,
-        third: .tab
-    )
-
+/// Three toolbar keys shown together.
+struct TerminalToolbarKeyPage: Equatable, Codable, Sendable {
     var first: TerminalToolbarKey
     var second: TerminalToolbarKey
     var third: TerminalToolbarKey
@@ -287,6 +282,47 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
     var compactSummary: String {
         values.map(\.toolbarTitle).joined(separator: " · ")
     }
+}
+
+/// The toolbar's key pages, swiped through three keys at a time. Never empty.
+struct TerminalToolbarKeys: Equatable, Codable, Sendable {
+    static let `default` = Self(pages: [
+        TerminalToolbarKeyPage(first: .control, second: .escape, third: .tab),
+        TerminalToolbarKeyPage(first: .shiftTab, second: .shift, third: .alt),
+    ])
+
+    private(set) var pages: [TerminalToolbarKeyPage]
+
+    init(pages: [TerminalToolbarKeyPage]) {
+        self.pages = pages.isEmpty ? Self.default.pages : pages
+    }
+
+    /// A single page.
+    init(first: TerminalToolbarKey, second: TerminalToolbarKey, third: TerminalToolbarKey) {
+        self.init(pages: [TerminalToolbarKeyPage(first: first, second: second, third: third)])
+    }
+
+    subscript(page index: Int) -> TerminalToolbarKeyPage {
+        get { pages[index] }
+        set { pages[index] = newValue }
+    }
+
+    /// Every key, page by page.
+    var values: [TerminalToolbarKey] {
+        pages.flatMap(\.values)
+    }
+
+    var summary: String {
+        guard pages.count > 1 else { return pages[0].summary }
+        return pages.enumerated()
+            .map { "Page \($0.offset + 1): \($0.element.summary)" }
+            .joined(separator: ". ")
+    }
+
+    /// The first page, which the toolbar shows until it is swiped.
+    var compactSummary: String {
+        pages[0].compactSummary
+    }
 
     /// The modifiers some key on the toolbar can arm.
     var modifiers: ShortcutModifiers {
@@ -294,6 +330,36 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
             if let modifier = key.modifier {
                 modifiers.formUnion(modifier)
             }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pages
+    }
+
+    /// Settings from before pages hold one page's three keys; they keep those keys as the first page
+    /// and gain the default second page. A page with a key this build doesn't know is left out, so a
+    /// newer build's settings still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.pages) {
+            let pages = try container.decode([DecodedPage].self, forKey: .pages).compactMap(\.page)
+            self.init(pages: pages)
+        } else {
+            self.init(pages: [try TerminalToolbarKeyPage(from: decoder)] + Self.default.pages.dropFirst())
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(pages, forKey: .pages)
+    }
+
+    private struct DecodedPage: Decodable {
+        let page: TerminalToolbarKeyPage?
+
+        init(from decoder: Decoder) throws {
+            page = try? TerminalToolbarKeyPage(from: decoder)
         }
     }
 }
@@ -316,8 +382,8 @@ struct TerminalSettings: Equatable, Codable, Sendable {
     /// or this global preference changes.
     var zoomMultipaneWindowsByDefault: Bool
 
-    /// The three configurable keys shown on the leading side of the terminal
-    /// toolbar. The first key owns the long-press shortcut-palette gesture.
+    /// The configurable key pages shown on the leading side of the terminal
+    /// toolbar. The first key of each page owns the long-press shortcut-palette gesture.
     var toolbarKeys: TerminalToolbarKeys
 
     /// Vibrate when a program rings the bell, or an agent needs the user or finishes.
