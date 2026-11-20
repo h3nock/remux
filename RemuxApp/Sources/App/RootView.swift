@@ -2420,12 +2420,9 @@ private struct TerminalToolbarKeysSettingsView: View {
     }
 
     private var footer: String {
-        let layout = toolbarKeys.pages.count > 1
-            ? "These keys appear on the left side of the terminal toolbar, a page at a time; swipe them to change "
-                + "page. Touch and hold a page's first key to open Shortcuts."
-            : "These keys appear on the left side of the terminal toolbar. Touch and hold the first key to open "
-                + "Shortcuts."
-        return layout + " Control, Shift and Alt apply to the next key you press."
+        toolbarKeys.pages.count > 1
+            ? "Swipe the toolbar keys to switch pages. Touch and hold a page's first key to open Shortcuts."
+            : "Touch and hold the first key to open Shortcuts."
     }
 
     /// Slots are numbered across pages, so the first page keeps the identifiers it had alone.
