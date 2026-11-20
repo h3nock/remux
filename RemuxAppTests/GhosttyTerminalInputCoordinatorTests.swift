@@ -893,19 +893,39 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertEqual(copyModeAttempts, 1)
     }
 
-    func testInputControllerPasteFlushesPendingPrefixBeforePasteWithoutClearingControl() {
+    func testInputControllerPasteFlushesPendingPrefixBeforePasteAndTurnsArmedModifiersOff() {
         var controller = GhosttyTerminalInputController()
         XCTAssertEqual(
             controller.receiveText(GhosttyTmuxPrefixInputBuffer.defaultPrefixInput),
             .schedulePrefixFlush(token: 1)
         )
         controller.toggleModifier(.control)
+        controller.toggleModifier(.shift)
 
         let action = controller.receivePaste("paste")
 
         XCTAssertEqual(action.pendingPrefixInput, GhosttyTmuxPrefixInputBuffer.defaultPrefixInput)
         XCTAssertEqual(action.text, "paste")
-        XCTAssertTrue(controller.isControlArmed)
+        XCTAssertEqual(controller.armedModifiers, [])
+    }
+
+    func testInputControllerKeyEventWithoutModifiersLeavesThemArmedForTheNextKey() {
+        var controller = GhosttyTerminalInputController()
+        XCTAssertEqual(
+            controller.receiveText(GhosttyTmuxPrefixInputBuffer.defaultPrefixInput),
+            .schedulePrefixFlush(token: 1)
+        )
+        controller.toggleModifier(.shift)
+
+        let cursor = controller.receiveKeyEvent(GhosttySurfaceKeyEvent(keyCode: .arrowLeft), appliesModifiers: false)
+
+        XCTAssertEqual(cursor.pendingPrefixInput, GhosttyTmuxPrefixInputBuffer.defaultPrefixInput)
+        XCTAssertEqual(cursor.event, GhosttySurfaceKeyEvent(keyCode: .arrowLeft))
+        XCTAssertEqual(controller.armedModifiers, .shift)
+
+        let key = controller.receiveKeyEvent(GhosttySurfaceKeyEvent(keyCode: .tab))
+        XCTAssertEqual(key.event, GhosttySurfaceKeyEvent(keyCode: .tab, mods: [.shift]))
+        XCTAssertEqual(controller.armedModifiers, [])
     }
 
     func testInputControllerPerformPasteFlushesPendingPrefixBeforePasteAndIgnoresPrefixResult() {

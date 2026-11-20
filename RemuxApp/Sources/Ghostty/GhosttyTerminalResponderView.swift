@@ -80,14 +80,16 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let sendFinishedText: (String) -> Bool
     let sendPaste: (String) -> Bool
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let sendCursorKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let isModifierArmed: () -> Bool
     let onFirstResponderChange: (Bool) -> Void
 
     /// `inputSurface` is the surface the focused input operations reach now, nil while they would
     /// be refused; a composition is drawn on it and stays with it. `sendText` sends what the
     /// keyboard commits, with an armed modifier applied. `sendFinishedText` sends a draft an app
-    /// action finishes while preserving the modifier for that action. `isModifierArmed` tells
-    /// whether `sendText` would apply a modifier to the next text.
+    /// action finishes while preserving the modifier for that action. `sendCursorKeyEvent` sends the
+    /// space bar's cursor arrows, which leave an armed modifier for the next key. `isModifierArmed`
+    /// tells whether `sendText` would apply a modifier to the next text.
     init(
         isEnabled: Bool,
         wantsFirstResponder: Bool,
@@ -100,6 +102,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         sendFinishedText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        sendCursorKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)? = nil,
         isModifierArmed: @escaping () -> Bool = { false },
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
@@ -114,6 +117,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.sendFinishedText = sendFinishedText
         self.sendPaste = sendPaste
         self.sendKeyEvent = sendKeyEvent
+        self.sendCursorKeyEvent = sendCursorKeyEvent ?? sendKeyEvent
         self.isModifierArmed = isModifierArmed
         self.onFirstResponderChange = onFirstResponderChange
     }
@@ -137,6 +141,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             sendFinishedText: { sendFinishedText(GhosttyTerminalInputNormalizer.normalize($0)) },
             sendPaste: sendPaste,
             sendKeyEvent: sendKeyEvent,
+            sendCursorKeyEvent: sendCursorKeyEvent,
             isModifierArmed: isModifierArmed,
             onFirstResponderChange: onFirstResponderChange
         )
@@ -202,6 +207,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendFinishedTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var sendCursorKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
     private var modifierArmedProvider: () -> Bool = { false }
     /// The space bar's drag: where iOS's cursor point started, in this view, and where the thumb is taken to be, in
     /// the window. iOS reports a cursor point, not the thumb, so the thumb starts at the space bar and moves as the
@@ -236,6 +242,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         sendFinishedText: ((String) -> Bool)? = nil,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        sendCursorKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)? = nil,
         isModifierArmed: @escaping () -> Bool = { false },
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
@@ -267,6 +274,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.sendFinishedTextHandler = sendFinishedText ?? sendText
         self.sendPasteHandler = sendPaste
         self.sendKeyEventHandler = sendKeyEvent
+        self.sendCursorKeyEventHandler = sendCursorKeyEvent ?? sendKeyEvent
         self.modifierArmedProvider = isModifierArmed
         self.firstResponderStateHandler = onFirstResponderChange
 
@@ -672,7 +680,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             edges: window.map(GhosttyKeyboardCursorTrackpadDriver.edges(of:)),
             source: .spaceBar,
             sendKeyEvent: { [weak self] event in
-                self?.sendKeyEventHandler?(event) == true
+                self?.sendCursorKeyEventHandler?(event) == true
             }
         )
         GhosttyRuntimeTrace.flowEventIfActive(

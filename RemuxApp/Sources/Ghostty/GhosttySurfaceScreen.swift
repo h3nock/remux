@@ -322,7 +322,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendText: { sendTerminalText($0) },
                             sendFinishedText: { sendTerminalText($0, appliesModifiers: false) },
                             sendPaste: sendTerminalPaste,
-                            sendKeyEvent: sendTerminalKeyEvent,
+                            sendKeyEvent: { sendTerminalKeyEvent($0) },
+                            // Moving the cursor isn't the next key: an armed modifier waits for the key that is, as
+                            // the iOS keyboard keeps a tapped Shift through the same drag.
+                            sendCursorKeyEvent: { sendTerminalKeyEvent($0, appliesModifiers: false) },
                             isModifierArmed: { !terminalInputController.armedModifiers.isEmpty },
                             onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
                         )
@@ -1560,7 +1563,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         Task { @MainActor in
             let executor = ShortcutExecutor(
                 sendText: { sendTerminalText($0) },
-                sendKey: sendTerminalKeyEvent
+                sendKey: { sendTerminalKeyEvent($0) }
             )
             if await executor.execute(shortcut) {
                 isShortcutPalettePresented = false
@@ -1842,10 +1845,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID)?.scrollViewportToBottom()
     }
 
-    private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent) -> Bool {
+    private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> Bool {
         guard !isFindPresented, !isReadingAfterFind else { return false }
         return terminalInputController.performKeyEvent(
             event,
+            appliesModifiers: appliesModifiers,
             submitPendingPrefix: submitTerminalText(_:),
             sendKey: { event in
                 let start = GhosttyRuntimeTrace.nowNanos()

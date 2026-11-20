@@ -834,6 +834,34 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testFloatingCursorArrowsGoToTheCursorSenderNotTheKeySender() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
+        var cursorEvents: [GhosttySurfaceKeyEvent] = []
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in
+                XCTFail("The space bar's arrows went to the key sender, which applies armed modifiers")
+                return true
+            },
+            sendCursorKeyEvent: {
+                cursorEvents.append($0)
+                return true
+            }
+        )
+
+        view.beginFloatingCursor(at: .zero)
+        view.updateFloatingCursor(at: .init(x: 16, y: 0))
+        view.endFloatingCursor()
+
+        XCTAssertEqual(cursorEvents.map(\.keyCode), [.arrowRight, .arrowRight])
+    }
+
+    @MainActor
     func testFloatingCursorInAWindowFollowsTheCursorPointFromTheSpaceBar() {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
         let driver = GhosttyKeyboardCursorTrackpadDriver(playHaptic: { _ in })

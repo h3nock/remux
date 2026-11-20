@@ -203,8 +203,11 @@ struct GhosttyTerminalInputController: Equatable {
         }
     }
 
+    /// A paste isn't the key armed modifiers wait for, so it turns them off rather than leaving them armed for
+    /// whatever comes after it.
     mutating func receivePaste(_ text: String) -> PasteAction {
-        PasteAction(
+        modifierState.clear()
+        return PasteAction(
             pendingPrefixInput: tmuxPrefixInputBuffer.flushPendingInput(),
             text: text
         )
@@ -222,19 +225,22 @@ struct GhosttyTerminalInputController: Equatable {
         return sendPaste(action.text)
     }
 
-    mutating func receiveKeyEvent(_ event: GhosttySurfaceKeyEvent) -> KeyEventAction {
+    /// `appliesModifiers` is false for a key that isn't the one armed modifiers wait for, such as an arrow of the
+    /// space bar's cursor drag; they stay armed for the next key.
+    mutating func receiveKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> KeyEventAction {
         KeyEventAction(
             pendingPrefixInput: tmuxPrefixInputBuffer.flushPendingInput(),
-            event: modifierState.apply(to: event)
+            event: appliesModifiers ? modifierState.apply(to: event) : event
         )
     }
 
     mutating func performKeyEvent(
         _ event: GhosttySurfaceKeyEvent,
+        appliesModifiers: Bool = true,
         submitPendingPrefix: (String) -> Bool,
         sendKey: (GhosttySurfaceKeyEvent) -> Bool
     ) -> Bool {
-        let action = receiveKeyEvent(event)
+        let action = receiveKeyEvent(event, appliesModifiers: appliesModifiers)
         if let pendingPrefixInput = action.pendingPrefixInput {
             _ = submitPendingPrefix(pendingPrefixInput)
         }
