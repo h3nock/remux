@@ -1364,6 +1364,41 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotEqual(ctrl.value as? String, "Armed")
     }
 
+    /// The first time the keys have a second page they glide toward it and back, or stay still under Reduce Motion
+    /// (REMUX_EXPECT_REDUCE_MOTION=1, with Reduce Motion set on the simulator beforehand).
+    func testToolbarFirstTimeGlide() {
+        let reduceMotion = ProcessInfo.processInfo.environment["REMUX_EXPECT_REDUCE_MOTION"] == "1"
+        // As on a first run: the glide hasn't played.
+        app.launchArguments = ["-terminal.toolbar.pagesGlideShown", "NO"]
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TEST_TOOLBAR_GLIDE": "1",
+                "REMUX_UI_TEST_INPUT_READY": "1",
+                "REMUX_UI_TESTING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+                "REMUX_DEBUG_TMUX_SESSION": "ui-test",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        let session = app.descendants(matching: .any)["library.session.resume"].firstMatch
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        session.tap()
+
+        // Sampled from the tap on, with no waits, which would let the glide pass unseen; it starts once the
+        // session's keys are usable.
+        let travel = sideTravel(of: app.buttons["terminal.toolbar-key.0"], for: 6)
+        if reduceMotion {
+            XCTAssertLessThan(travel, 1, "The keys moved under Reduce Motion")
+        } else {
+            XCTAssertGreaterThan(travel, 15, "The keys didn't glide")
+        }
+    }
+
     /// Finds how long the first key must be held before Shortcuts opens, by pressing for longer each time.
     func testFirstKeyHoldThresholdSweep() {
         launchSeededSimulatorTerminal()
@@ -6143,6 +6178,24 @@ final class RemuxAppUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         }
         return lines
+    }
+
+    /// How far `element` moves sideways from where it first shows, sampled for `duration` seconds.
+    private func sideTravel(of element: XCUIElement, for duration: TimeInterval) -> CGFloat {
+        var rest: CGFloat?
+        var travel: CGFloat = 0
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            guard element.exists else { continue }
+            let x = element.frame.minX
+            if let rest {
+                travel = max(travel, abs(x - rest))
+            } else {
+                rest = x
+            }
+        }
+        XCTAssertNotNil(rest, "\(element) never showed")
+        return travel
     }
 
     private func swipeToolbarKeys(from key: XCUIElement, toLeft: Bool) {

@@ -99,6 +99,8 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let toolbarKeys: TerminalToolbarKeys
     /// The key page on show; the key group swipes between pages when there is more than one.
     @Binding var toolbarKeyPage: Int
+    /// Whether the terminal is in front: Home only fades a terminal out, so the toolbar stays in place behind it.
+    let isOnScreen: Bool
     let topLevelNoun: GhosttyTopLevelNoun
     let selectedWindowIndex: Int?
     let windowCount: Int
@@ -121,6 +123,18 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
     let composerContent: () -> ComposerContent
     var allowsTerminalKeys = true
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Set once the first-time glide has played, or once a swipe has found the other pages without it.
+    @AppStorage("terminal.toolbar.pagesGlideShown") private var pagesGlideShown = false
+    /// The first-time glide's sideways shift, 0 at rest.
+    @State private var glideOffset: CGFloat = 0
+
+    /// UI tests run without the glide, which would move keys under their taps, unless a test asks for it.
+    private static var playsFirstTimeGlide: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["REMUX_UI_TESTING"] != "1" || environment["REMUX_UI_TEST_TOOLBAR_GLIDE"] == "1"
+    }
 
     var body: some View {
         selectorRow
@@ -225,6 +239,36 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                             .animation(.easeOut(duration: 0.15), value: armedModifiers)
                     }
             }
+            .task(id: isReadyForGlide) {
+                guard Self.playsFirstTimeGlide, isReadyForGlide, !pagesGlideShown else { return }
+                // A moment after the terminal settles in front, so the glide is seen rather than lost in the change.
+                try? await Task.sleep(for: .milliseconds(850))
+                guard !Task.isCancelled else { return }
+                glideTowardNextPage()
+            }
+        }
+    }
+
+    /// The glide waits for keys that answer: while a session opens they are dimmed, and the spinner has the attention.
+    private var isReadyForGlide: Bool {
+        isOnScreen && areTerminalKeysUsable
+    }
+
+    private var areTerminalKeysUsable: Bool {
+        isEnabled && allowsTerminalKeys && !isInteractionLocked
+    }
+
+    /// The first time the keys have another page, they glide toward it and back, once, to show there's more. With
+    /// Reduce Motion they stay still and the dots show the pages alone. Nothing vibrates: nobody is touching the
+    /// phone when it plays.
+    private func glideTowardNextPage() {
+        guard !pagesGlideShown, toolbarKeyPage == 0 else { return }
+        pagesGlideShown = true
+        guard !reduceMotion else { return }
+        Task { @MainActor in
+            withAnimation(.easeOut(duration: 0.32)) { glideOffset = -22 }
+            try? await Task.sleep(for: .milliseconds(560))
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) { glideOffset = 0 }
         }
     }
 
@@ -267,6 +311,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                         .id(index)
                 }
             }
+            .offset(x: glideOffset)
             .scrollTargetLayout()
         }
         .scrollTargetBehavior(.paging)
@@ -282,6 +327,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             set: { page in
                 guard let page, page != toolbarKeyPage else { return }
                 toolbarKeyPage = page
+                pagesGlideShown = true
                 Haptic.selection()
             }
         )
@@ -392,7 +438,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             isArmed: isArmed,
-            isEnabled: isEnabled && allowsTerminalKeys && !isInteractionLocked,
+            isEnabled: areTerminalKeysUsable,
             onLongPress: onLongPress,
             action: action
         )

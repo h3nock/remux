@@ -483,6 +483,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     armedModifiers: terminalInputController.armedModifiers,
                                     toolbarKeys: presentation.toolbarKeys,
                                     toolbarKeyPage: $toolbarKeyPage,
+                                    isOnScreen: isSelected && !isTerminalCovered,
                                     topLevelNoun: model.topLevelNoun,
                                     selectedWindowIndex: interactionProjection.selectedWindowIndex,
                                     windowCount: interactionProjection.windowCount,
