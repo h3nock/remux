@@ -7,6 +7,24 @@ import XCTest
 
 @MainActor
 final class GhosttyKitRuntimeTests: XCTestCase {
+    func testRendererBoundsPreserveExactPixelSizeThroughCoreAnimationPrecision() {
+        for scale: CGFloat in [2, 3] {
+            for pixels in [1983, 1984, 1985, 2310] {
+                let points = CGFloat(pixels) / scale
+                let extent = GhosttyKitSurfaceView.rendererPointExtent(points: points, scale: scale)
+                // Match Core Animation's float storage and Metal's integer truncation.
+                XCTAssertEqual(Int(Double(Float(extent)) * Double(scale)), pixels)
+            }
+        }
+        let view = GhosttyKitSurfaceView(frame: CGRect(x: 0, y: 0, width: CGFloat(1984) / 3, height: 770))
+        view.contentScaleFactor = 3
+        let renderer = CALayer()
+        view.layer.addSublayer(renderer)
+        view.alignGhosttyRendererSublayers()
+        XCTAssertEqual(Int(Double(Float(renderer.bounds.width)) * renderer.contentsScale), 1984)
+        XCTAssertEqual(Int(Double(Float(renderer.bounds.height)) * renderer.contentsScale), 2310)
+    }
+
     func testReleaseBuildModePolicyAcceptsReleaseFastGhosttyKit() {
         XCTAssertNil(
             GhosttyKitBuildModePolicy.releaseValidationFailure(
