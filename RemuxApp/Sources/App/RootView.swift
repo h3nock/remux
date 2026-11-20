@@ -2409,7 +2409,8 @@ private struct TerminalToolbarKeysSettingsView: View {
             } footer: {
                 Text(
                     "These keys appear on the left side of the terminal toolbar. "
-                        + "Touch and hold the first key to open Shortcuts."
+                        + "Touch and hold the first key to open Shortcuts. "
+                        + "Control, Shift and Alt apply to the next key you press."
                 )
             }
             .libraryHomeListRowSurface()
@@ -2436,8 +2437,15 @@ private struct TerminalToolbarKeysSettingsView: View {
         identifier: String
     ) -> some View {
         Picker(title, selection: selection) {
-            ForEach(TerminalToolbarKey.allCases, id: \.self) { key in
-                Text(key.settingsTitle).tag(key)
+            Section("Modifiers") {
+                ForEach(TerminalToolbarKey.modifierKeys, id: \.self) { key in
+                    Text(key.settingsTitle).tag(key)
+                }
+            }
+            Section("Keys") {
+                ForEach(TerminalToolbarKey.sendingKeys, id: \.self) { key in
+                    Text(key.settingsTitle).tag(key)
+                }
             }
         }
         .pickerStyle(.navigationLink)

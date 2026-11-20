@@ -321,7 +321,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendFinishedText: { sendTerminalText($0, appliesModifiers: false) },
                             sendPaste: sendTerminalPaste,
                             sendKeyEvent: sendTerminalKeyEvent,
-                            isModifierArmed: { terminalInputController.isControlArmed },
+                            isModifierArmed: { !terminalInputController.armedModifiers.isEmpty },
                             onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
                         )
                         .frame(
@@ -475,7 +475,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     isEnabled: interactionProjection.isInputAvailable,
                                     isInteractionLocked: composer.isSubmitting,
                                     isCompact: chrome.isCompact,
-                                    isControlArmed: terminalInputController.isControlArmed,
+                                    armedModifiers: terminalInputController.armedModifiers,
                                     toolbarKeys: presentation.toolbarKeys,
                                     topLevelNoun: model.topLevelNoun,
                                     selectedWindowIndex: interactionProjection.selectedWindowIndex,
@@ -492,7 +492,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                     onShowPanes: showPanes,
                                     onOpenComposer: openComposer,
                                     onToggleKeyboard: toggleKeyboardChrome,
-                                    onToggleControl: toggleControlModifier,
+                                    onToggleModifier: toggleModifier,
                                     onShowShortcuts: showShortcutPalette,
                                     sendKey: performToolbarKey,
                                     composerContent: { selectedComposerBar() },
@@ -1543,7 +1543,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showShortcutPalette() {
-        terminalInputController.clearControl()
+        terminalInputController.clearModifiers()
         isShortcutPalettePresented = true
     }
 
@@ -1563,23 +1563,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func toggleControlModifier() {
-        // Ctrl arms for what comes next, so a draft typed before it is finished first.
-        if !terminalInputController.isControlArmed,
+    private func toggleModifier(_ modifier: ShortcutModifiers) {
+        // A modifier arms for what comes next, so a draft typed before it is finished first.
+        let arms = !terminalInputController.armedModifiers.contains(modifier)
+        if arms,
            keyboardResponderHandoff.resolveTerminalComposition(
                for: .finish(preservingModifiers: true)
            ) == .refused {
             return
         }
-        terminalInputController.toggleControl()
-        if terminalInputController.isControlArmed, inputCoordinator.keyboardMode == .hidden {
+        terminalInputController.toggleModifier(modifier)
+        // Control and Alt usually go with a letter, so they bring up the keyboard. Shift doesn't: the
+        // keyboard has its own Shift for letters, so a toolbar Shift is for a toolbar key or Return.
+        if arms, modifier != .shift, inputCoordinator.keyboardMode == .hidden {
             showSystemKeyboard()
         }
     }
 
     /// A toolbar key settles the keyboard's draft first: Return confirms it and Escape cancels it,
     /// either without reaching the terminal; Backspace and Delete do nothing while it is open; any
-    /// other key finishes it, keeping an armed Ctrl for the key itself. Without a draft the key goes
+    /// other key finishes it, keeping the armed modifiers for the key itself. Without a draft the key goes
     /// to the terminal.
     private func performToolbarKey(_ event: GhosttySurfaceKeyEvent) -> Bool {
         let (action, consumesDraft): (GhosttyTerminalCompositionAction, Bool) = switch event.keyCode {
@@ -1594,8 +1597,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         case .noDraft:
             return sendTerminalKeyEvent(event)
         case .canceled:
-            // Ctrl was armed for the draft that is gone, not for whatever comes next.
-            terminalInputController.clearControl()
+            // The modifiers were armed for the draft that is gone, not for whatever comes next.
+            terminalInputController.clearModifiers()
         case .finished, .kept:
             break
         }
@@ -1782,7 +1785,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 ),
                 makeAttachmentTransferService: attachmentTransferServiceFactory,
                 prepareTerminalInput: {
-                    terminalInputController.clearControl()
+                    terminalInputController.clearModifiers()
                     scrollComposerDestinationToBottom(surfaceID)
                 },
                 sendPaste: { text in
@@ -2275,7 +2278,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isReadingAfterFind = true
         isFindPresented = true; findSurfaceID = surfaceID
         findQuery = ""; findWantsKeyboard = false
-        terminalInputController.clearControl()
+        terminalInputController.clearModifiers()
         _ = terminalInputController.flushPendingTmuxPrefixInput()
         inputCoordinator.dismissKeyboard()
         if let effect = topologyActionInputRefocusCoordinator.cancelForCommandFailure() {

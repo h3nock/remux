@@ -140,22 +140,25 @@ struct GhosttyTerminalInputController: Equatable {
     private var modifierState = GhosttyModifierState()
     private var tmuxPrefixInputBuffer = GhosttyTmuxPrefixInputBuffer()
 
+    var armedModifiers: ShortcutModifiers {
+        modifierState.armed
+    }
+
     var isControlArmed: Bool {
         modifierState.isControlArmed
     }
 
-    mutating func toggleControl() {
-        modifierState.toggleControl()
+    mutating func toggleModifier(_ modifier: ShortcutModifiers) {
+        modifierState.toggle(modifier)
     }
 
-    mutating func clearControl() {
-        modifierState.clearControl()
+    mutating func clearModifiers() {
+        modifierState.clear()
     }
 
+    /// A modifier whose key left the toolbar can't be seen or turned off any more, so it is dropped.
     mutating func reconcileToolbarKeys(_ toolbarKeys: TerminalToolbarKeys) {
-        if !toolbarKeys.containsControl {
-            clearControl()
-        }
+        modifierState.clear(modifierState.armed.subtracting(toolbarKeys.modifiers))
     }
 
     /// `holdsTmuxPrefix` is the session's `holdsTmuxPrefixKey`. An armed modifier applies to the

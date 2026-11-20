@@ -1,8 +1,17 @@
 import CoreGraphics
+import UIKit
 import XCTest
 @testable import Remux
 
 final class GhosttyPhoneChromeLayoutTests: XCTestCase {
+    func testEveryToolbarKeyLabelFitsACompactKeyWithoutShrinking() {
+        let font = UIFont.systemFont(ofSize: GhosttyKeyboardChromeSizing.keyLabelFontSize, weight: .semibold)
+        for key in TerminalToolbarKey.allCases {
+            let width = (key.toolbarTitle as NSString).size(withAttributes: [.font: font]).width
+            XCTAssertLessThanOrEqual(width, GhosttyKeyboardChromeSizing.compactDockButtonWidth, key.toolbarTitle)
+        }
+    }
+
     func testNarrowPortraitUsesCompactChrome() {
         let layout = GhosttyPhoneChromeLayout(
             screenSize: CGSize(width: 390, height: 844)

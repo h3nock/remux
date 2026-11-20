@@ -5961,7 +5961,12 @@ final class RemuxAppUITests: XCTestCase {
 
     private func selectToolbarKey(_ title: String) {
         let option = app.collectionViews.buttons[title].firstMatch
-        XCTAssertTrue(option.waitForExistence(timeout: 2))
+        var swipes = 0
+        while !(option.waitForExistence(timeout: 1) && option.isHittable), swipes < 3 {
+            app.collectionViews.firstMatch.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(option.isHittable)
         option.tap()
     }
 

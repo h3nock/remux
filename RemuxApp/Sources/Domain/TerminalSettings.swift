@@ -133,8 +133,11 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
 
 enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     case control
+    case shift
+    case alt
     case escape
     case tab
+    case shiftTab
     case enter
     case backspace
     case delete
@@ -147,14 +150,25 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     case pageUp
     case pageDown
 
+    /// Control, Shift and Alt, which apply to the next key instead of sending anything.
+    static let modifierKeys = allCases.filter { $0.modifier != nil }
+    /// The keys that send themselves.
+    static let sendingKeys = allCases.filter { $0.modifier == nil }
+
     var settingsTitle: String {
         switch self {
         case .control:
             "Control"
+        case .shift:
+            "Shift"
+        case .alt:
+            "Alt"
         case .escape:
             "Escape"
         case .tab:
             "Tab"
+        case .shiftTab:
+            "Shift-Tab"
         case .enter:
             "Enter"
         case .backspace:
@@ -184,10 +198,16 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
         switch self {
         case .control:
             "ctrl"
+        case .shift:
+            "shift"
+        case .alt:
+            "alt"
         case .escape:
             "esc"
         case .tab:
             "tab"
+        case .shiftTab:
+            "⇧tab"
         case .enter:
             "enter"
         case .backspace:
@@ -213,9 +233,35 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// The modifier this key arms for the next key, or nil for a key that sends itself.
+    var modifier: ShortcutModifiers? {
+        switch self {
+        case .control:
+            .control
+        case .shift:
+            .shift
+        case .alt:
+            .option
+        default:
+            nil
+        }
+    }
+
+    /// The key this sends, or nil for a modifier.
     var shortcutKey: ShortcutKey? {
-        guard self != .control else { return nil }
-        return ShortcutKey(rawValue: rawValue)
+        switch self {
+        case .control, .shift, .alt:
+            nil
+        case .shiftTab:
+            .tab
+        default:
+            ShortcutKey(rawValue: rawValue)
+        }
+    }
+
+    /// The modifiers this key always sends with `shortcutKey`.
+    var shortcutModifiers: ShortcutModifiers {
+        self == .shiftTab ? .shift : []
     }
 }
 
@@ -242,8 +288,13 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
         values.map(\.toolbarTitle).joined(separator: " · ")
     }
 
-    var containsControl: Bool {
-        values.contains(.control)
+    /// The modifiers some key on the toolbar can arm.
+    var modifiers: ShortcutModifiers {
+        values.reduce(into: []) { modifiers, key in
+            if let modifier = key.modifier {
+                modifiers.formUnion(modifier)
+            }
+        }
     }
 }
 

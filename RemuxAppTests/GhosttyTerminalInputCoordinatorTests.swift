@@ -624,7 +624,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
     func testInputControllerControlTextSubmitsTranslatedInputAndClearsControl() {
         var controller = GhosttyTerminalInputController()
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         XCTAssertEqual(controller.receiveText("c"), .submit("\u{03}"))
 
@@ -633,7 +633,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
     func testInputControllerUnsupportedControlTextFallsBackAndClearsControl() {
         var controller = GhosttyTerminalInputController()
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         XCTAssertEqual(controller.receiveText("7"), .submit("7"))
 
@@ -642,7 +642,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
     func testInputControllerTextWithoutModifiersKeepsControlForTheNextKey() {
         var controller = GhosttyTerminalInputController()
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         XCTAssertEqual(controller.receiveText("c", appliesModifiers: false), .submit("c"))
         XCTAssertTrue(controller.isControlArmed)
@@ -662,7 +662,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
     func testInputControllerControlKeyAddsCtrlModifierAndClearsControl() {
         var controller = GhosttyTerminalInputController()
-        controller.toggleControl()
+        controller.toggleModifier(.control)
         let event = GhosttySurfaceKeyEvent(keyCode: .arrowUp)
 
         let action = controller.receiveKeyEvent(event)
@@ -674,7 +674,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
     func testInputControllerClearsArmedControlWhenToolbarNoLongerContainsControl() {
         var controller = GhosttyTerminalInputController()
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         controller.reconcileToolbarKeys(
             TerminalToolbarKeys(first: .escape, second: .tab, third: .arrowUp)
@@ -686,13 +686,30 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
     func testInputControllerKeepsArmedControlWhenToolbarStillContainsControl() {
         var controller = GhosttyTerminalInputController()
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         controller.reconcileToolbarKeys(
             TerminalToolbarKeys(first: .escape, second: .control, third: .tab)
         )
 
         XCTAssertTrue(controller.isControlArmed)
+    }
+
+    func testInputControllerDropsOnlyArmedModifiersWhoseKeysLeftTheToolbar() {
+        var controller = GhosttyTerminalInputController()
+        controller.toggleModifier(.control)
+        controller.toggleModifier(.option)
+
+        controller.reconcileToolbarKeys(
+            TerminalToolbarKeys(first: .control, second: .escape, third: .tab)
+        )
+        XCTAssertEqual(controller.armedModifiers, .control)
+
+        controller.toggleModifier(.shift)
+        controller.reconcileToolbarKeys(
+            TerminalToolbarKeys(first: .control, second: .shift, third: .tab)
+        )
+        XCTAssertEqual(controller.armedModifiers, [.control, .shift])
     }
 
     func testInputControllerPrefixArmsFlushWithoutSubmitting() {
@@ -882,7 +899,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
             controller.receiveText(GhosttyTmuxPrefixInputBuffer.defaultPrefixInput),
             .schedulePrefixFlush(token: 1)
         )
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         let action = controller.receivePaste("paste")
 
@@ -949,7 +966,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
             controller.receiveText(GhosttyTmuxPrefixInputBuffer.defaultPrefixInput),
             .schedulePrefixFlush(token: 1)
         )
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         let action = controller.receiveKeyEvent(GhosttySurfaceKeyEvent(keyCode: .arrowUp))
 
@@ -972,7 +989,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
             schedulePrefixFlush: { _ in },
             enterCopyMode: { true }
         )
-        controller.toggleControl()
+        controller.toggleModifier(.control)
 
         let accepted = controller.performKeyEvent(
             GhosttySurfaceKeyEvent(keyCode: .arrowUp),

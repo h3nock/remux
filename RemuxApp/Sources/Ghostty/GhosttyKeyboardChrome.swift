@@ -34,6 +34,8 @@ enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
     static let compactDockButtonWidth: CGFloat = 35
+    /// Toolbar key labels, sized so every label fits a compact key without shrinking.
+    static let keyLabelFontSize: CGFloat = 12
     static let controlGroupVerticalPadding: CGFloat = 4
 
     /// Fallback reservation before the bottom chrome reports its intrinsic
@@ -85,7 +87,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isEnabled: Bool
     let isInteractionLocked: Bool
     let isCompact: Bool
-    let isControlArmed: Bool
+    let armedModifiers: ShortcutModifiers
     let toolbarKeys: TerminalToolbarKeys
     let topLevelNoun: GhosttyTopLevelNoun
     let selectedWindowIndex: Int?
@@ -104,7 +106,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let onShowPanes: () -> Void
     let onOpenComposer: () -> Void
     let onToggleKeyboard: () -> Void
-    let onToggleControl: () -> Void
+    let onToggleModifier: (ShortcutModifiers) -> Void
     let onShowShortcuts: () -> Void
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
     let composerContent: () -> ComposerContent
@@ -197,13 +199,14 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         controlGroup {
             HStack(spacing: isCompact ? 1 : 2) {
                 ForEach(Array(toolbarKeys.values.enumerated()), id: \.offset) { index, key in
+                    let isArmed = key.modifier.map(armedModifiers.contains) ?? false
                     accessoryKey(
                         title: key.toolbarTitle,
                         accessibilityLabel: key.settingsTitle,
                         accessibilityHint: toolbarKeyAccessibilityHint(key),
                         accessibilityIdentifier: "terminal.toolbar-key.\(index)",
-                        accessibilityValue: key == .control && isControlArmed ? "Armed" : nil,
-                        isArmed: key == .control && isControlArmed,
+                        accessibilityValue: isArmed ? "Armed" : nil,
+                        isArmed: isArmed,
                         onLongPress: index == 0 ? onShowShortcuts : nil
                     ) {
                         activateToolbarKey(key)
@@ -290,7 +293,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             accessibilityHint: accessibilityHint,
             accessibilityIdentifier: accessibilityIdentifier,
             accessibilityValue: accessibilityValue,
-            fontSize: 12,
+            fontSize: GhosttyKeyboardChromeSizing.keyLabelFontSize,
             width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             isArmed: isArmed,
@@ -301,18 +304,18 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     }
 
     private func activateToolbarKey(_ key: TerminalToolbarKey) -> Bool {
-        if key == .control {
-            onToggleControl()
+        if let modifier = key.modifier {
+            onToggleModifier(modifier)
             return true
         }
 
-        guard let keyCode = key.shortcutKey?.ghosttyKeyCode else { return false }
-        return sendKey(.init(keyCode: keyCode))
+        guard let shortcutKey = key.shortcutKey else { return false }
+        return sendKey(.init(keyCode: shortcutKey.ghosttyKeyCode, mods: key.shortcutModifiers.ghosttyModifiers))
     }
 
     private func toolbarKeyAccessibilityHint(_ key: TerminalToolbarKey) -> String {
-        if key == .control {
-            return "Arms Control for the next terminal input."
+        if key.modifier != nil {
+            return "Arms \(key.settingsTitle) for the next terminal input."
         }
         return "Sends \(key.settingsTitle) to the terminal."
     }

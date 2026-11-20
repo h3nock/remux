@@ -99,9 +99,26 @@ final class TerminalSettingsTests: XCTestCase {
         )
 
         XCTAssertEqual(keys.values, [.escape, .escape, .pageDown])
-        XCTAssertFalse(keys.containsControl)
+        XCTAssertEqual(keys.modifiers, [])
         XCTAssertEqual(keys.summary, "Escape, Escape, Page Down")
         XCTAssertEqual(keys.compactSummary, "esc · esc · pgdn")
+    }
+
+    func testModifierKeysArmAndShiftTabSendsTabWithShift() {
+        XCTAssertEqual(TerminalToolbarKey.modifierKeys, [.control, .shift, .alt])
+        XCTAssertEqual(TerminalToolbarKey.control.modifier, .control)
+        XCTAssertEqual(TerminalToolbarKey.shift.modifier, .shift)
+        XCTAssertEqual(TerminalToolbarKey.alt.modifier, .option)
+        XCTAssertNil(TerminalToolbarKey.shift.shortcutKey)
+        XCTAssertNil(TerminalToolbarKey.alt.shortcutKey)
+
+        XCTAssertEqual(TerminalToolbarKey.shiftTab.shortcutKey, .tab)
+        XCTAssertEqual(TerminalToolbarKey.shiftTab.shortcutModifiers, .shift)
+        XCTAssertEqual(TerminalToolbarKey.tab.shortcutModifiers, [])
+        XCTAssertEqual(TerminalToolbarKey.shiftTab.toolbarTitle, "⇧tab")
+        XCTAssertEqual(TerminalToolbarKey.shift.toolbarTitle, "shift")
+        XCTAssertEqual(TerminalToolbarKey.alt.toolbarTitle, "alt")
+        XCTAssertEqual(TerminalToolbarKeys(first: .shiftTab, second: .shift, third: .alt).modifiers, [.shift, .option])
     }
 
     func testTerminalAppearanceComparisonIgnoresNonAppearanceSettings() {
