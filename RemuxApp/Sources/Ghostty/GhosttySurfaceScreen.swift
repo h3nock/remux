@@ -199,6 +199,72 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isSelected && composer.isPresented
     }
 
+    /// The row under the terminal: Find while it is open, else the keyboard chrome (on iPad, only the composer).
+    @ViewBuilder
+    private func bottomChrome(
+        chrome: GhosttyPhoneChromeLayout,
+        renderedKeyboardMode: GhosttyKeyboardChromeMode,
+        interactionProjection: GhosttyTerminalInteractionProjection,
+        screenProjection: GhosttyTerminalScreenPresentationProjection
+    ) -> some View {
+        Group {
+            if isFindPresented {
+                TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
+                    presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
+                    onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
+                    .frame(height: 46)
+            } else {
+                GhosttyKeyboardChrome(
+                    keyboardMode: renderedKeyboardMode,
+                    isEnabled: interactionProjection.isInputAvailable,
+                    isInteractionLocked: composer.isSubmitting,
+                    isCompact: chrome.isCompact,
+                    isControlArmed: terminalInputController.isControlArmed,
+                    toolbarKeys: presentation.toolbarKeys,
+                    topLevelNoun: model.topLevelNoun,
+                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                    windowCount: interactionProjection.windowCount,
+                    paneCount: interactionProjection.paneCount,
+                    isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
+                    isComposerPresented: isActiveComposerPresented,
+                    onShowSessions: onShowSessions,
+                    onShowLibrary: onShowLibrary,
+                    waitingAgentStatus: waitingAgentStatus,
+                    onShowWindows: {
+                        showWindows()
+                    },
+                    onShowPanes: showPanes,
+                    onOpenComposer: openComposer,
+                    onToggleKeyboard: toggleKeyboardChrome,
+                    onToggleControl: toggleControlModifier,
+                    onShowShortcuts: showShortcutPalette,
+                    sendKey: performToolbarKey,
+                    composerContent: { selectedComposerBar() },
+                    allowsTerminalKeys: !isReadingAfterFind
+                )
+            }
+        }
+        .padding(.horizontal, chrome.surfaceHorizontalPadding)
+        .padding(.top, 4)
+        .padding(.bottom, chrome.bottomPadding)
+        .frame(maxWidth: .infinity, alignment: .bottom)
+        .background {
+            GeometryReader { chromeProxy in
+                Color.clear.preference(
+                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
+                    value: chromeProxy.size.height
+                )
+            }
+        }
+    }
+
+    /// The row under the terminal. A wide iPad window has none: its sessions are in the sidebar, its tabs and pane
+    /// actions in the toolbar, and its keys on the keyboard. Find and the composer still open there, under the
+    /// terminal, which gives them the room they take, as it does the keyboard.
+    private var showsBottomChrome: Bool {
+        !homeIsInSidebar || isFindPresented || isActiveComposerPresented
+    }
+
     private var isComposerChromeHeightTransient: Bool {
         isActiveComposerPresented && composer.dictationController.phase.isActive
     }
@@ -223,9 +289,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
                 + 4
                 + chrome.bottomPadding
-            let bottomChromeHeight = bottomChromeReservation.layoutHeight(
-                fallback: bottomChromeFallbackHeight
-            )
+            let bottomChromeHeight = showsBottomChrome
+                ? bottomChromeReservation.layoutHeight(fallback: bottomChromeFallbackHeight)
+                : 0
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
             let interactionProjection = screenProjection.interaction
@@ -309,6 +375,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             .background(presentation.terminalTheme.terminalSurfaceBackground)
 
                         GhosttyTerminalResponderRepresentable(
+                            shortcutsBarKeys: shortcutsBarKeys(isInputAvailable: interactionProjection.isInputAvailable),
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
                             wantsFirstResponder: terminalResponderFocusPolicy.wantsFirstResponder,
                             activationToken: inputCoordinator.terminalActivationToken,
@@ -462,61 +529,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                wideWindowTabRow(screenProjection)
-            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
                     .frame(height: bottomChromeHeight)
                     .overlay(alignment: .bottom) {
-                        Group {
-                            if isFindPresented {
-                                TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
-                                    presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
-                                    onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
-                                    .frame(height: 46)
-                            } else {
-                                GhosttyKeyboardChrome(
-                                    keyboardMode: renderedKeyboardMode,
-                                    isEnabled: interactionProjection.isInputAvailable,
-                                    isInteractionLocked: composer.isSubmitting,
-                                    isCompact: chrome.isCompact,
-                                    isControlArmed: terminalInputController.isControlArmed,
-                                    toolbarKeys: presentation.toolbarKeys,
-                                    topLevelNoun: model.topLevelNoun,
-                                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                                    windowCount: interactionProjection.windowCount,
-                                    paneCount: interactionProjection.paneCount,
-                                    isNavigationHeldByPopup: screenProjection.viewport.popup != nil,
-                                    isComposerPresented: isActiveComposerPresented,
-                                    onShowSessions: onShowSessions,
-                                    onShowLibrary: onShowLibrary,
-                                    waitingAgentStatus: waitingAgentStatus,
-                                    onShowWindows: {
-                                        showWindows()
-                                    },
-                                    onShowPanes: showPanes,
-                                    onOpenComposer: openComposer,
-                                    onToggleKeyboard: toggleKeyboardChrome,
-                                    onToggleControl: toggleControlModifier,
-                                    onShowShortcuts: showShortcutPalette,
-                                    sendKey: performToolbarKey,
-                                    composerContent: { selectedComposerBar() },
-                                    allowsTerminalKeys: !isReadingAfterFind
-                                )
-                            }
-                        }
-                        .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                        .padding(.top, 4)
-                        .padding(.bottom, chrome.bottomPadding)
-                        .frame(maxWidth: .infinity, alignment: .bottom)
-                        .background {
-                            GeometryReader { chromeProxy in
-                                Color.clear.preference(
-                                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
-                                    value: chromeProxy.size.height
-                                )
-                            }
+                        if showsBottomChrome {
+                            bottomChrome(
+                                chrome: chrome,
+                                renderedKeyboardMode: renderedKeyboardMode,
+                                interactionProjection: interactionProjection,
+                                screenProjection: screenProjection
+                            )
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .bottom)
@@ -744,6 +767,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
             }
 #endif
+        }
+        .toolbar {
+            wideWindowToolbar()
         }
         .onAppear {
             GhosttyRuntimeTrace.flowEvent(
@@ -1588,6 +1614,28 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     /// either without reaching the terminal; Backspace and Delete do nothing while it is open; any
     /// other key finishes it, keeping an armed Ctrl for the key itself. Without a draft the key goes
     /// to the terminal.
+    /// The keys a wide iPad window puts on the keyboard's shortcuts bar, which has no row of its own under the
+    /// terminal; nil elsewhere, where the row has them.
+    private func shortcutsBarKeys(isInputAvailable: Bool) -> GhosttyShortcutsBarKeys? {
+        guard homeIsInSidebar else { return nil }
+        return GhosttyShortcutsBarKeys(
+            keys: presentation.toolbarKeys.values,
+            isControlArmed: terminalInputController.isControlArmed,
+            isEnabled: isInputAvailable && !composer.isSubmitting && !isReadingAfterFind,
+            onKey: activateShortcutsBarKey,
+            onShowShortcuts: showShortcutPalette
+        )
+    }
+
+    /// A key from the keyboard's shortcuts bar, as the phone's toolbar key does it: Control arms, the rest send.
+    private func activateShortcutsBarKey(_ key: TerminalToolbarKey) {
+        if key == .control {
+            toggleControlModifier()
+        } else if let keyCode = key.shortcutKey?.ghosttyKeyCode {
+            _ = performToolbarKey(.init(keyCode: keyCode))
+        }
+    }
+
     private func performToolbarKey(_ event: GhosttySurfaceKeyEvent) -> Bool {
         let (action, consumesDraft): (GhosttyTerminalCompositionAction, Bool) = switch event.keyCode {
         case .enter: (.finish(preservingModifiers: false), true)
@@ -2244,20 +2292,93 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    /// A wide iPad window's tabs, under the toolbar. Every session's screen has the row, shown or not, so a session
-    /// shown next keeps the size it has now.
-    @ViewBuilder
-    private func wideWindowTabRow(_ screenProjection: GhosttyTerminalScreenPresentationProjection) -> some View {
-        if homeIsInSidebar {
-            TerminalTabRow(
-                windows: model.tabRowWindows(),
-                noun: model.topLevelNoun,
-                theme: presentation.terminalTheme,
-                isEnabled: !composer.isSubmitting && screenProjection.viewport.popup == nil,
-                onSelect: selectTopLevelFromTabRow,
-                onCreate: createTopLevelFromTabRow
-            )
+    /// A wide iPad window's toolbar, one row: the session's tabs as its main item, then New Tab, Compose and the pane
+    /// actions, as Safari's compact tab bar keeps tabs and actions in its toolbar. Every session's screen stays in the
+    /// window; only the one shown adds to the toolbar, which is as tall for each, so a session shown next keeps the
+    /// size it has now.
+    @ToolbarContentBuilder
+    private func wideWindowToolbar() -> some ToolbarContent {
+        if homeIsInSidebar, isSelected {
+            let screenProjection = model.terminalScreenPresentationProjection
+            ToolbarItem(placement: .principal) {
+                TerminalTabStrip(
+                    windows: model.tabRowWindows(),
+                    noun: model.topLevelNoun,
+                    isEnabled: isTopologyEnabled(screenProjection),
+                    onSelect: selectTopLevelFromTabRow
+                )
+                .frame(maxWidth: .infinity)
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("New \(model.topLevelNoun.singular)", systemImage: "plus", action: createTopLevelFromTabRow)
+                    .disabled(!isTopologyEnabled(screenProjection))
+                    .tint(.primary)
+                    .accessibilityIdentifier("terminal.tab.new")
+                Button("Compose", systemImage: "square.and.pencil", action: openComposer)
+                    .disabled(composer.isSubmitting || isFindPresented || composer.isPresented)
+                    .tint(.primary)
+                    .accessibilityIdentifier("terminal.composer.toggle")
+                Menu("Pane", systemImage: "rectangle.split.2x1") {
+                    paneMenu
+                }
+                .disabled(!isTopologyEnabled(screenProjection))
+                .tint(.primary)
+                .accessibilityIdentifier("terminal.pane-menu")
+            }
+            // The actions' icons are drawn in the text colour, as iPadOS draws toolbar icons; Remux's teal is kept
+            // for what is chosen or on: the session in the sidebar, the focused pane, an armed key.
         }
+    }
+
+    /// The focused pane's actions. Each reads the pane when chosen, so the toolbar doesn't build the pane list as the
+    /// screen draws.
+    @ViewBuilder
+    private var paneMenu: some View {
+        Button("Split Right", systemImage: "rectangle.split.2x1") {
+            splitFocusedPaneFromToolbar(GHOSTTY_SPLIT_DIRECTION_RIGHT)
+        }
+        Button("Split Down", systemImage: "rectangle.split.1x2") {
+            splitFocusedPaneFromToolbar(GHOSTTY_SPLIT_DIRECTION_DOWN)
+        }
+        Button("Zoom Pane", systemImage: "arrow.up.left.and.arrow.down.right", action: toggleFocusedPaneZoomFromToolbar)
+        if model.canFindInPane {
+            Button("Find in Pane", systemImage: "magnifyingglass", action: findInFocusedPaneFromToolbar)
+        }
+        Divider()
+        Button("Close Pane", systemImage: "xmark", role: .destructive, action: closeFocusedPaneFromToolbar)
+    }
+
+    private func isTopologyEnabled(_ screenProjection: GhosttyTerminalScreenPresentationProjection) -> Bool {
+        !composer.isSubmitting && screenProjection.viewport.popup == nil
+    }
+
+    private var focusedPaneTopLevelID: UUID? {
+        model.selectedPaneSheetPresentationProjection()?.topLevelID
+    }
+
+    private func splitFocusedPaneFromToolbar(_ direction: ghostty_action_split_direction_e) {
+        guard let topLevelID = focusedPaneTopLevelID else { return }
+        splitFocusedPaneFromSelectionSheet(topLevelID: topLevelID, direction: direction, event: "ui.toolbar.splitPane")
+    }
+
+    private func toggleFocusedPaneZoomFromToolbar() {
+        guard let topLevelID = focusedPaneTopLevelID else { return }
+        let isZoomed = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID).isServerZoomed
+        _ = model.setFocusedPaneZoomed(!isZoomed)
+    }
+
+    private func findInFocusedPaneFromToolbar() {
+        guard let topLevelID = focusedPaneTopLevelID,
+              let paneID = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID).selectedPaneID
+        else { return }
+        beginFind(paneID)
+    }
+
+    private func closeFocusedPaneFromToolbar() {
+        guard let topLevelID = focusedPaneTopLevelID,
+              let paneID = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID).selectedPaneID
+        else { return }
+        closePaneFromSelectionSheet(paneID, topLevelID: topLevelID)
     }
 
     private func selectTopLevelFromTabRow(_ id: UUID) {

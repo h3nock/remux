@@ -93,61 +93,38 @@ private struct RemuxRootContentView: View {
     }
 }
 
+/// A wide iPad window's name: the session shown, where iPadOS names the window (the app switcher). It is the scene's
+/// title, not a navigation title: the toolbar has none, since its tabs take the row and the sidebar, or the session
+/// menu when the sidebar is hidden, says which session it is. (A navigation title, even removed from the toolbar,
+/// takes the toolbar's middle, where the tabs are.)
+private struct WindowSceneTitle: UIViewRepresentable {
+    let title: String
+
+    func makeUIView(context: Context) -> TitleView { TitleView() }
+
+    func updateUIView(_ view: TitleView, context: Context) {
+        view.title = title
+    }
+
+    final class TitleView: UIView {
+        var title = "" {
+            didSet { apply() }
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            apply()
+        }
+
+        private func apply() {
+            window?.windowScene?.title = title
+        }
+    }
+}
+
 /// The setup the connection setup sheet keeps showing while it closes, after
 /// the model has let go of it. A reference, so keeping it current on every
 /// draft change doesn't redraw the shell.
-extension EnvironmentValues {
-    /// Whether Home opens its pages (Settings, Agents, a server) as sheets, as it does as a wide iPad window's sidebar,
-    /// where a page opened from the sidebar would take the terminal's place.
-    @Entry var homeOpensPagesAsSheets = false
-}
-
-/// A page Home opens: pushed onto Home's own stack, or, when Home is a sidebar, a sheet over the terminal.
-private struct HomePage<Page: View>: ViewModifier {
-    let asSheet: Bool
-    @Binding var isPresented: Bool
-    @ViewBuilder let page: () -> Page
-
-    func body(content: Content) -> some View {
-        if asSheet {
-            content.sheet(isPresented: $isPresented) {
-                NavigationStack {
-                    page()
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { isPresented = false }
-                                    .accessibilityIdentifier("library.page.done")
-                            }
-                        }
-                }
-            }
-        } else {
-            content.navigationDestination(isPresented: $isPresented, destination: page)
-        }
-    }
-}
-
-/// The title of a wide iPad window's terminal: the session shown, with its server under it, as Home's rows name it.
-private struct ShownSessionTitle: ViewModifier {
-    let session: ActiveTerminalSession?
-
-    func body(content: Content) -> some View {
-        let name = session?.target.workspace.sessionName ?? ""
-        let server = session?.target.server.displayName ?? ""
-        if #available(iOS 26.0, *) {
-            content
-                .navigationTitle(name)
-                .navigationSubtitle(server)
-                .navigationBarTitleDisplayMode(.inline)
-        } else {
-            // iPadOS 18 has no subtitle, so the server follows the name.
-            content
-                .navigationTitle(session == nil ? "" : "\(name) · \(server)")
-                .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-}
-
 private final class LastConnectionSetup {
     var setup: RemuxRootModel.ConnectionSetupState?
 }
@@ -190,6 +167,7 @@ private struct RemuxWorkspaceShell: View {
     /// between narrow and wide, UIKit moves the detail between containers, taking the terminal out of the window for
     /// a moment.)
     private static let showsHomeAsSidebar = UIDevice.current.userInterfaceIdiom == .pad
+    private static let wideTerminalMargin: CGFloat = 10
 
     private var isWideWindow: Bool {
         horizontalSizeClass == .regular
@@ -203,22 +181,34 @@ private struct RemuxWorkspaceShell: View {
                 preferredCompactColumn: $compactColumn
             ) {
                 if isWideWindow {
-                    // A page opened from a split view's sidebar would take the terminal's place, so Home opens its
-                    // pages as sheets over it.
-                    libraryStack
-                        .environment(\.homeOpensPagesAsSheets, true)
+                    iPadSidebar
                 }
             } detail: {
                 ZStack {
                     activeTerminalLayer
+                        // Beside a sidebar and under a toolbar whose items sit 16-20 pt in, text from a column's very
+                        // edge reads cramped; a wide window gives the terminal a margin of its own colour.
+                        .padding(.horizontal, isWideWindow ? Self.wideTerminalMargin : 0)
+                        .background(model.terminalSettings.theme.terminalSurfaceBackground.ignoresSafeArea())
                     if isWideWindow, selectedActiveSession == nil {
                         noSessionShown
                     }
                 }
                 .toolbar(isWideWindow ? .automatic : .hidden, for: .navigationBar)
-                .modifier(ShownSessionTitle(session: isWideWindow ? selectedActiveSession : nil))
+                .toolbar {
+                    if isWideWindow, sidebarVisibility == .detailOnly, let session = selectedActiveSession {
+                        ToolbarItem(placement: .topBarLeading) {
+                            shownSessionLabel(session)
+                        }
+                    }
+                }
+                .navigationBarTitleDisplayMode(.inline)
+                .background {
+                    WindowSceneTitle(title: selectedActiveSession?.target.workspace.sessionName ?? "Remux")
+                }
                 .environment(\.terminalHomeIsInSidebar, isWideWindow)
             }
+            .tint(RemuxAccent.fill)
             .overlay {
                 // Narrow, Home covers the terminal as on the phone, which stays in the window behind it; a collapsed
                 // split view's own sidebar would take the terminal out of the window instead. Home is laid over the
@@ -230,8 +220,8 @@ private struct RemuxWorkspaceShell: View {
             .onChange(of: compactColumn) { _, column in
                 if column != .detail { compactColumn = .detail }
             }
-            .onGeometryChange(for: Bool.self) { proxy in
-                proxy.size.width >= Self.sidebarBesideTerminalWidth
+            .onGeometryChange(for: Bool.self) { [threshold = Self.sidebarBesideTerminalWidth] proxy in
+                proxy.size.width >= threshold
             } action: { wideEnough in
                 guard wideEnough != isWideEnoughForSidebar else { return }
                 isWideEnoughForSidebar = wideEnough
@@ -257,6 +247,23 @@ private struct RemuxWorkspaceShell: View {
                 routeLayer
             }
         }
+    }
+
+    /// Where the window is, when the sidebar that shows it is hidden: the session, then its server, leading in the
+    /// toolbar. It only says where; the sidebar, a tap away, is where sessions are chosen.
+    private func shownSessionLabel(_ session: ActiveTerminalSession) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(session.target.workspace.sessionName)
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text(session.target.server.displayName)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .lineLimit(1)
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("workspace.session-label")
     }
 
     /// The detail of a wide window when no session is shown. It covers the last terminal, which stays alive behind it
@@ -787,10 +794,16 @@ private struct RemuxWorkspaceShell: View {
     /// Only the terminal on screen sets the window's appearance. Terminals stay
     /// alive behind Home, which follows the system appearance.
     private var shownTerminalColorScheme: ColorScheme? {
-        guard let selectedTerminalID else { return nil }
-        return model.activeTerminalScreenEntries
-            .first { $0.id == selectedTerminalID }?
-            .presentation.terminalTheme.terminalChromeColorScheme
+        if let selectedTerminalID,
+           let shown = model.activeTerminalScreenEntries.first(where: { $0.id == selectedTerminalID }) {
+            return shown.presentation.terminalTheme.terminalChromeColorScheme
+        }
+        // A wide iPad window keeps its sidebar beside the terminal, so it keeps the terminal theme's appearance with
+        // no session shown too, rather than turning light under the person's finger as a session closes or opens.
+        if Self.showsHomeAsSidebar, isWideWindow {
+            return model.terminalSettings.theme.terminalChromeColorScheme
+        }
+        return nil
     }
 
     private var visibleTerminalID: SavedWorkspace.ID? {
@@ -866,6 +879,35 @@ private struct RemuxWorkspaceShell: View {
         case .loading, .failed:
             EmptyView()
         }
+    }
+
+    /// A wide iPad window's sidebar: the servers and their sessions as a list beside the terminal, in place of the
+    /// phone's Home. Its pages (Settings, every agent) open as sheets, since a page opened from a split view's sidebar
+    /// would take the terminal's place.
+    private var iPadSidebar: some View {
+        IPadSidebar(
+            model: model,
+            selectedSessionID: selectedActiveSession?.id,
+            onShowActiveSession: { workspaceID in
+                GhosttyRuntimeTrace.flowBegin(
+                    sessionShowFlowID(workspaceID),
+                    event: "ui.tap.activeSession",
+                    fields: ["workspaceID": workspaceID.uuidString]
+                )
+                model.showActiveSession(workspaceID)
+            },
+            onConnect: { workspaceID in
+                traceSessionOpenTap(workspaceID)
+                Task { await model.connect(to: workspaceID) }
+            },
+            onNewSession: { serverID in
+                connectionSetupSheetShowsServerSummary = false
+                _ = model.beginNewWorkspace(for: serverID)
+            },
+            settingsPage: {
+                TerminalSettingsView(settings: terminalSettingsBinding, shortcutStore: shortcutStore)
+            }
+        )
     }
 
     private var libraryStack: some View {
@@ -1251,10 +1293,7 @@ private struct ConnectionLibraryView: View {
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
 
-    @Environment(\.homeOpensPagesAsSheets) private var opensPagesAsSheets
     @State private var showsAgents = false
-    /// Settings as a sheet; pushed, it opens from its own link.
-    @State private var showsSettings = false
     @State private var showsAllConnectedSessions = false
     @State private var showsAllRecentSessions = false
     @State private var serverEditMode: EditMode = .inactive
@@ -1314,25 +1353,15 @@ private struct ConnectionLibraryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                if opensPagesAsSheets {
-                    Button {
-                        showsSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityLabel("Settings")
-                    .accessibilityIdentifier("library.settings")
-                } else {
-                    NavigationLink {
-                        TerminalSettingsView(
-                            settings: $terminalSettings,
-                            shortcutStore: shortcutStore
-                        )
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityIdentifier("library.settings")
+                NavigationLink {
+                    TerminalSettingsView(
+                        settings: $terminalSettings,
+                        shortcutStore: shortcutStore
+                    )
+                } label: {
+                    Image(systemName: "gearshape")
                 }
+                .accessibilityIdentifier("library.settings")
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -1343,16 +1372,10 @@ private struct ConnectionLibraryView: View {
                 .accessibilityIdentifier("library.add-server")
             }
         }
-        .modifier(HomePage(asSheet: opensPagesAsSheets, isPresented: $showsSettings) {
-            TerminalSettingsView(
-                settings: $terminalSettings,
-                shortcutStore: shortcutStore
-            )
-        })
-        .modifier(HomePage(asSheet: opensPagesAsSheets, isPresented: $showsAgents) {
+        .navigationDestination(isPresented: $showsAgents) {
             SessionAgentsList(projection: agents, onOpen: openAgent)
-        })
-        .modifier(HomePage(asSheet: opensPagesAsSheets, isPresented: presentedServerIsActive) {
+        }
+        .navigationDestination(isPresented: presentedServerIsActive) {
             if let presentedServerID,
                let server = snapshot.server(id: presentedServerID) {
                 serverDetail(
@@ -1360,7 +1383,7 @@ private struct ConnectionLibraryView: View {
                     availableSessions: sessionProjection.availableSessions(on: server.id)
                 )
             }
-        })
+        }
     }
 
     private var presentedServerIsActive: Binding<Bool> {
@@ -1398,8 +1421,6 @@ private struct ConnectionLibraryView: View {
 
     private func openAgent(_ session: SessionAgentsProjection.Session, _ agent: HerdrAgentPresentation.Agent) {
         onOpenHerdrAgent(session.id, agent.paneID, session.bootID)
-        // As a sheet over the terminal, the list makes way for the agent's pane.
-        if opensPagesAsSheets { showsAgents = false }
     }
 
     @ViewBuilder
@@ -1510,36 +1531,19 @@ private struct ConnectionLibraryView: View {
                     discoveries[server.id]?.unavailableReason(of: $0.locator)
                 }
 
-                let row = ServerLibraryRow(
-                    server: server,
-                    sessionCount: workspaces.count,
-                    connectedSessionCount: connectedSessionCount(for: server.id),
-                    latestWorkspace: latest
-                )
-                .padding(.vertical, 4)
-                Group {
-                    if opensPagesAsSheets {
-                        Button {
-                            presentedServerID = server.id
-                        } label: {
-                            HStack {
-                                row
-                                Image(systemName: "chevron.right")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .foregroundStyle(.primary)
-                    } else {
-                        NavigationLink {
-                            serverDetail(
-                                for: server,
-                                availableSessions: sessionProjection.availableSessions(on: server.id)
-                            )
-                        } label: {
-                            row
-                        }
-                    }
+                NavigationLink {
+                    serverDetail(
+                        for: server,
+                        availableSessions: sessionProjection.availableSessions(on: server.id)
+                    )
+                } label: {
+                    ServerLibraryRow(
+                        server: server,
+                        sessionCount: workspaces.count,
+                        connectedSessionCount: connectedSessionCount(for: server.id),
+                        latestWorkspace: latest
+                    )
+                    .padding(.vertical, 4)
                 }
                 .accessibilityIdentifier("library.server.row")
                 .contextMenu {

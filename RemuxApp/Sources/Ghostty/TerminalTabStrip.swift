@@ -1,19 +1,19 @@
 import SwiftUI
 
-/// A wide iPad window's tabs: the session's tmux windows or Herdr tabs on a row of their own under the toolbar, as
-/// Safari's tab bar sits under its toolbar, with New Tab at the end. Labels never truncate: when the tabs outgrow the
-/// row it scrolls sideways, keeping the selected tab in view.
-struct TerminalTabRow: View {
+/// A wide iPad window's tabs: the session's tmux windows or Herdr tabs as the toolbar's main item, between the
+/// sidebar button and the actions, as Safari's compact tab bar keeps its tabs in the toolbar. Labels never truncate:
+/// when the tabs outgrow the space the strip scrolls sideways, keeping the selected tab in view, and its edges fade
+/// to show there is more.
+struct TerminalTabStrip: View {
     typealias Window = GhosttyWindowSelectionSheetRenderProjection.Window
 
     let windows: [Window]
     let noun: GhosttyTopLevelNoun
-    let theme: TerminalTheme
     let isEnabled: Bool
     let onSelect: (UUID) -> Void
-    let onCreate: () -> Void
 
-    static let height: CGFloat = 40
+    /// The fade at each end of the strip, narrower than a tab's own padding, so a tab that fits never fades.
+    static let edgeFade: CGFloat = 10
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -22,25 +22,26 @@ struct TerminalTabRow: View {
                     ForEach(windows) { window in
                         tab(window)
                     }
-                    newTabButton
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
+                .padding(.horizontal, Self.edgeFade)
             }
             .onAppear { scrollToSelection(proxy) }
             .onChange(of: selectedID) { _, _ in
                 withAnimation(.snappy) { scrollToSelection(proxy) }
             }
         }
-        .frame(height: Self.height)
-        .background(theme.terminalSurfaceBackground)
-        .overlay(alignment: .bottom) {
-            Color(uiColor: theme.terminalCompositeSeparatorUIColor).frame(height: 1)
+        .mask {
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: Self.edgeFade)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: Self.edgeFade)
+            }
         }
-        .environment(\.colorScheme, theme.terminalChromeColorScheme)
         .disabled(!isEnabled)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("terminal.tab-row")
+        .accessibilityIdentifier("terminal.tab-strip")
     }
 
     private var selectedID: UUID? {
@@ -83,21 +84,5 @@ struct TerminalTabRow: View {
         .accessibilityValue("\(noun.singular) \(window.displayIndex) of \(window.totalCount)")
         .accessibilityAddTraits(window.isSelected ? .isSelected : [])
         .accessibilityIdentifier("terminal.tab.\(window.displayIndex)")
-    }
-
-    private var newTabButton: some View {
-        Button {
-            Haptic.tap()
-            onCreate()
-        } label: {
-            Image(systemName: "plus")
-                .font(.subheadline.weight(.medium))
-                .frame(width: 32, height: 32)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .accessibilityLabel("New \(noun.singular)")
-        .accessibilityIdentifier("terminal.tab.new")
     }
 }

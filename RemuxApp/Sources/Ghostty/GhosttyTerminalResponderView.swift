@@ -68,7 +68,24 @@ enum GhosttyTerminalCompositionOutcome: Equatable {
     case refused
 }
 
+/// The terminal keys a wide iPad window puts on the on-screen keyboard's shortcuts bar, where iPad apps keep a
+/// keyboard's extra keys, in place of the phone's row under the terminal: the person's toolbar keys leading, and the
+/// Shortcuts palette trailing. With a hardware keyboard, iPadOS shows the same bar small at the bottom.
+struct GhosttyShortcutsBarKeys {
+    let keys: [TerminalToolbarKey]
+    let isControlArmed: Bool
+    let isEnabled: Bool
+    let onKey: (TerminalToolbarKey) -> Void
+    let onShowShortcuts: () -> Void
+
+    /// What the bar shows; the bar is rebuilt only when this changes.
+    var appearance: [String] {
+        keys.map(\.rawValue) + ["armed:\(isControlArmed)", "enabled:\(isEnabled)"]
+    }
+}
+
 struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
+    let shortcutsBarKeys: GhosttyShortcutsBarKeys?
     let isEnabled: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
@@ -89,6 +106,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     /// action finishes while preserving the modifier for that action. `isModifierArmed` tells
     /// whether `sendText` would apply a modifier to the next text.
     init(
+        shortcutsBarKeys: GhosttyShortcutsBarKeys? = nil,
         isEnabled: Bool,
         wantsFirstResponder: Bool,
         activationToken: Int,
@@ -103,6 +121,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         isModifierArmed: @escaping () -> Bool = { false },
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
+        self.shortcutsBarKeys = shortcutsBarKeys
         self.isEnabled = isEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.activationToken = activationToken
@@ -140,6 +159,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             isModifierArmed: isModifierArmed,
             onFirstResponderChange: onFirstResponderChange
         )
+        uiView.updateShortcutsBar(shortcutsBarKeys)
     }
 
     static func dismantleUIView(_ uiView: GhosttyTerminalResponderUIView, coordinator: ()) {
@@ -211,6 +231,10 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private static let spaceBarRise: CGFloat = 30
     private var firstResponderStateHandler: ((Bool) -> Void)?
     private var lastReportedFirstResponderState: Bool?
+    /// The shortcuts bar's keys and the bar iPadOS gave this view, put back when the keys go.
+    private var shortcutsBarKeys: GhosttyShortcutsBarKeys?
+    private var shortcutsBarAppearance: [String]?
+    private var systemShortcutsBarGroups: (leading: [UIBarButtonItemGroup], trailing: [UIBarButtonItemGroup])?
     private let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     lazy var floatingCursorTokenizer: UITextInputTokenizer =
         UITextInputStringTokenizer(textInput: self)
@@ -224,6 +248,61 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unavailable")
+    }
+
+    /// Puts the terminal keys on the keyboard's shortcuts bar, or gives the bar back to iPadOS when `keys` is nil:
+    /// the person's toolbar keys lead, before iPadOS's own (undo, redo, paste); the arrows and the Shortcuts palette
+    /// trail. Each key is a button, so an armed Control shows filled, as an armed key does on the phone. A key reads
+    /// the latest handlers when tapped; the bar is rebuilt only when what it shows changes.
+    func updateShortcutsBar(_ keys: GhosttyShortcutsBarKeys?) {
+        shortcutsBarKeys = keys
+        let appearance = keys?.appearance
+        guard appearance != shortcutsBarAppearance else { return }
+        shortcutsBarAppearance = appearance
+        if systemShortcutsBarGroups == nil {
+            systemShortcutsBarGroups = (inputAssistantItem.leadingBarButtonGroups, inputAssistantItem.trailingBarButtonGroups)
+        }
+        guard let keys, let system = systemShortcutsBarGroups else {
+            if let system = systemShortcutsBarGroups {
+                inputAssistantItem.leadingBarButtonGroups = system.leading
+                inputAssistantItem.trailingBarButtonGroups = system.trailing
+            }
+            return
+        }
+        let arrows: [TerminalToolbarKey] = [.arrowLeft, .arrowUp, .arrowDown, .arrowRight].filter { !keys.keys.contains($0) }
+        let keyItems = keys.keys.map { shortcutsBarItem($0, keys: keys) }
+        let arrowItems = arrows.map { shortcutsBarItem($0, keys: keys) }
+        let shortcuts = UIBarButtonItem(
+            image: UIImage(systemName: "command"),
+            primaryAction: UIAction { [weak self] _ in self?.shortcutsBarKeys?.onShowShortcuts() }
+        )
+        shortcuts.accessibilityLabel = "Shortcuts"
+        shortcuts.accessibilityIdentifier = "terminal.shortcuts-bar.shortcuts"
+        inputAssistantItem.leadingBarButtonGroups = [UIBarButtonItemGroup(barButtonItems: keyItems, representativeItem: nil)]
+            + system.leading
+        inputAssistantItem.trailingBarButtonGroups = system.trailing + [
+            UIBarButtonItemGroup(barButtonItems: arrowItems, representativeItem: nil),
+            UIBarButtonItemGroup(barButtonItems: [shortcuts], representativeItem: nil),
+        ]
+        if isFirstResponder { reloadInputViews() }
+    }
+
+    private func shortcutsBarItem(_ key: TerminalToolbarKey, keys: GhosttyShortcutsBarKeys) -> UIBarButtonItem {
+        let isArmed = key == .control && keys.isControlArmed
+        var configuration: UIButton.Configuration = isArmed ? .filled() : .plain()
+        configuration.title = key.toolbarTitle
+        configuration.baseBackgroundColor = RemuxAccent.uiFill
+        configuration.baseForegroundColor = isArmed ? RemuxAccent.uiOnFill : .label
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
+        let button = UIButton(configuration: configuration, primaryAction: UIAction { [weak self] _ in
+            self?.shortcutsBarKeys?.onKey(key)
+        })
+        button.isEnabled = keys.isEnabled
+        button.accessibilityLabel = key.settingsTitle
+        button.accessibilityValue = isArmed ? "Armed" : nil
+        button.accessibilityIdentifier = "terminal.shortcuts-bar.\(key.rawValue)"
+        return UIBarButtonItem(customView: button)
     }
 
     func update(

@@ -338,6 +338,9 @@ struct SessionAgentsHomeRows: View {
     let projection: SessionAgentsProjection
     let onOpen: (SessionAgentsProjection.Session, HerdrAgentPresentation.Agent) -> Void
     let onShowAll: () -> Void
+    /// In an iPad sidebar the rows are the sidebar's own: no card surface, and no chevron, since a row there
+    /// shows the agent's pane beside the list instead of opening a page.
+    var inSidebar = false
 
     @State private var gate = AgentOpenGate()
 
@@ -347,11 +350,16 @@ struct SessionAgentsHomeRows: View {
                 guard gate.admits() else { return }
                 onOpen(entry.session, entry.agent)
             } label: {
-                SessionAgentRow(entry: entry, namesSession: projection.namesSessions, showsState: true)
+                SessionAgentRow(
+                    entry: entry,
+                    namesSession: projection.namesSessions,
+                    showsState: true,
+                    showsChevron: !inSidebar
+                )
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("library.agents.agent")
-            .libraryHomeListRowSurface()
+            .modifier(HomeRowSurface(isApplied: !inSidebar))
         }
 
         if projection.hasMoreThanHomeShows {
@@ -378,7 +386,19 @@ struct SessionAgentsHomeRows: View {
             .accessibilityLabel("All agents")
             .accessibilityValue(projection.summaries.first ?? "")
             .accessibilityIdentifier("library.agents.all")
-            .libraryHomeListRowSurface()
+            .modifier(HomeRowSurface(isApplied: !inSidebar))
+        }
+    }
+}
+
+private struct HomeRowSurface: ViewModifier {
+    let isApplied: Bool
+
+    func body(content: Content) -> some View {
+        if isApplied {
+            content.libraryHomeListRowSurface()
+        } else {
+            content
         }
     }
 }
@@ -392,6 +412,7 @@ private struct SessionAgentRow: View {
     let entry: SessionAgentsProjection.Entry
     let namesSession: Bool
     let showsState: Bool
+    var showsChevron = true
 
     var body: some View {
         HStack(spacing: 12) {
@@ -418,10 +439,12 @@ private struct SessionAgentRow: View {
 
             Spacer(minLength: 8)
 
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
         }
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)

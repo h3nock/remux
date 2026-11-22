@@ -15,15 +15,24 @@ typealias LibraryHomePalette = RemuxAppPalette
 /// The app's accent, the same in every terminal theme: a theme sets only the terminal's colours and whether
 /// the chrome around it is light or dark.
 enum RemuxAccent {
-    static let fill = Color.accentColor
+    static let fill = Color(uiColor: uiFill)
     /// Text and glyphs drawn on `fill`.
     static let onFill = Color.white
 
     static let selectedFill = fill.opacity(0.18)
     static let selectedStroke = fill.opacity(0.76)
 
-    /// `fill` for UIKit: the app's named accent colour, or the system blue `Color.accentColor` is without one.
-    static let uiFill = UIColor(named: "AccentColor") ?? .systemBlue
+    /// `fill` for UIKit. On iPad it is Remux's teal (hue 182, from the app icon's family), mid-light so white text
+    /// reads on it and it reads on the terminal; the phone keeps the app's named accent colour, or the system blue
+    /// `Color.accentColor` is without one, until the teal is chosen for it too.
+    static let uiFill = UIColor { traits in
+        guard traits.userInterfaceIdiom == .pad else {
+            return (UIColor(named: "AccentColor") ?? .systemBlue).resolvedColor(with: traits)
+        }
+        return traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0x52 / 255, green: 0x94 / 255, blue: 0x89 / 255, alpha: 1) // OKLCH 0.62 0.07 182
+            : UIColor(red: 0x2F / 255, green: 0x70 / 255, blue: 0x66 / 255, alpha: 1) // OKLCH 0.50 0.07 182
+    }
     static let uiOnFill = UIColor.white
 }
 
