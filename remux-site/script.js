@@ -117,24 +117,25 @@ const recording = (() => {
   show();
   sync();
   return {
-    // Hold still and say where it was and whether it was playing.
+    // Hold still and say where it was.
     hold() {
       held = true;
-      const state = { at: video.currentTime, playing: !video.paused };
       video.pause();
-      return state;
+      return video.currentTime;
     },
-    // Pick up from a moment, playing again if it was playing when held.
+    // Pick up from a moment, playing or paused.
     release(at, playing) {
       held = false;
+      paused = !playing;
       video.currentTime = at;
-      if (playing) { paused = false; sync(); }
+      sync();
     },
   };
 })();
 
 // The viewer shows a screen, or the recording, full size. A screen opens at the largest size its image offers; the
-// recording continues from the moment the small one was at, and the small one picks up from where it stopped.
+// recording continues from the moment the small one was at, and the small one picks up where it was left, playing
+// or paused.
 (() => {
   const viewer = document.querySelector('.viewer');
   const image = viewer.querySelector('img');
@@ -159,10 +160,8 @@ const recording = (() => {
 
   const showFilm = bindPauseButton(film, filmButton);
   filmButton.addEventListener('click', () => { if (film.paused) film.play().catch(showFilm); else film.pause(); });
-  let resume = false;
   const openFilm = () => {
-    const { at, playing } = recording.hold();
-    resume = playing;
+    const at = recording.hold();
     const start = () => {
       film.currentTime = at;
       if (reduceMotion.matches) showFilm(); else film.play().catch(showFilm);
@@ -176,8 +175,9 @@ const recording = (() => {
 
   viewer.addEventListener('close', () => {
     if (viewer.dataset.kind !== 'video') return;
+    const playing = !film.paused;
     film.pause();
-    recording.release(film.currentTime, resume);
+    recording.release(film.currentTime, playing);
   });
   viewer.querySelector('.close').addEventListener('click', () => viewer.close());
   viewer.addEventListener('click', (event) => { if (event.target === viewer) viewer.close(); });
