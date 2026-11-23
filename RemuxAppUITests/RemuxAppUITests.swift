@@ -7729,6 +7729,7 @@ extension RemuxAppUITests {
 
     /// Plays the playbook's gestures on the attached session's pane. SCROLLRUN lines give each gesture's start and
     /// end in seconds since 1970, for lining up with the screen recording and the program's log.
+    @MainActor
     func testLiveScrollPlaybookWhenConfigured() throws {
         guard let json = ProcessInfo.processInfo.environment["REMUX_LIVE_SCROLL_CONFIG_JSON"], !json.isEmpty else {
             throw XCTSkip("Set REMUX_LIVE_SCROLL_CONFIG_JSON to run the scroll playbook.")
