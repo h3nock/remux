@@ -189,7 +189,9 @@ private final class GhosttyCompositeViewportHostView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let size = canvasSize ?? bounds.size
-        viewport.frame = CGRect(origin: CGPoint(x: 0, y: -slide(canvasHeight: size.height).pan), size: size)
+        let pan = slide(canvasHeight: size.height).pan
+        tracePan("layout", pan: pan, canvasHeight: size.height)
+        viewport.frame = CGRect(origin: CGPoint(x: 0, y: -pan), size: size)
         // Output only moves the canvas while the area covers part of it.
         let isCovered = bounds.height < size.height
         if isCovered != (viewport.onFocusedFramePublished != nil) {
@@ -198,11 +200,21 @@ private final class GhosttyCompositeViewportHostView: UIView {
     }
 
     private func followContent() {
-        let pan = slide(canvasHeight: viewport.bounds.height).following(currentPan: -viewport.frame.minY)
-        guard viewport.frame.minY != -pan else { return }
+        // The frame's origin reads back a rounding error off the pan it was set to; compare on whole pixels.
+        let current = (-viewport.frame.minY * displayScale).rounded() / displayScale
+        let pan = slide(canvasHeight: viewport.bounds.height).following(currentPan: current)
+        guard pan != current else { return }
+        tracePan("content", pan: pan, canvasHeight: viewport.bounds.height)
         UIView.performWithoutAnimation {
             viewport.frame.origin.y = -pan
         }
+    }
+
+    private func tracePan(_ reason: String, pan: CGFloat, canvasHeight: CGFloat) {
+        guard GhosttyRuntimeTrace.tmuxViewportEnabled else { return }
+        GhosttyRuntimeTrace.tmuxViewport(
+            "viewport.pan reason=\(reason) area=\(bounds.height) canvas=\(canvasHeight) pan=\(pan) previous=\(-viewport.frame.minY)"
+        )
     }
 
     private func slide(canvasHeight: CGFloat) -> GhosttyKeyboardSlide {
@@ -212,8 +224,12 @@ private final class GhosttyCompositeViewportHostView: UIView {
             canvasHeight: canvasHeight,
             keptLine: lines?.line,
             cursorRoom: lines?.cursorRoom,
-            scale: window?.screen.scale ?? traitCollection.displayScale
+            scale: displayScale
         )
+    }
+
+    private var displayScale: CGFloat {
+        max(window?.screen.scale ?? traitCollection.displayScale, 1)
     }
 }
 
