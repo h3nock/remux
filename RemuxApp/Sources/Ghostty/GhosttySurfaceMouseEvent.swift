@@ -130,15 +130,24 @@ struct GhosttySurfaceMouseScrollEvent: Equatable {
     let deltaX: Double
     let deltaY: Double
     let mods: GhosttySurfaceMouseScrollMods
+    /// Where the scroll happens, in the surface view's points. A wheel report carries this cell without a
+    /// motion report of its own; nil scrolls at the pointer's last position.
+    let pointer: CGPoint?
 
     init(
         deltaX: Double,
         deltaY: Double,
-        mods: GhosttySurfaceMouseScrollMods = .init()
+        mods: GhosttySurfaceMouseScrollMods = .init(),
+        pointer: CGPoint? = nil
     ) {
         self.deltaX = deltaX
         self.deltaY = deltaY
         self.mods = mods
+        self.pointer = pointer
+    }
+
+    func at(_ pointer: CGPoint?) -> GhosttySurfaceMouseScrollEvent {
+        GhosttySurfaceMouseScrollEvent(deltaX: deltaX, deltaY: deltaY, mods: mods, pointer: pointer)
     }
 }
 

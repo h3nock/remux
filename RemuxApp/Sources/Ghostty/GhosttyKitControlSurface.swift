@@ -325,11 +325,21 @@ final class GhosttyKitControlSurface {
     @discardableResult
     func sendMouseScroll(_ event: GhosttySurfaceMouseScrollEvent) -> Bool {
         guard !invalidated else { return false }
-        return Self.accepted(ghostty_terminal_surface_mouse_scroll(
+        guard let pointer = event.pointer else {
+            return Self.accepted(ghostty_terminal_surface_mouse_scroll(
+                handle,
+                event.deltaX,
+                event.deltaY,
+                ghostty_input_scroll_mods_t(event.mods.rawValue)
+            ))
+        }
+        return Self.accepted(ghostty_terminal_surface_mouse_scroll_at(
             handle,
             event.deltaX,
             event.deltaY,
-            ghostty_input_scroll_mods_t(event.mods.rawValue)
+            ghostty_input_scroll_mods_t(event.mods.rawValue),
+            Double(pointer.x) * scaleFactor,
+            Double(pointer.y) * scaleFactor
         ))
     }
 

@@ -122,6 +122,9 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var physicsDeltaBudget: GhosttyScrollDeltaBudget?
     private var physicsTailCutoff: GhosttyScrollTailCutoff?
     private var physicsReportedOffsetY: CGFloat?
+    /// The cell the gesture's wheel reports carry: under the finger while it is down, then where it lifted,
+    /// for the coast. A program may scroll only the region under the pointer, as Codex does its transcript.
+    private var physicsPointer: CGPoint?
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
 
@@ -608,12 +611,17 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
         // Remote wheel reports are encoded at the pointer position, and the
         // terminal surface rejects a remote scroll with no pointer. Touch input
-        // never moves the pointer, so anchor it at the touch point.
+        // never moves the pointer. Mouse-report scrolls carry the finger's cell
+        // in each report, with no motion report, as Rex sends them; the other
+        // routes anchor the pointer at the touch point.
         let location = physicsScrollView.panGestureRecognizer.location(in: surface.view)
         GhosttyRuntimeTrace.diagnostics(
             "scroll.physics begin surface=\(ghosttyDiagnosticShortID(surface.id)) location=\(location.x),\(location.y) offset=\(physicsScrollView.contentOffset.y)"
         )
-        _ = submitRouteForwardedMousePosition?(surface.id, location, [])
+        physicsPointer = Self.pointerCell(location, in: surface.view.bounds)
+        if surface.scrollRoute != .mouseReport {
+            _ = submitRouteForwardedMousePosition?(surface.id, location, [])
+        }
 
         // Precise scroll deltas are pixels: the terminal and Herdr count one step per cell
         // height in pixels. Finger travel is in points.
@@ -721,10 +729,31 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             forTranslation: CGPoint(x: 0, y: budgeted),
             phase: .changed
         )
+        let pointer = trackedPhysicsPointer(in: surface)
         for event in events {
-            _ = submitRouteForwardedMouseScroll(surface.id, event)
+            _ = submitRouteForwardedMouseScroll(surface.id, event.at(pointer))
         }
         if !events.isEmpty { lastForwardedScrollAt = now }
+    }
+
+    /// The pointer for the gesture's next report: the finger's cell while it is down, the lift cell after.
+    private func trackedPhysicsPointer(in surface: GhosttyManagedSurface) -> CGPoint? {
+        guard surface.scrollRoute == .mouseReport else { return nil }
+        if physicsScrollView.isTracking {
+            physicsPointer = Self.pointerCell(
+                physicsScrollView.panGestureRecognizer.location(in: surface.view),
+                in: surface.view.bounds
+            )
+        }
+        return physicsPointer
+    }
+
+    /// A touch can drag past the pane's edge; reports stay on the pane's own cells.
+    private static func pointerCell(_ location: CGPoint, in bounds: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(location.x, bounds.minX), max(bounds.maxX - 1, bounds.minX)),
+            y: min(max(location.y, bounds.minY), max(bounds.maxY - 1, bounds.minY))
+        )
     }
 
     private func endPhysicsGesture(phase: GhosttySurfacePanGesture.Phase) {
@@ -746,8 +775,9 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
                 forTranslation: .zero,
                 phase: phase
             )
+            let pointer = surface.scrollRoute == .mouseReport ? physicsPointer : nil
             for event in events {
-                _ = submitRouteForwardedMouseScroll(surface.id, event)
+                _ = submitRouteForwardedMouseScroll(surface.id, event.at(pointer))
             }
         } else {
             physicsForwardingGesture.reset()
@@ -779,12 +809,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         follow.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
         // A precise event that starts a gesture and carries between one and two cells is exactly one report.
         let stepPixels = 1.5 * Double(max(cellHeight(for: surface), 1) * displayScale)
+        let pointer = trackedPhysicsPointer(in: surface)
         var direction = follow.nextReport(at: now)
         while direction != 0 {
             _ = submitRouteForwardedMouseScroll(surface.id, GhosttySurfaceMouseScrollEvent(
                 deltaX: 0,
                 deltaY: Double(direction) * stepPixels,
-                mods: .init(precision: true, momentum: .began)
+                mods: .init(precision: true, momentum: .began),
+                pointer: pointer
             ))
             lastForwardedScrollAt = now
             direction = follow.nextReport(at: now)
