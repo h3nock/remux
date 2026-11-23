@@ -7688,3 +7688,97 @@ final class RemuxAppUITests: XCTestCase {
         app.swipeDown()
     }
 }
+
+// MARK: - Scroll playbook (phone measurements)
+
+extension RemuxAppUITests {
+    /// A scripted set of scroll gestures for measuring on a phone, given inline in REMUX_LIVE_SCROLL_CONFIG_JSON (pass
+    /// it to `xcodebuild test` with the TEST_RUNNER_ prefix): the phone can't read the Mac's files. The tmux session
+    /// must already exist, on the harness's own tmux; the app reads the credential from `credentialsFile`, a path in
+    /// its home directory where the harness copies it.
+    private struct LiveScrollPlaybook: Decodable {
+        struct Gesture: Decodable {
+            let name: String
+            let x: Double
+            let fromY: Double
+            let toY: Double
+            /// Seconds the finger takes from `fromY` to `toY`, at one speed.
+            let duration: Double
+            /// Seconds the finger rests at `toY` before it lifts; 0 lifts while moving, a flick.
+            let holdBeforeLift: Double
+            /// Seconds after the lift at which the finger touches down again and lifts, to catch a coast.
+            var catchAfter: Double?
+            /// Seconds to wait after the gesture, for its coast to end.
+            let pauseAfter: Double
+        }
+
+        var displayName: String?
+        let host: String
+        var port: String?
+        let username: String
+        let sessionName: String
+        let tmuxExecutablePath: String
+        let credentialsFile: String
+        var expectedHostKey: String?
+        /// Extra launch environment, such as REMUX_SCROLL_MOUSE_REPORT_CAP for a variant.
+        var appEnvironment: [String: String]?
+        /// Seconds to wait once the terminal is ready, before the first gesture.
+        var settle: Double?
+        let gestures: [Gesture]
+    }
+
+    /// Plays the playbook's gestures on the attached session's pane. SCROLLRUN lines give each gesture's start and
+    /// end in seconds since 1970, for lining up with the screen recording and the program's log.
+    func testLiveScrollPlaybookWhenConfigured() throws {
+        guard let json = ProcessInfo.processInfo.environment["REMUX_LIVE_SCROLL_CONFIG_JSON"], !json.isEmpty else {
+            throw XCTSkip("Set REMUX_LIVE_SCROLL_CONFIG_JSON to run the scroll playbook.")
+        }
+        let playbook = try JSONDecoder().decode(LiveScrollPlaybook.self, from: Data(json.utf8))
+
+        app.launchEnvironment["REMUX_DEBUG_SEED_CONNECTION"] = "1"
+        app.launchEnvironment["REMUX_DEBUG_SERVER_NAME"] = playbook.displayName ?? "Scroll playbook"
+        app.launchEnvironment["REMUX_DEBUG_SERVER_HOST"] = playbook.host
+        app.launchEnvironment["REMUX_DEBUG_SERVER_PORT"] = playbook.port ?? "22"
+        app.launchEnvironment["REMUX_DEBUG_SERVER_USERNAME"] = playbook.username
+        app.launchEnvironment["REMUX_DEBUG_CREDENTIALS_FILE"] = playbook.credentialsFile
+        app.launchEnvironment["REMUX_DEBUG_TMUX_SESSION"] = playbook.sessionName
+        app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = playbook.tmuxExecutablePath
+        app.launchEnvironment["REMUX_DEBUG_HERDR_EXECUTABLE_PATH"] = "/nonexistent/herdr"
+        app.launchEnvironment["REMUX_DEBUG_EPHEMERAL_STORAGE"] = "1"
+        for (key, value) in playbook.appEnvironment ?? [:] {
+            app.launchEnvironment[key] = value
+        }
+        app.launch()
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60, expectedHostKey: playbook.expectedHostKey)
+        hideKeyboardIfPresent()
+        RunLoop.current.run(until: Date().addingTimeInterval(playbook.settle ?? 2))
+
+        print(String(format: "SCROLLRUN start=%.3f", Date().timeIntervalSince1970))
+        for gesture in playbook.gestures {
+            let start = CGPoint(x: gesture.x, y: gesture.fromY)
+            var segments: [TouchPath.Segment] = [
+                .hold(0.05),
+                .move(to: CGPoint(x: gesture.x, y: gesture.toY), over: gesture.duration),
+            ]
+            if gesture.holdBeforeLift > 0 {
+                segments.append(.hold(gesture.holdBeforeLift))
+            }
+            let began = Date().timeIntervalSince1970
+            try TouchPath.play(from: start, segments)
+            let lifted = Date().timeIntervalSince1970
+            var caught: Double?
+            if let catchAfter = gesture.catchAfter {
+                RunLoop.current.run(until: Date().addingTimeInterval(catchAfter))
+                caught = Date().timeIntervalSince1970
+                try TouchPath.play(from: CGPoint(x: gesture.x, y: (gesture.fromY + gesture.toY) / 2), [.hold(0.08)])
+            }
+            print(String(
+                format: "SCROLLRUN gesture=%@ start=%.3f returned=%.3f catch=%.3f",
+                gesture.name, began, lifted, caught ?? 0
+            ))
+            RunLoop.current.run(until: Date().addingTimeInterval(gesture.pauseAfter))
+        }
+        print(String(format: "SCROLLRUN end=%.3f", Date().timeIntervalSince1970))
+    }
+}
