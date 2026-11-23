@@ -132,6 +132,24 @@ struct GhosttyKeyboardSlide: Equatable {
         self.limit = limit
     }
 
+    /// A slide that keeps the canvas where it is, `currentPan` up, within the height covered: while the pane shows its
+    /// history the user scrolls it, and output, or a keyboard opening, doesn't move it under them.
+    static func holding(currentPan: CGFloat, areaHeight: CGFloat, canvasHeight: CGFloat, scale: CGFloat) -> Self {
+        let covered = GhosttyKeyboardSlide(
+            areaHeight: areaHeight,
+            canvasHeight: canvasHeight,
+            keptLine: nil,
+            cursorRoom: nil,
+            scale: scale
+        )
+        return GhosttyKeyboardSlide(pan: min(max(currentPan, 0), covered.limit), limit: covered.limit)
+    }
+
+    private init(pan: CGFloat, limit: CGFloat) {
+        self.pan = pan
+        self.limit = limit
+    }
+
     /// The move for new output while the area keeps its size: output that reaches lower moves the canvas up, but
     /// output that leaves the bottom doesn't move it back down, since rows that come and go there, such as an agent's
     /// hints under its input, would move the whole picture a row each time. Only the cursor's row reaching the top,
@@ -192,10 +210,13 @@ private final class GhosttyCompositeViewportHostView: UIView {
         let pan = slide(canvasHeight: size.height).pan
         tracePan("layout", pan: pan, canvasHeight: size.height)
         viewport.frame = CGRect(origin: CGPoint(x: 0, y: -pan), size: size)
-        // Output only moves the canvas while the area covers part of it.
+        // Output only moves the canvas while the area covers part of it. Another surface taking the input, as a
+        // pane gaining focus or a popup showing, starts the slide afresh from its rows.
         let isCovered = bounds.height < size.height
         if isCovered != (viewport.onFocusedFramePublished != nil) {
-            viewport.onFocusedFramePublished = isCovered ? { [weak self] in self?.followContent() } : nil
+            viewport.onFocusedFramePublished = isCovered
+                ? { [weak self] isNewSurface in isNewSurface ? self?.setNeedsLayout() : self?.followContent() }
+                : nil
         }
     }
 
@@ -218,7 +239,24 @@ private final class GhosttyCompositeViewportHostView: UIView {
     }
 
     private func slide(canvasHeight: CGFloat) -> GhosttyKeyboardSlide {
-        let lines = bounds.height < canvasHeight ? viewport.keyboardSlideLines(canvasHeight: canvasHeight) : nil
+        guard bounds.height < canvasHeight else {
+            return GhosttyKeyboardSlide(
+                areaHeight: bounds.height,
+                canvasHeight: canvasHeight,
+                keptLine: nil,
+                cursorRoom: nil,
+                scale: displayScale
+            )
+        }
+        if viewport.isInputSurfaceScrolledBack {
+            return .holding(
+                currentPan: (-viewport.frame.minY * displayScale).rounded() / displayScale,
+                areaHeight: bounds.height,
+                canvasHeight: canvasHeight,
+                scale: displayScale
+            )
+        }
+        let lines = viewport.keyboardSlideLines(canvasHeight: canvasHeight)
         return GhosttyKeyboardSlide(
             areaHeight: bounds.height,
             canvasHeight: canvasHeight,
@@ -257,8 +295,9 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private var submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     private var selectionSource: GhosttyTerminalSelectionSource?
 
-    /// Called on the main thread for each frame the input surface's renderer publishes, observed while set.
-    var onFocusedFramePublished: (() -> Void)? {
+    /// Called on the main thread for each frame the input surface's renderer publishes, observed while set, and with
+    /// true when another surface takes the input.
+    var onFocusedFramePublished: ((_ isNewSurface: Bool) -> Void)? {
         didSet { observeFocusedFramePublications() }
     }
     private var focusedFrameObservation: (layer: CALayer, observation: NSKeyValueObservation)?
@@ -533,6 +572,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             return
         }
         guard focusedFrameObservation?.layer !== layer else { return }
+        let replacesSurface = focusedFrameObservation != nil
         let relay = FocusedFrameRelay(viewport: self, layer: layer)
         let observation = layer.observe(\.contents, options: [.new]) { _, _ in
             DispatchQueue.main.async {
@@ -540,6 +580,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             }
         }
         focusedFrameObservation = (layer, observation)
+        if replacesSurface { onFocusedFramePublished?(true) }
     }
 
     /// Carries a frame publication from the renderer layer's observation to the main thread, for as long as the
@@ -556,8 +597,14 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         @MainActor
         func publish() {
             guard let viewport, let layer, viewport.focusedFrameObservation?.layer === layer else { return }
-            viewport.onFocusedFramePublished?()
+            viewport.onFocusedFramePublished?(false)
         }
+    }
+
+    /// Whether the input surface shows its history, above its live rows.
+    var isInputSurfaceScrolledBack: Bool {
+        guard let scroll = inputSurface?.scrollState else { return false }
+        return scroll.offset < scroll.maxRow
     }
 
     /// What the keyboard slide keeps in view of the input surface, in this view's coordinates for a canvas
@@ -586,7 +633,10 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             layer.convert(CGRect(x: 0, y: $0 - 1, width: 1, height: 1), to: self.layer)
         }
         guard let lowest = [cursor, contentBottom].compactMap({ $0?.maxY }).max() else { return nil }
-        let bottomMargin = max(canvasHeight - layout.origin.y - layout.canvasSize.height, 0)
+        // The grid's padding below its last row, under a row: a grid shorter than the canvas by more, as while a
+        // resize waits for the server, leaves empty canvas below it that isn't kept in view.
+        let belowGrid = max(canvasHeight - layout.origin.y - layout.canvasSize.height, 0)
+        let bottomMargin = belowGrid < layout.cellSize.height ? belowGrid : 0
         return (lowest + bottomMargin, cursor.map { max($0.minY - layout.origin.y, 0) })
     }
 

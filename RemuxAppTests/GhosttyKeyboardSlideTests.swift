@@ -48,4 +48,18 @@ final class GhosttyKeyboardSlideTests: XCTestCase {
         let cleared = GhosttyKeyboardSlide(areaHeight: 459, canvasHeight: 726, keptLine: 20, cursorRoom: 0, scale: 3)
         XCTAssertEqual(cleared.following(currentPan: 200), 0)
     }
+
+    func testHoldingKeepsTheCanvasWhereItIsWithinTheHeightCovered() {
+        // While the pane shows its history, opening the keyboard doesn't move the canvas.
+        let opened = GhosttyKeyboardSlide.holding(currentPan: 0, areaHeight: 459, canvasHeight: 726, scale: 3)
+        XCTAssertEqual(opened.pan, 0)
+        XCTAssertEqual(opened.limit, 267)
+        // Output doesn't move it either.
+        XCTAssertEqual(opened.following(currentPan: 0), 0)
+        let slid = GhosttyKeyboardSlide.holding(currentPan: 120, areaHeight: 459, canvasHeight: 726, scale: 3)
+        XCTAssertEqual(slid.following(currentPan: 120), 120)
+        // A smaller covered height brings it down within it, and none brings it home.
+        XCTAssertEqual(GhosttyKeyboardSlide.holding(currentPan: 120, areaHeight: 650, canvasHeight: 726, scale: 3).pan, 76)
+        XCTAssertEqual(GhosttyKeyboardSlide.holding(currentPan: 120, areaHeight: 726, canvasHeight: 726, scale: 3).pan, 0)
+    }
 }
