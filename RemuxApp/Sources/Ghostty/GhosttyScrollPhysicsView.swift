@@ -22,6 +22,33 @@ enum GhosttyScrollTuning {
         NSLog("Remux scrollTuning preciseGain=%.2f (env override)", clamped)
         return clamped
     }()
+
+    /// Cap on wheel reports per second for mouse-reporting programs; nil sends
+    /// every row of travel. Rex sends one report per row of finger and coast
+    /// travel without a cap (300–600 a second after a flick, measured on the
+    /// phone). `REMUX_SCROLL_MOUSE_REPORT_CAP` sets a cap for experiments.
+    static let mouseReportTicksPerSecondCap: Double? = positiveEnvironmentValue(
+        "REMUX_SCROLL_MOUSE_REPORT_CAP"
+    )
+
+    /// Coast speed, in rows per second, below which a mouse-report coast is
+    /// cut; nil lets UIKit end it. Rex keeps sending until the coast is down to
+    /// about one or two rows a second. `REMUX_SCROLL_MOUSE_REPORT_TAIL_CUTOFF`
+    /// sets one for experiments.
+    static let mouseReportTailCutoffCellsPerSecond: Double? = positiveEnvironmentValue(
+        "REMUX_SCROLL_MOUSE_REPORT_TAIL_CUTOFF"
+    )
+
+    private static func positiveEnvironmentValue(_ name: String) -> Double? {
+        guard
+            let raw = ProcessInfo.processInfo.environment[name],
+            let value = Double(raw), value.isFinite, value > 0
+        else {
+            return nil
+        }
+        NSLog("Remux scrollTuning %@=%.2f (env override)", name, value)
+        return value
+    }
 }
 
 /// Scroll physics driver for route-forwarded scrolling.
@@ -73,11 +100,13 @@ struct GhosttyScrollTailCutoff {
     static let minimumCellsPerSecond: Double = 6
 
     private let smoothing: Double
+    private let cellsPerSecondFloor: Double
     private var smoothedSpeed: Double?
     private var lastSampleTime: TimeInterval?
 
-    init(smoothing: Double = 0.3) {
+    init(smoothing: Double = 0.3, cellsPerSecondFloor: Double = Self.minimumCellsPerSecond) {
         self.smoothing = min(max(smoothing, 0.01), 1)
+        self.cellsPerSecondFloor = max(cellsPerSecondFloor, 0)
     }
 
     /// Feed one offset delta (points) observed at `now`; returns true
@@ -95,7 +124,7 @@ struct GhosttyScrollTailCutoff {
         let speed = abs(delta) / dt
         let smoothed = (smoothedSpeed ?? speed) * (1 - smoothing) + speed * smoothing
         smoothedSpeed = smoothed
-        return smoothed < Self.minimumCellsPerSecond * cellHeightPoints
+        return smoothed < cellsPerSecondFloor * cellHeightPoints
     }
 
     mutating func reset() {

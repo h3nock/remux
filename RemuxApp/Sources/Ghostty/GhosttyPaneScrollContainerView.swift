@@ -117,8 +117,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var physicsForwardingGesture = GhosttyRouteForwardingScrollGesture(
         preciseScale: GhosttyScrollTuning.routeForwardedGain
     )
-    private var physicsDeltaBudget = GhosttyScrollDeltaBudget(unitsPerSecond: 0)
-    private var physicsTailCutoff = GhosttyScrollTailCutoff()
+    /// The gesture's cap on forwarded travel and its coast cutoff; nil when
+    /// its route has none.
+    private var physicsDeltaBudget: GhosttyScrollDeltaBudget?
+    private var physicsTailCutoff: GhosttyScrollTailCutoff?
     private var physicsReportedOffsetY: CGFloat?
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
@@ -592,17 +594,30 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             preciseScale: displayScale * GhosttyScrollTuning.routeForwardedGain
         )
         let cellHeightPixels = max(cellHeight(for: surface), 1) * displayScale
-        let ticksPerSecond = surface.scrollRoute == .altScreenCursor
-            ? Self.maxAltScreenTicksPerSecond
-            : Self.maxMouseReportTicksPerSecond
-        let budgetUnitsPerSecond = ticksPerSecond
-            * cellHeightPixels
-            / physicsForwardingGesture.preciseScale
+        let ticksPerSecond: Double?
+        let tailCutoffCellsPerSecond: Double?
+        switch surface.scrollRoute {
+        case .mouseReport:
+            ticksPerSecond = GhosttyScrollTuning.mouseReportTicksPerSecondCap
+            tailCutoffCellsPerSecond = GhosttyScrollTuning.mouseReportTailCutoffCellsPerSecond
+        case .altScreenCursor:
+            ticksPerSecond = Self.maxAltScreenTicksPerSecond
+            tailCutoffCellsPerSecond = GhosttyScrollTailCutoff.minimumCellsPerSecond
+        case .viewport, .remoteHistory:
+            ticksPerSecond = Self.maxMouseReportTicksPerSecond
+            tailCutoffCellsPerSecond = GhosttyScrollTailCutoff.minimumCellsPerSecond
+        }
+        physicsDeltaBudget = ticksPerSecond.map {
+            GhosttyScrollDeltaBudget(
+                unitsPerSecond: $0 * cellHeightPixels / physicsForwardingGesture.preciseScale
+            )
+        }
+        physicsTailCutoff = tailCutoffCellsPerSecond.map {
+            GhosttyScrollTailCutoff(cellsPerSecondFloor: $0)
+        }
         GhosttyRuntimeTrace.diagnostics(
-            "scroll.physics budget cellPts=\(cellHeight(for: surface)) scale=\(displayScale) cellPx=\(cellHeightPixels) unitsPerSec=\(budgetUnitsPerSecond)"
+            "scroll.physics budget cellPts=\(cellHeight(for: surface)) scale=\(displayScale) cellPx=\(cellHeightPixels) ticksPerSec=\(ticksPerSecond.map { String($0) } ?? "none") tailCutoff=\(tailCutoffCellsPerSecond.map { String($0) } ?? "none")"
         )
-        physicsDeltaBudget.rearm(unitsPerSecond: budgetUnitsPerSecond)
-        physicsTailCutoff.reset()
         physicsReportedOffsetY = physicsScrollView.contentOffset.y
         isPhysicsGestureActive = true
     }
@@ -636,11 +651,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         // emit isolated whole-cell ticks hundreds of milliseconds
         // apart — jitter, not motion. Never cuts off an active drag.
         if physicsScrollView.isDecelerating,
-           physicsTailCutoff.shouldStop(
+           physicsTailCutoff?.shouldStop(
                delta: delta,
                at: now,
                cellHeightPoints: Double(max(cellHeight(for: surface), 1))
-           ) {
+           ) == true {
             GhosttyRuntimeTrace.diagnostics(
                 "scroll.physics tailCutoff surface=\(ghosttyDiagnosticShortID(surface.id))"
             )
@@ -648,10 +663,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             return
         }
         if !physicsScrollView.isDecelerating {
-            physicsTailCutoff.reset()
+            physicsTailCutoff?.reset()
         }
 
-        let budgeted = physicsDeltaBudget.clamp(delta, at: now)
+        let budgeted = physicsDeltaBudget?.clamp(delta, at: now) ?? delta
         guard budgeted != 0 else { return }
 
         let events = physicsForwardingGesture.events(
