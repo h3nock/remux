@@ -709,7 +709,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
-    func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
+    func testComposerTogglePreservesKeyboardAndTerminalSize() {
         launchSeededSimulatorTerminal()
 
         let terminal = app.otherElements["terminal.screen"]
@@ -729,7 +729,8 @@ final class RemuxAppUITests: XCTestCase {
         guard let hiddenOpenContinuity = waitForKeyboardContinuity(owner: "none") else {
             return
         }
-        XCTAssertNotEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+        // The composer covers the bottom of the terminal, which keeps its size.
+        XCTAssertEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
         XCTAssertNotEqual(hiddenOpenContinuity.bottomChrome, hiddenContinuity.bottomChrome)
 
         composerToggle.tap()
@@ -752,6 +753,11 @@ final class RemuxAppUITests: XCTestCase {
         guard let initialContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
+        XCTAssertEqual(
+            initialContinuity.effectiveViewport,
+            hiddenContinuity.effectiveViewport,
+            "The keyboard covers the terminal instead of resizing it."
+        )
 
         composerToggle.tap()
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
@@ -761,14 +767,13 @@ final class RemuxAppUITests: XCTestCase {
         }
         XCTAssertEqual(composerContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
-        XCTAssertNotEqual(
+        XCTAssertEqual(
             composerContinuity.effectiveViewport,
             initialContinuity.effectiveViewport,
-            "Opening the composer must reserve its full height from the terminal viewport "
+            "Opening the composer covers the terminal instead of resizing it: "
                 + "from live=\(initialContinuity.liveViewport), effective=\(initialContinuity.effectiveViewport) "
                 + "to live=\(composerContinuity.liveViewport), effective=\(composerContinuity.effectiveViewport); "
-                + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome), "
-                + "safeAreaBottom \(initialContinuity.safeAreaBottom) → \(composerContinuity.safeAreaBottom)."
+                + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome)."
         )
         composerField.typeText("Keep this draft")
         XCTAssertEqual(composerField.value as? String, "Keep this draft")
