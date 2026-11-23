@@ -7724,6 +7724,9 @@ extension RemuxAppUITests {
         var appEnvironment: [String: String]?
         /// Seconds to wait once the terminal is ready, before the first gesture.
         var settle: Double?
+        /// The harness has launched the app already, with the seeding settings and its log mirrored to the Mac
+        /// (devicectl --console), so the test attaches instead of launching.
+        var attach: Bool?
         let gestures: [Gesture]
     }
 
@@ -7749,7 +7752,11 @@ extension RemuxAppUITests {
         for (key, value) in playbook.appEnvironment ?? [:] {
             app.launchEnvironment[key] = value
         }
-        app.launch()
+        if playbook.attach == true {
+            app.activate()
+        } else {
+            app.launch()
+        }
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60, expectedHostKey: playbook.expectedHostKey)
         hideKeyboardIfPresent()
