@@ -286,8 +286,11 @@ struct TerminalToolbarKeyPage: Equatable, Codable, Sendable {
 
 /// The toolbar's key pages, swiped through three keys at a time. Never empty.
 struct TerminalToolbarKeys: Equatable, Codable, Sendable {
+    /// The second page answers a program's prompt or menu with the keyboard down; it sits next to Escape because
+    /// answering is pressed more often than the third page's keys.
     static let `default` = Self(pages: [
         TerminalToolbarKeyPage(first: .control, second: .escape, third: .tab),
+        TerminalToolbarKeyPage(first: .enter, second: .arrowUp, third: .arrowDown),
         TerminalToolbarKeyPage(first: .shiftTab, second: .shift, third: .alt),
     ])
 
@@ -338,7 +341,7 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
     }
 
     /// Settings from before pages hold one page's three keys; they keep those keys as the first page
-    /// and gain the default second page. A page with a key this build doesn't know is left out, so a
+    /// and gain the default's other pages. A page with a key this build doesn't know is left out, so a
     /// newer build's settings still load.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)

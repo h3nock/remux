@@ -104,26 +104,28 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertEqual(keys.compactSummary, "esc · esc · pgdn")
     }
 
-    func testDefaultToolbarHasTwoPages() {
+    func testDefaultToolbarHasThreePagesWithAnsweringSecond() {
         XCTAssertEqual(TerminalToolbarKeys.default.pages.map(\.values), [
             [.control, .escape, .tab],
+            [.enter, .arrowUp, .arrowDown],
             [.shiftTab, .shift, .alt],
         ])
         XCTAssertEqual(TerminalToolbarKeys.default.compactSummary, "ctrl · esc · tab")
         XCTAssertEqual(
             TerminalToolbarKeys.default.summary,
-            "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt"
+            "Page 1: Control, Escape, Tab. Page 2: Enter, Up Arrow, Down Arrow. Page 3: Shift-Tab, Shift, Alt"
         )
         XCTAssertEqual(TerminalToolbarKeys.default.modifiers, [.control, .shift, .option])
     }
 
-    func testToolbarKeysSavedBeforePagesKeepTheirKeysAndGainTheSecondPage() throws {
+    func testToolbarKeysSavedBeforePagesKeepTheirKeysAndGainTheDefaultPages() throws {
         let data = Data(#"{"first":"escape","second":"control","third":"home"}"#.utf8)
 
         let keys = try JSONDecoder().decode(TerminalToolbarKeys.self, from: data)
 
         XCTAssertEqual(keys.pages.map(\.values), [
             [.escape, .control, .home],
+            [.enter, .arrowUp, .arrowDown],
             [.shiftTab, .shift, .alt],
         ])
     }
