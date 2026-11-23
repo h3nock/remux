@@ -16,7 +16,7 @@
 
 :root {
   --bg: #ffffff;
-  --line: #cecfd0;
+  --line: #ddddde;
   --text: #1f2328;
   --dim: #57606a;
   --accent: #367970;
@@ -59,7 +59,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117;
-    --line: #3d4147;
+    --line: #2f3339;
     --text: #e6edf3;
     --dim: #a5abb1;
     /* the focus ring lightens to mint so it stays visible on the dark page; fills keep their teal */
