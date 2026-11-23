@@ -16,7 +16,7 @@
 
 :root {
   --bg: #ffffff;
-  --line: #cecfd0;
+  --line: #ddddde;
   --text: #1f2328;
   --dim: #57606a;
   --accent: #367970;
@@ -44,6 +44,8 @@
   --text-col: 46ch;
   --screen: 26ch;
   --media-col: calc(2 * var(--screen) + 2ch);
+  /* the gap between the features' three columns, which the install details share */
+  --col-gap: 6ch;
   /* the sticky top line's height, so section jumps and focused elements land below it */
   --bar: 63px;
 
@@ -57,7 +59,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117;
-    --line: #3d4147;
+    --line: #2f3339;
     --text: #e6edf3;
     --dim: #a5abb1;
     /* the focus ring lightens to mint so it stays visible on the dark page; fills keep their teal */
@@ -244,26 +246,19 @@ h1, h2, h3, p { margin: 0; }
    (16 over 15, 15 over 14 on a phone) and leads by its letterform and brightness, the sentence stepping back in the
    dim colour. Bright is what you scan, dim is what you read. */
 
-.feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4ch; }
-.feature-item { position: relative; display: flex; flex-direction: column; gap: calc(var(--lh) * .9); }
-.feature-item + .feature-item::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: -2ch; width: 1px;
-  background: var(--line); }
+.feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(3 * var(--lh)) var(--col-gap); }
+.feature-item { display: flex; flex-direction: column; gap: calc(var(--lh) * .9); }
 .feature-item .shot { width: 100%; order: -1; }
 .feature-item .zoom { overflow: hidden; }
 .feature-copy { max-width: 34ch; }
 .feature-copy h3, .copy h3 { font-size: calc(1em + 1px); font-weight: 500; line-height: 1.4; letter-spacing: -0.01em;
   color: var(--text); }
 .feature-copy p { margin-top: .4em; line-height: 1.6; color: var(--dim); }
-/* two rows of three: the column rules run the full height of each row and meet one rule between the rows */
+/* two rows of three, held apart by space alone: a row's gap is wider than a column's, and both are wider than
+   the step from a screen to its name, so each feature reads as one. Screens are cut square, to the part that
+   shows the feature. */
 @media (min-width: 761px) {
-  .feature-grid { row-gap: 0; }
-  .feature-item:nth-child(-n+3) { padding-bottom: var(--lh); }
-  .feature-item:nth-child(n+4) { padding-top: var(--lh); }
-  .feature-item:nth-child(3n+1)::before { display: none; }
-  .feature-item:nth-child(n+4)::after { content: ""; position: absolute; top: 0; height: 1px; inset-inline: -2ch;
-    background: var(--line); }
-  .feature-item:nth-child(3n+1)::after { inset-inline-start: 0; }
-  .feature-item:nth-child(3n)::after { inset-inline-end: 0; }
+  .crop img { aspect-ratio: 1; }
 }
 /* one column: each feature's text with its screen small beside it, divided by rules */
 @media (max-width: 760px) {
@@ -273,7 +268,6 @@ h1, h2, h3, p { margin: 0; }
   .feature-item:first-child { padding-top: 0; }
   .feature-item:last-child { padding-bottom: 0; }
   .feature-item + .feature-item { border-block-start: 1px solid var(--line); }
-  .feature-item + .feature-item::before { display: none; }
   .feature-item .shot { margin: 0; order: 0; }
 }
 @media (max-width: 520px) { .feature-copy { max-width: none; } }
@@ -289,11 +283,13 @@ h1, h2, h3, p { margin: 0; }
 /* the icon file is square, as iOS masks it; here it takes the app icon's rounded corners */
 .app-icon { width: 40px; height: 40px; border-radius: 22.37%; }
 .get { display: flex; flex-wrap: wrap; gap: 1.5ch; }
+/* beside the text, the buttons end on the right edge the features and the details end on */
+@container (min-width: 820px) { .inst .get { justify-content: flex-end; } }
 @media (max-width: 520px) { .get { flex-direction: column; } }
-.specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4ch; margin: calc(1.5 * var(--lh)) 0 0;
+.specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--col-gap); margin: calc(1.5 * var(--lh)) 0 0;
   padding-top: var(--lh); border-top: 1px solid var(--line); }
 .specs div { position: relative; }
-.specs div + div::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: -2ch; width: 1px;
+.specs div + div::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: calc(var(--col-gap) / -2); width: 1px;
   background: var(--line); }
 .specs dt, .specs dd { font-size: 13px; line-height: 1.6; }
 .specs dt { font-weight: 500; }
