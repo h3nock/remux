@@ -87,6 +87,7 @@ final class TmuxTerminalSession: ObservableObject {
         paneViewTheme: @escaping () -> TerminalTheme,
         tmuxPath: String? = nil,
         zoomOwner: TmuxZoomOwner? = nil,
+        outputSettle: TmuxSessionController.OutputSettle? = nil,
         createPaneSurface: @escaping PaneSurfaceCreator = TmuxPaneSurface.create
     ) {
         self.app = app
@@ -120,7 +121,7 @@ final class TmuxTerminalSession: ObservableObject {
             onRequestFailed: { request in
                 MainActor.assumeIsolated { relay.target?.handleRequestFailed(request) }
             }
-        ), zoomOwner: zoomOwner)
+        ), zoomOwner: zoomOwner, outputSettle: outputSettle)
         self.controller = controller
         self.link = TmuxSessionLink(controller: controller, transport: transport)
         relay.target = self

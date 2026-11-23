@@ -1434,6 +1434,97 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 1)
     }
 
+    // MARK: Output settle
+
+    /// tmux forwards one frame of a program's output in pieces, and the pieces arrive in separate reads. Reads that
+    /// arrive together are parsed as one, so the pane is woken once, with the whole frame in its terminal.
+    func testOutputThatArrivesTogetherIsParsedAsOne() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(200), cap: .seconds(5))
+        )
+
+        harness.controller.pump(Data("%output %0 top half\n".utf8))
+        harness.controller.pump(Data("%output %0 bottom half\n".utf8))
+        try await waitUntil("the output didn't reach the pane") { wakes.count == 1 }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 1)
+    }
+
+    /// Without the wait every read is parsed on arrival.
+    func testOutputIsParsedPerReadWithoutASettle() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks
+        )
+
+        harness.controller.pump(Data("%output %0 top half\n".utf8))
+        harness.controller.pump(Data("%output %0 bottom half\n".utf8))
+        try await waitUntil("the output didn't reach the pane") { wakes.count == 2 }
+    }
+
+    /// Output that never pauses is still parsed: the wait ends at the cap after the first read.
+    func testSteadyOutputIsParsedAtTheCap() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(300), cap: .milliseconds(400))
+        )
+
+        // A read every 50 ms never leaves the 300 ms of quiet.
+        for line in 1...30 {
+            harness.controller.pump(Data("%output %0 line \(line)\n".utf8))
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        await drain(harness.controller)
+        XCTAssertGreaterThanOrEqual(wakes.count, 2)
+    }
+
+    /// A reply that arrives across reads is parsed whole and in order.
+    func testAReplySplitAcrossReadsCompletesAfterTheSettle() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3,
+            outputSettle: .init(quiet: .milliseconds(50), cap: .milliseconds(200))
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+
+        let query = Task {
+            try await harness.controller.paneCurrentDirectory(for: 1)
+        }
+        try await waitUntil("current-directory query was not written") {
+            harness.recorder.hasWrites
+        }
+        let reply = Data(responseBlock(commandNumber: &nextCommandNumber, body: "/Users/macbook/scratchpad\n").utf8)
+        harness.controller.pump(reply.prefix(20))
+        harness.controller.pump(reply.dropFirst(20))
+        let currentDirectory = try await query.value
+        XCTAssertEqual(currentDirectory, "/Users/macbook/scratchpad")
+    }
+
+    /// Output waiting for more when the session shuts down is dropped with it.
+    func testOutputWaitingToSettleEndsWithTheSession() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(200), cap: .seconds(5))
+        )
+
+        harness.controller.pump(Data("%output %0 frame\n".utf8))
+        await shutDown(harness.controller)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 0)
+    }
+
     private struct ReadyControllerHarness {
         let runtime: GhosttyKitRuntime
         let controller: TmuxSessionController
@@ -1459,14 +1550,16 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         callbacks: TmuxSessionController.Callbacks = .init(),
         zoomOwner: TmuxZoomOwner? = nil,
         zoomMarks: String = "",
-        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout
+        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout,
+        outputSettle: TmuxSessionController.OutputSettle? = nil
     ) async throws -> ReadyControllerHarness {
         let harness = try await hydratingController(
             listWindowsBody: listWindowsBody,
             expectedPaneCount: expectedPaneCount,
             callbacks: callbacks,
             zoomOwner: zoomOwner,
-            renderHoldTimeout: renderHoldTimeout
+            renderHoldTimeout: renderHoldTimeout,
+            outputSettle: outputSettle
         )
         let hydration = harness.hydrationCommands.enumerated()
             .map { index, command in
@@ -1476,6 +1569,10 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             }
             .joined()
         harness.controller.pump(Data(hydration.utf8))
+        if let outputSettle {
+            // The session is ready before its panes are loaded, so these replies wait out the settle too.
+            try await Task.sleep(for: Self.duration(outputSettle.quiet) + .milliseconds(300))
+        }
         await drain(harness.controller)
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
         return ReadyControllerHarness(
@@ -1492,14 +1589,16 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         expectedPaneCount: Int,
         callbacks: TmuxSessionController.Callbacks = .init(),
         zoomOwner: TmuxZoomOwner? = nil,
-        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout
+        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout,
+        outputSettle: TmuxSessionController.OutputSettle? = nil
     ) async throws -> HydratingControllerHarness {
         let runtime = try GhosttyKitRuntime()
         let recorder = ControllerOutboundRecorder()
         let controller = TmuxSessionController(
             callbacks: callbacks,
             zoomOwner: zoomOwner,
-            renderHoldTimeout: renderHoldTimeout
+            renderHoldTimeout: renderHoldTimeout,
+            outputSettle: outputSettle
         )
         addTeardownBlock {
             await withCheckedContinuation { continuation in
@@ -1616,6 +1715,16 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         return "%begin \(commandNumber) \(commandNumber) 1\n"
             + "\(body)\n"
             + "%error \(commandNumber) \(commandNumber) 1\n"
+    }
+
+    private static func duration(_ interval: DispatchTimeInterval) -> Duration {
+        switch interval {
+        case .seconds(let value): .seconds(value)
+        case .milliseconds(let value): .milliseconds(value)
+        case .microseconds(let value): .microseconds(value)
+        case .nanoseconds(let value): .nanoseconds(value)
+        default: .zero
+        }
     }
 
     private func drain(_ controller: TmuxSessionController) async {

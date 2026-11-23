@@ -98,7 +98,8 @@ final class TmuxScreenModel: ObservableObject {
                 self?.currentTerminalSettings.theme ?? target.terminalSettings.theme
             },
             tmuxPath: target.server.tmuxExecutablePath,
-            zoomOwner: TmuxZoomOwner(serverID: target.server.id)
+            zoomOwner: TmuxZoomOwner(serverID: target.server.id),
+            outputSettle: .configured
         )
         self.session = session
         terminalScreenAdapter.activate(
