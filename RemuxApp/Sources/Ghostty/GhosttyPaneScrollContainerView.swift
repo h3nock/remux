@@ -684,7 +684,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         GhosttyRuntimeTrace.diagnostics(
             "scroll.physics end surface=\(ghosttyDiagnosticShortID(surface?.id)) phase=\(phase)"
         )
-        recenterPhysicsScrollIfIdle()
+        // A drag that ends without momentum ends inside scrollViewDidEndDragging, where UIKit
+        // still reports tracking; it clears by the next main-queue turn.
+        DispatchQueue.main.async { [weak self] in
+            self?.recenterPhysicsScrollIfIdle()
+        }
     }
 
     /// Stop any tracking or deceleration immediately (route flips,

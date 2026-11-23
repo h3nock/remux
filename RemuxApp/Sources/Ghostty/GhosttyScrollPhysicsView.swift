@@ -32,10 +32,11 @@ enum GhosttyScrollTuning {
 /// tail after the finger lifts. It renders nothing; the container hosts its
 /// pan gesture recognizer.
 final class GhosttyScrollPhysicsView: UIScrollView {
-    /// Virtual content height as a multiple of the viewport. Large
-    /// enough that a single fling cannot reach an edge before the
-    /// container recenters between gestures.
-    private static let virtualSpanMultiplier: CGFloat = 9
+    /// Virtual travel available on each side of the centered offset. A fling
+    /// that reached an edge would bounce back and send steps the finger never
+    /// asked for. UIKit coasts about the release speed times half a second
+    /// (its 0.998-per-millisecond decay), so this covers any flick by far.
+    private static let virtualTravelEachWay: CGFloat = 100_000
 
     /// Touches pass through to the surface view; this view only exists
     /// so UIKit scroll physics run.
@@ -47,12 +48,10 @@ final class GhosttyScrollPhysicsView: UIScrollView {
         max(0, (contentSize.height - bounds.height) / 2)
     }
 
-    /// Keep the virtual content proportional to the viewport so the
-    /// deceleration runway scales with the screen.
     func synchronizeVirtualContent() {
         let size = CGSize(
             width: max(bounds.width, 1),
-            height: max(bounds.height, 1) * Self.virtualSpanMultiplier
+            height: max(bounds.height, 1) + 2 * Self.virtualTravelEachWay
         )
         guard contentSize != size else { return }
         contentSize = size
