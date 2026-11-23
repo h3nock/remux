@@ -283,6 +283,8 @@ h1, h2, h3, p { margin: 0; }
 /* the icon file is square, as iOS masks it; here it takes the app icon's rounded corners */
 .app-icon { width: 40px; height: 40px; border-radius: 22.37%; }
 .get { display: flex; flex-wrap: wrap; gap: 1.5ch; }
+/* beside the text, the buttons end on the right edge the features and the details end on */
+@container (min-width: 820px) { .inst .get { justify-content: flex-end; } }
 @media (max-width: 520px) { .get { flex-direction: column; } }
 .specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--col-gap); margin: calc(1.5 * var(--lh)) 0 0;
   padding-top: var(--lh); border-top: 1px solid var(--line); }
