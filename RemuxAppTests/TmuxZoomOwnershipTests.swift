@@ -1064,8 +1064,7 @@ private final class ZoomTranscript {
         adapter.activate(
             session: session,
             zoomMultipaneWindowsByDefault: zoomsByDefault,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
         let transcript = ZoomTranscript(runtime: runtime, session: session, adapter: adapter)
         session.controller.setOutboundSink { [outbound = transcript.outbound] in outbound.append($0) }

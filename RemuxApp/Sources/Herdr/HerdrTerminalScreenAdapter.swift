@@ -319,8 +319,6 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         model?.prepareViewport(size: size, scale: scale)
     }
 
-    func setViewportStabilityHint(stable: Bool) {}
-
     /// The session reads as ready once its connection is ready and its focused pane is presented, so the
     /// root sees it connect.
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection {

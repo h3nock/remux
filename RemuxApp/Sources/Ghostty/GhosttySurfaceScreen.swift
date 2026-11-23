@@ -726,11 +726,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
             }
             .onChange(of: inputCoordinator.keyboardMode) { _, mode in
-                // Sizes reported while the software keyboard is up are
-                // transient; flag them so reconnects carry the settled
-                // viewport (the mode flips before the layout changes,
-                // so the hint always precedes the affected report).
-                model.setViewportStabilityHint(stable: mode == .hidden)
                 if mode == .hidden, terminalCoverPhase.isRestoringKeyboard {
                     cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
                 }
