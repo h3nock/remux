@@ -128,3 +128,175 @@ final class GhosttyScrollDeltaBudgetTests: XCTestCase {
         XCTAssertEqual(budget.clamp(100, at: 10), 0)
     }
 }
+
+final class GhosttyViewportShiftTests: XCTestCase {
+    /// A header, rows `first...`, and an input box: what a full-screen agent shows.
+    private func frame(first: Int, body: Int = 12) -> [Substring] {
+        var rows = ["Agent v1"] + (first..<(first + body)).map { "R\($0)  text \($0 * 7919)" }
+        rows += ["", "> type here", "", ""]
+        return rows.map { Substring($0) }
+    }
+
+    func testRowsMovedDownAndUpAreCountedPastTheHeaderAndInputBox() {
+        var staticRows: Set<Int> = []
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 100), frame(first: 97), staticRows: &staticRows), .moved(3))
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 97), frame(first: 98), staticRows: &staticRows), .moved(-1))
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 98), frame(first: 98), staticRows: &staticRows), .unchanged)
+    }
+
+    /// Half of the rows already show the new position and half the old: counting that as movement and then
+    /// counting the finished frame again would double the distance.
+    func testHalfRepaintedFrameIsNotCountedAsMovement() {
+        var staticRows: Set<Int> = []
+        let old = frame(first: 100)
+        let done = frame(first: 98)
+        let half = Array(done[..<7] + old[7...])
+        XCTAssertEqual(GhosttyViewportShift.between(old, half, staticRows: &staticRows), .unclear)
+        XCTAssertEqual(GhosttyViewportShift.between(old, done, staticRows: &staticRows), .moved(2))
+    }
+
+    func testARowRedrawnInPlaceIsNotMovement() {
+        var staticRows: Set<Int> = []
+        var spinner = frame(first: 100)
+        spinner[14] = "> type here |"
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 100), spinner, staticRows: &staticRows), .redrawn)
+    }
+
+    func testRepeatedAndBlankRowsDoNotVote() {
+        var staticRows: Set<Int> = []
+        let old = (0..<10).map { Substring($0 < 4 ? "R\($0)" : "same") }
+        let new = (0..<10).map { Substring($0 < 4 ? "R\($0 + 1)" : "same") }
+        // Three numbered rows moved up by one; the six equal rows say nothing.
+        XCTAssertEqual(GhosttyViewportShift.between(old, new, staticRows: &staticRows), .moved(-1))
+    }
+
+    func testAnUnrelatedFrameIsUnclear() {
+        var staticRows: Set<Int> = []
+        let other = (0..<16).map { Substring("other \($0)") }
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 100), other, staticRows: &staticRows), .unclear)
+    }
+}
+
+final class GhosttyScrollFollowTests: XCTestCase {
+    /// A program that scrolls a numbered list by `rows(gap)` per report, `latency` after the report is sent.
+    private struct Program {
+        var first = 5000
+        var lastReportAt: TimeInterval = -1
+        var limit: ClosedRange<Int> = 0...10_000
+        let rows: (TimeInterval) -> Int
+
+        mutating func receive(direction: Int, at now: TimeInterval) {
+            let step = rows(now - lastReportAt)
+            lastReportAt = now
+            first = min(max(first - direction * step, limit.lowerBound), limit.upperBound)
+        }
+
+        var viewport: String {
+            (["Agent"] + (first..<(first + 30)).map { "R\($0)" } + ["", "> input"]).joined(separator: "\n")
+        }
+    }
+
+    /// Drag 14 rows in 0.4 s, then coast as UIKit does (speed x 0.998 per millisecond), 31.7 rows in all.
+    private func target(at t: TimeInterval) -> Double {
+        let dragRows = 14.0, dragTime = 0.4
+        guard t > dragTime else { return dragRows * max(t, 0) / dragTime }
+        let decay = -log(0.998) * 1000
+        return dragRows + dragRows / dragTime / decay * (1 - exp(-decay * (t - dragTime)))
+    }
+
+    private func run(
+        _ program: inout Program,
+        latency: TimeInterval,
+        seconds: TimeInterval = 4
+    ) -> (follow: GhosttyScrollFollow, moved: Int, furthestAhead: Double) {
+        var follow = GhosttyScrollFollow(reportsPerSecond: 60, burstSeconds: 0.08, latency: 0.08)
+        let start = program.first
+        var arrivals: [(at: TimeInterval, direction: Int)] = []
+        var visible: [(at: TimeInterval, text: String)] = []
+        var shown = program.viewport
+        var furthestAhead = 0.0
+        var last = 0.0
+        follow.observe(viewportRows: shown, at: 0)
+        for tick in 1...Int(seconds * 120) {
+            let now = Double(tick) / 120
+            while let next = arrivals.first, next.at <= now {
+                arrivals.removeFirst()
+                program.receive(direction: next.direction, at: next.at)
+                visible.append((next.at + latency / 2, program.viewport))
+            }
+            while let next = visible.first, next.at <= now {
+                visible.removeFirst()
+                shown = next.text
+            }
+            follow.moveTarget(byRows: target(at: now) - last)
+            last = target(at: now)
+            follow.observe(viewportRows: shown, at: now)
+            var direction = follow.nextReport(at: now)
+            while direction != 0 {
+                arrivals.append((now + latency / 2, direction))
+                direction = follow.nextReport(at: now)
+            }
+            furthestAhead = max(furthestAhead, Double(start - program.first) - follow.targetRows)
+        }
+        return (follow, start - program.first, furthestAhead)
+    }
+
+    func testOneRowPerReportEndsOnTheTarget() {
+        var program = Program { _ in 1 }
+        let result = run(&program, latency: 0.03)
+        XCTAssertEqual(Double(result.moved), result.follow.targetRows, accuracy: 1)
+        XCTAssertEqual(result.follow.reportCount, result.moved)
+    }
+
+    func testThreeRowsPerReportEndsOnTheTargetWithAThirdOfTheReports() {
+        var program = Program { _ in 3 }
+        let result = run(&program, latency: 0.03)
+        XCTAssertEqual(Double(result.moved), result.follow.targetRows, accuracy: 2)
+        XCTAssertEqual(result.follow.rowsPerReport, 3, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(result.follow.reportCount, 12)
+    }
+
+    /// A program that moves further per report when reports come close together would run away from a rule that
+    /// sends one report per row.
+    func testAProgramThatSpeedsUpWithCloseReportsStillEndsNearTheTarget() {
+        var gain = 1.0
+        var program = Program { gap in
+            gain = gap > 0.04 ? 1 : min(6, gain + 0.3)
+            return Int(gain)
+        }
+        let result = run(&program, latency: 0.03)
+        XCTAssertEqual(Double(result.moved), result.follow.targetRows, accuracy: 3)
+        XCTAssertLessThan(result.furthestAhead, 4)
+    }
+
+    func testANetworkDelayDoesNotMultiplyReports() {
+        var program = Program { _ in 1 }
+        let result = run(&program, latency: 0.2)
+        XCTAssertEqual(Double(result.moved), result.follow.targetRows, accuracy: 1)
+        XCTAssertEqual(result.follow.reportCount, result.moved)
+    }
+
+    /// At its first row a program moves nothing. That must not turn into a flood of reports.
+    func testAProgramAtItsEndGetsNoMoreReportsThanRowsOfTravel() {
+        var program = Program { _ in 1 }
+        program.limit = 4995...10_000
+        let result = run(&program, latency: 0.03)
+        XCTAssertEqual(result.moved, 5)
+        XCTAssertLessThanOrEqual(Double(result.follow.reportCount), result.follow.targetRows + 4)
+    }
+
+    func testContentAheadOfTheTargetIsNotPulledBack() {
+        var follow = GhosttyScrollFollow(reportsPerSecond: 60, burstSeconds: 0.08, latency: 0.03)
+        let rows = { (first: Int) in (first..<(first + 20)).map { "R\($0)" }.joined(separator: "\n") }
+        follow.observe(viewportRows: rows(100), at: 0)
+        follow.moveTarget(byRows: 1)
+        XCTAssertEqual(follow.nextReport(at: 0.01), 1)
+        // The program jumped six rows for that one report.
+        follow.observe(viewportRows: rows(94), at: 0.05)
+        follow.moveTarget(byRows: 0.5)
+        XCTAssertEqual(follow.nextReport(at: 0.2), 0)
+        // The finger turns round and passes where the content is.
+        follow.moveTarget(byRows: -8)
+        XCTAssertEqual(follow.nextReport(at: 0.3), -1)
+    }
+}

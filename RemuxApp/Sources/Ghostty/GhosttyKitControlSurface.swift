@@ -535,6 +535,19 @@ final class GhosttyKitControlSurface {
         return Self.decodeGhosttyText(text)
     }
 
+    /// The rows the viewport shows as text, one line per row.
+    func readViewportRows() -> String? {
+        guard !invalidated else { return nil }
+        var text = ghostty_text_s()
+        let result = ghostty_terminal_surface_read_viewport_rows(handle, &text)
+        guard result == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT else { return nil }
+        defer {
+            let freeResult = ghostty_terminal_surface_free_text(handle, &text)
+            assert(freeResult == GHOSTTY_TERMINAL_SURFACE_INPUT_CONSUMED_NO_OUTPUT)
+        }
+        return Self.decodeGhosttyText(text)
+    }
+
     @discardableResult
     func updateDisplay(metrics: GhosttySurfaceDisplayMetrics) -> Bool {
         guard !invalidated else { return false }

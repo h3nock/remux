@@ -125,6 +125,15 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
 
+    /// On the mouse-report route the reports follow what the program is seen to do with them. The display link
+    /// reads the viewport while a gesture runs, and for a short while after it, so reports still on their way are
+    /// counted.
+    private var scrollFollow: GhosttyScrollFollow?
+    private var scrollFollowLink: CADisplayLink?
+    private var scrollFollowSettleDeadline: TimeInterval?
+    private var scrollFollowLatency: TimeInterval = 0.08
+    private static let scrollFollowSettleWindow: TimeInterval = 0.4
+
     /// Set when a touch catches a live deceleration. The tap from that touch is
     /// the catch, not a click, as in native scroll views; the composite
     /// viewport's tap handler consumes it before forwarding mouse actions.
@@ -137,6 +146,9 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     /// is one cursor key moving one line, so fast flicks need a higher cap.
     private static let maxMouseReportTicksPerSecond: Double = 60
     private static let maxAltScreenTicksPerSecond: Double = 150
+    /// The follow rule's own ceiling on reports a second when mouse-report scrolling has no cap: Rex peaked at
+    /// 600 a second after a flick on the phone.
+    private static let uncappedFollowReportsPerSecond: Double = 600
 
     /// When this view last forwarded a scroll. A server's history position that
     /// changes soon after shows the scroll indicator; one that moves with new
@@ -159,6 +171,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     deinit {
         MainActor.assumeIsolated {
             displayLink?.invalidate()
+            scrollFollowLink?.invalidate()
         }
     }
 
@@ -273,6 +286,19 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         isUserViewportScrolling = true
     }
 
+    func scrollViewWillEndDragging(
+        _ scrollView: UIScrollView,
+        withVelocity velocity: CGPoint,
+        targetContentOffset: UnsafeMutablePointer<CGPoint>
+    ) {
+        // REMUX_SCROLL_FOLLOW=0 compares ending mouse-report scrolling with the finger: the coast is dropped.
+        guard scrollView === physicsScrollView,
+              GhosttyScrollTuning.forwardedScrollMode == .stopAtLift,
+              surface?.scrollRoute == .mouseReport
+        else { return }
+        targetContentOffset.pointee = scrollView.contentOffset
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if scrollView === physicsScrollView {
             if !decelerate {
@@ -290,10 +316,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         if scrollView === physicsScrollView {
             // Deceleration ending while a touch is tracking means that
             // touch caught the fling (a natural end has no touch).
-            if physicsScrollView.isTracking {
+            let wasCaught = physicsScrollView.isTracking
+            if wasCaught {
                 lastMomentumCatchAt = CACurrentMediaTime()
             }
-            endPhysicsGesture(phase: .ended)
+            endPhysicsGesture(phase: wasCaught && scrollFollow != nil ? .cancelled : .ended)
             return
         }
 
@@ -620,6 +647,21 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         )
         physicsReportedOffsetY = physicsScrollView.contentOffset.y
         isPhysicsGestureActive = true
+
+        // A new touch starts from what is on screen now: nothing is owed from the gesture before it.
+        stopScrollFollow()
+        if surface.scrollRoute == .mouseReport, GhosttyScrollTuning.forwardedScrollMode == .follow {
+            var follow = GhosttyScrollFollow(
+                reportsPerSecond: GhosttyScrollTuning.mouseReportTicksPerSecondCap ?? Self.uncappedFollowReportsPerSecond,
+                burstSeconds: GhosttyScrollDeltaBudget.defaultBurstSeconds,
+                latency: scrollFollowLatency
+            )
+            follow.observe(viewportRows: surface.controlSurface.readViewportRows(), at: CACurrentMediaTime())
+            scrollFollow = follow
+            let link = CADisplayLink(target: self, selector: #selector(scrollFollowTick))
+            link.add(to: .main, forMode: .common)
+            scrollFollowLink = link
+        }
     }
 
     /// Convert the offset delta since the last callback into the same
@@ -659,11 +701,17 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             GhosttyRuntimeTrace.diagnostics(
                 "scroll.physics tailCutoff surface=\(ghosttyDiagnosticShortID(surface.id))"
             )
-            haltPhysicsScroll()
+            haltPhysicsScroll(phase: scrollFollow != nil ? .ended : .cancelled)
             return
         }
         if !physicsScrollView.isDecelerating {
             physicsTailCutoff?.reset()
+        }
+
+        if scrollFollow != nil {
+            scrollFollow?.moveTarget(byRows: delta / Double(max(cellHeight(for: surface), 1)))
+            driveScrollFollow(at: now)
+            return
         }
 
         let budgeted = physicsDeltaBudget?.clamp(delta, at: now) ?? delta
@@ -684,7 +732,16 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         isPhysicsGestureActive = false
         physicsReportedOffsetY = nil
 
-        if let surface, let submitRouteForwardedMouseScroll {
+        if scrollFollow != nil {
+            // Each followed report is a whole step of its own, so there is no stream to close. Reports still on
+            // their way get a moment to land; a gesture that was cut short owes nothing more.
+            physicsForwardingGesture.reset()
+            if phase == .cancelled {
+                stopScrollFollow()
+            } else {
+                scrollFollowSettleDeadline = CACurrentMediaTime() + Self.scrollFollowSettleWindow
+            }
+        } else if let surface, let submitRouteForwardedMouseScroll {
             let events = physicsForwardingGesture.events(
                 forTranslation: .zero,
                 phase: phase
@@ -706,9 +763,53 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         }
     }
 
+    @objc
+    private func scrollFollowTick() {
+        driveScrollFollow(at: CACurrentMediaTime())
+    }
+
+    /// Read what the program has drawn and send the reports the content still needs to reach the target.
+    private func driveScrollFollow(at now: TimeInterval) {
+        guard var follow = scrollFollow else { return }
+        guard let surface, surface.scrollRoute == .mouseReport, let submitRouteForwardedMouseScroll else {
+            stopScrollFollow()
+            return
+        }
+
+        follow.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
+        // A precise event that starts a gesture and carries between one and two cells is exactly one report.
+        let stepPixels = 1.5 * Double(max(cellHeight(for: surface), 1) * displayScale)
+        var direction = follow.nextReport(at: now)
+        while direction != 0 {
+            _ = submitRouteForwardedMouseScroll(surface.id, GhosttySurfaceMouseScrollEvent(
+                deltaX: 0,
+                deltaY: Double(direction) * stepPixels,
+                mods: .init(precision: true, momentum: .began)
+            ))
+            lastForwardedScrollAt = now
+            direction = follow.nextReport(at: now)
+        }
+        GhosttyRuntimeTrace.diagnostics(
+            "scroll.follow t=\(now) target=\(follow.targetRows) seen=\(follow.seenRows) reports=\(follow.reportCount) rowsPerReport=\(follow.rowsPerReport) latency=\(follow.latency)"
+        )
+        scrollFollowLatency = follow.latency
+        scrollFollow = follow
+
+        if let deadline = scrollFollowSettleDeadline, now >= deadline || follow.isSettled(at: now) {
+            stopScrollFollow()
+        }
+    }
+
+    private func stopScrollFollow() {
+        scrollFollow = nil
+        scrollFollowSettleDeadline = nil
+        scrollFollowLink?.invalidate()
+        scrollFollowLink = nil
+    }
+
     /// Stop any tracking or deceleration immediately (route flips,
     /// surface detach, teardown) and close the local event stream.
-    private func haltPhysicsScroll() {
+    private func haltPhysicsScroll(phase: GhosttySurfacePanGesture.Phase = .cancelled) {
         let wasMoving = physicsScrollView.isTracking ||
             physicsScrollView.isDragging ||
             physicsScrollView.isDecelerating
@@ -718,9 +819,12 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             isRecenteringPhysicsScroll = false
         }
         if isPhysicsGestureActive {
-            endPhysicsGesture(phase: .cancelled)
+            endPhysicsGesture(phase: phase)
         } else if wasMoving {
             recenterPhysicsScrollIfIdle()
+        }
+        if phase == .cancelled {
+            stopScrollFollow()
         }
     }
 
