@@ -104,6 +104,18 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertEqual(keys.compactSummary, "esc · esc · pgdn")
     }
 
+    func testToolbarKeysKnownBySymbolDrawTheSymbol() {
+        XCTAssertEqual(TerminalToolbarKey.enter.toolbarLabel, .symbol("return"))
+        XCTAssertEqual(TerminalToolbarKey.backspace.toolbarLabel, .symbol("delete.left"))
+        XCTAssertEqual(
+            [TerminalToolbarKey.arrowUp, .arrowDown, .arrowLeft, .arrowRight].map(\.toolbarLabel),
+            [.symbol("arrow.up"), .symbol("arrow.down"), .symbol("arrow.left"), .symbol("arrow.right")]
+        )
+        XCTAssertEqual(TerminalToolbarKey.shiftTab.toolbarLabel, .symbolThenName(symbol: "shift", name: "tab"))
+        XCTAssertEqual(TerminalToolbarKey.escape.toolbarLabel, .name("esc"))
+        XCTAssertEqual(TerminalToolbarKey.pageUp.toolbarLabel, .name("pgup"))
+    }
+
     func testDefaultToolbarHasThreePagesWithAnsweringSecond() {
         XCTAssertEqual(TerminalToolbarKeys.default.pages.map(\.values), [
             [.control, .escape, .tab],

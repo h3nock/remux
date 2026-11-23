@@ -6,9 +6,25 @@ import XCTest
 final class GhosttyPhoneChromeLayoutTests: XCTestCase {
     func testEveryToolbarKeyLabelFitsACompactKeyWithoutShrinking() {
         let font = UIFont.systemFont(ofSize: GhosttyKeyboardChromeSizing.keyLabelFontSize, weight: .semibold)
+        func nameWidth(_ name: String) -> CGFloat {
+            (name as NSString).size(withAttributes: [.font: font]).width
+        }
+        func symbolWidth(_ symbol: String, _ configuration: UIImage.SymbolConfiguration) -> CGFloat {
+            UIImage(systemName: symbol, withConfiguration: configuration)?.size.width ?? .infinity
+        }
         for key in TerminalToolbarKey.allCases {
-            let width = (key.toolbarTitle as NSString).size(withAttributes: [.font: font]).width
-            XCTAssertLessThanOrEqual(width, GhosttyKeyboardChromeSizing.compactDockButtonWidth, key.toolbarTitle)
+            let width = switch key.toolbarLabel {
+            case .name(let name):
+                nameWidth(name)
+            case .symbol(let symbol):
+                symbolWidth(symbol, UIImage.SymbolConfiguration(
+                    pointSize: GhosttyKeyboardChromeSizing.keySymbolPointSize,
+                    weight: .semibold
+                ))
+            case .symbolThenName(let symbol, let name):
+                symbolWidth(symbol, UIImage.SymbolConfiguration(font: font)) + nameWidth(name)
+            }
+            XCTAssertLessThanOrEqual(width, GhosttyKeyboardChromeSizing.compactDockButtonWidth, "\(key)")
         }
     }
 

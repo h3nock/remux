@@ -36,6 +36,9 @@ enum GhosttyKeyboardChromeSizing {
     static let compactDockButtonWidth: CGFloat = 35
     /// Toolbar key labels, sized so every label fits a compact key without shrinking.
     static let keyLabelFontSize: CGFloat = 12
+    /// A key drawn as a symbol (an arrow, Return, Delete): at the names' weight, a point larger so it stands as tall as
+    /// a 12 pt name. Larger, the page of symbols reads heavier than the pages of names it swipes between.
+    static let keySymbolPointSize: CGFloat = 13
     /// The disc behind an armed or pressed key, smaller than the key at either width: it stays clear of the page
     /// dots under the keys, of a neighbouring armed key, and of the group's rounded ends.
     static let keyDiscDiameter: CGFloat = 32
@@ -287,7 +290,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             ForEach(Array(page.values.enumerated()), id: \.offset) { slot, key in
                 let isArmed = key.modifier.map(armedModifiers.contains) ?? false
                 accessoryKey(
-                    title: key.toolbarTitle,
+                    label: key.toolbarLabel,
                     accessibilityLabel: key.settingsTitle,
                     accessibilityHint: toolbarKeyAccessibilityHint(key),
                     accessibilityIdentifier: "terminal.toolbar-key.\(pageIndex * page.values.count + slot)",
@@ -419,7 +422,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     }
 
     private func accessoryKey(
-        title: String,
+        label: TerminalToolbarKeyLabel,
         accessibilityLabel: String,
         accessibilityHint: String? = nil,
         accessibilityIdentifier: String,
@@ -429,7 +432,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         action: @escaping () -> Bool
     ) -> some View {
         GhosttyKeyboardKeyButton(
-            title: title,
+            label: label,
             accessibilityLabel: accessibilityLabel,
             accessibilityHint: accessibilityHint,
             accessibilityIdentifier: accessibilityIdentifier,
@@ -616,7 +619,7 @@ private struct GhosttyKeyboardKeyButton: View {
     /// hold, such as a button with a menu.
     static let holdDuration = 0.4
 
-    let title: String
+    let label: TerminalToolbarKeyLabel
     let accessibilityLabel: String
     let accessibilityHint: String?
     let accessibilityIdentifier: String
@@ -634,11 +637,29 @@ private struct GhosttyKeyboardKeyButton: View {
     @State private var didHold = false
     private let discDiameter = GhosttyKeyboardChromeSizing.keyDiscDiameter
 
+    /// Names are text; symbols come from SF Symbols, as the toolbar's other buttons, and the ⇧ of ⇧tab sits inline on
+    /// the name's baseline.
+    @ViewBuilder
+    private var labelContent: some View {
+        switch label {
+        case .name(let name):
+            Text(name)
+                .font(.system(size: fontSize, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        case .symbol(let symbol):
+            Image(systemName: symbol)
+                .font(.system(size: GhosttyKeyboardChromeSizing.keySymbolPointSize, weight: .semibold))
+        case .symbolThenName(let symbol, let name):
+            (Text(Image(systemName: symbol)) + Text(name))
+                .font(.system(size: fontSize, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+    }
+
     var body: some View {
-        Text(title)
-            .font(.system(size: fontSize, weight: .semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
+        labelContent
             .foregroundStyle(isArmed ? GhosttyPhoneChromePalette.armedKeyLabel : GhosttyPhoneChromePalette.chromeForeground)
             .frame(width: width, height: height)
             .background {

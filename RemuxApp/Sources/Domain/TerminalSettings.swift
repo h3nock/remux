@@ -131,6 +131,15 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// What a toolbar key shows.
+enum TerminalToolbarKeyLabel: Equatable, Sendable {
+    case name(String)
+    /// An SF Symbol.
+    case symbol(String)
+    /// A modifier's SF Symbol set inline before a key's name, as in ⇧tab.
+    case symbolThenName(symbol: String, name: String)
+}
+
 enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     case control
     case shift
@@ -230,6 +239,30 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
             "pgup"
         case .pageDown:
             "pgdn"
+        }
+    }
+
+    /// How the toolbar draws the key: keys known by name show their name, and keys known by a symbol (arrows,
+    /// Return, Delete) show that symbol in the family the toolbar's other buttons use. Text that names a key, such as
+    /// a settings summary, uses `toolbarTitle`.
+    var toolbarLabel: TerminalToolbarKeyLabel {
+        switch self {
+        case .enter:
+            .symbol("return")
+        case .backspace:
+            .symbol("delete.left")
+        case .arrowUp:
+            .symbol("arrow.up")
+        case .arrowDown:
+            .symbol("arrow.down")
+        case .arrowLeft:
+            .symbol("arrow.left")
+        case .arrowRight:
+            .symbol("arrow.right")
+        case .shiftTab:
+            .symbolThenName(symbol: "shift", name: "tab")
+        case .control, .shift, .alt, .escape, .tab, .delete, .home, .end, .pageUp, .pageDown:
+            .name(toolbarTitle)
         }
     }
 
