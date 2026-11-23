@@ -2,15 +2,14 @@ import QuartzCore
 import UIKit
 
 enum GhosttyScrollTuning {
-    /// Gain for both forwarded scroll routes, chosen on device: at 2.0
-    /// slow drags run ahead of the finger; 1.5 stays controlled and keeps
-    /// flick reach.
-    static let routeForwardedDefaultGain: CGFloat = 1.5
+    /// Wheel steps per row of finger travel on the forwarded routes. At 1 a
+    /// program that scrolls one row per step moves with the finger; what a
+    /// step scrolls is the program's choice.
+    static let routeForwardedDefaultGain: CGFloat = 1
 
-    /// Gain from finger travel to precise scroll units on the
-    /// mouse-report route. `REMUX_SCROLL_PRECISE_GAIN` overrides for
-    /// on-device feel experiments (clamped; same read-once pattern as
-    /// the REMUX_TRACE_* flags).
+    /// Gain from finger travel to wheel steps on the forwarded routes.
+    /// `REMUX_SCROLL_PRECISE_GAIN` overrides for on-device feel experiments
+    /// (clamped; same read-once pattern as the REMUX_TRACE_* flags).
     static let routeForwardedGain: CGFloat = {
         let fallback = routeForwardedDefaultGain
         guard
@@ -57,57 +56,6 @@ final class GhosttyScrollPhysicsView: UIScrollView {
         )
         guard contentSize != size else { return }
         contentSize = size
-    }
-}
-
-/// Velocity-mapped gain for forwarded scrolling — the standard input
-/// acceleration shape (macOS scroll/pointer acceleration works the
-/// same way): a pure, monotonic function of smoothed instantaneous
-/// velocity. Below `slowVelocity` the multiplier is exactly 1 so the
-/// device-tuned slow-drag feel is untouched; above it the multiplier
-/// ramps linearly to `maxMultiplier` at `fastVelocity`, giving hard
-/// flicks real reach on routes where one tick is a single line.
-/// Deterministic: the same gesture at the same speed always scrolls
-/// the same amount (the EMA only suppresses single-frame spikes).
-struct GhosttyScrollVelocityGain {
-    /// Below this speed (points/s) the multiplier is 1, so slow drags keep
-    /// the base gain.
-    static let slowVelocity: Double = 900
-    /// Speed at which the ramp reaches `maxMultiplier`.
-    static let fastVelocity: Double = 3_500
-    static let maxMultiplier: Double = 3.5
-
-    private let smoothing: Double
-    private var smoothedSpeed: Double?
-    private var lastSampleTime: TimeInterval?
-
-    init(smoothing: Double = 0.3) {
-        self.smoothing = min(max(smoothing, 0.01), 1)
-    }
-
-    /// Multiplier for one offset delta (points) observed at `now`.
-    mutating func multiplier(delta: Double, at now: TimeInterval) -> Double {
-        defer { lastSampleTime = now }
-        guard let lastSampleTime else { return 1 }
-        let dt = now - lastSampleTime
-        guard dt > 0 else { return Self.multiplier(forVelocity: smoothedSpeed ?? 0) }
-
-        let speed = abs(delta) / dt
-        let smoothed = (smoothedSpeed ?? speed) * (1 - smoothing) + speed * smoothing
-        smoothedSpeed = smoothed
-        return Self.multiplier(forVelocity: smoothed)
-    }
-
-    static func multiplier(forVelocity velocity: Double) -> Double {
-        guard velocity > slowVelocity else { return 1 }
-        guard velocity < fastVelocity else { return maxMultiplier }
-        let t = (velocity - slowVelocity) / (fastVelocity - slowVelocity)
-        return 1 + t * (maxMultiplier - 1)
-    }
-
-    mutating func reset() {
-        smoothedSpeed = nil
-        lastSampleTime = nil
     }
 }
 
