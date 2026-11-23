@@ -44,6 +44,8 @@
   --text-col: 46ch;
   --screen: 26ch;
   --media-col: calc(2 * var(--screen) + 2ch);
+  /* the gap between the features' three columns, which the install details share */
+  --col-gap: 6ch;
   /* the sticky top line's height, so section jumps and focused elements land below it */
   --bar: 63px;
 
@@ -244,7 +246,7 @@ h1, h2, h3, p { margin: 0; }
    (16 over 15, 15 over 14 on a phone) and leads by its letterform and brightness, the sentence stepping back in the
    dim colour. Bright is what you scan, dim is what you read. */
 
-.feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(3 * var(--lh)) 6ch; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(3 * var(--lh)) var(--col-gap); }
 .feature-item { display: flex; flex-direction: column; gap: calc(var(--lh) * .9); }
 .feature-item .shot { width: 100%; order: -1; }
 .feature-item .zoom { overflow: hidden; }
@@ -282,10 +284,10 @@ h1, h2, h3, p { margin: 0; }
 .app-icon { width: 40px; height: 40px; border-radius: 22.37%; }
 .get { display: flex; flex-wrap: wrap; gap: 1.5ch; }
 @media (max-width: 520px) { .get { flex-direction: column; } }
-.specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4ch; margin: calc(1.5 * var(--lh)) 0 0;
+.specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--col-gap); margin: calc(1.5 * var(--lh)) 0 0;
   padding-top: var(--lh); border-top: 1px solid var(--line); }
 .specs div { position: relative; }
-.specs div + div::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: -2ch; width: 1px;
+.specs div + div::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: calc(var(--col-gap) / -2); width: 1px;
   background: var(--line); }
 .specs dt, .specs dd { font-size: 13px; line-height: 1.6; }
 .specs dt { font-weight: 500; }
