@@ -214,16 +214,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 #if DEBUG
         let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
 #endif
+        // The terminal's size comes from the screen as if no keyboard were up: the keyboard, like the composer,
+        // covers the bottom of the terminal, which slides up to keep its cursor in view, instead of resizing it.
+        Color.clear
+            .background {
+                GeometryReader { container in
+                    Color.clear.preference(key: GhosttyTerminalContainerSizePreferenceKey.self, value: container.size)
+                }
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+            }
+            .overlayPreferenceValue(GhosttyTerminalContainerSizePreferenceKey.self) { containerSize in
+                terminalScreen(containerSize: containerSize)
+            }
+    }
+
+    private func terminalScreen(containerSize: CGSize) -> some View {
         GeometryReader { screenProxy in
             let renderedKeyboardMode = inputCoordinator.keyboardMode
-            let chrome = GhosttyPhoneChromeLayout(
-                screenSize: screenProxy.size
-            )
-            let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
-                + 4
-                + chrome.bottomPadding
+            let chrome = GhosttyPhoneChromeLayout(screenSize: containerSize)
             let bottomChromeHeight = bottomChromeReservation.layoutHeight(
-                fallback: bottomChromeFallbackHeight
+                fallback: chrome.restingBottomChromeHeight
             )
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
@@ -244,7 +254,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .ignoresSafeArea(.all, edges: .all)
 
                 GeometryReader { proxy in
-                    let liveTerminalViewportSize = GhosttyTerminalViewportCoordinator.normalized(proxy.size)
+                    // The area shown, above the toolbar, the composer and the keyboard.
+                    let terminalAreaSize = GhosttyTerminalViewportCoordinator.normalized(proxy.size)
+                    let liveTerminalViewportSize = GhosttyTerminalViewportCoordinator.normalized(
+                        CGSize(
+                            width: containerSize.width,
+                            height: containerSize.height - chrome.restingBottomChromeHeight
+                        )
+                    )
                     let terminalViewportSize = terminalViewportCoordinator.effectiveSize(
                         liveSize: liveTerminalViewportSize
                     )
@@ -267,6 +284,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         GhosttyCompositeViewportView(
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
+                            canvasSize: terminalViewportSize,
                             terminalTheme: presentation.terminalTheme,
                             trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
@@ -301,8 +319,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             )
                         )
                             .frame(
-                                width: terminalViewportSize.width,
-                                height: terminalViewportSize.height,
+                                width: terminalAreaSize.width,
+                                height: terminalAreaSize.height,
                                 alignment: .topLeading
                             )
                             .background(presentation.terminalTheme.terminalSurfaceBackground)
@@ -473,7 +491,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
                                     presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
                                     onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
-                                    .frame(height: 46)
+                                    .frame(height: GhosttyKeyboardChromeSizing.baselineHeight)
                             } else {
                                 GhosttyKeyboardChrome(
                                     keyboardMode: renderedKeyboardMode,
@@ -508,7 +526,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             }
                         }
                         .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                        .padding(.top, 4)
+                        .padding(.top, GhosttyPhoneChromeLayout.topPadding)
                         .padding(.bottom, chrome.bottomPadding)
                         .frame(maxWidth: .infinity, alignment: .bottom)
                         .background {
@@ -2729,8 +2747,24 @@ struct GhosttyPhoneChromeLayout: Equatable {
         isCompact ? 8 : 12
     }
 
+    static let topPadding: CGFloat = 4
+
     var bottomPadding: CGFloat {
         isCompact ? 2 : 4
+    }
+
+    /// The bottom chrome's height with only the toolbar (or the find bar, as tall) in it: the space the terminal
+    /// leaves for it. The composer and the keyboard cover more of the terminal instead.
+    var restingBottomChromeHeight: CGFloat {
+        GhosttyKeyboardChromeSizing.baselineHeight + Self.topPadding + bottomPadding
+    }
+}
+
+private enum GhosttyTerminalContainerSizePreferenceKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 

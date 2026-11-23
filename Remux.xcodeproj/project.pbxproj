@@ -55,6 +55,7 @@
 		1E4598594269BC31B1B28C21 /* RemuxRootModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C76A9A6D14624AC5E1155D8 /* RemuxRootModelTests.swift */; };
 		1E7D2114A1105E92FCB75153 /* herdr-12-notification-B.c2s.bin in Resources */ = {isa = PBXBuildFile; fileRef = 7CA0CB5980CAD8233A6D22B7 /* herdr-12-notification-B.c2s.bin */; };
 		1E964EDC5E093FBBBDE6E8D0 /* TmuxSessionDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F74377E4AE057A12E99675E /* TmuxSessionDiscovery.swift */; };
+		1EF166D869317349FF108594 /* GhosttyKeyboardSlideTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E037FDDDA5ECA1E22281A8B1 /* GhosttyKeyboardSlideTests.swift */; };
 		1F97978A518B2AD52F9A556A /* GhosttyKeyboardCursorTrackpad.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C7136948AF9803FAAD6F82 /* GhosttyKeyboardCursorTrackpad.swift */; };
 		1FB8A4C5B66DAEB4315D3870 /* SSHPublicKeyRemoteInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 486F770F3A47F522406131B7 /* SSHPublicKeyRemoteInstallerTests.swift */; };
 		1FCDFBD088BC311CDCBA7C7B /* GhosttyKitRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BA8119EA500195F1FF488FF /* GhosttyKitRuntimeTests.swift */; };
@@ -823,6 +824,7 @@
 		DFD9AF0371D15A892B000530 /* DebugConnectionProfileSeederTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugConnectionProfileSeederTests.swift; sourceTree = "<group>"; };
 		DFE379BEA53B0CDD485B3DC1 /* herdr-wide-cells-patch-A.s2c.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "herdr-wide-cells-patch-A.s2c.bin"; sourceTree = "<group>"; };
 		E008F30DFD7B78390EB254CC /* direct-terminal-0.9.5-03-missing.c2s.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "direct-terminal-0.9.5-03-missing.c2s.bin"; sourceTree = "<group>"; };
+		E037FDDDA5ECA1E22281A8B1 /* GhosttyKeyboardSlideTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyKeyboardSlideTests.swift; sourceTree = "<group>"; };
 		E05107088F3540B7C04D2007 /* GhosttyTerminalResponderViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalResponderViewTests.swift; sourceTree = "<group>"; };
 		E0B4E47DA0DBB84F1301E14C /* GhosttyTerminalViewportCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalViewportCoordinator.swift; sourceTree = "<group>"; };
 		E163F548D30ACE295D0F7758 /* direct-terminal-0.9.3-06-grapheme.c2s.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "direct-terminal-0.9.3-06-grapheme.c2s.bin"; sourceTree = "<group>"; };
@@ -973,6 +975,7 @@
 				636A73D3AA225CCADC20F687 /* GhosttyKeyboardChromeModeTests.swift */,
 				348717C8CDA34B1C31055D3C /* GhosttyKeyboardChromeNavigationTests.swift */,
 				1DFA7B573241258BA93FCF29 /* GhosttyKeyboardCursorTrackpadTests.swift */,
+				E037FDDDA5ECA1E22281A8B1 /* GhosttyKeyboardSlideTests.swift */,
 				B9F00A0064AC2897BDF34495 /* GhosttyKeyboardVisibilityProjectionTests.swift */,
 				EF4BB00F78EE94D58937F98A /* GhosttyKitControlSurfaceTests.swift */,
 				8BA8119EA500195F1FF488FF /* GhosttyKitRuntimeTests.swift */,
@@ -1935,6 +1938,7 @@
 				27A320CC1E03C85158276F1D /* GhosttyKeyboardChromeModeTests.swift in Sources */,
 				CD8225B5E5F06DFF30FA11B4 /* GhosttyKeyboardChromeNavigationTests.swift in Sources */,
 				034B17174ABCC1D1DF36C135 /* GhosttyKeyboardCursorTrackpadTests.swift in Sources */,
+				1EF166D869317349FF108594 /* GhosttyKeyboardSlideTests.swift in Sources */,
 				4A02E9ACE7B1C741CA9DF696 /* GhosttyKeyboardVisibilityProjectionTests.swift in Sources */,
 				DBC5F67F490AAC96F4918650 /* GhosttyKitControlSurfaceTests.swift in Sources */,
 				1FCDFBD088BC311CDCBA7C7B /* GhosttyKitRuntimeTests.swift in Sources */,
