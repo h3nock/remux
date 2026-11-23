@@ -250,7 +250,8 @@ final class TmuxSessionController: @unchecked Sendable {
         let deadline: DispatchTime
     }
 
-    /// Control output received but not yet parsed, and when its first byte arrived. See `OutputSettle`.
+    /// Control output received but not yet parsed, and when its first byte arrived. See `OutputSettle`. It is parsed
+    /// early when the channel closes or the attachment stops, so the session ends on everything tmux sent.
     private var settlingOutput = Data()
     private var settlingSince: DispatchTime?
     private var settlingEnqueuedAt: UInt64 = 0
@@ -327,6 +328,7 @@ final class TmuxSessionController: @unchecked Sendable {
     func finishOutboundEndingClient() async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
+                feedSettlingOutput()
                 _ = drainOutbound()
                 var requestedClientExit = false
                 if let client, outboundSink != nil, !shuttingDown {
@@ -396,6 +398,8 @@ final class TmuxSessionController: @unchecked Sendable {
     func transportClosed() {
         queue.async { [self] in
             guard !shuttingDown else { return }
+            // What tmux sent before the channel closed says why it closed, and may answer waiting requests.
+            feedSettlingOutput()
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
             deferredNavigationIntent = nil
@@ -416,6 +420,7 @@ final class TmuxSessionController: @unchecked Sendable {
     func attachmentStopped() {
         queue.async { [self] in
             guard !shuttingDown else { return }
+            feedSettlingOutput()
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
             deferredNavigationIntent = nil

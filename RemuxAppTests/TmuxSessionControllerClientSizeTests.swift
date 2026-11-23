@@ -1525,6 +1525,29 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 0)
     }
 
+    /// tmux ends a session by sending %exit and closing the channel. Output still waiting when the channel closes
+    /// is parsed first, so the session ends for tmux's reason and not as a lost connection to reconnect.
+    func testOutputWaitingToSettleIsParsedBeforeTheChannelCloses() async throws {
+        let states = ControllerStateRecorder()
+        var callbacks = TmuxSessionController.Callbacks()
+        callbacks.onState = { states.append($0) }
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: callbacks,
+            outputSettle: .init(quiet: .milliseconds(200), cap: .seconds(5))
+        )
+
+        harness.controller.pump(Data("%exit\n".utf8))
+        harness.controller.transportClosed()
+        try await waitUntil("the session didn't end") {
+            states.contains { if case .detached = $0 { true } else { false } }
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(states.contains { $0 == .detached(.serverExited(nil)) })
+        XCTAssertFalse(states.contains { $0 == .detached(.transportClosed) })
+    }
+
     private struct ReadyControllerHarness {
         let runtime: GhosttyKitRuntime
         let controller: TmuxSessionController
@@ -1893,6 +1916,19 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     ) -> String {
         "$42 @\(id) \(active ? 1 : 0) %\(paneID) 83 44 "
             + "\(layout) \(visibleLayout) \(name)\n"
+    }
+}
+
+private final class ControllerStateRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var states: [TmuxSessionController.SessionState] = []
+
+    func append(_ state: TmuxSessionController.SessionState) {
+        lock.withLock { states.append(state) }
+    }
+
+    func contains(where predicate: (TmuxSessionController.SessionState) -> Bool) -> Bool {
+        lock.withLock { states.contains(where: predicate) }
     }
 }
 
