@@ -269,7 +269,9 @@ enum GhosttyViewportShift: Equatable {
 /// Content is never pulled back against the direction of travel: when a program overshoots, the target catches up.
 ///
 /// When reports land and nothing is seen to move (the program is at its first or last row, or what it shows
-/// can't be compared), each one counts as one row, which is the plain one-report-per-row rule.
+/// can't be compared), each one counts as one row, which is the plain one-report-per-row rule. That rule is also
+/// the ceiling: seeing the content only ever holds reports back, so a picture that arrives late, or can't be
+/// read, never costs more reports than a row of travel each.
 struct GhosttyScrollFollow {
     private struct Report {
         let sentAt: TimeInterval
@@ -299,6 +301,7 @@ struct GhosttyScrollFollow {
     private var recentRowsPerReport = 1.0
     private var history: [(at: TimeInterval, movedRows: Double, landed: Int)] = []
     private var travelDirection = 0.0
+    private var travelledRows = 0.0
 
     private var reference: [Substring]?
     private var referenceText: String?
@@ -326,6 +329,7 @@ struct GhosttyScrollFollow {
     mutating func moveTarget(byRows rows: Double) {
         guard rows != 0 else { return }
         targetRows += rows
+        travelledRows += abs(rows)
         travelDirection = rows > 0 ? 1 : -1
     }
 
@@ -364,7 +368,7 @@ struct GhosttyScrollFollow {
             availableReports = min(availableReports + max(0, now - lastRefill) * reportsPerSecond, burstReports)
         }
         lastRefill = now
-        guard availableReports >= 1 else { return 0 }
+        guard availableReports >= 1, Double(reports.count) + 1 <= travelledRows else { return 0 }
 
         // A program that moves further when reports come close together shows it in the last few reports before
         // it shows in the gesture's average, so reports on their way count at the larger of the two.

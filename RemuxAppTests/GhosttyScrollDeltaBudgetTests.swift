@@ -207,6 +207,7 @@ final class GhosttyScrollFollowTests: XCTestCase {
     private func run(
         _ program: inout Program,
         latency: TimeInterval,
+        pictureDelay: TimeInterval = 0,
         seconds: TimeInterval = 4
     ) -> (follow: GhosttyScrollFollow, moved: Int, furthestAhead: Double) {
         var follow = GhosttyScrollFollow(reportsPerSecond: 60, burstSeconds: 0.08, latency: 0.08)
@@ -222,7 +223,7 @@ final class GhosttyScrollFollowTests: XCTestCase {
             while let next = arrivals.first, next.at <= now {
                 arrivals.removeFirst()
                 program.receive(direction: next.direction, at: next.at)
-                visible.append((next.at + latency / 2, program.viewport))
+                visible.append((next.at + latency / 2 + pictureDelay, program.viewport))
             }
             while let next = visible.first, next.at <= now {
                 visible.removeFirst()
@@ -274,6 +275,16 @@ final class GhosttyScrollFollowTests: XCTestCase {
         let result = run(&program, latency: 0.2)
         XCTAssertEqual(Double(result.moved), result.follow.targetRows, accuracy: 1)
         XCTAssertEqual(result.follow.reportCount, result.moved)
+    }
+
+    /// A link that delivers the picture a second late leaves the content unseen for longer than any round trip
+    /// the follow has timed. It must fall back to a report per row, not send more.
+    func testALatePictureNeverCostsMoreThanAReportPerRow() {
+        var program = Program { _ in 1 }
+        let result = run(&program, latency: 0.03, pictureDelay: 1.0, seconds: 6)
+        XCTAssertLessThanOrEqual(Double(result.follow.reportCount), result.follow.targetRows)
+        XCTAssertLessThanOrEqual(Double(result.moved), result.follow.targetRows)
+        XCTAssertGreaterThan(Double(result.moved), result.follow.targetRows - 3)
     }
 
     /// At its first row a program moves nothing. That must not turn into a flood of reports.
