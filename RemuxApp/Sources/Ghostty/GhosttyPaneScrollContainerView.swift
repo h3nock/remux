@@ -271,6 +271,17 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         isUserViewportScrolling = true
     }
 
+    func scrollViewWillEndDragging(
+        _ scrollView: UIScrollView,
+        withVelocity velocity: CGPoint,
+        targetContentOffset: UnsafeMutablePointer<CGPoint>
+    ) {
+        // A program moves whole lines, so a coast after lift arrives as a run of line jumps that goes on
+        // after the finger has stopped. Forwarded scrolling ends with the finger.
+        guard scrollView === physicsScrollView else { return }
+        targetContentOffset.pointee = scrollView.contentOffset
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if scrollView === physicsScrollView {
             if !decelerate {
