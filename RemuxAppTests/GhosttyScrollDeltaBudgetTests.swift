@@ -10,11 +10,11 @@ final class GhosttyScrollDeltaBudgetTests: XCTestCase {
         XCTAssertLessThanOrEqual(instantDump, 150 * 0.1)
     }
 
-    func testRouteForwardedGainDefaultsToDeviceTunedValue() {
+    func testRouteForwardedGainDefaultsToOneStepPerRowOfTravel() {
         // No env override in the test process: the resolved gain is
         // the shipped default.
-        XCTAssertEqual(GhosttyScrollTuning.routeForwardedGain, 1.5)
-        XCTAssertEqual(GhosttyScrollTuning.routeForwardedDefaultGain, 1.5)
+        XCTAssertEqual(GhosttyScrollTuning.routeForwardedGain, 1)
+        XCTAssertEqual(GhosttyScrollTuning.routeForwardedDefaultGain, 1)
     }
 
     func testClampPassesDeltaWithinBudget() {
@@ -80,54 +80,6 @@ final class GhosttyScrollDeltaBudgetTests: XCTestCase {
         // Fresh burst at the new rate, with no stale refill timestamp:
         // capacity is 200 * 0.25 = 50 immediately.
         XCTAssertEqual(budget.clamp(1_000, at: 0), 50)
-    }
-
-    func testVelocityGainIsUnityForSlowDrags() {
-        // At and below `slowVelocity` (900 pt/s) the multiplier is exactly 1.
-        XCTAssertEqual(GhosttyScrollVelocityGain.multiplier(forVelocity: 0), 1)
-        XCTAssertEqual(GhosttyScrollVelocityGain.multiplier(forVelocity: 899), 1)
-        XCTAssertEqual(GhosttyScrollVelocityGain.multiplier(forVelocity: 900), 1)
-    }
-
-    func testVelocityGainRampsMonotonicallyAndClamps() {
-        let mid = GhosttyScrollVelocityGain.multiplier(forVelocity: 2_200)
-        XCTAssertGreaterThan(mid, 1)
-        XCTAssertLessThan(mid, GhosttyScrollVelocityGain.maxMultiplier)
-        XCTAssertEqual(
-            GhosttyScrollVelocityGain.multiplier(forVelocity: 3_500),
-            GhosttyScrollVelocityGain.maxMultiplier
-        )
-        XCTAssertEqual(
-            GhosttyScrollVelocityGain.multiplier(forVelocity: 50_000),
-            GhosttyScrollVelocityGain.maxMultiplier
-        )
-        var last = 0.0
-        for v in stride(from: 0.0, through: 5_000, by: 250) {
-            let m = GhosttyScrollVelocityGain.multiplier(forVelocity: v)
-            XCTAssertGreaterThanOrEqual(m, last)
-            last = m
-        }
-    }
-
-    func testVelocityGainSmoothingTracksSustainedSpeed() {
-        var gain = GhosttyScrollVelocityGain(smoothing: 1)
-        // First sample only seeds the clock.
-        XCTAssertEqual(gain.multiplier(delta: 0, at: 0), 1)
-        // Sustained 3500 pt/s: full multiplier.
-        XCTAssertEqual(
-            gain.multiplier(delta: 3_500 / 60, at: 1.0 / 60),
-            GhosttyScrollVelocityGain.maxMultiplier
-        )
-        // Sustained slow speed drops back to unity.
-        XCTAssertEqual(gain.multiplier(delta: 5, at: 2.0 / 60), 1)
-    }
-
-    func testVelocityGainResetForgetsSpeed() {
-        var gain = GhosttyScrollVelocityGain(smoothing: 1)
-        _ = gain.multiplier(delta: 0, at: 0)
-        _ = gain.multiplier(delta: 100, at: 1.0 / 60)
-        gain.reset()
-        XCTAssertEqual(gain.multiplier(delta: 100, at: 1), 1)
     }
 
     func testTailCutoffStopsBelowQuantizationFloor() {

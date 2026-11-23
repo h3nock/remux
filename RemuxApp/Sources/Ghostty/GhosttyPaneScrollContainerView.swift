@@ -113,13 +113,12 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     /// delta, so leftover momentum never becomes input for whatever
     /// mode comes next.
     private let physicsScrollView = GhosttyScrollPhysicsView()
+    /// Replaced at each gesture's start, for the display scale it runs at.
     private var physicsForwardingGesture = GhosttyRouteForwardingScrollGesture(
         preciseScale: GhosttyScrollTuning.routeForwardedGain
     )
     private var physicsDeltaBudget = GhosttyScrollDeltaBudget(unitsPerSecond: 0)
     private var physicsTailCutoff = GhosttyScrollTailCutoff()
-    private var physicsVelocityGain = GhosttyScrollVelocityGain()
-    private var physicsPeakMultiplier: Double = 1
     private var physicsReportedOffsetY: CGFloat?
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
@@ -587,6 +586,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         )
         _ = submitRouteForwardedMousePosition?(surface.id, location, [])
 
+        // Precise scroll deltas are pixels: the terminal and Herdr count one step per cell
+        // height in pixels. Finger travel is in points.
+        physicsForwardingGesture = GhosttyRouteForwardingScrollGesture(
+            preciseScale: displayScale * GhosttyScrollTuning.routeForwardedGain
+        )
         let cellHeightPixels = max(cellHeight(for: surface), 1) * displayScale
         let ticksPerSecond = surface.scrollRoute == .altScreenCursor
             ? Self.maxAltScreenTicksPerSecond
@@ -599,8 +603,6 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         )
         physicsDeltaBudget.rearm(unitsPerSecond: budgetUnitsPerSecond)
         physicsTailCutoff.reset()
-        physicsVelocityGain.reset()
-        physicsPeakMultiplier = 1
         physicsReportedOffsetY = physicsScrollView.contentOffset.y
         isPhysicsGestureActive = true
     }
@@ -649,12 +651,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             physicsTailCutoff.reset()
         }
 
-        // Velocity acceleration before the budget, so the per-route
-        // tick cap bounds the effective output.
-        let multiplier = physicsVelocityGain.multiplier(delta: delta, at: now)
-        physicsPeakMultiplier = max(physicsPeakMultiplier, multiplier)
-        let accelerated = delta * multiplier
-        let budgeted = physicsDeltaBudget.clamp(accelerated, at: now)
+        let budgeted = physicsDeltaBudget.clamp(delta, at: now)
         guard budgeted != 0 else { return }
 
         let events = physicsForwardingGesture.events(
@@ -685,7 +682,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         }
 
         GhosttyRuntimeTrace.diagnostics(
-            "scroll.physics end surface=\(ghosttyDiagnosticShortID(surface?.id)) phase=\(phase) peakGain=\(String(format: "%.2f", physicsPeakMultiplier))"
+            "scroll.physics end surface=\(ghosttyDiagnosticShortID(surface?.id)) phase=\(phase)"
         )
         recenterPhysicsScrollIfIdle()
     }
