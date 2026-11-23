@@ -288,13 +288,16 @@ struct GhosttyScrollFollow {
 
     private var reports: [Report] = []
     private var landedCount = 0
-    private var matchedCount = 0
+    /// When a report was sent with none on its way: the next movement times the round trip.
+    private var probeSentAt: TimeInterval?
     private var unmovedCount = 0
+    private var unmovedSince: TimeInterval?
     private var stallCounted = 0
     private var stallCredit = 0.0
     private var stalledReports = 0
     private var movedRows = 0.0
-    private var lastMoveGain = 1.0
+    private var recentRowsPerReport = 1.0
+    private var history: [(at: TimeInterval, movedRows: Double, landed: Int)] = []
     private var travelDirection = 0.0
 
     private var reference: [Substring]?
@@ -363,8 +366,10 @@ struct GhosttyScrollFollow {
         lastRefill = now
         guard availableReports >= 1 else { return 0 }
 
+        // A program that moves further when reports come close together shows it in the last few reports before
+        // it shows in the gesture's average, so reports on their way count at the larger of the two.
         let inFlight = reports[landedCount...].reduce(0) { $0 + $1.direction }
-        let behind = targetRows - (seenRows + stallCredit) - inFlight * max(rowsPerReport, lastMoveGain)
+        let behind = targetRows - (seenRows + stallCredit) - inFlight * max(rowsPerReport, recentRowsPerReport)
         let threshold = (rowsPerReport + 1) / 2
         let direction: Double
         if behind >= threshold, travelDirection > 0 {
@@ -375,6 +380,9 @@ struct GhosttyScrollFollow {
             return 0
         }
         availableReports -= 1
+        if landedCount == reports.count, probeSentAt == nil {
+            probeSentAt = now
+        }
         reports.append(Report(sentAt: now, direction: direction))
         return Int(direction)
     }
@@ -399,14 +407,11 @@ struct GhosttyScrollFollow {
         }
 
         if moved != 0 {
-            if matchedCount < reports.count {
-                let sample = now - reports[matchedCount].sentAt
-                latency = min(max(sample > latency ? sample : 0.8 * latency + 0.2 * sample, 0.02), 0.4)
+            if let probeSentAt {
+                let sample = now - probeSentAt
+                latency = min(max(sample > latency ? sample : 0.7 * latency + 0.3 * sample, 0.02), 0.4)
+                self.probeSentAt = nil
             }
-            let matched = max(1, Int((abs(moved) / rowsPerReport).rounded()))
-            let reportsBehindMove = max(1, min(matched, reports.count - matchedCount))
-            lastMoveGain = min(max(abs(moved) / Double(reportsBehindMove), 0.25), 20)
-            matchedCount = min(reports.count, matchedCount + matched)
             seenRows += moved
             movedRows += abs(moved)
             if stallCredit != 0, (moved > 0) == (stallCredit > 0) {
@@ -415,12 +420,19 @@ struct GhosttyScrollFollow {
                 stalledReports = max(0, stalledReports - Int(cancelled.rounded()))
             }
             unmovedCount = 0
+            unmovedSince = nil
             stallCounted = 0
-        } else {
+        } else if newlyLanded > 0 {
+            if unmovedSince == nil {
+                unmovedSince = reports[landedCount - newlyLanded].sentAt
+            }
             unmovedCount += newlyLanded
         }
 
-        if unmovedCount >= Self.stalledReportCount, landedCount > 0 {
+        // Reports that have had well over a round trip and moved nothing: the program is at its first or last
+        // row, or what it draws can't be compared. Each counts as one row from here on.
+        if unmovedCount >= Self.stalledReportCount,
+           let unmovedSince, now - unmovedSince >= 2.5 * latency + 0.05 {
             let fresh = unmovedCount - stallCounted
             stallCredit += Double(fresh) * reports[landedCount - 1].direction
             stalledReports += fresh
@@ -430,6 +442,17 @@ struct GhosttyScrollFollow {
         let effective = landedCount - stalledReports
         if movedRows > 0, effective > 0 {
             rowsPerReport = min(max(movedRows / Double(effective), 0.25), 20)
+        }
+
+        history.append((now, movedRows, effective))
+        let window = max(0.2, 3 * latency)
+        while let first = history.first, now - first.at > window, history.count > 1 {
+            history.removeFirst()
+        }
+        if let first = history.first, effective - first.landed >= 2 {
+            recentRowsPerReport = min(max((movedRows - first.movedRows) / Double(effective - first.landed), 0.25), 20)
+        } else {
+            recentRowsPerReport = rowsPerReport
         }
     }
 }

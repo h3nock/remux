@@ -739,7 +739,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             if phase == .cancelled {
                 stopScrollFollow()
             } else {
-                scrollFollowSettleDeadline = CACurrentMediaTime() + Self.scrollFollowSettleWindow
+                scrollFollowSettleDeadline = CACurrentMediaTime() + Self.scrollFollowSettleWindow + scrollFollowLatency
             }
         } else if let surface, let submitRouteForwardedMouseScroll {
             let events = physicsForwardingGesture.events(
