@@ -90,11 +90,6 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
         case preserveCurrentEffective
     }
 
-    /// With the keyboard pan, the size the terminal keeps is its resting size, the tallest live size seen
-    /// at the current width, instead of the live size.
-    var keepsRestingSize = GhosttyKeyboardPanExperiment.isEnabled
-    private var tallestLiveSize: CGSize?
-
     private(set) var lastLiveSize = CGSize(width: 1, height: 1)
     private(set) var lastStableSize = CGSize(width: 1, height: 1)
     private(set) var frozenSize: CGSize?
@@ -195,13 +190,12 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
                 releasePolicy: .adoptLatestLive
             )
         }
-        let resting = restingSize(for: normalizedSize)
         guard !isGeometryFrozen else {
             return observation(
                 outcome: didChangeLiveSize ? .observedWithoutStableUpdate : .unchanged
             )
         }
-        guard lastStableSize != resting else {
+        guard lastStableSize != normalizedSize else {
             return observation(
                 outcome: didReleaseUnsizedInitialLayout
                     ? .appliedStableSize
@@ -209,22 +203,8 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
             )
         }
 
-        lastStableSize = resting
+        lastStableSize = normalizedSize
         return observation(outcome: .appliedStableSize)
-    }
-
-    /// The size the terminal keeps for a usable live size: the live size itself, or with `keepsRestingSize`
-    /// the tallest live size at its width. A layout pass that reports a size reduced by the keyboard then
-    /// changes nothing, whatever order it arrives in relative to the keyboard's notifications.
-    private mutating func restingSize(for liveSize: CGSize) -> CGSize {
-        guard keepsRestingSize else { return liveSize }
-        if let tallestLiveSize,
-           tallestLiveSize.width == liveSize.width,
-           tallestLiveSize.height >= liveSize.height {
-            return tallestLiveSize
-        }
-        tallestLiveSize = liveSize
-        return liveSize
     }
 
     @discardableResult
@@ -375,7 +355,7 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
         switch finalReleasePolicy {
         case .adoptLatestLive:
             if Self.isUsable(normalizedSize) {
-                lastStableSize = restingSize(for: normalizedSize)
+                lastStableSize = normalizedSize
             } else if let frozenSize, Self.isUsable(frozenSize) {
                 lastStableSize = frozenSize
             }

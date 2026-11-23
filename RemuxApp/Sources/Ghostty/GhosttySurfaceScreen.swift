@@ -212,16 +212,30 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 #if DEBUG
         let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
 #endif
+        Color.clear
+            .background {
+                GeometryReader { container in
+                    Color.clear.preference(key: TerminalContainerSizeKey.self, value: container.size)
+                }
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+            }
+            .overlayPreferenceValue(TerminalContainerSizeKey.self) { containerSize in
+                terminalScreen(containerSize: containerSize)
+            }
+    }
+
+    private func terminalScreen(containerSize: CGSize) -> some View {
         GeometryReader { screenProxy in
+            let pansForKeyboard = GhosttyKeyboardPanExperiment.isEnabled
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
-                screenSize: screenProxy.size
+                screenSize: pansForKeyboard ? containerSize : screenProxy.size
             )
-            let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
+            let restingChromeHeight = GhosttyKeyboardChromeSizing.baselineHeight
                 + 4
                 + chrome.bottomPadding
             let bottomChromeHeight = bottomChromeReservation.layoutHeight(
-                fallback: bottomChromeFallbackHeight
+                fallback: restingChromeHeight
             )
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
@@ -242,7 +256,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .ignoresSafeArea(.all, edges: .all)
 
                 GeometryReader { proxy in
-                    let liveTerminalViewportSize = GhosttyTerminalViewportCoordinator.normalized(proxy.size)
+                    let visibleSize = GhosttyTerminalViewportCoordinator.normalized(proxy.size)
+                    let canvasSize = CGSize(
+                        width: containerSize.width,
+                        height: containerSize.height - restingChromeHeight
+                    )
+                    let liveTerminalViewportSize = pansForKeyboard
+                        ? GhosttyTerminalViewportCoordinator.normalized(canvasSize)
+                        : visibleSize
                     let terminalViewportSize = terminalViewportCoordinator.effectiveSize(
                         liveSize: liveTerminalViewportSize
                     )
@@ -263,8 +284,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
                     // With the keyboard pan the terminal keeps its resting size, and the area shown follows the
                     // keyboard: the composite viewport takes the area and shows the terminal inside it.
-                    let pansForKeyboard = terminalViewportCoordinator.keepsRestingSize
-                    let compositeFrameSize = pansForKeyboard ? liveTerminalViewportSize : terminalViewportSize
+                    let compositeFrameSize = pansForKeyboard ? visibleSize : terminalViewportSize
 
                     ZStack(alignment: .topLeading) {
                         GhosttyCompositeViewportView(
@@ -712,11 +732,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
             }
             .onChange(of: inputCoordinator.keyboardMode) { _, mode in
-                // Sizes reported while the software keyboard is up are
-                // transient; flag them so reconnects carry the settled
-                // viewport (the mode flips before the layout changes,
-                // so the hint always precedes the affected report).
-                model.setViewportStabilityHint(stable: mode == .hidden)
+                // A keyboard-independent container measurement also sizes the next attach.
+                model.setViewportStabilityHint(stable: pansForKeyboard || mode == .hidden)
                 if mode == .hidden, terminalCoverPhase.isRestoringKeyboard {
                     cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
                 }
@@ -2794,5 +2811,13 @@ struct GhosttySurfaceScreenLifecycleProjection: Equatable {
         @unknown default:
             self.shouldRefocusSystemKeyboard = false
         }
+    }
+}
+
+private enum TerminalContainerSizeKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }

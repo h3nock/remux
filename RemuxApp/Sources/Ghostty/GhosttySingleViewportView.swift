@@ -168,9 +168,7 @@ private final class GhosttyCompositeViewportHostView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let size = canvasSize.map {
-            CGSize(width: $0.width, height: max($0.height, bounds.height))
-        } ?? bounds.size
+        let size = canvasSize ?? bounds.size
         // Set inside an animation the size change runs in, the keyboard's, and so moves with it.
         let pan = pan(canvasHeight: size.height)
         tracePan("layout", pan: pan, canvasHeight: size.height)
