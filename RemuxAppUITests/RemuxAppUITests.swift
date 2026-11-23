@@ -7696,7 +7696,7 @@ extension RemuxAppUITests {
     /// it to `xcodebuild test` with the TEST_RUNNER_ prefix): the phone can't read the Mac's files. The tmux session
     /// must already exist, on the harness's own tmux; the app reads the credential from `credentialsFile`, a path in
     /// its home directory where the harness copies it.
-    private struct LiveScrollPlaybook: Decodable {
+    fileprivate struct LiveScrollPlaybook: Decodable {
         struct Gesture: Decodable {
             let name: String
             let x: Double
@@ -7767,6 +7767,53 @@ extension RemuxAppUITests {
             }
             let began = Date().timeIntervalSince1970
             try TouchPath.play(from: start, segments)
+            let lifted = Date().timeIntervalSince1970
+            var caught: Double?
+            if let catchAfter = gesture.catchAfter {
+                RunLoop.current.run(until: Date().addingTimeInterval(catchAfter))
+                caught = Date().timeIntervalSince1970
+                try TouchPath.play(from: CGPoint(x: gesture.x, y: (gesture.fromY + gesture.toY) / 2), [.hold(0.08)])
+            }
+            print(String(
+                format: "SCROLLRUN gesture=%@ start=%.3f returned=%.3f catch=%.3f",
+                gesture.name, began, lifted, caught ?? 0
+            ))
+            RunLoop.current.run(until: Date().addingTimeInterval(gesture.pauseAfter))
+        }
+        print(String(format: "SCROLLRUN end=%.3f", Date().timeIntervalSince1970))
+    }
+}
+
+extension RemuxAppUITests {
+    /// The scroll playbook played on another installed app, such as the stock-list reference app, so the same touches
+    /// can be compared with how iOS itself scrolls. REMUX_LIVE_SCROLL_OTHER_APP_JSON holds `bundleIdentifier`, an
+    /// optional `settle` and the `gestures`, as in the Remux playbook.
+    private struct OtherAppScrollPlaybook: Decodable {
+        let bundleIdentifier: String
+        var settle: Double?
+        let gestures: [LiveScrollPlaybook.Gesture]
+    }
+
+    @MainActor
+    func testScrollPlaybookOnOtherAppWhenConfigured() throws {
+        guard let json = ProcessInfo.processInfo.environment["REMUX_LIVE_SCROLL_OTHER_APP_JSON"], !json.isEmpty else {
+            throw XCTSkip("Set REMUX_LIVE_SCROLL_OTHER_APP_JSON to play the scroll playbook on another app.")
+        }
+        let playbook = try JSONDecoder().decode(OtherAppScrollPlaybook.self, from: Data(json.utf8))
+        let other = XCUIApplication(bundleIdentifier: playbook.bundleIdentifier)
+        other.launch()
+        RunLoop.current.run(until: Date().addingTimeInterval(playbook.settle ?? 2))
+        print(String(format: "SCROLLRUN start=%.3f", Date().timeIntervalSince1970))
+        for gesture in playbook.gestures {
+            var segments: [TouchPath.Segment] = [
+                .hold(0.05),
+                .move(to: CGPoint(x: gesture.x, y: gesture.toY), over: gesture.duration),
+            ]
+            if gesture.holdBeforeLift > 0 {
+                segments.append(.hold(gesture.holdBeforeLift))
+            }
+            let began = Date().timeIntervalSince1970
+            try TouchPath.play(from: CGPoint(x: gesture.x, y: gesture.fromY), segments)
             let lifted = Date().timeIntervalSince1970
             var caught: Double?
             if let catchAfter = gesture.catchAfter {
