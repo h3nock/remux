@@ -250,6 +250,7 @@ struct GhosttyScrollFollow {
     private var probeSentAt: TimeInterval?
     private var unmovedCount = 0
     private var unmovedSince: TimeInterval?
+    private var lastMovedAt: TimeInterval?
     private var stallCounted = 0
     private var stallCredit = 0.0
     private var stalledReports = 0
@@ -382,11 +383,14 @@ struct GhosttyScrollFollow {
             unmovedCount = 0
             unmovedSince = nil
             stallCounted = 0
-        } else if newlyLanded > 0 {
-            if unmovedSince == nil {
-                unmovedSince = reports[landedCount - newlyLanded].sentAt
+            lastMovedAt = now
+        } else {
+            // A report sent before the last movement may be what moved it, so only those sent since count as unmoved.
+            for report in reports[(landedCount - newlyLanded)..<landedCount]
+            where lastMovedAt.map({ report.sentAt >= $0 }) ?? true {
+                if unmovedSince == nil { unmovedSince = report.sentAt }
+                unmovedCount += 1
             }
-            unmovedCount += newlyLanded
         }
 
         // Reports that have had well over a round trip and moved nothing: the program is at its first or last

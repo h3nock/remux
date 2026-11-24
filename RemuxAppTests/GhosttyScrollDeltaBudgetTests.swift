@@ -304,9 +304,12 @@ final class GhosttyScrollFollowTests: XCTestCase {
         _ program: inout Program,
         latency: TimeInterval,
         pictureDelay: TimeInterval = 0,
-        seconds: TimeInterval = 4
+        seconds: TimeInterval = 4,
+        reportsPerSecond: Double = 60,
+        target: ((TimeInterval) -> Double)? = nil
     ) -> (follow: GhosttyScrollFollow, moved: Int, furthestAhead: Double) {
-        var follow = GhosttyScrollFollow(reportsPerSecond: 60, burstSeconds: 0.08, latency: 0.08)
+        let target = target ?? self.target(at:)
+        var follow = GhosttyScrollFollow(reportsPerSecond: reportsPerSecond, burstSeconds: 0.08, latency: 0.08)
         let start = program.first
         var arrivals: [(at: TimeInterval, direction: Int)] = []
         var visible: [(at: TimeInterval, text: String)] = []
@@ -325,8 +328,8 @@ final class GhosttyScrollFollowTests: XCTestCase {
                 visible.removeFirst()
                 shown = next.text
             }
-            follow.moveTarget(byRows: target(at: now) - last)
-            last = target(at: now)
+            follow.moveTarget(byRows: target(now) - last)
+            last = target(now)
             follow.observe(viewportRows: shown, at: now)
             var direction = follow.nextReport(at: now)
             while direction != 0 {
@@ -390,6 +393,22 @@ final class GhosttyScrollFollowTests: XCTestCase {
         let result = run(&program, latency: 0.03)
         XCTAssertEqual(result.moved, 5)
         XCTAssertLessThanOrEqual(Double(result.follow.reportCount), result.follow.targetRows + 4)
+    }
+
+    /// Reports whose movement was seen before their round trip ran out moved the content: when they run out during a
+    /// pause, they must not count as reports that moved nothing, or the drag that follows owes them back.
+    func testADragThatPausesFollowsTheFingerOnceItMovesAgain() {
+        var program = Program { _ in 1 }
+        // A quick 30 rows in 0.1 s, a pause, then 5 rows more.
+        let result = run(&program, latency: 0.03, seconds: 2, reportsPerSecond: 600) { t in
+            switch t {
+            case ..<0.1: 30 * t / 0.1
+            case ..<1.1: 30
+            case ..<1.35: 30 + 5 * (t - 1.1) / 0.25
+            default: 35
+            }
+        }
+        XCTAssertEqual(result.moved, 35)
     }
 
     func testContentAheadOfTheTargetIsNotPulledBack() {
