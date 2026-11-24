@@ -173,8 +173,8 @@ struct GhosttyKeyboardSlide: Equatable {
 ///
 /// A change of the area's size moves it in this view's layout, run as soon as the size is set, so inside the
 /// keyboard's animation that sets it: the viewport moves with the keyboard and the toolbar on it. A move for new rows,
-/// for the input surface returning to its live rows, or for another surface taking the input, is immediate, as a
-/// terminal scrolls.
+/// for the input surface returning to its live rows, for a pane moving, or for another surface taking the input, is
+/// immediate, as a terminal scrolls.
 private final class GhosttyCompositeViewportHostView: UIView {
     let viewport = GhosttyCompositeViewportContainerView()
     var canvasSize: CGSize? {
@@ -279,8 +279,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private var selectionSource: GhosttyTerminalSelectionSource?
 
     /// Called on the main thread when what the keyboard slide works from changes: the input surface's renderer
-    /// publishes different rows, the surface starts or stops showing its history, or another surface takes the input.
-    /// Observed while set.
+    /// publishes different rows, the surface starts or stops showing its history, a pane moves, or another surface
+    /// takes the input. Observed while set.
     var onSlideInputChange: (() -> Void)? {
         didSet { observeSlideInputs(notifying: false) }
     }
@@ -697,6 +697,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             }
             placePopup()
         }
+        // A pane's rows are measured from its own top, so a pane that moves keeps them: the slide hears of it here.
+        if changed { onSlideInputChange?() }
         if let startedAt {
             GhosttyRuntimeTrace.perf(
                 "viewport.layout bounds=\(ghosttyDiagnosticRect(bounds)) panes=\(containersBySurfaceID.count) changed=\(changed) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
