@@ -2239,3 +2239,68 @@ private final class ControllerTopologyRecorder: @unchecked Sendable {
         lock.withLock { snapshots.last }
     }
 }
+
+final class TmuxSettlingOutputTests: XCTestCase {
+    private let start: UInt64 = 1_000_000_000
+
+    private func at(_ milliseconds: Double) -> DispatchTime {
+        DispatchTime(uptimeNanoseconds: start + UInt64(milliseconds * 1_000_000))
+    }
+
+    private func output() -> TmuxSettlingOutput {
+        TmuxSettlingOutput(settle: .init(quiet: .milliseconds(3), cap: .milliseconds(12)))
+    }
+
+    private func text(_ taken: (data: Data, enqueuedAt: UInt64)?) -> String? {
+        taken.map { String(decoding: $0.data, as: UTF8.self) }
+    }
+
+    func testPiecesWithinTheQuietIntervalAreOneBurst() {
+        let output = output()
+        output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
+        output.append(Data("B".utf8), at: at(2), enqueuedAt: 0)
+
+        let early = output.takeDue(at: at(4))
+        XCTAssertNil(early.due)
+        XCTAssertEqual(early.next, at(5))
+        XCTAssertEqual(text(output.takeDue(at: at(5)).due), "AB")
+    }
+
+    /// A piece that arrives after the newest burst was due, while that burst still waits for the writer, starts a
+    /// burst of its own: parsing the overdue burst leaves it, and the rest of its frame, to come.
+    func testAPieceAfterABurstWasDueStartsTheNextBurst() {
+        let output = output()
+        output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
+        output.append(Data("B1".utf8), at: at(4), enqueuedAt: 0)
+
+        let taken = output.takeDue(at: at(5))
+        XCTAssertEqual(text(taken.due), "A")
+        XCTAssertEqual(taken.next, at(7))
+        output.append(Data("B2".utf8), at: at(5), enqueuedAt: 0)
+        XCTAssertNil(output.takeDue(at: at(7)).due)
+        XCTAssertEqual(text(output.takeDue(at: at(8)).due), "B1B2")
+    }
+
+    /// A request takes the bursts that began before it was made, not one that began after.
+    func testARequestTakesTheBurstsThatBeganBeforeIt() {
+        let output = output()
+        output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
+        output.append(Data("B".utf8), at: at(5), enqueuedAt: 0)
+
+        XCTAssertEqual(text(output.take(arrivedBy: at(1))), "A")
+        XCTAssertEqual(text(output.take(arrivedBy: nil)), "B")
+    }
+
+    func testTheCapEndsABurstOfSteadyOutput() {
+        let output = output()
+        for milliseconds in stride(from: 0.0, through: 14, by: 2) {
+            output.append(Data("\(Int(milliseconds)) ".utf8), at: at(milliseconds), enqueuedAt: 0)
+        }
+
+        let taken = output.takeDue(at: at(12))
+        XCTAssertEqual(text(taken.due), "0 2 4 6 8 10 ")
+        XCTAssertEqual(taken.next, at(17))
+        XCTAssertEqual(text(output.take(arrivedBy: nil)), "12 14 ")
+        XCTAssertNil(output.take(arrivedBy: nil))
+    }
+}
