@@ -229,12 +229,29 @@ private final class GhosttyCompositeViewportHostView: UIView {
 
     private func followSlideInputs() {
         let previousPan = slide?.pan
+        let wasScrolledBack = slide?.inputs.isScrolledBack ?? false
         let pan = updateSlide(canvasHeight: viewport.bounds.height, reason: "input")
         guard pan != previousPan else { return }
-        UIView.performWithoutAnimation {
-            viewport.frame.origin.y = -pan
+        // Scrolling into history lowers the keyboard, which starts moving a few frames later: the canvas comes down to
+        // rest over the keyboard's own time instead of jumping ahead of it. Every other move is immediate, as a
+        // terminal scrolls.
+        if slide?.inputs.isScrolledBack == true, !wasScrolledBack {
+            UIView.animate(
+                withDuration: Self.restDuration,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut]
+            ) {
+                self.viewport.frame.origin.y = -pan
+            }
+        } else {
+            UIView.performWithoutAnimation {
+                viewport.frame.origin.y = -pan
+            }
         }
     }
+
+    /// The system keyboard's own show and hide time.
+    private static let restDuration: TimeInterval = 0.25
 
     private func updateSlide(canvasHeight: CGFloat, reason: String) -> CGFloat {
         let scale = max(window?.screen.scale ?? traitCollection.displayScale, 1)
