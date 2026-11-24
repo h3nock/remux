@@ -1466,6 +1466,33 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 1)
     }
 
+    /// A hold that times out while its end waits in a burst that more output keeps extending ends with that
+    /// output once the burst reaches its cap, not on its own with half the frame.
+    func testAHoldTimeoutWaitsForAnExtendedBurstUpToItsCap() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(200),
+            outputSettle: .init(quiet: .milliseconds(100), cap: .milliseconds(300))
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hA\n".utf8))
+        try await waitUntil("the held output didn't reach the pane") { wakes.count == 1 }
+        // The hold times out about 200 ms from here. Its end arrives before that, and another pane's output keeps
+        // its burst settling past the timeout.
+        try await Task.sleep(for: .milliseconds(150))
+        harness.controller.pump(Data("%output %0 B\\033[?2026l\n".utf8))
+        try await Task.sleep(for: .milliseconds(80))
+        harness.controller.pump(Data("%output %1 other\n".utf8))
+        try await Task.sleep(for: .milliseconds(80))
+        harness.controller.pump(Data("%output %1 other\n".utf8))
+        try await Task.sleep(for: .milliseconds(600))
+        // The held output, then its end: never the timeout with the end still waiting.
+        XCTAssertEqual(wakes.count, 2)
+    }
+
     /// A hold whose end has arrived but waits to settle when the hold times out ends with that output, so the pane
     /// is woken once for it, not once for the timeout with half the frame and again for the rest.
     func testARenderHoldTimingOutWithItsEndWaitingEndsWithTheOutput() async throws {
@@ -2306,10 +2333,16 @@ final class TmuxSettlingOutputTests: XCTestCase {
 
     /// Output keeps its order with the requests made between it: a request takes what arrived before it, due or
     /// not, and what arrived after it, also within the same quiet interval, waits for it.
+    private func mark(_ output: TmuxSettlingOutput) -> UInt64 {
+        var marked: UInt64 = 0
+        output.markRequest { marked = $0 }
+        return marked
+    }
+
     func testOutputAfterARequestWaitsForIt() {
         let output = output()
         output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
-        let request = output.markRequest()
+        let request = mark(output)
         output.append(Data("B".utf8), at: at(1), enqueuedAt: 0)
 
         let beforeRequest = output.takeDue(at: at(10))
@@ -2322,13 +2355,34 @@ final class TmuxSettlingOutputTests: XCTestCase {
     func testARequestTakesWhatArrivedBeforeItDueOrNot() {
         let output = output()
         output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
-        let request = output.markRequest()
+        let request = mark(output)
         output.append(Data("B".utf8), at: at(1), enqueuedAt: 0)
 
         XCTAssertEqual(text(output.take(before: request)), "A")
         let after = output.takeDue(at: at(2))
         XCTAssertNil(after.due)
         XCTAssertEqual(after.next, at(4))
+    }
+
+    /// While a session starts, output is parsed as it comes, but not past a request still to run.
+    func testStartupOutputStopsAtTheNextRequest() {
+        let output = output()
+        output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
+        output.append(Data("B".utf8), at: at(1), enqueuedAt: 0)
+        let request = mark(output)
+        output.append(Data("C".utf8), at: at(2), enqueuedAt: 0)
+
+        XCTAssertEqual(text(output.takeUntilRequest()), "AB")
+        XCTAssertNil(output.takeUntilRequest())
+        XCTAssertNil(output.take(before: request))
+        XCTAssertEqual(text(output.takeUntilRequest()), "C")
+    }
+
+    func testTheNextBurstsCapRunsFromItsFirstPiece() {
+        let output = output()
+        output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
+        output.append(Data("B".utf8), at: at(2), enqueuedAt: 0)
+        XCTAssertEqual(output.nextBurstCap(), at(12))
     }
 
     func testTheCapEndsABurstOfSteadyOutput() {
