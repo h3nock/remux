@@ -229,7 +229,12 @@ enum GhosttyViewportShift: Equatable {
         func uniqueRows(_ rows: [Substring]) -> [Substring: Int] {
             var index: [Substring: Int] = [:]
             var repeated: Set<Substring> = []
-            for (row, text) in rows.enumerated() where !text.allSatisfy({ $0 == " " }) {
+            for (row, text) in rows.enumerated() {
+                // Blank cells after a row's text are how the row was painted, not what it shows: an erased cell
+                // reads as nothing and a written space as a space, and a pane restored from tmux's capture ends
+                // its rows in spaces that the same rows painted live don't have.
+                let text = text[..<(text.lastIndex(where: { $0 != " " }).map(text.index(after:)) ?? text.startIndex)]
+                guard !text.isEmpty else { continue }
                 if index.updateValue(row, forKey: text) != nil { repeated.insert(text) }
             }
             for text in repeated { index[text] = nil }
