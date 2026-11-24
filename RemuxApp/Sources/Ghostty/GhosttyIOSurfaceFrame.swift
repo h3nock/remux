@@ -35,7 +35,7 @@ struct GhosttyIOSurfaceFrame: Sendable {
     /// the first frame. GhosttyKit sets them on the layer in the same main-thread step that sets `contents`, as 16
     /// bytes: three Float32 values in surface pixels, -1 for none, then a UInt32 layout version.
     static func publishedRows(in layer: CALayer) -> (cursor: ClosedRange<CGFloat>?, contentBottom: CGFloat?)? {
-        guard let data = layer.value(forKey: "remuxFrameRows") as? Data, data.count >= 16 else { return nil }
+        guard let data = layer.value(forKey: publishedRowsKey) as? Data, data.count >= 16 else { return nil }
         let values = data.withUnsafeBytes { raw in
             (raw.loadUnaligned(fromByteOffset: 0, as: Float32.self),
              raw.loadUnaligned(fromByteOffset: 4, as: Float32.self),
@@ -50,6 +50,9 @@ struct GhosttyIOSurfaceFrame: Sendable {
             : nil
         return (cursor, values.2 > 0 ? CGFloat(values.2) / scale : nil)
     }
+
+    /// The layer key GhosttyKit sets the rows on, only when they differ from the frame before.
+    static let publishedRowsKey = "remuxFrameRows"
 
     static func dimensions(in layer: CALayer) -> (width: Int, height: Int)? {
         guard let surface = iosurface(from: layer) else { return nil }
@@ -172,5 +175,39 @@ struct GhosttyIOSurfaceFrame: Sendable {
         let value = contents as CFTypeRef
         guard CFGetTypeID(value) == IOSurfaceGetTypeID() else { return nil }
         return unsafeDowncast(contents as AnyObject, to: IOSurface.self)
+    }
+}
+
+/// Calls `onChange` when GhosttyKit publishes different rows on a renderer layer. GhosttyKit sets them on the main
+/// thread, in the same step that sets the frame's picture, so a move made in `onChange` shows with that picture.
+final class GhosttyFrameRowsObserver: NSObject {
+    let layer: CALayer
+    private let onChange: @MainActor () -> Void
+    private var rows: Data?
+
+    init(layer: CALayer, onChange: @escaping @MainActor () -> Void) {
+        self.layer = layer
+        self.onChange = onChange
+        rows = layer.value(forKey: GhosttyIOSurfaceFrame.publishedRowsKey) as? Data
+        super.init()
+        layer.addObserver(self, forKeyPath: GhosttyIOSurfaceFrame.publishedRowsKey, options: [.new], context: nil)
+    }
+
+    deinit {
+        layer.removeObserver(self, forKeyPath: GhosttyIOSurfaceFrame.publishedRowsKey)
+    }
+
+    override func observeValue(
+        forKeyPath keyPath: String?,
+        of object: Any?,
+        change: [NSKeyValueChangeKey: Any]?,
+        context: UnsafeMutableRawPointer?
+    ) {
+        // A layer notifies twice for each value set on a key it stores.
+        let rows = change?[.newKey] as? Data
+        guard rows != self.rows else { return }
+        self.rows = rows
+        let onChange = onChange
+        MainActor.assumeIsolated { onChange() }
     }
 }
