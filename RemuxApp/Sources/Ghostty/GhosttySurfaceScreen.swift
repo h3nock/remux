@@ -6,6 +6,7 @@ import CoreTransferable
 import GhosttyKit
 import PhotosUI
 import UniformTypeIdentifiers
+import GameController
 
 struct GhosttySurfaceScreenPresentation: Equatable {
     let workspaceID: SavedWorkspace.ID
@@ -1087,9 +1088,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     /// Scrolling a pane back into its history is reading, so the software keyboard steps aside, as it does in other
-    /// iOS apps. A hardware keyboard has no software keyboard to lower and keeps its input.
+    /// iOS apps. With a hardware keyboard connected the input stays: what shows of the system keyboard then is at most
+    /// its shortcut bar, and lowering it would stop the hardware keyboard's typing reaching the terminal.
     private func handleHistoryScroll() {
-        guard inputCoordinator.isSoftwareKeyboardVisible else { return }
+        guard inputCoordinator.isSoftwareKeyboardVisible, GCKeyboard.coalesced == nil else { return }
         dismissSystemKeyboard()
     }
 
