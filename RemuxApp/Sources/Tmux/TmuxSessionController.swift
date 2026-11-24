@@ -257,6 +257,7 @@ final class TmuxSessionController: @unchecked Sendable {
     private var settlingSince: DispatchTime?
     private var settlingEnqueuedAt: UInt64 = 0
     private var settleTimer: DispatchSourceTimer?
+    private var settlingFeedQueued = false
     private let outputSettle: OutputSettle?
     /// Panes whose terminal changed during the feed in progress; nil outside a feed. Their renderers are woken once,
     /// when the feed returns, rather than once per `%output` line.
@@ -465,9 +466,17 @@ final class TmuxSessionController: @unchecked Sendable {
             settlingSince = since
             settlingOutput.append(data)
             // The timer's handler queues behind work already on this queue, so a busy queue reaches the cap here.
+            // The parse goes behind the reads already queued, so pieces of a frame that arrived together still
+            // parse together.
             let cap = since + outputSettle.cap
             if now >= cap {
-                feedSettlingOutput()
+                if !settlingFeedQueued {
+                    settlingFeedQueued = true
+                    queue.async { [self] in
+                        settlingFeedQueued = false
+                        feedSettlingOutput()
+                    }
+                }
             } else {
                 scheduleSettle(at: min(now + outputSettle.quiet, cap))
             }
@@ -741,9 +750,12 @@ final class TmuxSessionController: @unchecked Sendable {
     private func endExpiredRenderHolds() {
         preconditionOnWriterQueue()
         guard let client, !shuttingDown else { return }
-        // Output still waiting to settle can end a hold with the rest of its frame.
-        feedSettlingOutput()
         let now = DispatchTime.now()
+        // Output still waiting to settle can end a due hold with the rest of its frame. A timer left from a hold
+        // that has ended parses nothing, so it doesn't split the next frame.
+        if renderHolds.values.contains(where: { $0.deadline <= now }) {
+            feedSettlingOutput()
+        }
         let expired = renderHolds.filter { $0.value.deadline <= now }.map(\.key)
         for paneID in expired {
             renderHolds.removeValue(forKey: paneID)
@@ -1239,7 +1251,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     func paneCurrentDirectory(for paneID: TmuxPaneID) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
-            queue.async { [self] in
+            onWriterWithCurrentState { [self] in
                 submitPaneCurrentDirectoryQueryOnWriter(
                     paneID: paneID,
                     completion: { continuation.resume(with: $0) }

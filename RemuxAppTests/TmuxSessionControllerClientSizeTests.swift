@@ -1417,6 +1417,32 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         try await waitUntil("the last hold didn't time out", timeout: .seconds(3)) { wakes.count == 8 }
     }
 
+    /// The timer of a hold that has ended doesn't parse output waiting to settle, so it doesn't split the next
+    /// frame: the frame's two pieces parse together.
+    func testAnEndedHoldsTimerDoesNotSplitTheNextFrame() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(600),
+            outputSettle: .init(quiet: .milliseconds(400), cap: .seconds(5))
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hA\n".utf8))
+        try await waitUntil("the held output didn't reach the pane") { wakes.count == 1 }
+        harness.controller.pump(Data("%output %0 B\\033[?2026l\n".utf8))
+        try await waitUntil("the hold's end didn't reach the pane") { wakes.count == 2 }
+        // The ended hold's timer is still set for 600 ms after the hold began: about 200 ms from here. A frame's
+        // two pieces come 100 ms before it and 100 ms after it, within the wait.
+        try await Task.sleep(for: .milliseconds(100))
+        harness.controller.pump(Data("%output %0 C1\n".utf8))
+        try await Task.sleep(for: .milliseconds(200))
+        harness.controller.pump(Data("%output %0 C2\n".utf8))
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(wakes.count, 3)
+    }
+
     /// A hold whose end has arrived but waits to settle when the hold times out ends with that output, so the pane
     /// is woken once for it, not once for the timeout with half the frame and again for the rest.
     func testARenderHoldTimingOutWithItsEndWaitingEndsWithTheOutput() async throws {
@@ -1555,6 +1581,26 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 1)
     }
 
+    /// Pieces of a frame that queue up while the writer is busy parse together once it is free, also when they
+    /// are past the cap by then.
+    func testPiecesQueuedPastTheCapParseTogether() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .standard
+        )
+
+        harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.05) }
+        for piece in 1...4 {
+            harness.controller.pump(Data("%output %0 piece \(piece)\n".utf8))
+        }
+        await drain(harness.controller)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(wakes.count, 1)
+    }
+
     /// The cap holds while the writer queue is busy, when the settle timer can't run between reads.
     func testOutputIsParsedAtTheCapWhileTheQueueIsBusy() async throws {
         let wakes = PaneWakeCounter()
@@ -1565,10 +1611,12 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             outputSettle: .init(quiet: .milliseconds(30), cap: .milliseconds(60))
         )
 
-        // 240 ms of reads, each queued behind 10 ms of other work.
-        for line in 1...24 {
-            harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.01) }
+        // A read every 5 ms for 300 ms, each with 5 ms of other work on the queue, so it is never free for the
+        // settle timer.
+        for line in 1...60 {
+            harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.005) }
             harness.controller.pump(Data("%output %0 line \(line)\n".utf8))
+            try await Task.sleep(for: .milliseconds(5))
         }
         await drain(harness.controller)
         try await waitUntil("the output wasn't parsed at the cap") { wakes.count >= 3 }
