@@ -34,7 +34,8 @@ enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
     static let compactDockButtonWidth: CGFloat = 35
-    /// Toolbar key labels, sized so every label fits a compact key without shrinking.
+    /// Toolbar key labels, sized so every label fits a compact key without shrinking. They are bold: at 12 pt that
+    /// draws the same stroke as the bar's symbols, so a page of names weighs as much as a page of symbols.
     static let keyLabelFontSize: CGFloat = 12
     /// Every SF Symbol on the bar, the buttons' and the keys drawn as a symbol (an arrow, Return, Delete), at one size
     /// and weight, so a page of symbol keys reads as the same family as Sessions, Home and the rest beside it.
@@ -644,7 +645,7 @@ private struct GhosttyKeyboardKeyButton: View {
         switch label {
         case .name(let name):
             Text(name)
-                .font(.system(size: fontSize, weight: .semibold))
+                .font(.system(size: fontSize, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         case .symbol(let symbol):
@@ -652,8 +653,8 @@ private struct GhosttyKeyboardKeyButton: View {
                 .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
         case .symbolThenName(let symbol, let name):
             // The symbol a size down, so ⇧ stands no taller than "tab" beside it and the label fits inside the key's disc.
-            (Text(Image(systemName: symbol)).font(.system(size: fontSize * 0.875, weight: .semibold))
-                + Text(name).font(.system(size: fontSize, weight: .semibold)))
+            (Text(Image(systemName: symbol)).font(.system(size: fontSize * 0.875, weight: .bold))
+                + Text(name).font(.system(size: fontSize, weight: .bold)))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
