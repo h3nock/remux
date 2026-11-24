@@ -43,6 +43,34 @@ enum GhosttyKeyboardChromeSizing {
     /// The disc behind an armed key, smaller than the key at either width: it stays clear of the page dots under the
     /// keys, of a neighbouring armed key, and of the group's rounded ends.
     static let keyDiscDiameter: CGFloat = 32
+
+    /// SF Symbols centre their whole drawing in the frame, so a symbol with a mark beside its main shape (the stack
+    /// above Sessions, the pencil of Compose, the chevron under the keyboard) sets that shape off the bar's row, and a
+    /// symbol whose shape is lopsided (Return, Delete) sits off its key's middle. Each entry moves the main shape back
+    /// onto the row and the key's middle. Measured on the shape's outline at `toolbarSymbolPointSize` semibold, for
+    /// every symbol the bar can show; only shapes two device pixels or more off are listed.
+    static func opticalOffset(forSymbol name: String) -> CGSize {
+        switch name {
+        case "rectangle.stack", "square.and.pencil":
+            CGSize(width: 0, height: -5.0 / 3)
+        case "house":
+            CGSize(width: 0, height: -1)
+        case "keyboard.chevron.compact.down":
+            CGSize(width: 0, height: 7.0 / 3)
+        case "return":
+            CGSize(width: -1, height: 0)
+        case "delete.left":
+            CGSize(width: -2.0 / 3, height: 0)
+        default:
+            .zero
+        }
+    }
+
+    /// SwiftUI centres a name by its whole line, room for descenders included, so a lowercase name reads below the
+    /// row. This lift puts the names' visual centre on the row: measured on the filled letter shapes of every name
+    /// the bar can show, at `keyLabelFontSize` bold, it leaves all of them within half a point but pgup, whose
+    /// descenders keep it 0.9 pt low.
+    static let nameOpticalLift: CGFloat = 2.0 / 3
     static let pageDotSize: CGFloat = 5
     static let pageDotSpacing: CGFloat = 6
     /// Lifts the dots so they sit one dot above the group's edge and further below the labels, a descender's
@@ -553,6 +581,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
                         .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
                         .symbolRenderingMode(.monochrome)
                         .contentTransition(.symbolEffect(.replace))
+                        .opticalOffset(GhosttyKeyboardChromeSizing.opticalOffset(forSymbol: systemName))
 
                     if dot != nil {
                         Circle()
@@ -648,15 +677,18 @@ private struct GhosttyKeyboardKeyButton: View {
                 .font(.system(size: fontSize, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .opticalOffset(CGSize(width: 0, height: -GhosttyKeyboardChromeSizing.nameOpticalLift))
         case .symbol(let symbol):
             Image(systemName: symbol)
                 .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
+                .opticalOffset(GhosttyKeyboardChromeSizing.opticalOffset(forSymbol: symbol))
         case .symbolThenName(let symbol, let name):
             // The symbol a size down, so ⇧ stands no taller than "tab" beside it and the label fits inside the key's disc.
             (Text(Image(systemName: symbol)).font(.system(size: fontSize * 0.875, weight: .bold))
                 + Text(name).font(.system(size: fontSize, weight: .bold)))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .opticalOffset(CGSize(width: 0, height: -GhosttyKeyboardChromeSizing.nameOpticalLift))
         }
     }
 
@@ -869,7 +901,25 @@ extension View {
     }
 }
 
+/// Moves a glyph by whole device pixels, so a correction never leaves it drawn between pixels.
+private struct GhosttyOpticalOffset: ViewModifier {
+    let offset: CGSize
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content.offset(x: snapped(offset.width), y: snapped(offset.height))
+    }
+
+    private func snapped(_ value: CGFloat) -> CGFloat {
+        (value * displayScale).rounded() / displayScale
+    }
+}
+
 private extension View {
+    func opticalOffset(_ offset: CGSize) -> some View {
+        modifier(GhosttyOpticalOffset(offset: offset))
+    }
+
     func ghosttyToolbarGroupSurface() -> some View {
         ghosttyChromeGlass(in: Capsule(), isInteractive: true)
     }
