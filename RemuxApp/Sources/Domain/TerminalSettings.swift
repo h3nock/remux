@@ -375,17 +375,10 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
         case pages
     }
 
-    /// Settings from before pages hold one page's three keys; they keep those keys as the first page
-    /// and gain the default's other pages. A page with a key this build doesn't know is left out, so a
-    /// newer build's settings still load.
+    /// A page with a key this build doesn't know is left out, so a newer build's settings still load.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if container.contains(.pages) {
-            let pages = try container.decode([DecodedPage].self, forKey: .pages).compactMap(\.page)
-            self.init(pages: pages)
-        } else {
-            self.init(pages: [try TerminalToolbarKeyPage(from: decoder)] + Self.default.pages.dropFirst())
-        }
+        self.init(pages: try container.decode([DecodedPage].self, forKey: .pages).compactMap(\.page))
     }
 
     func encode(to encoder: Encoder) throws {
@@ -453,7 +446,9 @@ struct TerminalSettings: Equatable, Codable, Sendable {
         case theme
         case allowInsecureRSAHostKeys
         case zoomMultipaneWindowsByDefault
-        case toolbarKeys
+        // A layout saved by an earlier build, under "toolbarKeys", isn't read: the default pages changed during the
+        // beta, so everyone starts again from them once, and a layout set from here on is saved under this name.
+        case toolbarKeys = "toolbarKeyPages"
         case vibratesForBellsAndAgents
         case vibratesForKeysAndButtons
     }
