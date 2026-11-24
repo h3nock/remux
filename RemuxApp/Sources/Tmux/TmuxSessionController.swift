@@ -251,7 +251,8 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     /// Control output received but not yet parsed, and when its first byte arrived. See `OutputSettle`. It is parsed
-    /// early when the channel closes or the attachment stops, so the session ends on everything tmux sent.
+    /// early when the channel closes or the attachment stops, so the session ends on everything tmux sent, and
+    /// before a request that decides on the session's state (`onWriterWithCurrentState`).
     private var settlingOutput = Data()
     private var settlingSince: DispatchTime?
     private var settlingEnqueuedAt: UInt64 = 0
@@ -1030,7 +1031,7 @@ final class TmuxSessionController: @unchecked Sendable {
             return
         }
         let nextSize = ClientSize(cols: cols, rows: rows)
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             guard !shuttingDown else { return }
             guard client != nil else {
                 clientSize = nextSize
@@ -1049,8 +1050,18 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
-    func requestNewWindow() {
+    /// Runs a request that decides on the session's state on the writer queue, once the control output still
+    /// waiting to settle is parsed, so it decides on everything tmux has sent. Input goes to the queue directly: it
+    /// decides nothing, and parsing early would cut the wait short while the user types or scrolls.
+    private func onWriterWithCurrentState(_ request: @escaping () -> Void) {
         queue.async { [self] in
+            feedSettlingOutput()
+            request()
+        }
+    }
+
+    func requestNewWindow() {
+        onWriterWithCurrentState { [self] in
             _ = admitActiveViewportClaimIfNeeded()
             enqueueOnWriter(command: "new-window", request: .newWindow)
         }
@@ -1067,7 +1078,7 @@ final class TmuxSessionController: @unchecked Sendable {
         case .up: "-v -b"
         case .down: "-v"
         }
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             _ = admitActiveViewportClaimIfNeeded()
             let split = "split-window \(flags) -t %\(paneID.rawValue)"
             guard let window = window(containing: paneID),
@@ -1105,18 +1116,18 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func requestClosePane(paneID: TmuxPaneID) {
-        queue.async { [self] in enqueuePaneClosure(paneID) }
+        onWriterWithCurrentState { [self] in enqueuePaneClosure(paneID) }
     }
 
     func requestCloseWindow(windowID: TmuxWindowID) {
-        queue.async { [self] in enqueueWindowClosure(windowID) }
+        onWriterWithCurrentState { [self] in enqueueWindowClosure(windowID) }
     }
 
     func requestSelectWindow(
         windowID: TmuxWindowID,
         preferredPaneID: TmuxPaneID? = nil
     ) {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             submitNavigation(
                 .window(windowID, preferredPaneID: preferredPaneID)
             )
@@ -1124,7 +1135,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func requestSelectPane(paneID: TmuxPaneID) {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             submitNavigation(.pane(paneID))
         }
     }
@@ -1132,7 +1143,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// The user's own zoom choice; the multi-pane zoom default then leaves the
     /// pane's window alone.
     func requestSetPaneZoomed(paneID: TmuxPaneID, zoomed: Bool) {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             if let window = window(containing: paneID) {
                 zoomDefault?.recordWindowChoice(window.id)
             }
@@ -1144,7 +1155,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// default, once per window, as topologies arrive. The client applies no
     /// default until this is first called.
     func setZoomMultipaneWindowsByDefault(_ enabled: Bool) {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             if zoomDefault == nil {
                 zoomDefault = TmuxMultipaneZoomDefaultPolicy(isEnabled: enabled)
                 applyZoomDefault(afterSettingChange: false)
@@ -1159,7 +1170,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// topology zooms a window, and unzooms each window whose zoom is Remux's
     /// or may become so by a command line tmux runs ahead of this release.
     func requestReleaseZoom() {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             zoomDefault = nil
             let claimingWindowIDs = zoomsInFlight.filter { windowID, zoom in
                 zoom.mayClaim && topology?.windows.contains(where: { $0.id == windowID }) == true
@@ -1176,7 +1187,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func requestCopyMode(paneID: TmuxPaneID) {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             _ = admitActiveViewportClaimIfNeeded()
             enqueueOnWriter(
                 command: "copy-mode -t %\(paneID.rawValue)",
@@ -1186,14 +1197,14 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func claimActiveViewportIfNeeded() {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             guard admitActiveViewportClaimIfNeeded() else { return }
             _ = drainOutbound()
         }
     }
 
     func requestRefreshWindowPaneMetadata(windowID: TmuxWindowID) {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             preconditionOnWriterQueue()
             guard let client, outboundSink != nil, !shuttingDown else { return }
             guard topology?.windows.contains(where: { $0.id == windowID }) == true else {
@@ -1215,7 +1226,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func reclaimActiveViewport() {
-        queue.async { [self] in
+        onWriterWithCurrentState { [self] in
             guard admitActiveViewportClaim(force: true) else { return }
             _ = drainOutbound()
         }

@@ -1487,6 +1487,23 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(wakes.count, 2)
     }
 
+    /// A request decides on everything tmux has sent, also output still waiting to settle.
+    func testAPaneSelectionSeesTopologyWaitingToSettle() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3,
+            outputSettle: .init(quiet: .milliseconds(200), cap: .seconds(5))
+        )
+
+        harness.controller.pump(Data("%window-pane-changed @0 %1\n".utf8))
+        harness.controller.requestSelectPane(paneID: 0)
+        await drain(harness.controller)
+        assertCommandWrite(
+            harness.recorder.takeStrings(),
+            command: "select-pane -Z -t %0"
+        )
+    }
+
     /// The cap holds while the writer queue is busy, when the settle timer can't run between reads.
     func testOutputIsParsedAtTheCapWhileTheQueueIsBusy() async throws {
         let wakes = PaneWakeCounter()
