@@ -257,8 +257,8 @@ final class TmuxSessionController: @unchecked Sendable {
     private var settlingEnqueuedAt: UInt64 = 0
     private var settleTimer: DispatchSourceTimer?
     private let outputSettle: OutputSettle?
-    /// Panes whose terminal changed during the feed in progress; nil outside a feed. Their renderers are woken once
-    /// the feed returns, so a frame that spans several `%output` lines is never drawn part-way.
+    /// Panes whose terminal changed during the feed in progress; nil outside a feed. Their renderers are woken once,
+    /// when the feed returns, rather than once per `%output` line.
     private var panesChangedDuringFeed: Set<TmuxPaneID>?
 
     /// How long control output waits for more before it is parsed.
@@ -462,7 +462,13 @@ final class TmuxSessionController: @unchecked Sendable {
             if settlingSince == nil { settlingEnqueuedAt = enqueuedAt }
             settlingSince = since
             settlingOutput.append(data)
-            scheduleSettle(at: min(now + outputSettle.quiet, since + outputSettle.cap))
+            // The timer's handler queues behind work already on this queue, so a busy queue reaches the cap here.
+            let cap = since + outputSettle.cap
+            if now >= cap {
+                feedSettlingOutput()
+            } else {
+                scheduleSettle(at: min(now + outputSettle.quiet, cap))
+            }
         }
     }
 

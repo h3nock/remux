@@ -1487,6 +1487,25 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(wakes.count, 2)
     }
 
+    /// The cap holds while the writer queue is busy, when the settle timer can't run between reads.
+    func testOutputIsParsedAtTheCapWhileTheQueueIsBusy() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(30), cap: .milliseconds(60))
+        )
+
+        // 240 ms of reads, each queued behind 10 ms of other work.
+        for line in 1...24 {
+            harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.01) }
+            harness.controller.pump(Data("%output %0 line \(line)\n".utf8))
+        }
+        await drain(harness.controller)
+        try await waitUntil("the output wasn't parsed at the cap") { wakes.count >= 3 }
+    }
+
     /// A reply that arrives across reads is parsed whole and in order.
     func testAReplySplitAcrossReadsCompletesAfterTheSettle() async throws {
         let harness = try await readyController(
