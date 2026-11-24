@@ -1074,7 +1074,8 @@ final class HerdrScreenModel {
         _ = popup.sendMouse(kind, column: cell.column, row: cell.row, modifiers: HerdrInputTranslator.modifiers(for: mods))
     }
 
-    /// A swipe over the popup, as the pane's: its travel in whole rows of the panes' font.
+    /// A swipe over the popup, as the pane's: its travel in whole rows of the panes' font, at the event's pointer
+    /// when it carries one.
     func scrollPopup(_ event: GhosttySurfaceMouseScrollEvent) -> Bool {
         let momentum = event.mods.momentum
         guard momentum != .cancelled else {
@@ -1085,6 +1086,7 @@ final class HerdrScreenModel {
         defer {
             if momentum == .ended { popupWheelRemainder = nil }
         }
+        if let pointer = event.pointer { popupPointer = pointer }
         guard popup.takesInput, let cell = popup.displayed?.cell ?? measurement?.cellMetrics else { return false }
         let cellHeight = Double(cell.pixelHeight)
         let travel = (popupWheelRemainder ?? 0) + event.deltaY
@@ -1462,7 +1464,9 @@ final class HerdrScreenModel {
     /// lines for tmux: one step per cell height, the rest kept for the next. Herdr decides what a step
     /// does: it scrolls the pane's history, or goes to the program as a wheel report or an arrow key. As
     /// in Herdr's client, scrolling another pane focuses it. The wheel goes where any input goes
-    /// (`inputTarget(forPane:)`), placed in the pane's drawn area.
+    /// (`inputTarget(forPane:)`), placed in the pane's drawn area: at the event's pointer when it carries one,
+    /// which then becomes the pane's pointer, as a host terminal's wheel is wherever its mouse is; else at the
+    /// pane's pointer.
     func scroll(_ event: GhosttySurfaceMouseScrollEvent, inPane paneID: String) -> Bool {
         let momentum = event.mods.momentum
         // A cancelled gesture, as when the program's mouse mode changes, sends none of its travel.
@@ -1474,6 +1478,7 @@ final class HerdrScreenModel {
         defer {
             if momentum == .ended { wheelRemainders[paneID] = nil }
         }
+        if let pointer = event.pointer { pointers[paneID] = pointer }
         guard let target = inputTarget(forPane: paneID), let measurement,
               let cell = paneCell(at: pointers[paneID] ?? .zero, inPane: paneID)
         else { return false }

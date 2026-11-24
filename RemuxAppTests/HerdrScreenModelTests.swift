@@ -5162,6 +5162,38 @@ final class HerdrScreenModelTests: XCTestCase {
         ])
     }
 
+    /// A swipe's wheel step goes at the cell it carries, the finger's, without a move of its own. That cell
+    /// becomes the pane's pointer, so a move away from it, also back to where the pointer was, reports.
+    func testAWheelStepGoesAtTheCellItCarries() async throws {
+        let harness = await makeHarness()
+        let session = try await shownSession(harness, mouseReporting: true)
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+        let pane = try paneSurfaceID(harness, "w1:p1")
+        let cellHeight = Double(try XCTUnwrap(harness.model.measurement).cellMetrics.pixelHeight)
+
+        XCTAssertEqual(adapter.sendMousePosition(to: pane, try point(harness, column: 0), mods: []), .sent)
+        let step = GhosttySurfaceMouseScrollEvent(
+            deltaX: 0,
+            deltaY: cellHeight * 1.5,
+            mods: .init(precision: true, momentum: .began),
+            pointer: try point(harness, column: 2)
+        )
+        XCTAssertEqual(adapter.sendMouseScroll(to: pane, step), .sent)
+        XCTAssertEqual(adapter.sendMousePosition(to: pane, try point(harness, column: 0), mods: []), .sent)
+
+        var sent: [[UInt8]] = []
+        for _ in 0..<3 {
+            sent.append(try await nextWrite(session.bridge, from: &index, paneInput))
+        }
+        let wheel = HerdrMouseEvent(kind: .scrollUp, column: 2, row: 0, lines: HerdrScreenModel.wheelLines)
+        XCTAssertEqual(sent, [
+            frame("w1:p1", [mouse(.moved, column: 0)]),
+            frame("w1:p1", [.mouse(wheel)]),
+            frame("w1:p1", [mouse(.moved, column: 0)]),
+        ])
+    }
+
     /// A program can leave mouse reporting while a swipe's reports go out. The swipe's reports stop there: in the
     /// mode that follows they would be arrow keys.
     func testASwipesReportsStopWhenItsProgramLeavesMouseReporting() async throws {
