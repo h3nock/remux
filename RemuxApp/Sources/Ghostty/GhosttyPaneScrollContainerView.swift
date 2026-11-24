@@ -85,6 +85,8 @@ enum GhosttyPaneScrollGeometry {
 
 @MainActor
 final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+    /// Called after the pane's surface changes where it is scrolled to.
+    var onSurfaceScrollStateChange: (() -> Void)?
     private let scrollView = UIScrollView()
     private let contentView = UIView()
     private let rendererRecoveryImageView = UIImageView()
@@ -193,6 +195,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             surface.onScrollStateChange = { [weak self, weak surface] in
                 guard let self, self.surface === surface else { return }
                 self.synchronizeFromSurface()
+                self.onSurfaceScrollStateChange?()
             }
             surface.onRendererRecoveryChange = { [weak self, weak surface] in
                 guard let self, self.surface === surface else { return }
