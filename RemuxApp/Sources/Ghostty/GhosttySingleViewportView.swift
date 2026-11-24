@@ -454,6 +454,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             restoreLocalSelectionIfPresent()
         }
         flushLayoutIfPossible()
+        // After the panes and the popup are placed, so a surface taking the input is measured where it shows.
+        observeSlideInputs(notifying: true)
     }
 
     func dismantle() {
@@ -538,7 +540,6 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         syncPopup()
         bringSubviewToFront(startSelectionHandle)
         bringSubviewToFront(endSelectionHandle)
-        observeSlideInputs(notifying: true)
     }
 
     /// The surface that takes the terminal's input and shows its cursor: the popup's while one shows, otherwise the
