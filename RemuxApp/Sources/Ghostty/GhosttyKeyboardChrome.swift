@@ -34,11 +34,43 @@ enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
     static let compactDockButtonWidth: CGFloat = 35
-    /// Toolbar key labels, sized so every label fits a compact key without shrinking.
+    /// Toolbar key labels, sized so every label fits a compact key without shrinking. They are bold: at 12 pt that
+    /// draws the same stroke as the bar's symbols, so a page of names weighs as much as a page of symbols.
     static let keyLabelFontSize: CGFloat = 12
-    /// The disc behind an armed or pressed key, smaller than the key at either width: it stays clear of the page
-    /// dots under the keys, of a neighbouring armed key, and of the group's rounded ends.
+    /// Every SF Symbol on the bar, the buttons' and the keys drawn as a symbol (an arrow, Return, Delete), at one size
+    /// and weight, so a page of symbol keys reads as the same family as Sessions, Home and the rest beside it.
+    static let toolbarSymbolPointSize: CGFloat = 16.5
+    /// The disc behind an armed key, smaller than the key at either width: it stays clear of the page dots under the
+    /// keys, of a neighbouring armed key, and of the group's rounded ends.
     static let keyDiscDiameter: CGFloat = 32
+
+    /// SF Symbols centre their whole drawing in the frame, so a symbol with a mark beside its main shape (the stack
+    /// above Sessions, the pencil of Compose, the chevron under the keyboard) sets that shape off the bar's row, and a
+    /// symbol whose shape is lopsided (Return, Delete) sits off its key's middle. Each entry moves the main shape back
+    /// onto the row and the key's middle. Measured on the shape's outline at `toolbarSymbolPointSize` semibold, for
+    /// every symbol the bar can show; only shapes two device pixels or more off are listed.
+    static func opticalOffset(forSymbol name: String) -> CGSize {
+        switch name {
+        case "rectangle.stack", "square.and.pencil":
+            CGSize(width: 0, height: -5.0 / 3)
+        case "house":
+            CGSize(width: 0, height: -1)
+        case "keyboard.chevron.compact.down":
+            CGSize(width: 0, height: 7.0 / 3)
+        case "return":
+            CGSize(width: -1, height: 0)
+        case "delete.left":
+            CGSize(width: -2.0 / 3, height: 0)
+        default:
+            .zero
+        }
+    }
+
+    /// SwiftUI centres a name by its whole line, room for descenders included, so a lowercase name reads below the
+    /// row. This lift puts the names' visual centre on the row: measured on the filled letter shapes of every name
+    /// the bar can show, at `keyLabelFontSize` bold, it leaves all of them within half a point but pgup, whose
+    /// descenders keep it 0.9 pt low.
+    static let nameOpticalLift: CGFloat = 2.0 / 3
     static let pageDotSize: CGFloat = 5
     static let pageDotSpacing: CGFloat = 6
     /// Lifts the dots so they sit one dot above the group's edge and further below the labels, a descender's
@@ -287,7 +319,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             ForEach(Array(page.values.enumerated()), id: \.offset) { slot, key in
                 let isArmed = key.modifier.map(armedModifiers.contains) ?? false
                 accessoryKey(
-                    title: key.toolbarTitle,
+                    label: key.toolbarLabel,
                     accessibilityLabel: key.settingsTitle,
                     accessibilityHint: toolbarKeyAccessibilityHint(key),
                     accessibilityIdentifier: "terminal.toolbar-key.\(pageIndex * page.values.count + slot)",
@@ -303,22 +335,29 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     /// The pages side by side, one on show; a swipe moves a whole page and stops on it.
     private func pagedKeys(_ pages: [TerminalToolbarKeyPage]) -> some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 0) {
-                ForEach(pages.indices, id: \.self) { index in
-                    keyPage(pages[index], index: index)
-                        .frame(width: keyPageWidth)
-                        .id(index)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(pages.indices, id: \.self) { index in
+                        keyPage(pages[index], index: index)
+                            .frame(width: keyPageWidth)
+                            .id(index)
+                    }
                 }
+                .offset(x: glideOffset)
+                .scrollTargetLayout()
             }
-            .offset(x: glideOffset)
-            .scrollTargetLayout()
+            .scrollTargetBehavior(.paging)
+            .scrollIndicators(.hidden)
+            .scrollPosition(id: shownKeyPage(count: pages.count))
+            .frame(width: keyPageWidth)
+            .accessibilityIdentifier("terminal.toolbar-keys")
+            // Turning the phone can change the keys' width, and a page's with it. The scroll view keeps its offset in
+            // points, which would leave the page on show part-way across, so it goes back to that page's edge.
+            .onChange(of: keyPageWidth) {
+                proxy.scrollTo(shownPageIndex(pages), anchor: .leading)
+            }
         }
-        .scrollTargetBehavior(.paging)
-        .scrollIndicators(.hidden)
-        .scrollPosition(id: shownKeyPage(count: pages.count))
-        .frame(width: keyPageWidth)
-        .accessibilityIdentifier("terminal.toolbar-keys")
     }
 
     private func shownKeyPage(count: Int) -> Binding<Int?> {
@@ -419,7 +458,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     }
 
     private func accessoryKey(
-        title: String,
+        label: TerminalToolbarKeyLabel,
         accessibilityLabel: String,
         accessibilityHint: String? = nil,
         accessibilityIdentifier: String,
@@ -429,7 +468,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         action: @escaping () -> Bool
     ) -> some View {
         GhosttyKeyboardKeyButton(
-            title: title,
+            label: label,
             accessibilityLabel: accessibilityLabel,
             accessibilityHint: accessibilityHint,
             accessibilityIdentifier: accessibilityIdentifier,
@@ -546,9 +585,10 @@ private struct GhosttyKeyboardChromeDockButton: View {
             ZStack {
                 ZStack {
                     Image(systemName: systemName)
-                        .font(.system(size: 16.5, weight: .semibold))
+                        .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
                         .symbolRenderingMode(.monochrome)
                         .contentTransition(.symbolEffect(.replace))
+                        .opticalOffset(GhosttyKeyboardChromeSizing.opticalOffset(forSymbol: systemName))
 
                     if dot != nil {
                         Circle()
@@ -616,7 +656,7 @@ private struct GhosttyKeyboardKeyButton: View {
     /// hold, such as a button with a menu.
     static let holdDuration = 0.4
 
-    let title: String
+    let label: TerminalToolbarKeyLabel
     let accessibilityLabel: String
     let accessibilityHint: String?
     let accessibilityIdentifier: String
@@ -634,11 +674,33 @@ private struct GhosttyKeyboardKeyButton: View {
     @State private var didHold = false
     private let discDiameter = GhosttyKeyboardChromeSizing.keyDiscDiameter
 
+    /// Names are text; symbols come from SF Symbols, as the toolbar's other buttons, and the ⇧ of ⇧tab sits inline on
+    /// the name's baseline.
+    @ViewBuilder
+    private var labelContent: some View {
+        switch label {
+        case .name(let name):
+            Text(name)
+                .font(.system(size: fontSize, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .opticalOffset(CGSize(width: 0, height: -GhosttyKeyboardChromeSizing.nameOpticalLift))
+        case .symbol(let symbol):
+            Image(systemName: symbol)
+                .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
+                .opticalOffset(GhosttyKeyboardChromeSizing.opticalOffset(forSymbol: symbol))
+        case .symbolThenName(let symbol, let name):
+            // The symbol a size down, so ⇧ stands no taller than "tab" beside it and the label fits inside the key's disc.
+            (Text(Image(systemName: symbol)).font(.system(size: fontSize * 0.875, weight: .bold))
+                + Text(name).font(.system(size: fontSize, weight: .bold)))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .opticalOffset(CGSize(width: 0, height: -GhosttyKeyboardChromeSizing.nameOpticalLift))
+        }
+    }
+
     var body: some View {
-        Text(title)
-            .font(.system(size: fontSize, weight: .semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
+        labelContent
             .foregroundStyle(isArmed ? GhosttyPhoneChromePalette.armedKeyLabel : GhosttyPhoneChromePalette.chromeForeground)
             .frame(width: width, height: height)
             .background {
@@ -648,11 +710,8 @@ private struct GhosttyKeyboardKeyButton: View {
                         .frame(width: discDiameter, height: discDiameter)
                 }
             }
-            .ghosttyToolbarButtonSurface(
-                isPressed: isPressed,
-                isEnabled: isEnabled,
-                diameter: discDiameter
-            )
+            // Pressed the way every other button on the bar is: a disc that fills the key, so it holds the widest label.
+            .ghosttyToolbarButtonSurface(isPressed: isPressed, isEnabled: isEnabled)
             .scaleEffect(isPressed && isEnabled ? 0.96 : 1)
             // Dimmed as one image, so a disabled button's symbol doesn't show through its badge or surface.
             .compositingGroup()
@@ -849,18 +908,34 @@ extension View {
     }
 }
 
+/// Moves a glyph by whole device pixels, so a correction never leaves it drawn between pixels.
+private struct GhosttyOpticalOffset: ViewModifier {
+    let offset: CGSize
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content.offset(x: snapped(offset.width), y: snapped(offset.height))
+    }
+
+    private func snapped(_ value: CGFloat) -> CGFloat {
+        (value * displayScale).rounded() / displayScale
+    }
+}
+
 private extension View {
+    func opticalOffset(_ offset: CGSize) -> some View {
+        modifier(GhosttyOpticalOffset(offset: offset))
+    }
+
     func ghosttyToolbarGroupSurface() -> some View {
         ghosttyChromeGlass(in: Capsule(), isInteractive: true)
     }
 
-    /// The press feedback every toolbar button shares: a faint disc while a finger is down, filling the button
-    /// unless `diameter` sizes it.
-    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool, diameter: CGFloat? = nil) -> some View {
+    /// The press feedback every toolbar button and key shares: a faint disc filling the button while a finger is down.
+    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool) -> some View {
         overlay {
             Circle()
                 .fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
-                .frame(width: diameter, height: diameter)
         }
     }
 }
