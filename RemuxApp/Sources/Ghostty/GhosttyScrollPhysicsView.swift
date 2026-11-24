@@ -212,7 +212,8 @@ enum GhosttyViewportShift: Equatable {
             return .moved(best.key)
         }
         let somethingMoved = (moving.first?.value ?? 0) >= 3
-        return !somethingMoved && 2 * inPlace.count >= newRows.count ? .redrawn : .unclear
+        // A frame with no rows to compare, such as a cleared screen before its repaint, says nothing yet.
+        return !somethingMoved && !newRows.isEmpty && 2 * inPlace.count >= newRows.count ? .redrawn : .unclear
     }
 }
 
@@ -251,6 +252,9 @@ struct GhosttyScrollFollow {
     /// When a report was sent with none on its way: the next movement times the round trip.
     private var probeSentAt: TimeInterval?
     private var unmovedCount = 0
+    /// The unmoved reports' directions, summed, and how much of that sum is already credited.
+    private var unmovedTravel = 0.0
+    private var stallCountedTravel = 0.0
     private var unmovedSince: TimeInterval?
     private var lastMovedAt: TimeInterval?
     private var stallCounted = 0
@@ -387,6 +391,8 @@ struct GhosttyScrollFollow {
                 stalledReports = max(0, stalledReports - Int(cancelled.rounded()))
             }
             unmovedCount = 0
+            unmovedTravel = 0
+            stallCountedTravel = 0
             unmovedSince = nil
             stallCounted = 0
             lastMovedAt = now
@@ -402,6 +408,7 @@ struct GhosttyScrollFollow {
             where lastMovedAt.map({ report.sentAt >= $0 }) ?? true {
                 if unmovedSince == nil { unmovedSince = report.sentAt }
                 unmovedCount += 1
+                unmovedTravel += report.direction
             }
         }
 
@@ -409,10 +416,10 @@ struct GhosttyScrollFollow {
         // row, or what it draws can't be compared. Each counts as one row from here on.
         if unmovedCount >= Self.stalledReportCount,
            let unmovedSince, now - unmovedSince >= 2.5 * latency + 0.05 {
-            let fresh = unmovedCount - stallCounted
-            stallCredit += Double(fresh) * reports[landedCount - 1].direction
-            stalledReports += fresh
+            stallCredit += unmovedTravel - stallCountedTravel
+            stalledReports += unmovedCount - stallCounted
             stallCounted = unmovedCount
+            stallCountedTravel = unmovedTravel
         }
 
         let effective = landedCount - stalledReports

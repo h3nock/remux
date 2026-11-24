@@ -266,6 +266,13 @@ final class GhosttyViewportShiftTests: XCTestCase {
         )
     }
 
+    /// A cleared screen has nothing to compare, so the copy before it stays the one the repaint is read against.
+    func testABlankFrameIsUnclear() {
+        var staticRows: Set<Int> = []
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 100), [], staticRows: &staticRows), .unclear)
+        XCTAssertEqual(GhosttyViewportShift.between(frame(first: 100), ["", ""], staticRows: &staticRows), .unclear)
+    }
+
     func testAnUnrelatedFrameIsUnclear() {
         var staticRows: Set<Int> = []
         let other = (0..<16).map { Substring("other \($0)") }
@@ -429,6 +436,22 @@ final class GhosttyScrollFollowTests: XCTestCase {
         var program = Program { _ in 1 }
         let result = run(&program, latency: 0.3, seconds: 3)
         XCTAssertGreaterThan(result.follow.latency, 0.25)
+    }
+
+    /// Content that can't be seen to move credits each report one row in its own direction, so a drag that turns
+    /// back sends a report for every row of travel back.
+    func testStalledReportsCountInTheirOwnDirection() {
+        var program = Program { _ in 0 }
+        let result = run(&program, latency: 0.03, seconds: 3) { t in
+            switch t {
+            case ..<0.2: 4 * t / 0.2
+            case ..<0.6: 4 - 8 * (t - 0.2) / 0.4
+            case ..<1.6: -4
+            case ..<2.0: -4 - 8 * (t - 1.6) / 0.4
+            default: -12
+            }
+        }
+        XCTAssertGreaterThanOrEqual(result.follow.reportCount, 19)
     }
 
     func testContentAheadOfTheTargetIsNotPulledBack() {
