@@ -1307,28 +1307,28 @@ final class RemuxAppUITests: XCTestCase {
 
         swipeToolbarKeys(from: keys[4], toLeft: true)
         XCTAssertTrue(waitUntilOnShownPage(keys[6]))
-        XCTAssertEqual(keys.suffix(3).map { $0.label }, ["Shift-Tab", "Shift", "Alt"])
+        XCTAssertEqual(keys.suffix(3).map { $0.label }, ["Shift-Tab", "Alt", "Shift"])
         XCTAssertFalse(isOnShownKeyPage(keys[3]))
         attachScreenshot(named: "toolbar-key-pages-3-keyboard-hidden")
 
         // An armed key stays armed on another page, ready for that page's keys.
-        keys[7].tap()
-        XCTAssertEqual(keys[7].value as? String, "Armed")
+        keys[8].tap()
+        XCTAssertEqual(keys[8].value as? String, "Armed")
         attachScreenshot(named: "toolbar-key-pages-3-shift-armed")
         swipeToolbarKeys(from: keys[6], toLeft: false)
         XCTAssertTrue(waitUntilOnShownPage(keys[3]))
-        XCTAssertEqual(keys[7].value as? String, "Armed")
+        XCTAssertEqual(keys[8].value as? String, "Armed")
         attachScreenshot(named: "toolbar-key-pages-2-shift-armed-on-page-3")
         swipeToolbarKeys(from: keys[4], toLeft: true)
         XCTAssertTrue(waitUntilOnShownPage(keys[6]))
-        keys[7].tap()
-        XCTAssertNotEqual(keys[7].value as? String, "Armed")
+        keys[8].tap()
+        XCTAssertNotEqual(keys[8].value as? String, "Armed")
 
         // Alt brings the keyboard up, as Control does.
-        keys[8].tap()
-        XCTAssertEqual(keys[8].value as? String, "Armed")
+        keys[7].tap()
+        XCTAssertEqual(keys[7].value as? String, "Armed")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        keys[8].tap()
+        keys[7].tap()
 
         // Every page's first key opens Shortcuts when held.
         swipeToolbarKeys(from: keys[7], toLeft: false)

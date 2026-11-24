@@ -120,12 +120,12 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertEqual(TerminalToolbarKeys.default.pages.map(\.values), [
             [.control, .escape, .tab],
             [.enter, .arrowUp, .arrowDown],
-            [.shiftTab, .shift, .alt],
+            [.shiftTab, .alt, .shift],
         ])
         XCTAssertEqual(TerminalToolbarKeys.default.compactSummary, "ctrl · esc · tab")
         XCTAssertEqual(
             TerminalToolbarKeys.default.summary,
-            "Page 1: Control, Escape, Tab. Page 2: Enter, Up Arrow, Down Arrow. Page 3: Shift-Tab, Shift, Alt"
+            "Page 1: Control, Escape, Tab. Page 2: Enter, Up Arrow, Down Arrow. Page 3: Shift-Tab, Alt, Shift"
         )
         XCTAssertEqual(TerminalToolbarKeys.default.modifiers, [.control, .shift, .option])
     }
@@ -138,7 +138,7 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertEqual(keys.pages.map(\.values), [
             [.escape, .control, .home],
             [.enter, .arrowUp, .arrowDown],
-            [.shiftTab, .shift, .alt],
+            [.shiftTab, .alt, .shift],
         ])
     }
 

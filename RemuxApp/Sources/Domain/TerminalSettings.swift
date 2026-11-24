@@ -320,11 +320,13 @@ struct TerminalToolbarKeyPage: Equatable, Codable, Sendable {
 /// The toolbar's key pages, swiped through three keys at a time. Never empty.
 struct TerminalToolbarKeys: Equatable, Codable, Sendable {
     /// The second page answers a program's prompt or menu with the keyboard down; it sits next to Escape because
-    /// answering is pressed more often than the third page's keys.
+    /// answering is pressed more often than the third page's keys. On the third page Alt comes before Shift, in the
+    /// order keyboards list modifiers (Control, Option, Shift), and short "alt" beside ⇧tab keeps the two labels
+    /// apart on compact keys.
     static let `default` = Self(pages: [
         TerminalToolbarKeyPage(first: .control, second: .escape, third: .tab),
         TerminalToolbarKeyPage(first: .enter, second: .arrowUp, third: .arrowDown),
-        TerminalToolbarKeyPage(first: .shiftTab, second: .shift, third: .alt),
+        TerminalToolbarKeyPage(first: .shiftTab, second: .alt, third: .shift),
     ])
 
     private(set) var pages: [TerminalToolbarKeyPage]
