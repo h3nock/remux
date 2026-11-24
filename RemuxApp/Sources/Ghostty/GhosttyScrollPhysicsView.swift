@@ -285,6 +285,10 @@ struct GhosttyScrollFollow {
 
     var reportCount: Int { reports.count }
 
+    /// The index of the earliest report still on its way: the likeliest cause of movement seen now. Nil when every
+    /// report has landed.
+    var earliestReportOnItsWay: Int? { landedCount < reports.count ? landedCount : nil }
+
     mutating func moveTarget(byRows rows: Double) {
         guard rows != 0 else { return }
         targetRows += rows

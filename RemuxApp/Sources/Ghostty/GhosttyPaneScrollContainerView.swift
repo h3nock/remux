@@ -126,6 +126,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var physicsPointer: CGPoint?
     /// The content has moved since the gesture began, so its reports stay at `physicsPointer`.
     private var physicsPointerHeld = false
+    /// The cell each of the gesture's followed reports carried, in order.
+    private var physicsReportCells: [CGPoint?] = []
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
 
@@ -609,6 +611,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         )
         physicsPointer = Self.pointerCell(location, in: surface.view.bounds)
         physicsPointerHeld = false
+        physicsReportCells.removeAll()
         if surface.scrollRoute != .mouseReport {
             _ = submitRouteForwardedMousePosition?(surface.id, location, [])
         }
@@ -792,8 +795,13 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         scrollFollow?.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
         // A precise event that starts a gesture and carries between one and two cells is exactly one report.
         let stepPixels = 1.5 * Double(max(cellHeight(for: surface), 1) * displayScale)
+        // The cell held is the one the moving report carried, not where the finger has gone since.
         if !physicsPointerHeld, let follow = scrollFollow, follow.seenRows != 0 {
             physicsPointerHeld = true
+            let cause = follow.earliestReportOnItsWay ?? physicsReportCells.count - 1
+            if physicsReportCells.indices.contains(cause), let cell = physicsReportCells[cause] {
+                physicsPointer = cell
+            }
         }
         let pointer = trackedPhysicsPointer(in: surface)
         // Sending a report can end the gesture or change the program's mouse mode, so both are checked before each.
@@ -805,6 +813,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
                 mods: .init(precision: true, momentum: .began),
                 pointer: pointer
             ))
+            physicsReportCells.append(pointer)
             lastForwardedScrollAt = now
         }
         guard let follow = scrollFollow else { return }
