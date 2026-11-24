@@ -1460,7 +1460,10 @@ final class RemuxAppUITests: XCTestCase {
             settingsForm.swipeUp()
         }
         XCTAssertTrue(toolbarKeys.waitForExistence(timeout: 2))
-        XCTAssertEqual(toolbarKeys.value as? String, "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt")
+        XCTAssertEqual(
+            toolbarKeys.value as? String,
+            "Page 1: Control, Escape, Tab. Page 2: Enter, Up Arrow, Down Arrow. Page 3: Shift-Tab, Alt, Shift"
+        )
         attachScreenshot(named: "settings-toolbar-keys-row-default")
         toolbarKeys.tap()
 
@@ -1726,7 +1729,7 @@ final class RemuxAppUITests: XCTestCase {
         try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60)
-        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        let keys = (0..<9).map { app.buttons["terminal.toolbar-key.\($0)"] }
         XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
 
         // Each check reads what arrives within a few seconds in raw mode and prints a marker it builds at run
@@ -1750,27 +1753,30 @@ final class RemuxAppUITests: XCTestCase {
             )
         }
 
+        // The third page holds Shift-Tab, Alt and Shift; swiping to it sends nothing.
         expectBytes("SWIPE_SENDS_NOTHING", "b\"\"") {
             swipeToolbarKeys(from: keys[1], toLeft: true)
             XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+            swipeToolbarKeys(from: keys[4], toLeft: true)
+            XCTAssertTrue(waitUntilOnShownPage(keys[6]))
         }
         expectBytes("SHIFT_TAB", "b\"\\x1b[Z\"") {
-            keys[3].tap()
+            keys[6].tap()
         }
         expectBytes("ALT_B", "b\"\\x1bb\"") {
-            keys[5].tap()
+            keys[7].tap()
             app.typeText("b")
         }
         expectBytes("SHIFT_A", "b\"A\"") {
-            keys[4].tap()
+            keys[8].tap()
             app.typeText("a")
         }
         expectBytes("ALT_RETURN", "b\"\\x1b\\r\"") {
-            keys[5].tap()
+            keys[7].tap()
             app.typeText("\n")
         }
         expectBytes("HOLD_SENDS_NOTHING", "b\"\"") {
-            keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+            keys[6].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
             XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
             app.otherElements["terminal.screen"]
                 .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
