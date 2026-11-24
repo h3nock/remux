@@ -1601,6 +1601,28 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 1)
     }
 
+    /// A burst's parse queued at its cap parses only that burst: when a request has parsed it already, the next
+    /// burst's pieces still parse together at their own cap.
+    func testAQueuedParseLeavesTheNextBurstAlone() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .seconds(1), cap: .milliseconds(100))
+        )
+
+        harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.2) }
+        harness.controller.pump(Data("%output %0 A\n".utf8))
+        harness.controller.requestSelectPane(paneID: 1)
+        try await Task.sleep(for: .milliseconds(150))
+        harness.controller.pump(Data("%output %0 B1\n".utf8))
+        try await Task.sleep(for: .milliseconds(60))
+        harness.controller.pump(Data("%output %0 B2\n".utf8))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(wakes.count, 2)
+    }
+
     /// The cap holds while the writer queue is busy, when the settle timer can't run between reads.
     func testOutputIsParsedAtTheCapWhileTheQueueIsBusy() async throws {
         let wakes = PaneWakeCounter()

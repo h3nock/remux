@@ -257,7 +257,7 @@ final class TmuxSessionController: @unchecked Sendable {
     private var settlingSince: DispatchTime?
     private var settlingEnqueuedAt: UInt64 = 0
     private var settleTimer: DispatchSourceTimer?
-    private var settlingFeedQueued = false
+    private var settlingFeedQueuedFor: DispatchTime?
     private let outputSettle: OutputSettle?
     /// Panes whose terminal changed during the feed in progress; nil outside a feed. Their renderers are woken once,
     /// when the feed returns, rather than once per `%output` line.
@@ -470,10 +470,12 @@ final class TmuxSessionController: @unchecked Sendable {
             // parse together.
             let cap = since + outputSettle.cap
             if now >= cap {
-                if !settlingFeedQueued {
-                    settlingFeedQueued = true
+                // Once for this burst, and only while it lasts: a request can parse it first, and the next burst
+                // waits for its own cap.
+                if settlingFeedQueuedFor != since {
+                    settlingFeedQueuedFor = since
                     queue.async { [self] in
-                        settlingFeedQueued = false
+                        guard settlingSince == since else { return }
                         feedSettlingOutput()
                     }
                 }
@@ -1070,7 +1072,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// waiting to settle is parsed, so it decides on everything tmux has sent. Keystrokes and wheel steps go to the
     /// queue directly, so typing and scrolling don't cut the wait short; what they read of the session's state can
     /// lag tmux by the wait, as all of it lags by the network's delay.
-    private func onWriterWithCurrentState(_ request: @escaping () -> Void) {
+    private func onWriterWithCurrentState(_ request: @escaping @Sendable () -> Void) {
         queue.async { [self] in
             feedSettlingOutput()
             request()
