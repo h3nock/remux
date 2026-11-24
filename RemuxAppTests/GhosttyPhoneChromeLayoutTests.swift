@@ -18,7 +18,7 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
                 nameWidth(name)
             case .symbol(let symbol):
                 symbolWidth(symbol, UIImage.SymbolConfiguration(
-                    pointSize: GhosttyKeyboardChromeSizing.keySymbolPointSize,
+                    pointSize: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize,
                     weight: .semibold
                 ))
             case .symbolThenName(let symbol, let name):

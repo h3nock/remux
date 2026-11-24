@@ -36,11 +36,11 @@ enum GhosttyKeyboardChromeSizing {
     static let compactDockButtonWidth: CGFloat = 35
     /// Toolbar key labels, sized so every label fits a compact key without shrinking.
     static let keyLabelFontSize: CGFloat = 12
-    /// A key drawn as a symbol (an arrow, Return, Delete): at the names' weight, a point larger so it stands as tall as
-    /// a 12 pt name. Larger, the page of symbols reads heavier than the pages of names it swipes between.
-    static let keySymbolPointSize: CGFloat = 13
-    /// The disc behind an armed or pressed key, smaller than the key at either width: it stays clear of the page
-    /// dots under the keys, of a neighbouring armed key, and of the group's rounded ends.
+    /// Every SF Symbol on the bar, the buttons' and the keys drawn as a symbol (an arrow, Return, Delete), at one size
+    /// and weight, so a page of symbol keys reads as the same family as Sessions, Home and the rest beside it.
+    static let toolbarSymbolPointSize: CGFloat = 16.5
+    /// The disc behind an armed key, smaller than the key at either width: it stays clear of the page dots under the
+    /// keys, of a neighbouring armed key, and of the group's rounded ends.
     static let keyDiscDiameter: CGFloat = 32
     static let pageDotSize: CGFloat = 5
     static let pageDotSpacing: CGFloat = 6
@@ -549,7 +549,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
             ZStack {
                 ZStack {
                     Image(systemName: systemName)
-                        .font(.system(size: 16.5, weight: .semibold))
+                        .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
                         .symbolRenderingMode(.monochrome)
                         .contentTransition(.symbolEffect(.replace))
 
@@ -649,10 +649,11 @@ private struct GhosttyKeyboardKeyButton: View {
                 .minimumScaleFactor(0.8)
         case .symbol(let symbol):
             Image(systemName: symbol)
-                .font(.system(size: GhosttyKeyboardChromeSizing.keySymbolPointSize, weight: .semibold))
+                .font(.system(size: GhosttyKeyboardChromeSizing.toolbarSymbolPointSize, weight: .semibold))
         case .symbolThenName(let symbol, let name):
-            (Text(Image(systemName: symbol)) + Text(name))
-                .font(.system(size: fontSize, weight: .semibold))
+            // The symbol a size down, so ⇧ stands no taller than "tab" beside it and the label fits inside the key's disc.
+            (Text(Image(systemName: symbol)).font(.system(size: fontSize * 0.875, weight: .semibold))
+                + Text(name).font(.system(size: fontSize, weight: .semibold)))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
@@ -669,11 +670,8 @@ private struct GhosttyKeyboardKeyButton: View {
                         .frame(width: discDiameter, height: discDiameter)
                 }
             }
-            .ghosttyToolbarButtonSurface(
-                isPressed: isPressed,
-                isEnabled: isEnabled,
-                diameter: discDiameter
-            )
+            // Pressed the way every other button on the bar is: a disc that fills the key, so it holds the widest label.
+            .ghosttyToolbarButtonSurface(isPressed: isPressed, isEnabled: isEnabled)
             .scaleEffect(isPressed && isEnabled ? 0.96 : 1)
             // Dimmed as one image, so a disabled button's symbol doesn't show through its badge or surface.
             .compositingGroup()
@@ -875,13 +873,11 @@ private extension View {
         ghosttyChromeGlass(in: Capsule(), isInteractive: true)
     }
 
-    /// The press feedback every toolbar button shares: a faint disc while a finger is down, filling the button
-    /// unless `diameter` sizes it.
-    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool, diameter: CGFloat? = nil) -> some View {
+    /// The press feedback every toolbar button and key shares: a faint disc filling the button while a finger is down.
+    func ghosttyToolbarButtonSurface(isPressed: Bool, isEnabled: Bool) -> some View {
         overlay {
             Circle()
                 .fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
-                .frame(width: diameter, height: diameter)
         }
     }
 }
