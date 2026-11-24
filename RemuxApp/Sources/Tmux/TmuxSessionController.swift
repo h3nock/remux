@@ -450,6 +450,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     func pump(_ data: Data) {
         let enqueuedAt = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
+        let arrivedAt = DispatchTime.now()
         queue.async { [self, data] in
             guard client != nil, !shuttingDown else { return }
             // Until the session is ready nothing is drawn, and its replies each start the next command.
@@ -459,7 +460,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 return
             }
             let now = DispatchTime.now()
-            let since = settlingSince ?? now
+            let since = settlingSince ?? arrivedAt
             if settlingSince == nil { settlingEnqueuedAt = enqueuedAt }
             settlingSince = since
             settlingOutput.append(data)
@@ -740,6 +741,8 @@ final class TmuxSessionController: @unchecked Sendable {
     private func endExpiredRenderHolds() {
         preconditionOnWriterQueue()
         guard let client, !shuttingDown else { return }
+        // Output still waiting to settle can end a hold with the rest of its frame.
+        feedSettlingOutput()
         let now = DispatchTime.now()
         let expired = renderHolds.filter { $0.value.deadline <= now }.map(\.key)
         for paneID in expired {
@@ -982,7 +985,8 @@ final class TmuxSessionController: @unchecked Sendable {
         completion: @escaping @Sendable (Bool) -> Void
     ) -> Bool {
         guard !text.isEmpty else { return false }
-        queue.async { [self] in
+        // A paste goes to the pane's synchronized siblings too, as the last parsed layout has them.
+        onWriterWithCurrentState { [self] in
             admitTrackedInputOnWriter(completion: completion) { client, token in
                 var text = text
                 return text.withUTF8 { buffer in
@@ -1051,8 +1055,9 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     /// Runs a request that decides on the session's state on the writer queue, once the control output still
-    /// waiting to settle is parsed, so it decides on everything tmux has sent. Input goes to the queue directly: it
-    /// decides nothing, and parsing early would cut the wait short while the user types or scrolls.
+    /// waiting to settle is parsed, so it decides on everything tmux has sent. Keystrokes and wheel steps go to the
+    /// queue directly, so typing and scrolling don't cut the wait short; what they read of the session's state can
+    /// lag tmux by the wait, as all of it lags by the network's delay.
     private func onWriterWithCurrentState(_ request: @escaping () -> Void) {
         queue.async { [self] in
             feedSettlingOutput()

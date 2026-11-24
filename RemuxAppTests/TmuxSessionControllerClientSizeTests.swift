@@ -1417,6 +1417,25 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         try await waitUntil("the last hold didn't time out", timeout: .seconds(3)) { wakes.count == 8 }
     }
 
+    /// A hold whose end has arrived but waits to settle when the hold times out ends with that output, so the pane
+    /// is woken once for it, not once for the timeout with half the frame and again for the rest.
+    func testARenderHoldTimingOutWithItsEndWaitingEndsWithTheOutput() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(200),
+            outputSettle: .init(quiet: .milliseconds(400), cap: .seconds(5))
+        )
+
+        harness.controller.pump(Data("%output %0 \\033[?2026hA\n".utf8))
+        try await waitUntil("the held output didn't reach the pane") { wakes.count == 1 }
+        harness.controller.pump(Data("%output %0 B\\033[?2026l\n".utf8))
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertEqual(wakes.count, 2)
+    }
+
     /// A hold pending when the session shuts down is dropped with it.
     func testAPendingRenderHoldEndsWithTheSession() async throws {
         let wakes = PaneWakeCounter()
@@ -1502,6 +1521,38 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             harness.recorder.takeStrings(),
             command: "select-pane -Z -t %0"
         )
+    }
+
+    /// A paste goes where the last parsed layout says, so output still waiting is parsed before it.
+    func testAPasteSeesOutputWaitingToSettle() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .seconds(5), cap: .seconds(10))
+        )
+
+        harness.controller.pump(Data("%output %0 frame\n".utf8))
+        XCTAssertTrue(harness.controller.sendPaste(paneID: 0, "text", completion: { _ in }))
+        await drain(harness.controller)
+        try await waitUntil("the output waiting wasn't parsed before the paste") { wakes.count == 1 }
+    }
+
+    /// The cap runs from when output arrives, also when the writer queue can't take it at once.
+    func testOutputThatWaitedForTheWriterPastTheCapIsParsedAtOnce() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .seconds(2), cap: .milliseconds(200))
+        )
+
+        harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.4) }
+        harness.controller.pump(Data("%output %0 frame\n".utf8))
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 1)
     }
 
     /// The cap holds while the writer queue is busy, when the settle timer can't run between reads.
