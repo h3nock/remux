@@ -5162,6 +5162,71 @@ final class HerdrScreenModelTests: XCTestCase {
         ])
     }
 
+    /// A swipe's wheel step goes at the cell it carries, the finger's, without a move of its own. That cell
+    /// becomes the pane's pointer, so a move away from it, also back to where the pointer was, reports.
+    func testAWheelStepGoesAtTheCellItCarries() async throws {
+        let harness = await makeHarness()
+        let session = try await shownSession(harness, mouseReporting: true)
+        var index = session.next
+        let adapter = harness.model.terminalScreenAdapter
+        let pane = try paneSurfaceID(harness, "w1:p1")
+        let cellHeight = Double(try XCTUnwrap(harness.model.measurement).cellMetrics.pixelHeight)
+
+        XCTAssertEqual(adapter.sendMousePosition(to: pane, try point(harness, column: 0), mods: []), .sent)
+        let step = GhosttySurfaceMouseScrollEvent(
+            deltaX: 0,
+            deltaY: cellHeight * 1.5,
+            mods: .init(precision: true, momentum: .began),
+            pointer: try point(harness, column: 2)
+        )
+        XCTAssertEqual(adapter.sendMouseScroll(to: pane, step), .sent)
+        XCTAssertEqual(adapter.sendMousePosition(to: pane, try point(harness, column: 0), mods: []), .sent)
+
+        var sent: [[UInt8]] = []
+        for _ in 0..<3 {
+            sent.append(try await nextWrite(session.bridge, from: &index, paneInput))
+        }
+        let wheel = HerdrMouseEvent(kind: .scrollUp, column: 2, row: 0, lines: HerdrScreenModel.wheelLines)
+        XCTAssertEqual(sent, [
+            frame("w1:p1", [mouse(.moved, column: 0)]),
+            frame("w1:p1", [.mouse(wheel)]),
+            frame("w1:p1", [mouse(.moved, column: 0)]),
+        ])
+    }
+
+    /// A program can leave mouse reporting while a swipe's reports go out. The swipe's reports stop there: in the
+    /// mode that follows they would be arrow keys.
+    func testASwipesReportsStopWhenItsProgramLeavesMouseReporting() async throws {
+        let harness = await makeHarness()
+        _ = try await shownSession(harness, mouseReporting: true)
+        let surface = try XCTUnwrap(harness.model.paneSurface("w1:p1")?.renderer.managedSurface)
+        let cell = try XCTUnwrap(harness.model.measurement).cellMetrics
+        XCTAssertEqual(surface.scrollRoute, .mouseReport)
+
+        let container = GhosttyPaneScrollContainerView(frame: CGRect(x: 0, y: 0, width: 300, height: 220))
+        var routes: [GhosttySurfaceScrollRoute] = []
+        _ = container.update(
+            surface: surface,
+            displayScale: cell.contentScale,
+            submitRouteForwardedMouseScroll: { _, _ in
+                routes.append(surface.scrollRoute)
+                if routes.count == 1 {
+                    surface.setRemoteScroll(surface.scrollState, route: .altScreenCursor)
+                }
+                return .sent
+            },
+            submitRouteForwardedMousePosition: nil
+        )
+        defer { container.detachCurrentSurfaceForRemoval() }
+        container.layoutIfNeeded()
+        let physics = try XCTUnwrap(container.subviews.compactMap { $0 as? GhosttyScrollPhysicsView }.first)
+        container.scrollViewWillBeginDragging(physics)
+        let start = physics.contentOffset
+        physics.setContentOffset(CGPoint(x: start.x, y: start.y - 7.1 * cell.pointHeight), animated: false)
+        container.scrollViewDidScroll(physics)
+        XCTAssertEqual(routes, [.mouseReport])
+    }
+
     /// A tap in a pane whose program reads the mouse is a left click at the tap's cell, after the pointer's
     /// move there, each reported relative to the pane's text area as Herdr's client reports them. A pane
     /// whose program doesn't read the mouse takes no button.

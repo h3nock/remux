@@ -25,6 +25,17 @@ final class GhosttySurfaceScrollGestureTests: XCTestCase {
         window.isHidden = true
     }
 
+    /// A fling that reached the virtual edge would bounce back and send steps the finger never asked for.
+    @MainActor
+    func testPhysicsViewLeavesTheSameFlickTravelOnBothSidesWhateverThePaneHeight() {
+        for height in [CGFloat(120), 760] {
+            let view = GhosttyScrollPhysicsView(frame: CGRect(x: 0, y: 0, width: 300, height: height))
+            view.synchronizeVirtualContent()
+            XCTAssertEqual(view.centeredContentOffsetY, 100_000)
+            XCTAssertEqual(view.contentSize.height - height - view.centeredContentOffsetY, 100_000)
+        }
+    }
+
     func testPaneScrollGeometryRejectsUnsizedDisplayViewport() {
         XCTAssertNil(GhosttyPaneScrollGeometry.displayViewportSize(for: .zero))
         XCTAssertNil(GhosttyPaneScrollGeometry.displayViewportSize(for: CGRect(x: 0, y: 0, width: 120, height: 0)))

@@ -325,11 +325,27 @@ final class GhosttyKitControlSurface {
     @discardableResult
     func sendMouseScroll(_ event: GhosttySurfaceMouseScrollEvent) -> Bool {
         guard !invalidated else { return false }
-        return Self.accepted(ghostty_terminal_surface_mouse_scroll(
+        // A touch gesture's first event carries momentum began. The terminal surface reads that phase as AppKit's
+        // start of a coast, so the gesture's start goes to it as a call of its own.
+        if event.mods.momentum == .began {
+            ghostty_terminal_surface_mouse_scroll_begin(handle)
+        }
+        guard let pointer = event.pointer else {
+            return Self.accepted(ghostty_terminal_surface_mouse_scroll(
+                handle,
+                event.deltaX,
+                event.deltaY,
+                ghostty_input_scroll_mods_t(event.mods.rawValue)
+            ))
+        }
+        return Self.accepted(ghostty_terminal_surface_mouse_scroll_at(
             handle,
             event.deltaX,
             event.deltaY,
-            ghostty_input_scroll_mods_t(event.mods.rawValue)
+            ghostty_input_scroll_mods_t(event.mods.rawValue),
+            Double(pointer.x) * scaleFactor,
+            Double(pointer.y) * scaleFactor,
+            GHOSTTY_MODS_NONE
         ))
     }
 
@@ -527,6 +543,19 @@ final class GhosttyKitControlSurface {
         guard !invalidated else { return nil }
         var text = ghostty_text_s()
         let result = ghostty_terminal_surface_read_selection(handle, &text)
+        guard result == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT else { return nil }
+        defer {
+            let freeResult = ghostty_terminal_surface_free_text(handle, &text)
+            assert(freeResult == GHOSTTY_TERMINAL_SURFACE_INPUT_CONSUMED_NO_OUTPUT)
+        }
+        return Self.decodeGhosttyText(text)
+    }
+
+    /// The rows the viewport shows as text, one line per row.
+    func readViewportRows() -> String? {
+        guard !invalidated else { return nil }
+        var text = ghostty_text_s()
+        let result = ghostty_terminal_surface_read_viewport_rows(handle, &text)
         guard result == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT else { return nil }
         defer {
             let freeResult = ghostty_terminal_surface_free_text(handle, &text)

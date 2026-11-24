@@ -113,16 +113,32 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     /// delta, so leftover momentum never becomes input for whatever
     /// mode comes next.
     private let physicsScrollView = GhosttyScrollPhysicsView()
+    /// Replaced at each gesture's start, for the display scale it runs at.
     private var physicsForwardingGesture = GhosttyRouteForwardingScrollGesture(
         preciseScale: GhosttyScrollTuning.routeForwardedGain
     )
     private var physicsDeltaBudget = GhosttyScrollDeltaBudget(unitsPerSecond: 0)
     private var physicsTailCutoff = GhosttyScrollTailCutoff()
-    private var physicsVelocityGain = GhosttyScrollVelocityGain()
-    private var physicsPeakMultiplier: Double = 1
     private var physicsReportedOffsetY: CGFloat?
+    /// The cell the gesture's wheel reports carry: under the finger while it is down, then where it lifted,
+    /// for the coast, until a report moves the content (`trackedPhysicsPointer`). A program may scroll only the
+    /// region under the pointer.
+    private var physicsPointer: CGPoint?
+    /// The content has moved since the gesture began, so its reports stay at `physicsPointer`.
+    private var physicsPointerHeld = false
+    /// The cell each of the gesture's followed reports carried, in order.
+    private var physicsReportCells: [CGPoint?] = []
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
+
+    /// On the mouse-report route the reports follow what the program is seen to do with them
+    /// (`GhosttyScrollFollow`). The display link reads the viewport while a gesture runs, and for a short while
+    /// after it, so reports still on their way are counted.
+    private var scrollFollow: GhosttyScrollFollow?
+    private var scrollFollowLink: CADisplayLink?
+    private var scrollFollowSettleDeadline: TimeInterval?
+    private var scrollFollowLatency: TimeInterval = 0.08
+    private static let scrollFollowSettleWindow: TimeInterval = 0.4
 
     /// Set when a touch catches a live deceleration. The tap from that touch is
     /// the catch, not a click, as in native scroll views; the composite
@@ -130,12 +146,15 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var lastMomentumCatchAt: TimeInterval?
     private static let momentumCatchTapWindow: TimeInterval = 0.4
 
-    /// Per-route caps on reports per second of one gesture. Each mouse-report
-    /// tick makes the remote TUI repaint, and each remote-history tick makes the
-    /// server send a new frame, so those caps stay low. An alt-screen-cursor tick
-    /// is one cursor key moving one line, so fast flicks need a higher cap.
-    private static let maxMouseReportTicksPerSecond: Double = 60
+    /// Per-route caps on steps per second of one gesture. Each remote-history
+    /// step makes the server send a new frame, so that cap stays low. An
+    /// alt-screen-cursor step is one cursor key moving one line, so fast flicks
+    /// need a higher cap.
+    private static let maxRemoteHistoryTicksPerSecond: Double = 60
     private static let maxAltScreenTicksPerSecond: Double = 150
+    /// The follow rule sends at most one report per row of travel; this only
+    /// bounds how fast a burst of them can go out.
+    private static let maxFollowedReportsPerSecond: Double = 600
 
     /// When this view last forwarded a scroll. A server's history position that
     /// changes soon after shows the scroll indicator; one that moves with new
@@ -158,6 +177,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     deinit {
         MainActor.assumeIsolated {
             displayLink?.invalidate()
+            scrollFollowLink?.invalidate()
         }
     }
 
@@ -289,10 +309,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         if scrollView === physicsScrollView {
             // Deceleration ending while a touch is tracking means that
             // touch caught the fling (a natural end has no touch).
-            if physicsScrollView.isTracking {
+            let wasCaught = physicsScrollView.isTracking
+            if wasCaught {
                 lastMomentumCatchAt = CACurrentMediaTime()
             }
-            endPhysicsGesture(phase: .ended)
+            endPhysicsGesture(phase: wasCaught && scrollFollow != nil ? .cancelled : .ended)
             return
         }
 
@@ -580,17 +601,30 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
         // Remote wheel reports are encoded at the pointer position, and the
         // terminal surface rejects a remote scroll with no pointer. Touch input
-        // never moves the pointer, so anchor it at the touch point.
+        // never moves the pointer. Mouse-report scrolls carry the finger's cell
+        // in each report without a motion report, which a program tracking any
+        // motion would treat as hover; the other routes anchor the pointer at
+        // the touch point.
         let location = physicsScrollView.panGestureRecognizer.location(in: surface.view)
         GhosttyRuntimeTrace.diagnostics(
             "scroll.physics begin surface=\(ghosttyDiagnosticShortID(surface.id)) location=\(location.x),\(location.y) offset=\(physicsScrollView.contentOffset.y)"
         )
-        _ = submitRouteForwardedMousePosition?(surface.id, location, [])
+        physicsPointer = Self.pointerCell(location, in: surface.view.bounds)
+        physicsPointerHeld = false
+        physicsReportCells.removeAll()
+        if surface.scrollRoute != .mouseReport {
+            _ = submitRouteForwardedMousePosition?(surface.id, location, [])
+        }
 
+        // Precise scroll deltas are pixels: the terminal and Herdr count one step per cell
+        // height in pixels. Finger travel is in points.
+        physicsForwardingGesture = GhosttyRouteForwardingScrollGesture(
+            preciseScale: displayScale * GhosttyScrollTuning.routeForwardedGain
+        )
         let cellHeightPixels = max(cellHeight(for: surface), 1) * displayScale
         let ticksPerSecond = surface.scrollRoute == .altScreenCursor
             ? Self.maxAltScreenTicksPerSecond
-            : Self.maxMouseReportTicksPerSecond
+            : Self.maxRemoteHistoryTicksPerSecond
         let budgetUnitsPerSecond = ticksPerSecond
             * cellHeightPixels
             / physicsForwardingGesture.preciseScale
@@ -599,10 +633,23 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         )
         physicsDeltaBudget.rearm(unitsPerSecond: budgetUnitsPerSecond)
         physicsTailCutoff.reset()
-        physicsVelocityGain.reset()
-        physicsPeakMultiplier = 1
         physicsReportedOffsetY = physicsScrollView.contentOffset.y
         isPhysicsGestureActive = true
+
+        // A new touch starts from what is on screen now: nothing is owed from the gesture before it.
+        stopScrollFollow()
+        if surface.scrollRoute == .mouseReport {
+            var follow = GhosttyScrollFollow(
+                reportsPerSecond: Self.maxFollowedReportsPerSecond,
+                burstSeconds: GhosttyScrollDeltaBudget.defaultBurstSeconds,
+                latency: scrollFollowLatency
+            )
+            follow.observe(viewportRows: surface.controlSurface.readViewportRows(), at: CACurrentMediaTime())
+            scrollFollow = follow
+            let link = CADisplayLink(target: self, selector: #selector(scrollFollowTick))
+            link.add(to: .main, forMode: .common)
+            scrollFollowLink = link
+        }
     }
 
     /// Convert the offset delta since the last callback into the same
@@ -629,6 +676,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         let delta = Double(reported - offsetY)
         let now = CACurrentMediaTime()
 
+        // A followed program gets the whole coast: the follow rule decides
+        // how many reports it needs, and its reports end with the content.
+        if scrollFollow != nil {
+            scrollFollow?.moveTarget(byRows: delta / Double(max(cellHeight(for: surface), 1)))
+            driveScrollFollow(at: now)
+            return
+        }
+
         // While decelerating (finger up), stop once the coast falls
         // below the cell-quantization floor: the remaining tail would
         // emit isolated whole-cell ticks hundreds of milliseconds
@@ -649,22 +704,42 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             physicsTailCutoff.reset()
         }
 
-        // Velocity acceleration before the budget, so the per-route
-        // tick cap bounds the effective output.
-        let multiplier = physicsVelocityGain.multiplier(delta: delta, at: now)
-        physicsPeakMultiplier = max(physicsPeakMultiplier, multiplier)
-        let accelerated = delta * multiplier
-        let budgeted = physicsDeltaBudget.clamp(accelerated, at: now)
+        let budgeted = physicsDeltaBudget.clamp(delta, at: now)
         guard budgeted != 0 else { return }
 
         let events = physicsForwardingGesture.events(
             forTranslation: CGPoint(x: 0, y: budgeted),
             phase: .changed
         )
+        let pointer = trackedPhysicsPointer(in: surface)
         for event in events {
-            _ = submitRouteForwardedMouseScroll(surface.id, event)
+            _ = submitRouteForwardedMouseScroll(surface.id, event.at(pointer))
         }
         if !events.isEmpty { lastForwardedScrollAt = now }
+    }
+
+    /// The pointer for the gesture's next report: the finger's cell while it is down, the lift cell after, until
+    /// a report moves the content. From then on reports stay at the cell that moved it, as a mouse's wheel stays
+    /// where the mouse is. A program can scroll only the region under the pointer, such as Codex's transcript and
+    /// not its input box: a drag that starts on the input box scrolls once the finger reaches the transcript, and a
+    /// finger that goes on into the input box, or lifts there for a coast, keeps scrolling.
+    private func trackedPhysicsPointer(in surface: GhosttyManagedSurface) -> CGPoint? {
+        guard surface.scrollRoute == .mouseReport else { return nil }
+        if physicsScrollView.isTracking, !physicsPointerHeld {
+            physicsPointer = Self.pointerCell(
+                physicsScrollView.panGestureRecognizer.location(in: surface.view),
+                in: surface.view.bounds
+            )
+        }
+        return physicsPointer
+    }
+
+    /// A touch can drag past the pane's edge; reports stay on the pane's own cells.
+    private static func pointerCell(_ location: CGPoint, in bounds: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(location.x, bounds.minX), max(bounds.maxX - 1, bounds.minX)),
+            y: min(max(location.y, bounds.minY), max(bounds.maxY - 1, bounds.minY))
+        )
     }
 
     private func endPhysicsGesture(phase: GhosttySurfacePanGesture.Phase) {
@@ -672,22 +747,91 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         isPhysicsGestureActive = false
         physicsReportedOffsetY = nil
 
-        if let surface, let submitRouteForwardedMouseScroll {
+        if scrollFollow != nil {
+            // Each followed report is a whole step of its own, so there is no stream to close. Reports still on
+            // their way get a moment to land; a gesture that was cut short owes nothing more.
+            physicsForwardingGesture.reset()
+            if phase == .cancelled {
+                stopScrollFollow()
+            } else {
+                scrollFollowSettleDeadline = CACurrentMediaTime() + Self.scrollFollowSettleWindow + scrollFollowLatency
+            }
+        } else if let surface, let submitRouteForwardedMouseScroll {
             let events = physicsForwardingGesture.events(
                 forTranslation: .zero,
                 phase: phase
             )
+            let pointer = surface.scrollRoute == .mouseReport ? physicsPointer : nil
             for event in events {
-                _ = submitRouteForwardedMouseScroll(surface.id, event)
+                _ = submitRouteForwardedMouseScroll(surface.id, event.at(pointer))
             }
         } else {
             physicsForwardingGesture.reset()
         }
 
         GhosttyRuntimeTrace.diagnostics(
-            "scroll.physics end surface=\(ghosttyDiagnosticShortID(surface?.id)) phase=\(phase) peakGain=\(String(format: "%.2f", physicsPeakMultiplier))"
+            "scroll.physics end surface=\(ghosttyDiagnosticShortID(surface?.id)) phase=\(phase)"
         )
-        recenterPhysicsScrollIfIdle()
+        // A drag that ends without momentum ends inside scrollViewDidEndDragging, where UIKit
+        // still reports tracking; it clears by the next main-queue turn.
+        DispatchQueue.main.async { [weak self] in
+            self?.recenterPhysicsScrollIfIdle()
+        }
+    }
+
+    @objc
+    private func scrollFollowTick() {
+        driveScrollFollow(at: CACurrentMediaTime())
+    }
+
+    /// Read what the program has drawn and send the reports the content still needs to reach the target.
+    private func driveScrollFollow(at now: TimeInterval) {
+        guard scrollFollow != nil else { return }
+        guard let surface, surface.scrollRoute == .mouseReport, let submitRouteForwardedMouseScroll else {
+            stopScrollFollow()
+            return
+        }
+
+        scrollFollow?.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
+        // A precise event that starts a gesture and carries between one and two cells is exactly one report.
+        let stepPixels = 1.5 * Double(max(cellHeight(for: surface), 1) * displayScale)
+        // The cell held is the one the moving report carried, not where the finger has gone since.
+        if !physicsPointerHeld, let follow = scrollFollow, follow.seenRows != 0 {
+            physicsPointerHeld = true
+            let cause = follow.earliestReportOnItsWay ?? physicsReportCells.count - 1
+            if physicsReportCells.indices.contains(cause), let cell = physicsReportCells[cause] {
+                physicsPointer = cell
+            }
+        }
+        let pointer = trackedPhysicsPointer(in: surface)
+        // Sending a report can end the gesture or change the program's mouse mode, so both are checked before each.
+        while surface.scrollRoute == .mouseReport,
+              let direction = scrollFollow?.nextReport(at: now), direction != 0 {
+            _ = submitRouteForwardedMouseScroll(surface.id, GhosttySurfaceMouseScrollEvent(
+                deltaX: 0,
+                deltaY: Double(direction) * stepPixels,
+                mods: .init(precision: true, momentum: .began),
+                pointer: pointer
+            ))
+            physicsReportCells.append(pointer)
+            lastForwardedScrollAt = now
+        }
+        guard let follow = scrollFollow else { return }
+        GhosttyRuntimeTrace.diagnostics(
+            "scroll.follow t=\(now) target=\(follow.targetRows) seen=\(follow.seenRows) reports=\(follow.reportCount) rowsPerReport=\(follow.rowsPerReport) latency=\(follow.latency)"
+        )
+        scrollFollowLatency = follow.latency
+
+        if let deadline = scrollFollowSettleDeadline, now >= deadline || follow.isSettled(at: now) {
+            stopScrollFollow()
+        }
+    }
+
+    private func stopScrollFollow() {
+        scrollFollow = nil
+        scrollFollowSettleDeadline = nil
+        scrollFollowLink?.invalidate()
+        scrollFollowLink = nil
     }
 
     /// Stop any tracking or deceleration immediately (route flips,
@@ -706,6 +850,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         } else if wasMoving {
             recenterPhysicsScrollIfIdle()
         }
+        stopScrollFollow()
     }
 
     /// True exactly once for the tap produced by a fling-catch touch;
