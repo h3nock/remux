@@ -1623,6 +1623,45 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 2)
     }
 
+    /// Pieces that arrive within the quiet interval of each other parse together, also when the writer is busy
+    /// while they arrive and the settle timer has fired by the time it is free.
+    func testPiecesArrivingTogetherParseTogetherAcrossABusyWriter() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(100), cap: .seconds(2))
+        )
+
+        harness.controller.pump(Data("%output %0 piece 1\n".utf8))
+        await drain(harness.controller)
+        harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.3) }
+        try await Task.sleep(for: .milliseconds(60))
+        harness.controller.pump(Data("%output %0 piece 2\n".utf8))
+        try await Task.sleep(for: .milliseconds(60))
+        harness.controller.pump(Data("%output %0 piece 3\n".utf8))
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 1)
+    }
+
+    /// The quiet interval runs from when output arrives: a lone piece that waited for the writer longer than that
+    /// parses as soon as the writer is free.
+    func testALonePieceThatWaitedForTheWriterParsesAtOnce() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(200), cap: .seconds(2))
+        )
+
+        harness.controller.queue.async { Thread.sleep(forTimeInterval: 0.4) }
+        harness.controller.pump(Data("%output %0 frame\n".utf8))
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 1)
+    }
+
     /// The cap holds while the writer queue is busy, when the settle timer can't run between reads.
     func testOutputIsParsedAtTheCapWhileTheQueueIsBusy() async throws {
         let wakes = PaneWakeCounter()
