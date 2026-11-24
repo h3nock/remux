@@ -335,22 +335,29 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
 
     /// The pages side by side, one on show; a swipe moves a whole page and stops on it.
     private func pagedKeys(_ pages: [TerminalToolbarKeyPage]) -> some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 0) {
-                ForEach(pages.indices, id: \.self) { index in
-                    keyPage(pages[index], index: index)
-                        .frame(width: keyPageWidth)
-                        .id(index)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(pages.indices, id: \.self) { index in
+                        keyPage(pages[index], index: index)
+                            .frame(width: keyPageWidth)
+                            .id(index)
+                    }
                 }
+                .offset(x: glideOffset)
+                .scrollTargetLayout()
             }
-            .offset(x: glideOffset)
-            .scrollTargetLayout()
+            .scrollTargetBehavior(.paging)
+            .scrollIndicators(.hidden)
+            .scrollPosition(id: shownKeyPage(count: pages.count))
+            .frame(width: keyPageWidth)
+            .accessibilityIdentifier("terminal.toolbar-keys")
+            // Turning the phone can change the keys' width, and a page's with it. The scroll view keeps its offset in
+            // points, which would leave the page on show part-way across, so it goes back to that page's edge.
+            .onChange(of: keyPageWidth) {
+                proxy.scrollTo(shownPageIndex(pages), anchor: .leading)
+            }
         }
-        .scrollTargetBehavior(.paging)
-        .scrollIndicators(.hidden)
-        .scrollPosition(id: shownKeyPage(count: pages.count))
-        .frame(width: keyPageWidth)
-        .accessibilityIdentifier("terminal.toolbar-keys")
     }
 
     private func shownKeyPage(count: Int) -> Binding<Int?> {

@@ -1338,6 +1338,33 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "toolbar-key-pages-2-first-key-shortcuts")
     }
 
+    /// The keys are narrower in landscape than in portrait on a wide phone, so a page is narrower too; turning the
+    /// phone keeps the page on show whole, its first key at the group's leading edge, as it was before turning.
+    func testToolbarKeyPageStaysWholeWhenThePhoneTurns() {
+        XCUIDevice.shared.orientation = .portrait
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        launchSeededSimulatorTerminal()
+        let keys = (0..<9).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        let group = app.scrollViews["terminal.toolbar-keys"]
+        XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
+        swipeToolbarKeys(from: keys[1], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        swipeToolbarKeys(from: keys[4], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[6]))
+
+        func assertPageThreeWhole(_ when: String) {
+            RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+            attachScreenshot(named: "toolbar-page-3-\(when)")
+            XCTAssertEqual(keys[6].frame.minX, group.frame.minX, accuracy: 0.5, "Page 3's first key isn't at the group's edge \(when)")
+            XCTAssertEqual(keys[8].frame.maxX, group.frame.maxX, accuracy: 0.5, "Page 3's last key isn't at the group's edge \(when)")
+        }
+        assertPageThreeWhole("in portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        assertPageThreeWhole("in landscape")
+        XCUIDevice.shared.orientation = .portrait
+        assertPageThreeWhole("back in portrait")
+    }
+
     /// A swipe that starts on any key of the page turns the page and presses nothing: the key's press feedback starts
     /// at touch-down, and the swipe still belongs to the page scroll view.
     func testToolbarSwipeFromEveryKeyTurnsPage() {
