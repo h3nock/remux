@@ -6,6 +6,11 @@ struct GhosttyPaneScrollPosition: Equatable {
     let row: UInt64
     let cellOffset: Double
 
+    /// Whether this position is further back in history, toward the oldest rows.
+    func isOlder(than other: GhosttyPaneScrollPosition) -> Bool {
+        row < other.row || (row == other.row && cellOffset < other.cellOffset)
+    }
+
     func approximatelyEquals(_ other: GhosttyPaneScrollPosition?) -> Bool {
         guard let other else { return false }
         return row == other.row && abs(cellOffset - other.cellOffset) < 0.000_001
@@ -87,6 +92,8 @@ enum GhosttyPaneScrollGeometry {
 final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     /// Called after the pane's surface changes where it is scrolled to.
     var onSurfaceScrollStateChange: (() -> Void)?
+    /// Called when the user scrolls the pane toward older rows of its history.
+    var onScrollTowardHistory: (() -> Void)?
     private let scrollView = UIScrollView()
     private let contentView = UIView()
     private let rendererRecoveryImageView = UIImageView()
@@ -558,10 +565,12 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         guard !position.approximatelyEquals(lastSentViewportScrollPosition) else { return false }
         lastSentViewportScrollPosition = position
 
+        let isTowardHistory = position.isOlder(than: GhosttyPaneScrollGeometry.position(for: surface.scrollState))
         surface.scrollToPosition(
             row: position.row,
             cellOffset: position.cellOffset
         )
+        if isTowardHistory { onScrollTowardHistory?() }
         return true
     }
 
@@ -668,6 +677,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             _ = submitRouteForwardedMouseScroll(surface.id, event)
         }
         if !events.isEmpty { lastForwardedScrollAt = now }
+        // A positive translation scrolls up: on a server's history, as Herdr's, that is toward older rows.
+        if surface.scrollRoute == .remoteHistory, budgeted > 0, !events.isEmpty { onScrollTowardHistory?() }
     }
 
     private func endPhysicsGesture(phase: GhosttySurfacePanGesture.Phase) {

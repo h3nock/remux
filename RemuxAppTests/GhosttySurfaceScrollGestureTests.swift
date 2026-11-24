@@ -432,4 +432,13 @@ final class GhosttySurfaceScrollGestureTests: XCTestCase {
             GhosttyPaneScrollPosition(row: 80, cellOffset: 0)
         )
     }
+
+    func testPaneScrollPositionOrdersTowardHistory() {
+        let position = GhosttyPaneScrollPosition(row: 12, cellOffset: 0.5)
+        XCTAssertTrue(GhosttyPaneScrollPosition(row: 11, cellOffset: 0.9).isOlder(than: position))
+        XCTAssertTrue(GhosttyPaneScrollPosition(row: 12, cellOffset: 0.25).isOlder(than: position))
+        XCTAssertFalse(position.isOlder(than: position))
+        XCTAssertFalse(GhosttyPaneScrollPosition(row: 12, cellOffset: 0.75).isOlder(than: position))
+        XCTAssertFalse(GhosttyPaneScrollPosition(row: 13, cellOffset: 0).isOlder(than: position))
+    }
 }

@@ -104,27 +104,34 @@ final class GhosttyKeyboardSlideTests: XCTestCase {
         XCTAssertEqual(pans([shown, lower])[1], 141)
     }
 
-    func testHoldsWhereItIsWhileTheSurfaceShowsItsHistory() {
-        // Opening the keyboard over history doesn't move the canvas.
+    func testRestsWhileTheSurfaceShowsItsHistory() {
+        // Opening the keyboard over history doesn't move the canvas, nor does output while reading.
         let closed = inputs(area: 726, line: 726, room: nil, scrolledBack: true)
         XCTAssertEqual(pans([closed, inputs(line: 726, room: nil, scrolledBack: true)]), [0, 0])
-        // Output while reading doesn't move it either, and a smaller covered height brings it within that height.
+        // Whatever the slide was on the live rows, history rests at 0, so the area hides only its bottom, which
+        // scrolling toward the live rows brings up, and the oldest rows are never pushed above the top.
         XCTAssertEqual(
             pans([
                 inputs(line: 600, room: 560),
                 inputs(line: 726, room: nil, scrolledBack: true),
                 inputs(area: 650, line: 726, room: nil, scrolledBack: true),
             ]),
-            [141, 141, 76]
+            [141, 0, 0]
         )
-        // Back at the live rows, the slide follows them again.
+        // Nothing carries over from another surface while reading either.
+        XCTAssertEqual(
+            pans([inputs(line: 726, room: 700), inputs(line: 726, room: nil, surface: 1, scrolledBack: true)]),
+            [267, 0]
+        )
+        // Back at the live rows, the slide is worked out from them.
         XCTAssertEqual(
             pans([
                 inputs(line: 600, room: 560),
                 inputs(line: 726, room: nil, scrolledBack: true),
                 inputs(line: 726, room: 700),
             ]),
-            [141, 141, 267]
+            [141, 0, 267]
         )
     }
+
 }

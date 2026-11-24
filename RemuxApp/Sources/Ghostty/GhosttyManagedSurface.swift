@@ -142,7 +142,7 @@ final class GhosttyManagedSurface {
         guard !text.isEmpty else { return .empty }
         guard rendererIsAvailable else { return .surfaceRejected }
         guard controlSurface.sendInput(text) else { return .surfaceRejected }
-        onLocalSelectionGeometryChange?()
+        didAcceptTyping()
         return .accepted
     }
 
@@ -155,8 +155,18 @@ final class GhosttyManagedSurface {
     func sendKeyEvent(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
         guard rendererIsAvailable else { return .surfaceRejected }
         guard controlSurface.sendKeyEvent(event) else { return .surfaceRejected }
-        onLocalSelectionGeometryChange?()
+        didAcceptTyping()
         return .accepted
+    }
+
+    /// Typing returns the terminal's view to its live rows at once, before any output comes back: read that back
+    /// now while the view shows history, so what follows the scroll position, as the keyboard slide, hears of it.
+    private func didAcceptTyping() {
+        if scrollState.isScrolledBack {
+            refreshInteractionState()
+        } else {
+            onLocalSelectionGeometryChange?()
+        }
     }
 
     func sendKeyEventAwaitingCommandCompletion(

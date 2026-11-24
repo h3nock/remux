@@ -20,6 +20,8 @@ struct GhosttyCompositeViewportView: View {
     /// The terminal's size, which the area this view is given may be shorter than, as while the keyboard or the
     /// composer covers the bottom of the screen; nil to fill the area.
     var canvasSize: CGSize? = nil
+    /// Called when the user scrolls a pane toward older rows of its history.
+    var onHistoryScroll: (() -> Void)? = nil
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -37,6 +39,7 @@ struct GhosttyCompositeViewportView: View {
             surfaceLookup: surfaceLookup,
             projection: projection,
             canvasSize: canvasSize,
+            onHistoryScroll: onHistoryScroll,
             terminalTheme: terminalTheme,
             trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
@@ -57,6 +60,7 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let canvasSize: CGSize?
+    let onHistoryScroll: (() -> Void)?
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -81,6 +85,7 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
         host.backgroundColor = terminalTheme.terminalBackgroundUIColor
         host.canvasSize = canvasSize
         let view = host.viewport
+        view.onHistoryScroll = onHistoryScroll
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
         view.update(
@@ -113,8 +118,8 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
 /// area's bottom edge, but never so far that the cursor's row leaves the top. As output arrives the canvas follows what
 /// is drawn lower, and holds while up to `heldRows` rows leave the bottom, such as an agent's hints or status line
 /// under its input, so rows that come and go there don't move the whole picture each time; a bigger change works it
-/// out afresh. While the input surface shows its history the canvas stays where it is, under the reader. On whole
-/// pixels, so the picture isn't resampled.
+/// out afresh. While the input surface shows its history there is no line to keep and the canvas rests: the area hides
+/// only its bottom, which scrolling toward the live rows brings up. On whole pixels, so the picture isn't resampled.
 struct GhosttyKeyboardSlide: Equatable {
     /// What a slide is worked out from, in the canvas's points.
     struct Inputs: Equatable {
@@ -145,12 +150,8 @@ struct GhosttyKeyboardSlide: Equatable {
     /// The slide for `inputs`, following on from `previous`, the slide shown.
     static func next(after previous: Self?, inputs: Inputs) -> Self {
         let covered = inputs.canvasHeight - inputs.areaHeight
-        guard covered > 0 else { return Self(pan: 0, inputs: inputs) }
+        guard covered > 0, !inputs.isScrolledBack else { return Self(pan: 0, inputs: inputs) }
         let scale = max(inputs.scale, 1)
-        let shownPan = previous?.pan ?? 0
-        if inputs.isScrolledBack {
-            return Self(pan: min(shownPan, (covered * scale).rounded(.down) / scale), inputs: inputs)
-        }
         let limit = (min(covered, inputs.cursorRoom ?? covered) * scale).rounded(.down) / scale
         let fresh = min(
             (max((inputs.keptLine ?? inputs.canvasHeight) - inputs.areaHeight, 0) * scale).rounded() / scale,
@@ -161,7 +162,7 @@ struct GhosttyKeyboardSlide: Equatable {
               previous.inputs.areaHeight == inputs.areaHeight,
               previous.inputs.canvasHeight == inputs.canvasHeight
         else { return Self(pan: fresh, inputs: inputs) }
-        let held = min(shownPan, limit)
+        let held = min(previous.pan, limit)
         let isWithinHeldRows = held - fresh <= heldRows * inputs.rowHeight + 0.5 / scale
         return Self(pan: isWithinHeldRows ? max(fresh, held) : fresh, inputs: inputs)
     }
@@ -286,6 +287,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
     private var inputRowsObserver: GhosttyFrameRowsObserver?
     private var isInputScrolledBack = false
+    /// Called when the user scrolls a pane or the popup toward older rows of its history.
+    var onHistoryScroll: (() -> Void)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
     private var didNavigateForActivePan = false
@@ -370,6 +373,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         super.init(frame: frame)
         clipsToBounds = true
         addSubview(linesView)
+        popupView.terminal.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
         panRecognizer.delegate = self
         surfaceTapRecognizer.require(toFail: selectionLongPressRecognizer)
         surfaceTapRecognizer.require(toFail: arrowRegripRecognizer)
@@ -565,6 +569,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private func makePaneContainer() -> GhosttyPaneScrollContainerView {
         let container = GhosttyPaneScrollContainerView()
         container.onSurfaceScrollStateChange = { [weak self] in self?.noteInputScrollStateChange() }
+        container.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
         return container
     }
 
@@ -604,7 +609,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         else { return inputs }
         inputs.surface = ObjectIdentifier(layer)
         inputs.isScrolledBack = surface.scrollState.isScrolledBack
-        guard let grid = projection.windowGrid,
+        guard !inputs.isScrolledBack,
+              let grid = projection.windowGrid,
               let cell = projection.cellMetrics,
               let layout = GhosttyCompositeViewportLayout(
                   bounds: CGRect(x: 0, y: 0, width: bounds.width, height: canvasHeight),

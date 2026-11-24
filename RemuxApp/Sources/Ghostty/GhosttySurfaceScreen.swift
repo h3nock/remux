@@ -285,6 +285,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
                             canvasSize: terminalViewportSize,
+                            onHistoryScroll: handleHistoryScroll,
                             terminalTheme: presentation.terminalTheme,
                             trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
@@ -729,6 +730,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 if mode == .hidden, terminalCoverPhase.isRestoringKeyboard {
                     cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
                 }
+                // The terminal's keyboard is for typing, which returns the pane to its live rows anyway: go there as
+                // it opens, so the line being typed on comes up above it. The composer's leaves the pane as it is.
+                if mode == .system, inputCoordinator.keyboardOwner == .terminal {
+                    model.focusedInputSurfaceID
+                        .flatMap { model.terminalManagedSurfaceLookup.managedSurface(for: $0) }?
+                        .scrollViewportToBottom()
+                }
             }
             .onChange(of: model.paneFindPresentation == nil) { _, ended in
                 if ended, isFindPresented { closeFind() }
@@ -1074,9 +1082,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func dismissComposerKeyboard() {
-        guard isActiveComposerPresented,
-              inputCoordinator.keyboardMode == .system,
-              inputCoordinator.keyboardOwner == .composer else { return }
+        guard isActiveComposerPresented, inputCoordinator.keyboardOwner == .composer else { return }
+        dismissSystemKeyboard()
+    }
+
+    /// Scrolling a pane back into its history is reading, so the software keyboard steps aside, as it does in other
+    /// iOS apps. A hardware keyboard has no software keyboard to lower and keeps its input.
+    private func handleHistoryScroll() {
+        guard inputCoordinator.isSoftwareKeyboardVisible else { return }
+        dismissSystemKeyboard()
+    }
+
+    /// Lowers the system keyboard for whichever input holds it, as its own key would.
+    private func dismissSystemKeyboard() {
+        guard inputCoordinator.keyboardMode == .system else { return }
 
         let projection = GhosttyKeyboardToggleProjection(
             keyboardMode: inputCoordinator.keyboardMode,
