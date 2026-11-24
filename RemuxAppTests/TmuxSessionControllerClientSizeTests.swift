@@ -1721,6 +1721,23 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 0)
     }
 
+    /// Output that arrives after the session has shut down sets no timer and reaches no pane.
+    func testOutputAfterShutdownIsDropped() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            callbacks: wakes.callbacks,
+            outputSettle: .init(quiet: .milliseconds(50), cap: .seconds(1))
+        )
+
+        await shutDown(harness.controller)
+        harness.controller.pump(Data("%output %0 late\n".utf8))
+        await drain(harness.controller)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(wakes.count, 0)
+    }
+
     /// tmux ends a session by sending %exit and closing the channel. Output still waiting when the channel closes
     /// is parsed first, so the session ends for tmux's reason and not as a lost connection to reconnect.
     func testOutputWaitingToSettleIsParsedBeforeTheChannelCloses() async throws {

@@ -506,6 +506,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// Parses the waiting output once it is due, or sets the timer for when it will be.
     private func settleOutput() {
         preconditionOnWriterQueue()
+        guard client != nil, !shuttingDown else { return }
         // Until the session is ready nothing is drawn, and its replies each start the next command.
         guard let outputSettle, state == .ready else {
             feedSettlingOutput()
