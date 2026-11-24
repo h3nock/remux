@@ -121,8 +121,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var physicsTailCutoff = GhosttyScrollTailCutoff()
     private var physicsReportedOffsetY: CGFloat?
     /// The cell the gesture's wheel reports carry: under the finger while it is down, then where it lifted,
-    /// for the coast. A program may scroll only the region under the pointer.
+    /// for the coast, until a report moves the content (`trackedPhysicsPointer`). A program may scroll only the
+    /// region under the pointer.
     private var physicsPointer: CGPoint?
+    /// The content has moved since the gesture began, so its reports stay at `physicsPointer`.
+    private var physicsPointerHeld = false
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
 
@@ -605,6 +608,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             "scroll.physics begin surface=\(ghosttyDiagnosticShortID(surface.id)) location=\(location.x),\(location.y) offset=\(physicsScrollView.contentOffset.y)"
         )
         physicsPointer = Self.pointerCell(location, in: surface.view.bounds)
+        physicsPointerHeld = false
         if surface.scrollRoute != .mouseReport {
             _ = submitRouteForwardedMousePosition?(surface.id, location, [])
         }
@@ -711,10 +715,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         if !events.isEmpty { lastForwardedScrollAt = now }
     }
 
-    /// The pointer for the gesture's next report: the finger's cell while it is down, the lift cell after.
+    /// The pointer for the gesture's next report: the finger's cell while it is down, the lift cell after, until
+    /// a report moves the content. From then on reports stay at the cell that moved it, as a mouse's wheel stays
+    /// where the mouse is. A program can scroll only the region under the pointer, such as Codex's transcript and
+    /// not its input box: a drag that starts on the input box scrolls once the finger reaches the transcript, and a
+    /// finger that goes on into the input box, or lifts there for a coast, keeps scrolling.
     private func trackedPhysicsPointer(in surface: GhosttyManagedSurface) -> CGPoint? {
         guard surface.scrollRoute == .mouseReport else { return nil }
-        if physicsScrollView.isTracking {
+        if physicsScrollView.isTracking, !physicsPointerHeld {
             physicsPointer = Self.pointerCell(
                 physicsScrollView.panGestureRecognizer.location(in: surface.view),
                 in: surface.view.bounds
@@ -784,6 +792,9 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         scrollFollow?.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
         // A precise event that starts a gesture and carries between one and two cells is exactly one report.
         let stepPixels = 1.5 * Double(max(cellHeight(for: surface), 1) * displayScale)
+        if !physicsPointerHeld, let follow = scrollFollow, follow.seenRows != 0 {
+            physicsPointerHeld = true
+        }
         let pointer = trackedPhysicsPointer(in: surface)
         // Sending a report can end the gesture or change the program's mouse mode, so both are checked before each.
         while surface.scrollRoute == .mouseReport,
