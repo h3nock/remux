@@ -243,6 +243,8 @@ final class TmuxSessionController: @unchecked Sendable {
     /// and when that hold times out.
     private var renderHolds: [TmuxPaneID: RenderHold] = [:]
     private var renderHoldTimer: DispatchSourceTimer?
+    /// A due hold's end waited once for output still settling.
+    private var renderHoldExpiryWaited = false
     private let renderHoldTimeout: DispatchTimeInterval
 
     private struct RenderHold {
@@ -485,10 +487,10 @@ final class TmuxSessionController: @unchecked Sendable {
         timer.schedule(deadline: deadline, leeway: .nanoseconds(0))
     }
 
-    /// Parses the waiting output now, due or not: all of it, or the bursts that began by `time`.
-    private func feedSettlingOutput(arrivedBy time: DispatchTime? = nil) {
+    /// Parses all the waiting output now, due or not.
+    private func feedSettlingOutput() {
         preconditionOnWriterQueue()
-        guard let waiting = settlingOutput?.take(arrivedBy: time), client != nil, !shuttingDown else { return }
+        guard let waiting = settlingOutput?.takeAll(), client != nil, !shuttingDown else { return }
         feed(waiting.data, enqueuedAt: waiting.enqueuedAt)
     }
 
@@ -739,11 +741,19 @@ final class TmuxSessionController: @unchecked Sendable {
         preconditionOnWriterQueue()
         guard let client, !shuttingDown else { return }
         let now = DispatchTime.now()
-        // Output still waiting to settle can end a due hold with the rest of its frame. A timer left from a hold
-        // that has ended parses nothing, so it doesn't split the next frame.
-        if renderHolds.values.contains(where: { $0.deadline <= now }) {
-            feedSettlingOutput()
+        // Output still waiting to settle can end a due hold with the rest of its frame: what is due is parsed, and a
+        // burst still settling is waited for once, at most `cap`. A timer left from a hold that has ended parses
+        // nothing, so it doesn't split the next frame.
+        if renderHolds.values.contains(where: { $0.deadline <= now }), let settlingOutput {
+            let (due, next) = settlingOutput.takeDue(at: now)
+            if let due { feed(due.data, enqueuedAt: due.enqueuedAt) }
+            if let next, !renderHoldExpiryWaited {
+                renderHoldExpiryWaited = true
+                renderHoldTimer?.schedule(deadline: next, leeway: .nanoseconds(0))
+                return
+            }
         }
+        renderHoldExpiryWaited = false
         let expired = renderHolds.filter { $0.value.deadline <= now }.map(\.key)
         for paneID in expired {
             renderHolds.removeValue(forKey: paneID)
@@ -762,7 +772,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private func endOutputSettle() {
-        _ = settlingOutput?.take(arrivedBy: nil)
+        _ = settlingOutput?.takeAll()
         settleTimer?.cancel()
         settleTimer = nil
     }
@@ -1058,10 +1068,14 @@ final class TmuxSessionController: @unchecked Sendable {
     /// go to the queue directly, so typing and scrolling don't cut the wait short; what they read of the session's
     /// state can lag tmux by the wait, as all of it lags by the network's delay.
     private func onWriterWithCurrentState(_ request: @escaping @Sendable () -> Void) {
-        let madeAt = DispatchTime.now()
+        let mark = settlingOutput?.markRequest()
         queue.async { [self] in
-            feedSettlingOutput(arrivedBy: madeAt)
+            if let mark, let earlier = settlingOutput?.take(before: mark), client != nil, !shuttingDown {
+                feed(earlier.data, enqueuedAt: earlier.enqueuedAt)
+            }
             request()
+            // Output that arrived after the request waited for it.
+            settleOutput()
         }
     }
 
@@ -1994,9 +2008,11 @@ private struct TopologyAccumulator {
     }
 }
 
-/// tmux control output waiting to settle (`TmuxSessionController.OutputSettle`), kept as the bursts it arrived in.
-/// `pump` adds to it as output arrives and the writer queue takes it, so it is locked. A piece that arrives after the
-/// newest burst was due starts a burst of its own, so parsing a burst that is overdue never takes part of the next.
+/// tmux control output waiting to settle (`TmuxSessionController.OutputSettle`), kept in the order it arrived in: as
+/// bursts, and between them the requests that decide on the session's state, so output that arrives after a request
+/// is parsed after it. `pump` adds output as it arrives and the writer queue takes it, so it is locked. A piece that
+/// arrives after the newest burst was due starts a burst of its own, so parsing an overdue burst never takes part of
+/// the next.
 final class TmuxSettlingOutput: @unchecked Sendable {
     private struct Burst {
         var data: Data
@@ -2005,9 +2021,15 @@ final class TmuxSettlingOutput: @unchecked Sendable {
         let enqueuedAt: UInt64
     }
 
+    private enum Item {
+        case burst(Burst)
+        case request(UInt64)
+    }
+
     private let settle: TmuxSessionController.OutputSettle
     private let lock = NSLock()
-    private var bursts: [Burst] = []
+    private var items: [Item] = []
+    private var nextRequest: UInt64 = 0
 
     init(settle: TmuxSessionController.OutputSettle) {
         self.settle = settle
@@ -2015,28 +2037,59 @@ final class TmuxSettlingOutput: @unchecked Sendable {
 
     func append(_ piece: Data, at arrival: DispatchTime, enqueuedAt: UInt64) {
         lock.withLock {
-            if let last = bursts.indices.last, arrival < deadline(of: bursts[last]) {
-                bursts[last].data.append(piece)
-                bursts[last].latestArrival = arrival
+            if case .burst(var last)? = items.last, arrival < deadline(of: last) {
+                last.data.append(piece)
+                last.latestArrival = arrival
+                items[items.count - 1] = .burst(last)
             } else {
-                bursts.append(Burst(data: piece, firstArrival: arrival, latestArrival: arrival, enqueuedAt: enqueuedAt))
+                items.append(.burst(Burst(data: piece, firstArrival: arrival, latestArrival: arrival, enqueuedAt: enqueuedAt)))
             }
         }
     }
 
-    /// The bursts due by `now`, in one piece, and when the next one will be due.
-    func takeDue(at now: DispatchTime) -> (due: (data: Data, enqueuedAt: UInt64)?, next: DispatchTime?) {
+    /// A request that decides on the session's state is made. Output that arrives from now on waits for it.
+    func markRequest() -> UInt64 {
         lock.withLock {
-            let dueCount = bursts.prefix { deadline(of: $0) <= now }.count
-            let due = take(dueCount)
-            return (due, bursts.first.map(deadline(of:)))
+            let request = nextRequest
+            nextRequest += 1
+            items.append(.request(request))
+            return request
         }
     }
 
-    /// The waiting output, due or not: all of it, or the bursts that began by `time`.
-    func take(arrivedBy time: DispatchTime?) -> (data: Data, enqueuedAt: UInt64)? {
+    /// The bursts due by `now` that no waiting request comes before, in one piece, and when the next burst will be
+    /// due; nil when none waits or a request comes first.
+    func takeDue(at now: DispatchTime) -> (due: (data: Data, enqueuedAt: UInt64)?, next: DispatchTime?) {
         lock.withLock {
-            take(time.map { time in bursts.prefix { $0.firstArrival <= time }.count } ?? bursts.count)
+            var count = 0
+            while count < items.count, case let .burst(burst) = items[count], deadline(of: burst) <= now {
+                count += 1
+            }
+            let due = take(count)
+            guard case let .burst(burst)? = items.first else { return (due, nil) }
+            return (due, deadline(of: burst))
+        }
+    }
+
+    /// The output that arrived before `request`, due or not. What follows no longer waits for it.
+    func take(before request: UInt64) -> (data: Data, enqueuedAt: UInt64)? {
+        lock.withLock {
+            guard let index = items.firstIndex(where: {
+                if case let .request(other) = $0 { return other == request }
+                return false
+            }) else { return nil }
+            let taken = take(index)
+            items.removeFirst()
+            return taken
+        }
+    }
+
+    /// All the waiting output, due or not.
+    func takeAll() -> (data: Data, enqueuedAt: UInt64)? {
+        lock.withLock {
+            let taken = take(items.count)
+            items.removeAll()
+            return taken
         }
     }
 
@@ -2045,12 +2098,16 @@ final class TmuxSettlingOutput: @unchecked Sendable {
         min(burst.latestArrival + settle.quiet, burst.firstArrival + settle.cap)
     }
 
+    /// The bursts among the first `count` items, removing those items.
     private func take(_ count: Int) -> (data: Data, enqueuedAt: UInt64)? {
-        guard count > 0 else { return nil }
+        let bursts = items[..<count].compactMap { item -> Burst? in
+            if case let .burst(burst) = item { return burst }
+            return nil
+        }
+        items.removeFirst(count)
+        guard let first = bursts.first else { return nil }
         var data = Data()
-        for burst in bursts[..<count] { data.append(burst.data) }
-        let enqueuedAt = bursts[0].enqueuedAt
-        bursts.removeFirst(count)
-        return (data, enqueuedAt)
+        for burst in bursts { data.append(burst.data) }
+        return (data, first.enqueuedAt)
     }
 }

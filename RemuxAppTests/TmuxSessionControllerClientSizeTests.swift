@@ -1443,6 +1443,29 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(wakes.count, 3)
     }
 
+    /// One pane's hold timing out doesn't parse another pane's burst that is still settling, so that pane's repaint
+    /// stays whole.
+    func testAHoldTimeoutLeavesAnotherPanesSettlingBurstWhole() async throws {
+        let wakes = PaneWakeCounter()
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3,
+            callbacks: wakes.callbacks,
+            renderHoldTimeout: .milliseconds(200),
+            outputSettle: .init(quiet: .milliseconds(100), cap: .seconds(2))
+        )
+
+        // Pane %1's hold begins once its output settles, about 100 ms from here, and times out 200 ms later.
+        // Pane %0's repaint comes in two pieces around the timeout.
+        harness.controller.pump(Data("%output %1 \\033[?2026hheld\n".utf8))
+        try await Task.sleep(for: .milliseconds(250))
+        harness.controller.pump(Data("%output %0 first half\n".utf8))
+        try await Task.sleep(for: .milliseconds(70))
+        harness.controller.pump(Data("%output %0 second half\n".utf8))
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(wakes.count, 1)
+    }
+
     /// A hold whose end has arrived but waits to settle when the hold times out ends with that output, so the pane
     /// is woken once for it, not once for the timeout with half the frame and again for the rest.
     func testARenderHoldTimingOutWithItsEndWaitingEndsWithTheOutput() async throws {
@@ -2281,14 +2304,31 @@ final class TmuxSettlingOutputTests: XCTestCase {
         XCTAssertEqual(text(output.takeDue(at: at(8)).due), "B1B2")
     }
 
-    /// A request takes the bursts that began before it was made, not one that began after.
-    func testARequestTakesTheBurstsThatBeganBeforeIt() {
+    /// Output keeps its order with the requests made between it: a request takes what arrived before it, due or
+    /// not, and what arrived after it, also within the same quiet interval, waits for it.
+    func testOutputAfterARequestWaitsForIt() {
         let output = output()
         output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
-        output.append(Data("B".utf8), at: at(5), enqueuedAt: 0)
+        let request = output.markRequest()
+        output.append(Data("B".utf8), at: at(1), enqueuedAt: 0)
 
-        XCTAssertEqual(text(output.take(arrivedBy: at(1))), "A")
-        XCTAssertEqual(text(output.take(arrivedBy: nil)), "B")
+        let beforeRequest = output.takeDue(at: at(10))
+        XCTAssertEqual(text(beforeRequest.due), "A")
+        XCTAssertNil(beforeRequest.next)
+        XCTAssertNil(output.take(before: request))
+        XCTAssertEqual(text(output.takeDue(at: at(10)).due), "B")
+    }
+
+    func testARequestTakesWhatArrivedBeforeItDueOrNot() {
+        let output = output()
+        output.append(Data("A".utf8), at: at(0), enqueuedAt: 0)
+        let request = output.markRequest()
+        output.append(Data("B".utf8), at: at(1), enqueuedAt: 0)
+
+        XCTAssertEqual(text(output.take(before: request)), "A")
+        let after = output.takeDue(at: at(2))
+        XCTAssertNil(after.due)
+        XCTAssertEqual(after.next, at(4))
     }
 
     func testTheCapEndsABurstOfSteadyOutput() {
@@ -2300,7 +2340,7 @@ final class TmuxSettlingOutputTests: XCTestCase {
         let taken = output.takeDue(at: at(12))
         XCTAssertEqual(text(taken.due), "0 2 4 6 8 10 ")
         XCTAssertEqual(taken.next, at(17))
-        XCTAssertEqual(text(output.take(arrivedBy: nil)), "12 14 ")
-        XCTAssertNil(output.take(arrivedBy: nil))
+        XCTAssertEqual(text(output.takeAll()), "12 14 ")
+        XCTAssertNil(output.takeAll())
     }
 }
