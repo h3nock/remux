@@ -325,6 +325,11 @@ final class GhosttyKitControlSurface {
     @discardableResult
     func sendMouseScroll(_ event: GhosttySurfaceMouseScrollEvent) -> Bool {
         guard !invalidated else { return false }
+        // A touch gesture's first event carries momentum began. The terminal surface reads that phase as AppKit's
+        // start of a coast, so the gesture's start goes to it as a call of its own.
+        if event.mods.momentum == .began {
+            ghostty_terminal_surface_mouse_scroll_begin(handle)
+        }
         guard let pointer = event.pointer else {
             return Self.accepted(ghostty_terminal_surface_mouse_scroll(
                 handle,
