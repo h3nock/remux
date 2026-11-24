@@ -775,18 +775,19 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
     /// Read what the program has drawn and send the reports the content still needs to reach the target.
     private func driveScrollFollow(at now: TimeInterval) {
-        guard var follow = scrollFollow else { return }
+        guard scrollFollow != nil else { return }
         guard let surface, surface.scrollRoute == .mouseReport, let submitRouteForwardedMouseScroll else {
             stopScrollFollow()
             return
         }
 
-        follow.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
+        scrollFollow?.observe(viewportRows: surface.controlSurface.readViewportRows(), at: now)
         // A precise event that starts a gesture and carries between one and two cells is exactly one report.
         let stepPixels = 1.5 * Double(max(cellHeight(for: surface), 1) * displayScale)
         let pointer = trackedPhysicsPointer(in: surface)
-        var direction = follow.nextReport(at: now)
-        while direction != 0 {
+        // Sending a report can end the gesture or change the program's mouse mode, so both are checked before each.
+        while surface.scrollRoute == .mouseReport,
+              let direction = scrollFollow?.nextReport(at: now), direction != 0 {
             _ = submitRouteForwardedMouseScroll(surface.id, GhosttySurfaceMouseScrollEvent(
                 deltaX: 0,
                 deltaY: Double(direction) * stepPixels,
@@ -794,13 +795,12 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
                 pointer: pointer
             ))
             lastForwardedScrollAt = now
-            direction = follow.nextReport(at: now)
         }
+        guard let follow = scrollFollow else { return }
         GhosttyRuntimeTrace.diagnostics(
             "scroll.follow t=\(now) target=\(follow.targetRows) seen=\(follow.seenRows) reports=\(follow.reportCount) rowsPerReport=\(follow.rowsPerReport) latency=\(follow.latency)"
         )
         scrollFollowLatency = follow.latency
-        scrollFollow = follow
 
         if let deadline = scrollFollowSettleDeadline, now >= deadline || follow.isSettled(at: now) {
             stopScrollFollow()
