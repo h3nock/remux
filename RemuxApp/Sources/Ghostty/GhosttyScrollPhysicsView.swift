@@ -236,6 +236,8 @@ struct GhosttyScrollFollow {
 
     /// Reports that land without movement before they start to count as one row each.
     private static let stalledReportCount = 4
+    /// The longest round trip the follow allows for.
+    private static let longestRoundTrip: TimeInterval = 0.4
     /// How long unclear frames are read against the last clear one before the newest takes its place.
     private static let unreadableFrameWindow: TimeInterval = 0.15
 
@@ -278,7 +280,7 @@ struct GhosttyScrollFollow {
         self.reportsPerSecond = max(reportsPerSecond, 1)
         self.burstReports = max(self.reportsPerSecond * burstSeconds, 1)
         self.availableReports = self.burstReports
-        self.latency = min(max(latency, 0.02), 0.4)
+        self.latency = min(max(latency, 0.02), Self.longestRoundTrip)
     }
 
     var reportCount: Int { reports.count }
@@ -370,7 +372,7 @@ struct GhosttyScrollFollow {
         if moved != 0 {
             if let probeSentAt {
                 let sample = now - probeSentAt
-                latency = min(max(sample > latency ? sample : 0.7 * latency + 0.3 * sample, 0.02), 0.4)
+                latency = min(max(sample > latency ? sample : 0.7 * latency + 0.3 * sample, 0.02), Self.longestRoundTrip)
                 self.probeSentAt = nil
             }
             seenRows += moved
@@ -386,8 +388,9 @@ struct GhosttyScrollFollow {
             lastMovedAt = now
         } else {
             // A program can ignore a report, as Codex does one over its input box. A probe that has moved nothing
-            // for well over a round trip times nothing, so the next report sent alone starts another.
-            if let probeSentAt, now - probeSentAt >= 2.5 * latency + 0.05 {
+            // for longer than any round trip the follow allows times nothing, so the next report sent alone starts
+            // another.
+            if let probeSentAt, now - probeSentAt > Self.longestRoundTrip {
                 self.probeSentAt = nil
             }
             // A report sent before the last movement may be what moved it, so only those sent since count as unmoved.
