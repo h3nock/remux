@@ -385,6 +385,11 @@ struct GhosttyScrollFollow {
             stallCounted = 0
             lastMovedAt = now
         } else {
+            // A program can ignore a report, as Codex does one over its input box. A probe that has moved nothing
+            // for well over a round trip times nothing, so the next report sent alone starts another.
+            if let probeSentAt, now - probeSentAt >= 2.5 * latency + 0.05 {
+                self.probeSentAt = nil
+            }
             // A report sent before the last movement may be what moved it, so only those sent since count as unmoved.
             for report in reports[(landedCount - newlyLanded)..<landedCount]
             where lastMovedAt.map({ report.sentAt >= $0 }) ?? true {

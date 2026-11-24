@@ -411,6 +411,19 @@ final class GhosttyScrollFollowTests: XCTestCase {
         XCTAssertEqual(result.moved, 35)
     }
 
+    /// The first reports of a drag that starts over a program's input box move nothing. The round trip is timed
+    /// from a report that moves the content, not from the first one sent.
+    func testIgnoredReportsDoNotLengthenTheRoundTrip() {
+        var sent = 0
+        var program = Program { _ in
+            sent += 1
+            return sent <= 3 ? 0 : 1
+        }
+        // A slow drag: 12 rows in 1.2 s.
+        let result = run(&program, latency: 0.03, seconds: 2) { t in min(t, 1.2) * 10 }
+        XCTAssertLessThan(result.follow.latency, 0.1)
+    }
+
     func testContentAheadOfTheTargetIsNotPulledBack() {
         var follow = GhosttyScrollFollow(reportsPerSecond: 60, burstSeconds: 0.08, latency: 0.03)
         let rows = { (first: Int) in (first..<(first + 20)).map { "R\($0)" }.joined(separator: "\n") }
