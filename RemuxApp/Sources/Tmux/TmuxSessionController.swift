@@ -250,6 +250,33 @@ final class TmuxSessionController: @unchecked Sendable {
         let deadline: DispatchTime
     }
 
+    /// Control output received but not yet parsed, and when its first byte arrived. See `OutputSettle`. It is parsed
+    /// early when the channel closes or the attachment stops, so the session ends on everything tmux sent.
+    private var settlingOutput = Data()
+    private var settlingSince: DispatchTime?
+    private var settlingEnqueuedAt: UInt64 = 0
+    private var settleTimer: DispatchSourceTimer?
+    private let outputSettle: OutputSettle?
+    /// Panes whose terminal changed during the feed in progress; nil outside a feed. Their renderers are woken once
+    /// the feed returns, so a frame that spans several `%output` lines is never drawn part-way.
+    private var panesChangedDuringFeed: Set<TmuxPaneID>?
+
+    /// How long control output waits for more before it is parsed.
+    ///
+    /// tmux forwards a pane's output as it reads it from the pane's terminal, in pieces of about a kilobyte, and
+    /// the network delivers those pieces separately. A program that repaints without synchronized output (mode
+    /// 2026) writes one frame as a single write of several kilobytes, so its frame reaches the pane's terminal in
+    /// two or more steps, and a renderer that draws between them shows rows from two frames at once. Parsing the
+    /// pieces together keeps the intermediate state out of the terminal. The wait restarts with every read and
+    /// ends at `cap` after the first, so steady output is still parsed many times a second.
+    struct OutputSettle: Equatable, Sendable {
+        var quiet: DispatchTimeInterval
+        var cap: DispatchTimeInterval
+
+        /// WezTerm and kitty wait 3 ms after output for the same reason.
+        static let standard = OutputSettle(quiet: .milliseconds(3), cap: .milliseconds(12))
+    }
+
     /// A program that never ends its synchronized output would freeze its pane; Ghostty's own process runtime ends a
     /// hold after one second.
     static let defaultRenderHoldTimeout: DispatchTimeInterval = .seconds(1)
@@ -258,13 +285,15 @@ final class TmuxSessionController: @unchecked Sendable {
         callbacks: Callbacks,
         zoomOwner: TmuxZoomOwner? = nil,
         queue: DispatchQueue = DispatchQueue(label: "remux.tmux.session.writer"),
-        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout
+        renderHoldTimeout: DispatchTimeInterval = TmuxSessionController.defaultRenderHoldTimeout,
+        outputSettle: OutputSettle? = nil
     ) {
         self.callbacks = callbacks
         self.zoomOwner = zoomOwner
         zoomCommands = TmuxZoomCommands(owner: zoomOwner)
         self.queue = queue
         self.renderHoldTimeout = renderHoldTimeout
+        self.outputSettle = outputSettle
     }
 
     deinit {
@@ -285,6 +314,7 @@ final class TmuxSessionController: @unchecked Sendable {
     func finishOutboundEndingClient() async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
+                feedSettlingOutput()
                 _ = drainOutbound()
                 var requestedClientExit = false
                 if let client, outboundSink != nil, !shuttingDown {
@@ -354,6 +384,8 @@ final class TmuxSessionController: @unchecked Sendable {
     func transportClosed() {
         queue.async { [self] in
             guard !shuttingDown else { return }
+            // What tmux sent before the channel closed says why it closed, and may answer waiting requests.
+            feedSettlingOutput()
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
             deferredNavigationIntent = nil
@@ -374,6 +406,7 @@ final class TmuxSessionController: @unchecked Sendable {
     func attachmentStopped() {
         queue.async { [self] in
             guard !shuttingDown else { return }
+            feedSettlingOutput()
             failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             failOutstandingTrackedInput()
             deferredNavigationIntent = nil
@@ -401,6 +434,7 @@ final class TmuxSessionController: @unchecked Sendable {
             topology = nil
             clientSize = nil
             endRenderHoldTracking()
+            endOutputSettle()
             retainedPaneIDs.removeAll()
             assert(surfacesByPaneID.isEmpty, "terminal surfaces must unregister before client free")
             surfacesByPaneID.removeAll()
@@ -416,26 +450,68 @@ final class TmuxSessionController: @unchecked Sendable {
     func pump(_ data: Data) {
         let enqueuedAt = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
         queue.async { [self, data] in
-            guard let client, !shuttingDown else { return }
-            let applyStart = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
-            let result = data.withUnsafeBytes { bytes in
-                ghostty_tmux_client_feed(
-                    client,
-                    bytes.bindMemory(to: UInt8.self).baseAddress,
-                    bytes.count
-                )
-            }
-            if state == .attaching {
-                publishState(.syncing)
-            }
-            let outboundBytes = drainOutbound()
-            GhosttyRuntimeTrace.perf(
-                "tmuxFeed bytes=\(data.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStart)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStart)) outbound_bytes=\(outboundBytes) result=\(result)"
-            )
-            guard result == GHOSTTY_TMUX_RESULT_OK else {
-                handleClientFailure(result)
+            guard client != nil, !shuttingDown else { return }
+            // Until the session is ready nothing is drawn, and its replies each start the next command.
+            guard let outputSettle, state == .ready else {
+                feedSettlingOutput()
+                feed(data, enqueuedAt: enqueuedAt)
                 return
             }
+            let now = DispatchTime.now()
+            let since = settlingSince ?? now
+            if settlingSince == nil { settlingEnqueuedAt = enqueuedAt }
+            settlingSince = since
+            settlingOutput.append(data)
+            scheduleSettle(at: min(now + outputSettle.quiet, since + outputSettle.cap))
+        }
+    }
+
+    private func scheduleSettle(at deadline: DispatchTime) {
+        let timer = settleTimer ?? {
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.setEventHandler { [weak self] in self?.feedSettlingOutput() }
+            timer.resume()
+            settleTimer = timer
+            return timer
+        }()
+        timer.schedule(deadline: deadline, leeway: .nanoseconds(0))
+    }
+
+    private func feedSettlingOutput() {
+        preconditionOnWriterQueue()
+        guard settlingSince != nil else { return }
+        let data = settlingOutput
+        settlingOutput = Data()
+        settlingSince = nil
+        guard client != nil, !shuttingDown else { return }
+        feed(data, enqueuedAt: settlingEnqueuedAt)
+    }
+
+    private func feed(_ data: Data, enqueuedAt: UInt64) {
+        preconditionOnWriterQueue()
+        guard let client else { return }
+        let applyStart = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
+        panesChangedDuringFeed = []
+        let result = data.withUnsafeBytes { bytes in
+            ghostty_tmux_client_feed(
+                client,
+                bytes.bindMemory(to: UInt8.self).baseAddress,
+                bytes.count
+            )
+        }
+        let changedPanes = panesChangedDuringFeed ?? []
+        panesChangedDuringFeed = nil
+        changedPanes.forEach(paneTerminalChanged)
+        if state == .attaching {
+            publishState(.syncing)
+        }
+        let outboundBytes = drainOutbound()
+        GhosttyRuntimeTrace.perf(
+            "tmuxFeed bytes=\(data.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStart)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStart)) outbound_bytes=\(outboundBytes) result=\(result)"
+        )
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            handleClientFailure(result)
+            return
         }
     }
 
@@ -601,7 +677,11 @@ final class TmuxSessionController: @unchecked Sendable {
             return
         }
 
-        paneTerminalChanged(paneID)
+        if panesChangedDuringFeed != nil {
+            panesChangedDuringFeed?.insert(paneID)
+        } else {
+            paneTerminalChanged(paneID)
+        }
     }
 
     private func paneTerminalChanged(_ paneID: TmuxPaneID) {
@@ -669,6 +749,13 @@ final class TmuxSessionController: @unchecked Sendable {
         renderHolds.removeAll()
         renderHoldTimer?.cancel()
         renderHoldTimer = nil
+    }
+
+    private func endOutputSettle() {
+        settlingOutput = Data()
+        settlingSince = nil
+        settleTimer?.cancel()
+        settleTimer = nil
     }
 
     private func handleCommandCompletion(_ completion: ghostty_tmux_command_completion_s) {
