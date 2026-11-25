@@ -47,6 +47,9 @@ enum HerdrConnectionEvent: Sendable {
     case keyboardReportAll(Bool)
     /// Part of Herdr's answer to an endpoint request, which only the engine sends.
     case response(HerdrResponseChunk)
+    /// Herdr's reply to a ping the connection didn't send: a marker the engine put after its input, answered once
+    /// Herdr has read everything sent before it.
+    case pong(data: String)
     /// The connection ended; nothing follows.
     case ended(HerdrConnectionError)
 }
@@ -505,8 +508,13 @@ actor HerdrConnection {
             case .surfaceScroll(let scroll):
                 await onEvent(.surface(try decoder.decode(.scroll(scroll))))
             case .healthPong(let data):
-                if outstandingPing?.data == data { outstandingPing = nil }
-                pongWaiters.removeValue(forKey: data)?.waiter.resume(returning: true)
+                if outstandingPing?.data == data {
+                    outstandingPing = nil
+                } else if let waiting = pongWaiters.removeValue(forKey: data) {
+                    waiting.waiter.resume(returning: true)
+                } else {
+                    await onEvent(.pong(data: data))
+                }
             case .welcome, .ignored:
                 break
             }

@@ -7,11 +7,14 @@ final class HerdrPaneSurface: TerminalPaneInputSink {
     let paneID: String
     let terminal: HerdrRetainedTerminal
     let renderer: TerminalPaneRenderer
+    /// The pane's rows and its wheel batches go through the screen model, which holds the connection.
+    private weak var model: HerdrScreenModel?
 
-    init(paneID: String, terminal: HerdrRetainedTerminal, renderer: TerminalPaneRenderer) {
+    init(paneID: String, terminal: HerdrRetainedTerminal, renderer: TerminalPaneRenderer, model: HerdrScreenModel?) {
         self.paneID = paneID
         self.terminal = terminal
         self.renderer = renderer
+        self.model = model
     }
 
     func screenSurface(id: UUID) -> GhosttyManagedSurface {
@@ -23,10 +26,13 @@ final class HerdrPaneSurface: TerminalPaneInputSink {
 
     func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent) async -> Bool { false }
 
-    // A pane's scroll goes as Herdr's client sends it (`HerdrScreenModel.scroll`).
-    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool { false }
+    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool {
+        model?.observeRows(ofPane: paneID, observer) ?? false
+    }
 
-    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool { false }
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool {
+        model?.sendWheelBatch(batch, inPane: paneID, tag: tag) ?? false
+    }
 }
 
 /// The screen model for one Herdr session, as `TmuxScreenModel` is for tmux: one connection at a time
@@ -115,6 +121,10 @@ final class HerdrScreenModel {
             params: any Encodable & Sendable,
             answered: CheckedContinuation<Result<HerdrCommandReply, HerdrCommandError>, Never>
         )
+        /// Starts or stops the engine's reports of a pane's rows, for a touch scroll measuring it.
+        case observeRows(paneID: String, observe: Bool)
+        /// Wheel events for a touch scroll, whose answer comes with the pane's rows (`HerdrEngineFeed.sendWheelBatch`).
+        case wheelBatch(paneID: String, events: [HerdrInputEvent], tag: UInt64)
 
         /// Tells whoever waits on the operation that it won't be carried out.
         func abandon() {
@@ -395,6 +405,9 @@ final class HerdrScreenModel {
     private var pointers: [String: CGPoint] = [:]
     /// The scroll travel over each pane not yet a whole wheel step.
     private var wheelRemainders: [String: Double] = [:]
+    /// Where each pane's rows go while a touch scroll measures it, and the tag of the wheel batch each has out.
+    private var rowObservers: [String: @MainActor @Sendable (GhosttyPaneRowsEvent) -> Void] = [:]
+    private var wheelBatchesOut: [String: UInt64] = [:]
     /// The mouse button held down in a pane, from its press to its release.
     private var mouseGesture: MouseGesture?
     private var presentationFailures: [String: TerminalDisconnectReason] = [:]
@@ -1501,6 +1514,51 @@ final class HerdrScreenModel {
         return send(events, to: target) == .accepted
     }
 
+    /// Starts or, with nil, stops reporting a pane's rows to `observer`, for a touch scroll that measures what the
+    /// pane's program does with wheel reports (`GhosttyScrollFollower`). False when the session can't take the pane's
+    /// input now.
+    func observeRows(ofPane paneID: String, _ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool {
+        guard let observer else {
+            guard rowObservers.removeValue(forKey: paneID) != nil else { return true }
+            wheelBatchesOut[paneID] = nil
+            if let attempt, isCurrent(attempt) { attempt.ask(.observeRows(paneID: paneID, observe: false)) }
+            return true
+        }
+        guard let target = inputTarget(forPane: paneID) else { return false }
+        rowObservers[paneID] = observer
+        target.attempt.ask(.observeRows(paneID: paneID, observe: true))
+        return true
+    }
+
+    /// A touch scroll's wheel batch: `batch.reports` wheel steps at the batch's cell, as `scroll` sends a step, then a
+    /// marker whose answer comes to the pane's row observer. As in Herdr's client, scrolling another pane focuses it.
+    func sendWheelBatch(_ batch: GhosttySurfaceWheelBatch, inPane paneID: String, tag: UInt64) -> Bool {
+        guard batch.reports > 0, rowObservers[paneID] != nil, let target = inputTarget(forPane: paneID),
+              let cell = paneCell(at: batch.pointer, inPane: paneID)
+        else { return false }
+        if paneID != userPaneID { _ = focusPane(paneID) }
+        managedSurface(of: .pane(paneID))?.endSelection()
+        let wheel = HerdrMouseEvent(
+            kind: batch.up ? .scrollUp : .scrollDown,
+            column: cell.column,
+            row: cell.row,
+            lines: Self.wheelLines
+        )
+        wheelBatchesOut[paneID] = tag
+        target.attempt.ask(.wheelBatch(
+            paneID: paneID,
+            events: Array(repeating: .mouse(wheel), count: batch.reports),
+            tag: tag
+        ))
+        return true
+    }
+
+    private func wheelBatchFailed(paneID: String, tag: UInt64) {
+        guard wheelBatchesOut[paneID] == tag else { return }
+        wheelBatchesOut[paneID] = nil
+        rowObservers[paneID]?(.reply(tag: tag, delivered: false, rows: nil))
+    }
+
     /// Herdr keeps a pane's history position, so the focused pane's return to its live rows is a scroll Herdr makes.
     /// It is asked whatever the position last reported, which can trail scrolls still on their way to Herdr. If it
     /// fails, the first key typed returns the pane there, as Herdr does with input.
@@ -1917,6 +1975,13 @@ final class HerdrScreenModel {
             }
         case .appActive(let active):
             await connection.setAppActive(active)
+        case .observeRows(let paneID, let observe):
+            await feed.observeRows(ofPane: paneID, observe)
+        case .wheelBatch(let paneID, let events, let tag):
+            guard case .sent = await feed.sendWheelBatch(events, toPane: paneID, tag: tag) else {
+                wheelBatchFailed(paneID: paneID, tag: tag)
+                return
+            }
         case .input(let target, let events, let delivered):
             switch await feed.send(events, to: target) {
             case .sent:
@@ -1978,6 +2043,8 @@ final class HerdrScreenModel {
                 Task { @MainActor in model.keyboardReportAllChanged(attemptID, enabled) }
             case .response(let chunk):
                 await feed.receive(chunk)
+            case .pong(let data):
+                await feed.receive(pong: data)
             case .notification(let notification):
                 Task { @MainActor in model.notificationArrived(attemptID, notification) }
             case .bell:
@@ -2205,6 +2272,8 @@ final class HerdrScreenModel {
         attempt.closeCause = cause
         attempt.finishOperations()
         attempt.task?.cancel()
+        // A wheel batch the attempt won't answer is reported as not delivered, so its touch scroll ends.
+        for (paneID, tag) in wheelBatchesOut { wheelBatchFailed(paneID: paneID, tag: tag) }
         if attempt === self.attempt {
             findPresentation = nil
             findMethodsAvailable = false
@@ -2327,6 +2396,15 @@ final class HerdrScreenModel {
         case .drawn(let layout, let projectionRevision, let connection):
             guard receive(DrawnFrame(layout: layout, projectionRevision: projectionRevision, connection: connection))
             else { return }
+        case .paneRows(let paneID, let event, let connection):
+            if case .reply(let tag, _, _) = event {
+                guard wheelBatchesOut[paneID] == tag else { return }
+                wheelBatchesOut[paneID] = nil
+            } else {
+                guard attempt?.id == connection else { return }
+            }
+            rowObservers[paneID]?(event)
+            return
         case .paneScroll(let scrolls):
             endSelections(movedBy: scrolls)
             paneScrolls = scrolls
@@ -2623,7 +2701,7 @@ final class HerdrScreenModel {
                 close(renderer)
                 return
             }
-            let surface = HerdrPaneSurface(paneID: paneID, terminal: terminal, renderer: renderer)
+            let surface = HerdrPaneSurface(paneID: paneID, terminal: terminal, renderer: renderer, model: self)
             // The panes of a frame held off screen draw their first pictures there.
             let staged = pendingFrame != nil
             if staged {

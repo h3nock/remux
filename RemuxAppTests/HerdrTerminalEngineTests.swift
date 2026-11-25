@@ -28,6 +28,52 @@ final class HerdrTerminalEngineTests: XCTestCase {
         runtime = nil
     }
 
+    // MARK: - Rows for a touch scroll
+
+    /// A touch scroll reads a pane's rows in the order Herdr sent what they show: when it starts, after each paint of
+    /// the pane, and at Herdr's answer to the marker after a wheel batch, which comes after the frames Herdr sent
+    /// before it. A batch whose connection ends before the answer is reported as not delivered.
+    func testAWheelBatchsAnswerCarriesTheRowsHerdrSentBeforeIt() async throws {
+        let engine = makeEngine()
+        let updates = UpdateLog(engine)
+        let (feed, outbox) = await connect(engine)
+        // As `shown`, keeping P's terminal, which comes before the show completes.
+        await feed.receive(try Self.places(revision: 1))
+        let show = try await start(feed, updates, Self.show())
+        try await acknowledgeShow(feed, outbox, floor: 1)
+        await feed.receive(.surface(try Self.surface(revision: 1, lines: ["one ", "two "], panes: Self.atP)))
+        let terminal = try await updates.terminal(for: "P")
+        try await activation(show, updates)
+        let renderer = try await makeRenderer(engine: engine, paneID: "P", terminal: terminal, columns: 2, rows: 2)
+        await feed.observeRows(ofPane: "P", true)
+        let first = try await updates.nextRows(of: "P")
+        XCTAssertEqual(first, .frame("on\ntw"))
+
+        let wheel = HerdrInputEvent.mouse(HerdrMouseEvent(kind: .scrollUp, column: 0, row: 0, modifiers: [], lines: 3))
+        guard case .sent = await feed.sendWheelBatch([wheel, wheel], toPane: "P", tag: 7) else {
+            return XCTFail("the batch didn't go")
+        }
+        let writes = try outbox.writes()
+        guard case .ping(let marker)? = writes.last, case .paneInput? = writes.dropLast().last else {
+            return XCTFail("the batch went as \(writes.suffix(2))")
+        }
+        await feed.receive(.surface(try Self.surface(revision: 2, lines: ["ab  ", "cd  "], panes: Self.atP)))
+        let painted = try await updates.nextRows(of: "P")
+        XCTAssertEqual(painted, .frame("ab\ncd"))
+        await feed.receive(pong: marker)
+        let answer = try await updates.nextRows(of: "P")
+        XCTAssertEqual(answer, .reply(tag: 7, delivered: true, rows: "ab\ncd"))
+
+        guard case .sent = await feed.sendWheelBatch([wheel], toPane: "P", tag: 8) else {
+            return XCTFail("the second batch didn't go")
+        }
+        await engine.endConnection(2)
+        let unanswered = try await updates.nextRows(of: "P")
+        XCTAssertEqual(unanswered, .reply(tag: 8, delivered: false, rows: nil))
+        await close(renderer)
+        await engine.stop()
+    }
+
     // MARK: - Painting
 
     /// A pane's terminal is painted before any renderer exists; a renderer created later shows it.
@@ -1934,7 +1980,8 @@ final class HerdrTerminalEngineTests: XCTestCase {
                 case .paneTerminal(let paneID, let terminal): terminals[paneID] = terminal
                 case .paneTerminalFailed, .rendererWakeFailed, .popupTerminalFailed, .popupRendererWakeFailed, .failed:
                     XCTFail("\(fixture.name): \(update)")
-                case .drawn, .paneScroll, .started, .activated, .timedOut, .answered, .zoomAnswered, .showRefused, .popupTerminal, .findChanged:
+                case .drawn, .paneScroll, .paneRows, .started, .activated, .timedOut, .answered, .zoomAnswered, .showRefused,
+                     .popupTerminal, .findChanged:
                     break
                 }
             }
@@ -3496,6 +3543,13 @@ private final class UpdateLog {
     func nextLayout() async throws -> HerdrPaneLayout {
         while true {
             if case .drawn(let layout, _, _) = try await next() { return layout }
+        }
+    }
+
+    /// The next report of `paneID`'s rows for a touch scroll.
+    func nextRows(of paneID: String) async throws -> GhosttyPaneRowsEvent {
+        while true {
+            if case .paneRows(paneID, let event, _) = try await next() { return event }
         }
     }
 

@@ -137,6 +137,9 @@ enum HerdrEngineUpdate: Sendable {
     /// Each listed pane's scrolling, whenever any of it changed. Kept out of the layout because the
     /// history grows with every line a program prints.
     case paneScroll([String: HerdrPaneScroll])
+    /// A pane's rows for a touch scroll measuring it (`HerdrEngineFeed.observeRows`), in the order Herdr sent what
+    /// they show.
+    case paneRows(paneID: String, GhosttyPaneRowsEvent, connection: UInt64)
     /// Ghostty couldn't make or paint the pane's terminal. It isn't painted again until the pane leaves
     /// the layout or a new connection begins; a terminal it already had keeps its last frame.
     case paneTerminalFailed(paneID: String)
@@ -192,6 +195,22 @@ struct HerdrEngineFeed: Sendable {
 
     func receive(_ chunk: HerdrResponseChunk) async {
         await engine.receive(chunk, connection: connection)
+    }
+
+    func receive(pong data: String) async {
+        await engine.receivePong(data, connection: connection)
+    }
+
+    /// Starts or stops reporting `paneID`'s rows (`HerdrEngineUpdate.paneRows`): now, after each paint of it, and at
+    /// Herdr's answer to each wheel batch sent with `sendWheelBatch`.
+    func observeRows(ofPane paneID: String, _ observe: Bool) async {
+        await engine.observeRows(ofPane: paneID, observe, connection: connection)
+    }
+
+    /// Wheel events for a pane, followed by a marker Herdr answers once it has read them; the answer comes as the
+    /// pane's `.reply` with `tag`.
+    func sendWheelBatch(_ events: [HerdrInputEvent], toPane paneID: String, tag: UInt64) async -> HerdrInputSend {
+        await engine.sendWheelBatch(events, toPane: paneID, tag: tag, connection: connection)
     }
 
     /// The connection ended: its commands fail, and an end waiting for Remux's zooms to come off goes.
@@ -729,6 +748,11 @@ actor HerdrTerminalEngine {
     private var unpaintedFindReveal: (paneID: String, offset: UInt64)?
     /// Where the connection's requests go out.
     private var outbox: (any HerdrOutbound)?
+    /// Panes a touch scroll is measuring, those of them painted since their rows were last reported, and the
+    /// markers of wheel batches Herdr hasn't answered yet.
+    private var rowObservedPanes: Set<String> = []
+    private var changedObservedPanes: Set<String> = []
+    private var wheelBatchMarkers: [String: (paneID: String, tag: UInt64)] = [:]
     /// The methods the connection's welcome offered, and how long a command may stay unanswered.
     private var methods: Set<String> = []
     private var commandTimeout: Duration = .seconds(60)
@@ -1162,6 +1186,7 @@ actor HerdrTerminalEngine {
         let feed = HerdrEngineFeed(engine: self, connection: connection)
         guard state != .stopped, connection > self.connection else { return feed }
         endRequests()
+        endRowObservations(of: self.connection)
         self.connection = connection
         self.outbox = outbox
         state = .running
@@ -1177,9 +1202,11 @@ actor HerdrTerminalEngine {
     /// frame, and every command it had waiting or in flight fails.
     func endConnection(_ connection: UInt64) {
         guard state != .stopped, connection >= self.connection else { return }
+        let ended = self.connection
         self.connection = connection
         state = .idle
         endRequests()
+        endRowObservations(of: ended)
     }
 
     fileprivate func opened(methods: Set<String>, commandTimeout: Duration, connection: UInt64) {
@@ -2115,6 +2142,7 @@ actor HerdrTerminalEngine {
         bordersMayHaveChanged = true
         checkOvertaken()
         paintPresented()
+        reportChangedObservedRows()
         dispatch()
     }
 
@@ -2136,6 +2164,81 @@ actor HerdrTerminalEngine {
             _ = presentation.receive(patch)
         }
         paintPresented()
+        reportChangedObservedRows()
+    }
+
+    // MARK: - Rows for a touch scroll
+
+    fileprivate func observeRows(ofPane paneID: String, _ observe: Bool, connection: UInt64) {
+        guard state == .running, connection == self.connection else { return }
+        changedObservedPanes.remove(paneID)
+        guard observe else {
+            rowObservedPanes.remove(paneID)
+            return
+        }
+        rowObservedPanes.insert(paneID)
+        continuation.yield(.paneRows(paneID: paneID, .frame(viewportRows(ofPane: paneID)), connection: connection))
+    }
+
+    /// The wheel events go as any pane input goes (`send(_:to:connection:)`); the marker after them is a ping, which
+    /// Herdr answers only after reading everything sent before it, and its answer comes after the frames Herdr sent
+    /// before it (`HerdrConnectionEvent.pong`).
+    fileprivate func sendWheelBatch(
+        _ events: [HerdrInputEvent],
+        toPane paneID: String,
+        tag: UInt64,
+        connection: UInt64
+    ) -> HerdrInputSend {
+        let sent = send(events, to: .pane(paneID), connection: connection)
+        guard case .sent = sent, let outbox else { return sent }
+        let marker = "remux-wheel-\(connection)-\(tag)"
+        wheelBatchMarkers[marker] = (paneID, tag)
+        outbox.send([.healthPing(data: marker)])
+        return .sent
+    }
+
+    fileprivate func receivePong(_ data: String, connection: UInt64) {
+        guard connection == self.connection, let batch = wheelBatchMarkers.removeValue(forKey: data) else { return }
+        reportChangedObservedRows()
+        continuation.yield(.paneRows(
+            paneID: batch.paneID,
+            .reply(tag: batch.tag, delivered: true, rows: viewportRows(ofPane: batch.paneID)),
+            connection: connection
+        ))
+    }
+
+    private func reportChangedObservedRows() {
+        guard !changedObservedPanes.isEmpty else { return }
+        for paneID in changedObservedPanes {
+            continuation.yield(.paneRows(paneID: paneID, .frame(viewportRows(ofPane: paneID)), connection: connection))
+        }
+        changedObservedPanes.removeAll()
+    }
+
+    /// A connection's row reports end with it; a wheel batch it didn't answer is reported as not delivered.
+    private func endRowObservations(of connection: UInt64) {
+        for batch in wheelBatchMarkers.values {
+            continuation.yield(.paneRows(
+                paneID: batch.paneID,
+                .reply(tag: batch.tag, delivered: false, rows: nil),
+                connection: connection
+            ))
+        }
+        wheelBatchMarkers.removeAll()
+        rowObservedPanes.removeAll()
+        changedObservedPanes.removeAll()
+    }
+
+    /// The pane's viewport as text, as the engine last painted it; nil while it has no renderer or its program is
+    /// inside a synchronized update. Read through the registered renderer, which unregisters on this actor before
+    /// it is freed.
+    private func viewportRows(ofPane paneID: String) -> String? {
+        guard let renderer = terminals[.pane(paneID)]?.renderer else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_terminal_surface_read_viewport_rows(renderer.handle, &text) == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT
+        else { return nil }
+        defer { _ = ghostty_terminal_surface_free_text(renderer.handle, &text) }
+        return GhosttyKitControlSurface.decodeGhosttyText(text)
     }
 
     /// What `paneID`'s terminal shows of Herdr's pane; nil while it has no terminal.
@@ -2434,6 +2537,7 @@ actor HerdrTerminalEngine {
             }
             return
         }
+        if case .pane(let paneID) = target, rowObservedPanes.contains(paneID) { changedObservedPanes.insert(paneID) }
     }
 
     /// Frees the terminal's producer; a renderer over its terminal keeps the last frame Ghostty accepted.

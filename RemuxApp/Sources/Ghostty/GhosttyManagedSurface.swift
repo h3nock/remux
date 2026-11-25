@@ -101,7 +101,7 @@ protocol TerminalPaneInputSink: AnyObject {
 
 /// What a pane's backend reports of its rows while a touch scroll measures it, in the order its server sent what they
 /// show. Rows are the viewport as text, one line per row; nil while the program is inside a synchronized update.
-enum GhosttyPaneRowsEvent: Sendable {
+enum GhosttyPaneRowsEvent: Equatable, Sendable {
     /// The pane's rows now: when the reports start, and after output changes them.
     case frame(String?)
     /// The server's answer to the wheel batch sent with `tag`: whether it reached the program, and the rows as of

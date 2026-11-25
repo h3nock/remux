@@ -2196,7 +2196,7 @@ actor HerdrLiveEventLog {
             endReason = reason
         case .keyboardReportAll(let enabled):
             reportsAllKeys = enabled
-        case .bell, .notification, .clipboard, .inputRefused:
+        case .bell, .notification, .clipboard, .inputRefused, .pong:
             break
         }
     }

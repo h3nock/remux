@@ -587,6 +587,23 @@ final class HerdrConnectionTests: XCTestCase {
         XCTAssertTrue(answered)
     }
 
+    /// The reply to a ping the connection didn't send, the marker the engine puts after a wheel batch, goes to the
+    /// screen in wire order with what Herdr sent around it; the connection's own ping is still its own.
+    func testAPongTheConnectionDidNotSendGoesToTheScreenInWireOrder() async throws {
+        let (connection, transport, events) = try await openedSession(surfaceActive: true)
+        let before = await events.events.count
+        async let alive = connection.confirmAlive()
+        let ping = try Self.control(try await transport.written(1))
+        await transport.serve(
+            HerdrWire.frame([9, 1]) + Self.pong("remux-wheel-1-7") + HerdrWire.frame([9, 1]) + Self.pong(ping.data)
+        )
+        let answered = await alive
+        XCTAssertTrue(answered)
+        await events.waitForCount(before + 3)
+        let kinds = await events.events.dropFirst(before).map(\.kind)
+        XCTAssertEqual(kinds, ["bell", "pong(remux-wheel-1-7)", "bell"])
+    }
+
     /// Another ping's reply doesn't answer the check, so it stays unanswered and ends the connection.
     func testAnotherPongDoesNotConfirmAlive() async throws {
         let (connection, transport, events) = try await openedSession(
@@ -1139,6 +1156,7 @@ extension HerdrConnectionEvent {
         case .inputRefused: return "inputRefused"
         case .keyboardReportAll(let enabled): return "keyboardReportAll(\(enabled))"
         case .response(let chunk): return "response(\(chunk.requestID)\(chunk.isFinal ? ", final" : ""))"
+        case .pong(let data): return "pong(\(data))"
         case .ended(let error):
             switch error {
             case .serverShutdown: return "ended(serverShutdown)"
