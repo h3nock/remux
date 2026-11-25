@@ -1767,6 +1767,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ),
             at: submittedAt
         )
+        stopScrolling(surfaceID: model.focusedInputSurfaceID)
         let result = model.sendInputToFocusedSurface(outbound)
         GhosttyRuntimeTrace.perf(
             "input.sendText bytes=\(outbound.lengthOfBytes(using: .utf8)) result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
@@ -1816,7 +1817,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return terminalInputController.performPaste(
             text,
             submitPendingPrefix: submitTerminalText(_:),
-            sendPaste: { model.sendPasteToFocusedSurface($0).isAccepted }
+            sendPaste: { text in
+                stopScrolling(surfaceID: model.focusedInputSurfaceID)
+                return model.sendPasteToFocusedSurface(text).isAccepted
+            }
         )
     }
 
@@ -1893,7 +1897,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {
+        stopScrolling(surfaceID: surfaceID)
         model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID)?.scrollViewportToBottom()
+    }
+
+    /// Input to the terminal is a new intent, as a touch is: it ends a scroll of its pane still in motion, which
+    /// would otherwise carry the pane back into history after the input returned it to its live rows.
+    private func stopScrolling(surfaceID: UUID?) {
+        surfaceID.flatMap { model.terminalManagedSurfaceLookup.managedSurface(for: $0) }?.stopScrolling()
     }
 
     private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> Bool {
@@ -1904,6 +1915,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             submitPendingPrefix: submitTerminalText(_:),
             sendKey: { event in
                 let start = GhosttyRuntimeTrace.nowNanos()
+                stopScrolling(surfaceID: model.focusedInputSurfaceID)
                 let result = model.sendKeyEventToFocusedSurface(event)
                 GhosttyRuntimeTrace.perf(
                     "input.sendKey result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"

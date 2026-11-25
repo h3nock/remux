@@ -542,11 +542,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     /// dropped. While a scroll moves, the scroll view leads and a position the surface takes from elsewhere waits,
     /// so the surface's position is taken up once it stops.
     private func stopScrolling() {
+        let isViewportMoving = isActiveViewportScrollInteraction
+        let isPhysicsMoving = isPhysicsGestureActive || physicsScrollView.isTracking || physicsScrollView.isDecelerating
+        guard isViewportMoving || isPhysicsMoving else { return }
         GhosttyRuntimeTrace.diagnostics(
-            "scroll.stop surface=\(ghosttyDiagnosticShortID(surface?.id)) viewportMoving=\(isActiveViewportScrollInteraction) viewportDecelerating=\(scrollView.isDecelerating) physicsMoving=\(physicsScrollView.isTracking || physicsScrollView.isDecelerating)"
+            "scroll.stop surface=\(ghosttyDiagnosticShortID(surface?.id)) viewportMoving=\(isViewportMoving) viewportDecelerating=\(scrollView.isDecelerating) physicsMoving=\(isPhysicsMoving)"
         )
         haltPhysicsScroll()
-        guard isActiveViewportScrollInteraction else { return }
+        guard isViewportMoving else { return }
         withProgrammaticScrollSynchronization {
             scrollView.setContentOffset(scrollView.contentOffset, animated: false)
         }
