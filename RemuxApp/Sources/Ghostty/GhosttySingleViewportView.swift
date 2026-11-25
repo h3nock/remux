@@ -304,7 +304,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
     private var inputRowsObserver: GhosttyFrameRowsObserver?
     private var isInputScrolledBack = false
-    /// Called when the user scrolls a pane or the popup toward older rows of its history.
+    /// Called when the user scrolls a pane toward older rows of its history.
     var onHistoryScroll: (() -> Void)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
@@ -390,7 +390,6 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         super.init(frame: frame)
         clipsToBounds = true
         addSubview(linesView)
-        popupView.terminal.onScrollTowardHistory = { [weak self] in self?.noteHistoryScroll(of: $0) }
         panRecognizer.delegate = self
         surfaceTapRecognizer.require(toFail: selectionLongPressRecognizer)
         surfaceTapRecognizer.require(toFail: arrowRegripRecognizer)
@@ -586,14 +585,11 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private func makePaneContainer() -> GhosttyPaneScrollContainerView {
         let container = GhosttyPaneScrollContainerView()
         container.onSurfaceScrollStateChange = { [weak self] in self?.noteInputScrollStateChange() }
-        container.onScrollTowardHistory = { [weak self] in self?.noteHistoryScroll(of: $0) }
+        // A pane's scroll route tells history from a program's own scrolling. A popup's swipe always goes to
+        // Herdr's wheel handling, which may scroll its history, move a full-screen program's cursor or reach a
+        // program that reads the mouse, and the app can't tell which, so a popup leaves the keyboard as it is.
+        container.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
         return container
-    }
-
-    /// A scroll up goes to the program instead while it reads the mouse, as a popup's full-screen program can.
-    private func noteHistoryScroll(of surfaceID: UUID) {
-        guard !isMouseCaptured(surfaceID) else { return }
-        onHistoryScroll?()
     }
 
     /// Returning to the live rows, or leaving them, can leave the published rows as they were, as for a program that
