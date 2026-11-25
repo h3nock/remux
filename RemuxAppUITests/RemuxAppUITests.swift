@@ -4272,7 +4272,8 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 60)
         sendTerminalCommand("tmux new-window -d -n second; printf 'FIRST_WINDOW\\n'")
         let terminal = app.otherElements["terminal.screen"].firstMatch
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let windows = app.buttons["terminal.windows"]
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
         RunLoop.current.run(until: Date().addingTimeInterval(2))
         let initialContinuity = try XCTUnwrap(waitForKeyboardContinuity(owner: "terminal"))
         attachScreenshot(named: "keyboard-switch-start")
@@ -4280,14 +4281,19 @@ final class RemuxAppUITests: XCTestCase {
             let from = terminal.coordinate(withNormalizedOffset: CGVector(dx: index % 2 == 0 ? 0.8 : 0.2, dy: 0.2))
             let to = terminal.coordinate(withNormalizedOffset: CGVector(dx: index % 2 == 0 ? 0.2 : 0.8, dy: 0.2))
             from.press(forDuration: 0.05, thenDragTo: to)
+            let destination = index % 2 == 0 ? "2 of 2" : "1 of 2"
+            let switched = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label CONTAINS %@", destination), object: windows
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [switched], timeout: 15), .completed, "windows label \(windows.label)")
             waitForLiveTerminalReady(timeout: 15)
-            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-            XCTAssertTrue(app.buttons["terminal.windows"].label.contains(index % 2 == 0 ? "2 of 2" : "1 of 2"))
+            XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
             let continuity = try XCTUnwrap(waitForKeyboardContinuity(owner: "terminal"))
             XCTAssertEqual(continuity.willHideCount, initialContinuity.willHideCount)
             attachScreenshot(named: "keyboard-switch-\(index)")
         }
-        sendTerminalCommand("printf 'REMUX_KEYBOARD_SWITCH_INPUT_OK\\n'")
+        // Only the command's output joins the marker's halves, so the typed line alone can't satisfy the capture.
+        sendTerminalCommand("printf 'REMUX_KEYBOARD_SWITCH_%s\\n' INPUT_OK")
         recordLiveTmuxWindowPaneCaptureExpectation(
             sessionName: sessionName, windowIndex: 1, paneIndex: 1,
             marker: "REMUX_KEYBOARD_SWITCH_INPUT_OK"
