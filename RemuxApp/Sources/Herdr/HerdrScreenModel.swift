@@ -1497,10 +1497,11 @@ final class HerdrScreenModel {
     }
 
     /// Herdr keeps a pane's history position, so the focused pane's return to its live rows is a scroll Herdr makes.
-    /// If it fails, the first key typed returns the pane there, as Herdr does with input.
+    /// It is asked whatever the position last reported, which can trail scrolls still on their way to Herdr. If it
+    /// fails, the first key typed returns the pane there, as Herdr does with input.
     func returnFocusedPaneToLiveRows() {
-        guard paneScrollAvailable, popup.popup == nil, let attempt = shownAttempt, let paneID = focusedPaneID,
-              (paneScrolls[paneID]?.linesFromBottom ?? 0) > 0 else { return }
+        guard paneScrollAvailable, popup.popup == nil, let attempt = shownAttempt, let paneID = focusedPaneID
+        else { return }
         struct Params: Encodable, Sendable { let pane_id: String; let offset_from_bottom: UInt64 }
         Task { [weak self] in
             _ = await self?.command("pane.scroll", params: Params(pane_id: paneID, offset_from_bottom: 0), on: attempt)

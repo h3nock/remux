@@ -732,11 +732,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
                 }
             }
-            .onChange(of: isTerminalKeyboardActive) { _, isActive in
+            .onChange(of: keyboardHolder) { _, holder in
+                guard holder != .none else { return }
+                // Taking the keyboard ends any scroll still in motion, as a touch ends a fling: a fling left going
+                // would carry the pane on under the keyboard, undo its return to the live rows, and lower the
+                // keyboard again with its steps into history.
+                stopScrollingShownSurfaces()
                 // The terminal's keyboard is for typing, which returns the pane to its live rows anyway: go there as
                 // it opens or the composer hands it over, so the line being typed on comes up above it. The
                 // composer's keyboard leaves the pane as it is.
-                if isActive { model.returnFocusedPaneToLiveRows() }
+                if holder == .terminal { model.returnFocusedPaneToLiveRows() }
             }
             .onChange(of: model.paneFindPresentation == nil) { _, ended in
                 if ended, isFindPresented { closeFind() }
@@ -1081,8 +1086,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         showComposerKeyboard()
     }
 
-    private var isTerminalKeyboardActive: Bool {
-        inputCoordinator.keyboardMode == .system && inputCoordinator.keyboardOwner == .terminal
+    /// The input the system keyboard is up for, none while it is down.
+    private var keyboardHolder: GhosttyKeyboardOwner {
+        inputCoordinator.keyboardMode == .system ? inputCoordinator.keyboardOwner : .none
+    }
+
+    private func stopScrollingShownSurfaces() {
+        let viewport = model.terminalScreenPresentationProjection.viewport
+        for id in viewport.panes.map(\.id) + [viewport.popup?.id].compactMap({ $0 }) {
+            model.terminalManagedSurfaceLookup.managedSurface(for: id)?.stopScrolling()
+        }
     }
 
     private func dismissComposerKeyboard() {

@@ -115,6 +115,8 @@ final class GhosttyManagedSurface {
     /// rows, and the terminal's selection draws the part of it on screen.
     private(set) var historySelection: GhosttyHistorySelection?
     var onScrollStateChange: (() -> Void)?
+    /// Set by the scroll container showing the surface, to end a scroll of it still in motion.
+    var onStopScrolling: (() -> Void)?
     var onLocalSelectionGeometryChange: (() -> Void)?
     var onRendererRecoveryChange: (() -> Void)?
 
@@ -199,8 +201,14 @@ final class GhosttyManagedSurface {
         _ = controlSurface.setFocused(focused)
     }
 
+    /// Ends a scroll of this surface still in motion, a fling's or a drag's, where it is.
+    func stopScrolling() {
+        onStopScrolling?()
+    }
+
     func prepareForPermanentRemoval() {
         onScrollStateChange = nil
+        onStopScrolling = nil
         setFocused(false)
         setVisible(false)
         view.isHidden = true

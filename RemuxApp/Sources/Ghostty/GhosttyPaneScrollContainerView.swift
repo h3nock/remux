@@ -190,6 +190,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             )
             haltPhysicsScroll()
             self.surface?.onScrollStateChange = nil
+            self.surface?.onStopScrolling = nil
             self.surface?.onRendererRecoveryChange = nil
             resetViewportScrollInteractionState()
             self.surface = surface
@@ -203,6 +204,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
                 guard let self, self.surface === surface else { return }
                 self.synchronizeFromSurface()
                 self.onSurfaceScrollStateChange?()
+            }
+            surface.onStopScrolling = { [weak self, weak surface] in
+                guard let self, self.surface === surface else { return }
+                self.stopScrolling()
             }
             surface.onRendererRecoveryChange = { [weak self, weak surface] in
                 guard let self, self.surface === surface else { return }
@@ -240,6 +245,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         guard self.surface === surface else { return }
         haltPhysicsScroll()
         surface.onScrollStateChange = nil
+        surface.onStopScrolling = nil
         surface.onRendererRecoveryChange = nil
         self.surface = nil
         submitRouteForwardedMouseScroll = nil
@@ -529,6 +535,23 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             scrollView.isTracking ||
             scrollView.isDragging ||
             scrollView.isDecelerating
+    }
+
+    /// Ends a scroll in motion where it is, as a touch ends a fling. A forwarded scroll sends nothing more; the pane's
+    /// own scroll stops on the position the surface shows, and a step not yet sent to the surface, never drawn, is
+    /// dropped. While a scroll moves, the scroll view leads and a position the surface takes from elsewhere waits,
+    /// so the surface's position is taken up once it stops.
+    private func stopScrolling() {
+        GhosttyRuntimeTrace.diagnostics(
+            "scroll.stop surface=\(ghosttyDiagnosticShortID(surface?.id)) viewportMoving=\(isActiveViewportScrollInteraction) viewportDecelerating=\(scrollView.isDecelerating) physicsMoving=\(physicsScrollView.isTracking || physicsScrollView.isDecelerating)"
+        )
+        haltPhysicsScroll()
+        guard isActiveViewportScrollInteraction else { return }
+        withProgrammaticScrollSynchronization {
+            scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+        }
+        isUserViewportScrolling = false
+        synchronizeFromSurface()
     }
 
     private func finishUserViewportScroll() {
