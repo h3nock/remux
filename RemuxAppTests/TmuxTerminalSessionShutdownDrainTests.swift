@@ -211,6 +211,62 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testSelectionPreparesFirstFrameBeforeViewAttachment() async throws {
+        let fixture = try await makeNativeFixture(attach: false)
+        defer { fixture.window.isHidden = true }
+        let renderer = fixture.surface.renderer
+        renderer.setPresented(false)
+        renderer.suppressFirstPublicationForTesting = true
+
+        fixture.session.prepareForPaneSelection(paneID: 0)
+        XCTAssertEqual(renderer.presentation, .awaitingFrame)
+        XCTAssertNil(renderer.inputControlSurface)
+        XCTAssertNil(renderer.view.window)
+
+        renderer.suppressFirstPublicationForTesting = false
+        _ = renderer.managedSurface?.controlSurface.requestFrame()
+        try await waitUntil { renderer.presentation == .ready }
+        XCTAssertNil(renderer.view.window, "the native frame must be prepared off screen")
+        XCTAssertNotNil(renderer.inputControlSurface)
+        await fixture.session.shutdown()
+    }
+
+    func testSelectionReusesPublishedFrameAcrossWindowAttachment() async throws {
+        let fixture = try await makeNativeFixture()
+        defer { fixture.window.isHidden = true }
+        let renderer = fixture.surface.renderer
+        let surface = renderer.rawSurface
+        renderer.setPresented(false)
+        renderer.view.removeFromSuperview()
+        XCTAssertEqual(renderer.presentation, .pending)
+
+        fixture.session.prepareForPaneSelection(paneID: 0)
+        XCTAssertEqual(renderer.presentation, .ready, "a warm pane must not wait for another UI update")
+        XCTAssertEqual(renderer.rawSurface, surface)
+        renderer.setPresented(true)
+        XCTAssertEqual(renderer.presentation, .ready, "confirmation before attachment must preserve readiness")
+        fixture.window.rootViewController?.view.addSubview(renderer.view)
+        await drain(fixture.session.controller)
+        XCTAssertEqual(renderer.presentation, .ready)
+        renderer.setPresented(false)
+        renderer.view.removeFromSuperview()
+        XCTAssertEqual(renderer.presentation, .pending, "preparation ends when the view is presented")
+        await fixture.session.shutdown()
+    }
+
+    func testSelectionPreparationDoesNotEraseRendererFailure() async throws {
+        let fixture = try await makeNativeFixture(attach: false)
+        defer { fixture.window.isHidden = true }
+        let renderer = fixture.surface.renderer
+        renderer.setPresented(false)
+        renderer.failPresentation(message: "test failure")
+        let failed = renderer.presentation
+        fixture.session.prepareForPaneSelection(paneID: 0)
+        XCTAssertEqual(renderer.presentation, failed)
+        XCTAssertNil(renderer.inputControlSurface)
+        await fixture.session.shutdown()
+    }
+
     func testInitialFrameTimeoutIsRepairableAndCannotBeErasedByLatePublication() async throws {
         let fixture = try await makeNativeFixture(attach: false)
         defer { fixture.window.isHidden = true }
