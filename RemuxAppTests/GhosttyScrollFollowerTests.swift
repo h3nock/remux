@@ -8,13 +8,14 @@ final class GhosttyScrollFollowerTests: XCTestCase {
     /// and `ledger.py`, driven by `parity.py`, in remux-docs evidence/scroll-follower-20261125/reference) against a
     /// simulated program that moves one, three, or an accelerating number of rows per report, ignores reports over its
     /// input box, drops the first report after a change of direction, draws some answers in two pieces or two
-    /// repaints, once freezes, and streams a reply at the live edge. Each trace is every call the follower got, in
-    /// order, and what each tick returned; the port has to return the same.
+    /// repaints, once freezes, streams a reply at the live edge, and sends its frames on a 16 ms cadence as Herdr
+    /// does. Each trace is every call the follower got, in order, and what each tick returned; the port has to return
+    /// the same.
     func testMakesTheReferenceModelsDecisions() throws {
         let fixture = try Self.parityFixture()
         let gridRows = try XCTUnwrap(fixture["rows"] as? Int)
         let traces = try XCTUnwrap(fixture["traces"] as? [[String: Any]])
-        XCTAssertEqual(traces.count, 11)
+        XCTAssertEqual(traces.count, 13)
         for (traceIndex, trace) in traces.enumerated() {
             let touch = try XCTUnwrap(trace["touch"] as? Int)
             var current = try Self.spec(trace["first"])

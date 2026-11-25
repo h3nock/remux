@@ -259,6 +259,8 @@ struct GhosttyScrollFollower {
     private var caughtAt: Double?
     private var closing = 0
     private var unaskedAt: TimeInterval?
+    /// The last answered batch, whose answer can still be arriving: its direction, and until when.
+    private var tail: (up: Bool, until: TimeInterval)?
 
     init(gridRows: Int, memory: Memory = Memory()) {
         self.gridRows = gridRows
@@ -370,6 +372,7 @@ struct GhosttyScrollFollower {
         caughtAt = nil
         closing = 0
         unaskedAt = nil
+        tail = nil
     }
 
     // MARK: One batch
@@ -388,10 +391,11 @@ struct GhosttyScrollFollower {
         return current.offset != before
     }
 
-    /// The content moved with no batch to account for it: the tail of an earlier answer, or the program's own doing,
-    /// as a reply streaming in at the live edge. It counts toward the target, never past it: movement the follower
-    /// didn't ask for must not become travel owed the other way. Nothing is learned for a second.
+    /// The content moved with no batch to account for it: the program's own doing, as a reply streaming in at the live
+    /// edge, unless it is the last batch's answer still arriving. It counts toward the target, never past it: movement
+    /// the follower didn't ask for must not become travel owed the other way. Nothing is learned for a second.
     private mutating func unasked(rows: Int, now: TimeInterval) {
+        if let tail, now <= tail.until, (rows > 0) == tail.up { return }
         unaskedAt = now
         guard let lastTarget else { return }
         let moved = Double(rows)
@@ -437,6 +441,9 @@ struct GhosttyScrollFollower {
                 memory.answer = memory.answer.map { 0.75 * $0 + 0.25 * took } ?? took
             }
             answeredRow = current.row
+            // A program can answer in more than one repaint, and a server can send them a frame apart: what moves the
+            // same way within one settle is still this batch's answer, not movement nobody asked for.
+            tail = (current.up, now + Self.settle)
             silent = 0
             batch = nil
             return true
