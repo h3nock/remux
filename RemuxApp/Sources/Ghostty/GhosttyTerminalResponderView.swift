@@ -163,7 +163,7 @@ enum GhosttyTerminalInputNormalizer {
 
 @MainActor
 final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTraits {
-    override var canBecomeFirstResponder: Bool { isInputEnabled }
+    override var canBecomeFirstResponder: Bool { isInputEnabled || wantsFirstResponder }
 
     var hasText: Bool { isInputEnabled }
     var keyboardAppearance: UIKeyboardAppearance = .dark
@@ -201,7 +201,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var isInputEnabled = false
     private var wantsFirstResponder = false
     private var activationToken = -1
-    private var pendingFirstResponderRequest = false
+    private(set) var pendingFirstResponderRequest = false
     private var responderReconciliationScheduled = false
     private var sendTextHandler: ((String) -> Bool)?
     private var sendFinishedTextHandler: ((String) -> Bool)?
@@ -295,10 +295,6 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
         if !isEnabled {
             cancelTrackpadGestureIfActive(reason: "disabled")
-            pendingFirstResponderRequest = false
-            self.activationToken = activationToken
-            scheduleResponderReconciliationIfNeeded(reason: "disabled")
-            return
         }
 
         guard wantsFirstResponder else {
@@ -309,7 +305,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         }
 
         let activationChanged = activationToken != self.activationToken
-        let enabledChanged = !wasInputEnabled
+        let enabledChanged = isEnabled && !wasInputEnabled
         let wantsFirstResponderChanged = wantsFirstResponder != previouslyWantedFirstResponder
         let needsFirstResponderRecovery = !isFirstResponder && !pendingFirstResponderRequest
         guard activationChanged || enabledChanged || wantsFirstResponderChanged || needsFirstResponderRecovery else { return }
@@ -862,22 +858,14 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     private var needsResponderReconciliation: Bool {
         if isFirstResponder {
-            return !isInputEnabled || !wantsFirstResponder || pendingFirstResponderRequest
+            return !wantsFirstResponder || pendingFirstResponderRequest
         }
 
-        return isInputEnabled && wantsFirstResponder && pendingFirstResponderRequest
+        return wantsFirstResponder && pendingFirstResponderRequest
     }
 
     private func reconcileResponderState() {
         responderReconciliationScheduled = false
-
-        guard isInputEnabled else {
-            pendingFirstResponderRequest = false
-            guard isFirstResponder else { return }
-            GhosttyRuntimeTrace.diagnostics("responder.reconcile resign disabled token=\(activationToken)")
-            _ = resignFirstResponder()
-            return
-        }
 
         guard wantsFirstResponder else {
             pendingFirstResponderRequest = false

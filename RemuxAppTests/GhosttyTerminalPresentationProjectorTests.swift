@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
+    func testKeyboardFocusWaitsForSessionLifecycleButNotPanePresentation() {
+        let failure = TerminalDisconnectReason(kind: .runtime, message: "renderer failed")
+        for presentation in [TerminalPanePresentation.pending, .awaitingFrame, .ready, .failed(failure)] {
+            let snapshot = TerminalReadinessProjector.snapshot(
+                phase: .running, transportWritable: true, topLevelCount: 1,
+                selectedActiveLeafID: nil, selectedPanePresentation: presentation
+            )
+            XCTAssertEqual(TerminalReadinessProjector.isKeyboardFocusAvailable(snapshot), presentation != .failed(failure))
+            XCTAssertFalse(TerminalReadinessProjector.isInputAvailable(snapshot))
+        }
+        for phase in [GhosttyTerminalRuntimePhase.idle, .starting, .failed(message: "disconnected", reason: nil)] {
+            let snapshot = TerminalReadinessProjector.snapshot(
+                phase: phase, transportWritable: false, topLevelCount: 1,
+                selectedActiveLeafID: UUID(), selectedPanePresentation: .ready
+            )
+            XCTAssertFalse(TerminalReadinessProjector.isKeyboardFocusAvailable(snapshot))
+        }
+        XCTAssertFalse(TerminalReadinessProjector.isKeyboardFocusAvailable(.init(
+            phase: .running, transportWritable: true, topLevelCount: 0,
+            selectedActiveLeafID: nil
+        )))
+    }
+
     func testTopologyAndSurfaceIdentityCannotDeclarePresentationSuccess() {
         let paneID = UUID()
         let failure = TerminalDisconnectReason(kind: .runtime, message: "first frame failed")

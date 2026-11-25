@@ -440,10 +440,13 @@ final class TmuxTerminalSession: ObservableObject {
     // MARK: Composite presentation
 
     /// Before a pane's window is shown: a picker frame still pending must not complete into the
-    /// window's presentation.
+    /// window's presentation, and the pane prepares its picture while tmux confirms the switch, so it
+    /// is ready when its view is attached instead of a UI update later. A pane that was shown before
+    /// already has its picture; one never shown draws it off screen. tmux still decides the switch.
     func prepareForPaneSelection(paneID: TmuxPaneID) {
         guard !isShutDown else { return }
         cancelPickerPreview()
+        surfacesByPaneID[paneID]?.renderer.prepare()
     }
 
     /// The preview of the window `paneID` is the active pane of: the window's rows around that pane's

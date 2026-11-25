@@ -2,6 +2,19 @@ import XCTest
 @testable import Remux
 
 final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
+    func testUnavailablePanePausesInputWithoutSurrenderingRequestedKeyboard() {
+        let policy = GhosttyTerminalResponderFocusPolicy(
+            isSelected: true,
+            keyboardMode: .system,
+            keyboardOwner: .terminal,
+            isInputAvailable: false,
+            isKeyboardFocusAvailable: true,
+            isTransientInputOwnerPresented: false
+        )
+        XCTAssertFalse(policy.isResponderEnabled)
+        XCTAssertTrue(policy.wantsFirstResponder)
+    }
+
     func testAttachmentModalPresentationsBecomeTransientInputOwners() {
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
@@ -64,6 +77,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
             keyboardMode: .system,
             keyboardOwner: .terminal,
             isInputAvailable: true,
+            isKeyboardFocusAvailable: true,
             isTransientInputOwnerPresented: false
         )
 
@@ -77,6 +91,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
             keyboardMode: .system,
             keyboardOwner: .terminal,
             isInputAvailable: true,
+            isKeyboardFocusAvailable: true,
             isTransientInputOwnerPresented: true
         )
 
@@ -90,6 +105,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
             keyboardMode: .hidden,
             keyboardOwner: .none,
             isInputAvailable: true,
+            isKeyboardFocusAvailable: true,
             isTransientInputOwnerPresented: false
         )
 
@@ -103,6 +119,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
             keyboardMode: .system,
             keyboardOwner: .composer,
             isInputAvailable: true,
+            isKeyboardFocusAvailable: true,
             isTransientInputOwnerPresented: false
         )
 
