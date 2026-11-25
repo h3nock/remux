@@ -4931,6 +4931,54 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertGreaterThan(scrollView.contentSize.height, container.bounds.height)
     }
 
+    /// A swipe back, toward older content, is reported whoever scrolls, so the keyboard steps aside for any of
+    /// them: Herdr scrolling the pane's history, a program that reads the mouse, or one on the alternate screen
+    /// that takes the swipe as arrow keys. A swipe toward newer content isn't.
+    func testASwipeBackIsReportedOnEveryScrollRoute() async throws {
+        let harness = await makeHarness()
+        let session = try await shownSession(harness)
+        let adapter = harness.model.terminalScreenAdapter
+        let ids = adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id)
+        let lookup = adapter.terminalManagedSurfaceLookup
+        let routes: [GhosttySurfaceScrollRoute] = [.remoteHistory, .mouseReport, .altScreenCursor]
+        for (index, route) in routes.enumerated() {
+            await session.bridge.serve(HerdrServerScript.surface(
+                projection: 1,
+                revision: UInt64(3 + index),
+                lines: ["one two"],
+                panes: [
+                    .init(
+                        id: "w1:p1", x: 0, width: 3, height: 1, focused: true, scroll: (0, 40, 1),
+                        mouseReporting: route == .mouseReport, alternateScreen: route != .remoteHistory
+                    ),
+                    .init(id: "w1:p2", x: 4, width: 3, height: 1),
+                ]
+            ))
+            try await harness.waitUntil("the pane didn't take the \(route) route") {
+                lookup.managedSurface(for: ids[0])?.scrollRoute == route
+            }
+            let surface = try XCTUnwrap(lookup.managedSurface(for: ids[0]))
+            let container = GhosttyPaneScrollContainerView(frame: CGRect(x: 0, y: 0, width: 300, height: 40))
+            _ = container.update(
+                surface: surface,
+                displayScale: 3,
+                submitRouteForwardedMouseScroll: { _, _ in .sent },
+                submitRouteForwardedMousePosition: { _, _, _ in .sent }
+            )
+            container.layoutIfNeeded()
+            var scrollBacks = 0
+            container.onScrollBack = { scrollBacks += 1 }
+            let physics = try XCTUnwrap(container.subviews.compactMap { $0 as? GhosttyScrollPhysicsView }.first)
+
+            container.scrollViewWillBeginDragging(physics)
+            physics.contentOffset.y += 120
+            XCTAssertEqual(scrollBacks, 0, "a swipe toward newer content was reported as one back on \(route)")
+            physics.contentOffset.y -= 240
+            XCTAssertGreaterThan(scrollBacks, 0, "a swipe back wasn't reported on \(route)")
+            container.detachCurrentSurfaceForRemoval()
+        }
+    }
+
     /// A server reporting a history at the top of the range gets a capped history, not a crash, and a
     /// pane scrolled up keeps its distance from the bottom.
     func testAnOversizedHistoryCapsTheScrollTotal() {

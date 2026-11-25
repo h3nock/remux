@@ -20,8 +20,8 @@ struct GhosttyCompositeViewportView: View {
     /// The terminal's size, which the area this view is given may be shorter than, as while the keyboard or the
     /// composer covers the bottom of the screen; nil to fill the area.
     var canvasSize: CGSize? = nil
-    /// Called when the user scrolls a pane toward older rows of its history.
-    var onHistoryScroll: (() -> Void)? = nil
+    /// Called when the user scrolls a pane or the popup back, toward older content.
+    var onScrollBack: (() -> Void)? = nil
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -39,7 +39,7 @@ struct GhosttyCompositeViewportView: View {
             surfaceLookup: surfaceLookup,
             projection: projection,
             canvasSize: canvasSize,
-            onHistoryScroll: onHistoryScroll,
+            onScrollBack: onScrollBack,
             terminalTheme: terminalTheme,
             trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
@@ -60,7 +60,7 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let canvasSize: CGSize?
-    let onHistoryScroll: (() -> Void)?
+    let onScrollBack: (() -> Void)?
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -85,7 +85,7 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
         host.backgroundColor = terminalTheme.terminalBackgroundUIColor
         host.canvasSize = canvasSize
         let view = host.viewport
-        view.onHistoryScroll = onHistoryScroll
+        view.onScrollBack = onScrollBack
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
         view.update(
@@ -304,8 +304,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     }
     private var inputRowsObserver: GhosttyFrameRowsObserver?
     private var isInputScrolledBack = false
-    /// Called when the user scrolls a pane toward older rows of its history.
-    var onHistoryScroll: (() -> Void)?
+    /// Called when the user scrolls a pane or the popup back, toward older content.
+    var onScrollBack: (() -> Void)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
     private var didNavigateForActivePan = false
@@ -400,6 +400,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         addInteraction(selectionEditMenuInteraction)
         addSubview(startSelectionHandle)
         addSubview(endSelectionHandle)
+        popupView.terminal.onScrollBack = { [weak self] in self?.onScrollBack?() }
     }
 
     @available(*, unavailable)
@@ -585,10 +586,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private func makePaneContainer() -> GhosttyPaneScrollContainerView {
         let container = GhosttyPaneScrollContainerView()
         container.onSurfaceScrollStateChange = { [weak self] in self?.noteInputScrollStateChange() }
-        // A pane's scroll route tells history from a program's own scrolling. A popup's swipe always goes to
-        // Herdr's wheel handling, which may scroll its history, move a full-screen program's cursor or reach a
-        // program that reads the mouse, and the app can't tell which, so a popup leaves the keyboard as it is.
-        container.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
+        container.onScrollBack = { [weak self] in self?.onScrollBack?() }
         return container
     }
 
