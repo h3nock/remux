@@ -161,6 +161,14 @@ struct GhosttyTerminalInputController: Equatable {
         modifierState.clear(modifierState.armed.subtracting(toolbarKeys.modifiers))
     }
 
+    /// Return typed while a modifier is armed is the Return key with that modifier, sent as a key so the pane's
+    /// keyboard mode decides what it becomes. As text it could only be CR, which submits where Shift+Return
+    /// starts a new line.
+    func armedReturnKeyEvent(for text: String) -> GhosttySurfaceKeyEvent? {
+        guard text == "\r", !modifierState.armed.isEmpty else { return nil }
+        return GhosttySurfaceKeyEvent(keyCode: .enter)
+    }
+
     /// `holdsTmuxPrefix` is the session's `holdsTmuxPrefixKey`. An armed modifier applies to the
     /// text unless `appliesModifiers` is false, as for a draft an app action finishes, which leaves
     /// it armed for that action's own key.

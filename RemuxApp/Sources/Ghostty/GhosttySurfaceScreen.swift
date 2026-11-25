@@ -1730,6 +1730,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func sendTerminalText(_ text: String, appliesModifiers: Bool = true) -> Bool {
         guard !isFindPresented, !isReadingAfterFind else { return false }
+        if appliesModifiers, let returnKey = terminalInputController.armedReturnKeyEvent(for: text) {
+            return sendTerminalKeyEvent(returnKey)
+        }
         return terminalInputController.performTextInput(
             text,
             holdsTmuxPrefix: model.holdsTmuxPrefixKey,
