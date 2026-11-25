@@ -709,7 +709,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(waitForTerminalFirstResponder(true), "The terminal didn't get the keyboard back after Tabs.")
     }
 
-    func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
+    func testComposerTogglePreservesKeyboardAndTerminalSize() {
         launchSeededSimulatorTerminal()
 
         let terminal = app.otherElements["terminal.screen"]
@@ -729,7 +729,8 @@ final class RemuxAppUITests: XCTestCase {
         guard let hiddenOpenContinuity = waitForKeyboardContinuity(owner: "none") else {
             return
         }
-        XCTAssertNotEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+        // The composer covers the bottom of the terminal, which keeps its size.
+        XCTAssertEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
         XCTAssertNotEqual(hiddenOpenContinuity.bottomChrome, hiddenContinuity.bottomChrome)
 
         composerToggle.tap()
@@ -752,6 +753,11 @@ final class RemuxAppUITests: XCTestCase {
         guard let initialContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
+        XCTAssertEqual(
+            initialContinuity.effectiveViewport,
+            hiddenContinuity.effectiveViewport,
+            "The keyboard covers the terminal instead of resizing it."
+        )
 
         composerToggle.tap()
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
@@ -761,14 +767,13 @@ final class RemuxAppUITests: XCTestCase {
         }
         XCTAssertEqual(composerContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
-        XCTAssertNotEqual(
+        XCTAssertEqual(
             composerContinuity.effectiveViewport,
             initialContinuity.effectiveViewport,
-            "Opening the composer must reserve its full height from the terminal viewport "
+            "Opening the composer covers the terminal instead of resizing it: "
                 + "from live=\(initialContinuity.liveViewport), effective=\(initialContinuity.effectiveViewport) "
                 + "to live=\(composerContinuity.liveViewport), effective=\(composerContinuity.effectiveViewport); "
-                + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome), "
-                + "safeAreaBottom \(initialContinuity.safeAreaBottom) → \(composerContinuity.safeAreaBottom)."
+                + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome)."
         )
         composerField.typeText("Keep this draft")
         XCTAssertEqual(composerField.value as? String, "Keep this draft")
@@ -3894,11 +3899,11 @@ final class RemuxAppUITests: XCTestCase {
     /// Herdr's popup on a live server, opened by a second Herdr client on the tab the phone shows, as from a
     /// Mac. The phone attaches to the popup's terminal and shows it in a frame filling the terminal area at
     /// the panes' font, with its title and the tab it is over; Tabs and Panes are held, Sessions isn't. The
-    /// popup's terminal takes the phone's grid, which the keyboard and a rotation change by rows and columns,
-    /// not text size, and keeps it while the other client types, and through a quiet minute; Home gives it
-    /// back. Typing, the composer and swipes go into it: an arrow reaches a program asking for application
-    /// cursor keys as one, a shell's history scrolls, and a program reporting the mouse gets wheel steps and a
-    /// tap as a click. A long press on a word selects it, and Copy copies it.
+    /// popup's terminal takes the phone's grid, which a rotation changes by rows and columns, not text size, and
+    /// the keyboard covers without changing; it keeps it while the other client types, and through a quiet
+    /// minute; Home gives it back. Typing, the composer and swipes go into it: an arrow reaches a program asking
+    /// for application cursor keys as one, a shell's history scrolls, and a program reporting the mouse gets wheel
+    /// steps and a tap as a click. A long press on a word selects it, and Copy copies it.
     /// btop says the grid it has is too small, with its size; Claude Code takes the phone's keys. Each
     /// popup closes when its program exits. Screens in dark, then Latte.
     /// The harness answers each `<step>.request` with `<step>.done`, and `<step>.out` for what it read:
@@ -4008,11 +4013,9 @@ final class RemuxAppUITests: XCTestCase {
         let full = try XCTUnwrap(try popupGrid("at the phone's size") { $0.columns < 80 })
         capture("f1-popup-dark")
 
-        // The keyboard takes rows, not text size; hiding it gives them back.
+        // The keyboard covers the bottom of the popup's terminal, which slides up, and takes none of its rows.
         showKeyboard()
-        let withKeyboard = try XCTUnwrap(try popupGrid("with the keyboard up") {
-            $0.rows < full.rows && $0.columns == full.columns
-        })
+        let withKeyboard = try XCTUnwrap(try popupGrid("with the keyboard up") { $0 == full })
         try assertSttySays(withKeyboard, "with the keyboard up")
         capture("f2-popup-dark-keyboard")
         hideKeyboard()
@@ -4023,7 +4026,7 @@ final class RemuxAppUITests: XCTestCase {
         let darkLandscape = try XCTUnwrap(try popupGrid("in landscape") { $0.columns > full.columns })
         capture("f2l-popup-dark-landscape")
         showKeyboard()
-        XCTAssertNotNil(try popupGrid("in landscape with the keyboard up") { $0.rows < darkLandscape.rows })
+        XCTAssertNotNil(try popupGrid("in landscape with the keyboard up") { $0 == darkLandscape })
         capture("f2lk-popup-dark-landscape-keyboard")
         hideKeyboard()
         XCUIDevice.shared.orientation = .portrait
@@ -4122,9 +4125,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertLessThan(landscape.rows, full.rows)
         capture("f5-popup-light-landscape")
         showKeyboard()
-        let landscapeWithKeyboard = try XCTUnwrap(try popupGrid("in landscape with the keyboard up") {
-            $0.rows < landscape.rows && $0.columns == landscape.columns
-        })
+        let landscapeWithKeyboard = try XCTUnwrap(try popupGrid("in landscape with the keyboard up") { $0 == landscape })
         try assertSttySays(landscapeWithKeyboard, "in landscape with the keyboard up")
         capture("f5k-popup-light-landscape-keyboard")
         hideKeyboard()

@@ -112,6 +112,11 @@ struct GhosttySurfaceScrollState: Equatable {
     var maxRow: UInt64 {
         total > len ? total - len : 0
     }
+
+    /// Whether the view shows history, above the live rows.
+    var isScrolledBack: Bool {
+        offset < maxRow
+    }
 }
 
 enum GhosttySurfaceScrollRoute: Equatable {

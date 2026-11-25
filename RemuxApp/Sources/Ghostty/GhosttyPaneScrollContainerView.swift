@@ -6,6 +6,11 @@ struct GhosttyPaneScrollPosition: Equatable {
     let row: UInt64
     let cellOffset: Double
 
+    /// Whether this position is further back in history, toward the oldest rows.
+    func isOlder(than other: GhosttyPaneScrollPosition) -> Bool {
+        row < other.row || (row == other.row && cellOffset < other.cellOffset)
+    }
+
     func approximatelyEquals(_ other: GhosttyPaneScrollPosition?) -> Bool {
         guard let other else { return false }
         return row == other.row && abs(cellOffset - other.cellOffset) < 0.000_001
@@ -93,6 +98,10 @@ enum GhosttyPaneScrollGeometry {
 
 @MainActor
 final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+    /// Called after the pane's surface changes where it is scrolled to.
+    var onSurfaceScrollStateChange: (() -> Void)?
+    /// Called when the user scrolls the pane toward older rows of its history.
+    var onScrollTowardHistory: (() -> Void)?
     private let scrollView = UIScrollView()
     private let contentView = UIView()
     private let rendererRecoveryImageView = UIImageView()
@@ -189,6 +198,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             )
             haltPhysicsScroll()
             self.surface?.onScrollStateChange = nil
+            self.surface?.onStopScrolling = nil
             self.surface?.onRendererRecoveryChange = nil
             resetViewportScrollInteractionState()
             self.surface = surface
@@ -201,6 +211,11 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             surface.onScrollStateChange = { [weak self, weak surface] in
                 guard let self, self.surface === surface else { return }
                 self.synchronizeFromSurface()
+                self.onSurfaceScrollStateChange?()
+            }
+            surface.onStopScrolling = { [weak self, weak surface] in
+                guard let self, self.surface === surface else { return }
+                self.stopScrolling()
             }
             surface.onRendererRecoveryChange = { [weak self, weak surface] in
                 guard let self, self.surface === surface else { return }
@@ -238,6 +253,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         guard self.surface === surface else { return }
         haltPhysicsScroll()
         surface.onScrollStateChange = nil
+        surface.onStopScrolling = nil
         surface.onRendererRecoveryChange = nil
         self.surface = nil
         submitRouteForwardedMouseScroll = nil
@@ -529,6 +545,26 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             scrollView.isDecelerating
     }
 
+    /// Ends a scroll in motion where it is, as a touch ends a fling. A forwarded scroll sends nothing more; the pane's
+    /// own scroll stops on the position the surface shows, and a step not yet sent to the surface, never drawn, is
+    /// dropped. While a scroll moves, the scroll view leads and a position the surface takes from elsewhere waits,
+    /// so the surface's position is taken up once it stops.
+    private func stopScrolling() {
+        let isViewportMoving = isActiveViewportScrollInteraction
+        let isPhysicsMoving = isPhysicsGestureActive || physicsScrollView.isTracking || physicsScrollView.isDecelerating
+        guard isViewportMoving || isPhysicsMoving else { return }
+        GhosttyRuntimeTrace.diagnostics(
+            "scroll.stop surface=\(ghosttyDiagnosticShortID(surface?.id)) viewportMoving=\(isViewportMoving) viewportDecelerating=\(scrollView.isDecelerating) physicsMoving=\(isPhysicsMoving)"
+        )
+        haltPhysicsScroll()
+        guard isViewportMoving else { return }
+        withProgrammaticScrollSynchronization {
+            scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+        }
+        isUserViewportScrolling = false
+        synchronizeFromSurface()
+    }
+
     private func finishUserViewportScroll() {
         flushPendingViewportScrollOffset()
         isUserViewportScrolling = false
@@ -564,10 +600,12 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         guard !position.approximatelyEquals(lastSentViewportScrollPosition) else { return false }
         lastSentViewportScrollPosition = position
 
+        let isTowardHistory = position.isOlder(than: GhosttyPaneScrollGeometry.position(for: surface.scrollState))
         surface.scrollToPosition(
             row: position.row,
             cellOffset: position.cellOffset
         )
+        if isTowardHistory { onScrollTowardHistory?() }
         return true
     }
 
@@ -674,6 +712,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             _ = submitRouteForwardedMouseScroll(surface.id, event)
         }
         if !events.isEmpty { lastForwardedScrollAt = now }
+        // A positive translation scrolls up: on a server's history, as Herdr's, that is toward older rows.
+        if surface.scrollRoute == .remoteHistory, budgeted > 0, !events.isEmpty { onScrollTowardHistory?() }
     }
 
     private func endPhysicsGesture(phase: GhosttySurfacePanGesture.Phase) {

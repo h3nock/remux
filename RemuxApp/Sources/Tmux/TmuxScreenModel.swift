@@ -21,12 +21,10 @@ final class TmuxScreenModel: ObservableObject {
     @Published private(set) var startupFailure: String?
 
     /// The viewport the root carries into the replacement model on
-    /// reconnect for a sized attach. Prefers the last size reported
-    /// with the viewport in its settled shape, so disconnecting while
-    /// the keyboard is up does not make the next attach first-paint
-    /// at the keyboard-shrunken size.
+    /// reconnect for a sized attach. The keyboard doesn't change it, so the
+    /// last size submitted is the terminal's settled size.
     var carriedClientSize: TmuxSessionController.ClientSize? {
-        lastStableClientSize ?? lastSubmittedClientSize
+        lastSubmittedClientSize
     }
 
     /// True when no connection exists or is in progress, so the root
@@ -51,8 +49,6 @@ final class TmuxScreenModel: ObservableObject {
     private var stopped = false
     private var initialViewport: TmuxControlViewport?
     private var lastSubmittedClientSize: TmuxSessionController.ClientSize?
-    private var lastStableClientSize: TmuxSessionController.ClientSize?
-    private var viewportIsStable = true
     private var lastViewportPointSize: CGSize?
     private var lastViewportScale: CGFloat?
 
@@ -110,9 +106,6 @@ final class TmuxScreenModel: ObservableObject {
                     scale: scale,
                     claimActiveViewport: claimActiveViewport
                 )
-            },
-            viewportStabilityHandler: { [weak self] stable in
-                self?.setViewportStability(stable)
             }
         )
 
@@ -170,7 +163,6 @@ final class TmuxScreenModel: ObservableObject {
             rows: UInt32(viewport.rows)
         )
         lastSubmittedClientSize = initialSize
-        if viewportIsStable { lastStableClientSize = initialSize }
         report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
         session?.connect(viewport: viewport)
     }
@@ -223,7 +215,6 @@ final class TmuxScreenModel: ObservableObject {
         guard sizeChanged || claimActiveViewport else { return false }
         if sizeChanged {
             lastSubmittedClientSize = size
-            if viewportIsStable { lastStableClientSize = size }
         }
         controller.setClientSize(
             cols: size.cols,
@@ -231,11 +222,6 @@ final class TmuxScreenModel: ObservableObject {
             claimActiveViewport: claimActiveViewport
         )
         return true
-    }
-
-    private func setViewportStability(_ stable: Bool) {
-        viewportIsStable = stable
-        if stable { lastStableClientSize = lastSubmittedClientSize }
     }
 
     func setSelected(_ selected: Bool) {

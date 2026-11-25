@@ -27,7 +27,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var activeManagedPaneID: TmuxPaneID?
     private var pendingFocusedPaneID: TmuxPaneID?
     private var initialViewportHandler: ((CGSize, CGFloat, Bool) -> Void)?
-    private var viewportStabilityHandler: ((Bool) -> Void)?
     private var latestViewportMeasurement: GhosttyTerminalViewportMeasurement?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
 
@@ -42,14 +41,12 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     func activate(
         session: TmuxTerminalSession,
         zoomMultipaneWindowsByDefault: Bool = false,
-        initialViewportHandler: @escaping (CGSize, CGFloat, Bool) -> Void,
-        viewportStabilityHandler: @escaping (Bool) -> Void
+        initialViewportHandler: @escaping (CGSize, CGFloat, Bool) -> Void
     ) {
         self.session = session
         self.controller = session.controller
         setZoomMultipaneWindowsByDefault(zoomMultipaneWindowsByDefault)
         self.initialViewportHandler = initialViewportHandler
-        self.viewportStabilityHandler = viewportStabilityHandler
 
         session.$state
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -108,7 +105,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         session = nil
         controller = nil
         initialViewportHandler = nil
-        viewportStabilityHandler = nil
         latestViewportMeasurement = nil
         latestTopology = nil
         cachedTopologySnapshot = Self.emptyTopologySnapshot
@@ -450,10 +446,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         }
     }
 
-    func setViewportStabilityHint(stable: Bool) {
-        viewportStabilityHandler?(stable)
-    }
-
     func makePanePreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession? {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
@@ -491,6 +483,10 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         if let preflight = preflightFocusedInput() { return preflight }
         return focusedManagedSurface?.sendInput(text) ?? .noFocusedSurface
+    }
+
+    func returnFocusedPaneToLiveRows() {
+        focusedManagedSurface?.scrollViewportToBottom()
     }
 
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {

@@ -115,6 +115,8 @@ final class GhosttyManagedSurface {
     /// rows, and the terminal's selection draws the part of it on screen.
     private(set) var historySelection: GhosttyHistorySelection?
     var onScrollStateChange: (() -> Void)?
+    /// Set by the scroll container showing the surface, to end a scroll of it still in motion.
+    var onStopScrolling: (() -> Void)?
     var onLocalSelectionGeometryChange: (() -> Void)?
     var onRendererRecoveryChange: (() -> Void)?
 
@@ -142,7 +144,7 @@ final class GhosttyManagedSurface {
         guard !text.isEmpty else { return .empty }
         guard rendererIsAvailable else { return .surfaceRejected }
         guard controlSurface.sendInput(text) else { return .surfaceRejected }
-        onLocalSelectionGeometryChange?()
+        didAcceptTyping()
         return .accepted
     }
 
@@ -155,8 +157,18 @@ final class GhosttyManagedSurface {
     func sendKeyEvent(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
         guard rendererIsAvailable else { return .surfaceRejected }
         guard controlSurface.sendKeyEvent(event) else { return .surfaceRejected }
-        onLocalSelectionGeometryChange?()
+        didAcceptTyping()
         return .accepted
+    }
+
+    /// Typing returns the terminal's view to its live rows at once, before any output comes back: read that back
+    /// now while the view shows history, so what follows the scroll position, as the keyboard slide, hears of it.
+    private func didAcceptTyping() {
+        if scrollState.isScrolledBack {
+            refreshInteractionState()
+        } else {
+            onLocalSelectionGeometryChange?()
+        }
     }
 
     func sendKeyEventAwaitingCommandCompletion(
@@ -189,8 +201,14 @@ final class GhosttyManagedSurface {
         _ = controlSurface.setFocused(focused)
     }
 
+    /// Ends a scroll of this surface still in motion, a fling's or a drag's, where it is.
+    func stopScrolling() {
+        onStopScrolling?()
+    }
+
     func prepareForPermanentRemoval() {
         onScrollStateChange = nil
+        onStopScrolling = nil
         setFocused(false)
         setVisible(false)
         view.isHidden = true

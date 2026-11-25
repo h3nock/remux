@@ -47,6 +47,7 @@ final class HerdrScreenModel {
     /// The session's workspaces and tabs, from the newest snapshot, kept across a reconnect.
     let places = HerdrSessionPlaces()
     private var findMethodsAvailable = false
+    private var paneScrollAvailable = false
     private(set) var findPresentation: TerminalFindPresentation?
     private(set) var isFindInputBlocked = false
     var canFindInPane: Bool { findMethodsAvailable && shownAttempt != nil && popup.popup == nil }
@@ -1495,6 +1496,18 @@ final class HerdrScreenModel {
         return send(events, to: target) == .accepted
     }
 
+    /// Herdr keeps a pane's history position, so the focused pane's return to its live rows is a scroll Herdr makes.
+    /// It is asked whatever the position last reported, which can trail scrolls still on their way to Herdr. If it
+    /// fails, the first key typed returns the pane there, as Herdr does with input.
+    func returnFocusedPaneToLiveRows() {
+        guard paneScrollAvailable, popup.popup == nil, let attempt = shownAttempt, let paneID = focusedPaneID
+        else { return }
+        struct Params: Encodable, Sendable { let pane_id: String; let offset_from_bottom: UInt64 }
+        Task { [weak self] in
+            _ = await self?.command("pane.scroll", params: Params(pane_id: paneID, offset_from_bottom: 0), on: attempt)
+        }
+    }
+
     private func applyScroll(toPane paneID: String) {
         guard let scroll = paneScrolls[paneID],
               let managed = currentSurface(of: paneID)?.renderer.managedSurface
@@ -1817,6 +1830,7 @@ final class HerdrScreenModel {
         guard isCurrent(attempt) else { return }
         let methods = await connection.negotiated?.methods ?? []
         findMethodsAvailable = methods.contains("pane.copy_search") && methods.contains("pane.scroll")
+        paneScrollAvailable = methods.contains("pane.scroll")
         await feed.opened(methods: methods, commandTimeout: connectionTiming.command)
         guard isCurrent(attempt) else { return }
         attempt.isOpen = true

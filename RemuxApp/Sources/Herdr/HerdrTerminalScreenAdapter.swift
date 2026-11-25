@@ -319,8 +319,6 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         model?.prepareViewport(size: size, scale: scale)
     }
 
-    func setViewportStabilityHint(stable: Bool) {}
-
     /// The session reads as ready once its connection is ready and its focused pane is presented, so the
     /// root sees it connect.
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection {
@@ -412,6 +410,10 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         model?.sendText(text) ?? .transportUnavailable
+    }
+
+    func returnFocusedPaneToLiveRows() {
+        model?.returnFocusedPaneToLiveRows()
     }
 
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {

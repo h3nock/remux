@@ -298,8 +298,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
 
         session.handleTopology(TmuxSessionController.TopologySnapshot(
@@ -362,8 +361,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
 
         session.handleTopology(TmuxSessionController.TopologySnapshot(
@@ -439,8 +437,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
         session.handleTopology(TmuxSessionController.TopologySnapshot(
             sessionName: "removal-test",
@@ -492,8 +489,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
 
         let twoWindows = TmuxSessionController.TopologySnapshot(
@@ -549,8 +545,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
 
         let initial = TmuxSessionController.TopologySnapshot(
@@ -591,8 +586,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
         let measurement = try XCTUnwrap(runtime.measureTmuxViewportLayout(
             size: CGSize(width: 390, height: 600), scale: UIScreen.main.scale
@@ -672,8 +666,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
         let measurement = try XCTUnwrap(runtime.measureTmuxViewportLayout(
             size: CGSize(width: 390, height: 600), scale: UIScreen.main.scale
@@ -767,8 +760,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _, _ in },
-            viewportStabilityHandler: { _ in }
+            initialViewportHandler: { _, _, _ in }
         )
         session.handleTopology(topology(zoomed: false, activePaneID: 10, paneCount: 2))
         session.handleStateForTesting(.ready)
@@ -815,7 +807,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             zoomOwner: TmuxZoomOwner(serverID: UUID())
         )
         let adapter = TmuxTerminalScreenAdapter()
-        adapter.activate(session: session, initialViewportHandler: { _, _, _ in }, viewportStabilityHandler: { _ in })
+        adapter.activate(session: session, initialViewportHandler: { _, _, _ in })
         session.updateViewportMeasurement(try XCTUnwrap(runtime.measureTmuxViewportLayout(
             size: CGSize(width: 390, height: 600), scale: UIScreen.main.scale
         )))

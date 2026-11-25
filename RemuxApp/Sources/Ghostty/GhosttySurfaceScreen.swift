@@ -6,6 +6,7 @@ import CoreTransferable
 import GhosttyKit
 import PhotosUI
 import UniformTypeIdentifiers
+import GameController
 
 struct GhosttySurfaceScreenPresentation: Equatable {
     let workspaceID: SavedWorkspace.ID
@@ -214,16 +215,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 #if DEBUG
         let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
 #endif
+        // The terminal's size comes from the screen as if no keyboard were up: the keyboard, like the composer,
+        // covers the bottom of the terminal, which slides up to keep its cursor in view, instead of resizing it.
+        Color.clear
+            .background {
+                GeometryReader { container in
+                    Color.clear.preference(key: GhosttyTerminalContainerSizePreferenceKey.self, value: container.size)
+                }
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+            }
+            .overlayPreferenceValue(GhosttyTerminalContainerSizePreferenceKey.self) { containerSize in
+                terminalScreen(containerSize: containerSize)
+            }
+    }
+
+    private func terminalScreen(containerSize: CGSize) -> some View {
         GeometryReader { screenProxy in
             let renderedKeyboardMode = inputCoordinator.keyboardMode
-            let chrome = GhosttyPhoneChromeLayout(
-                screenSize: screenProxy.size
-            )
-            let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
-                + 4
-                + chrome.bottomPadding
+            let chrome = GhosttyPhoneChromeLayout(screenSize: containerSize)
             let bottomChromeHeight = bottomChromeReservation.layoutHeight(
-                fallback: bottomChromeFallbackHeight
+                fallback: chrome.restingBottomChromeHeight
             )
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
@@ -244,7 +255,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .ignoresSafeArea(.all, edges: .all)
 
                 GeometryReader { proxy in
-                    let liveTerminalViewportSize = GhosttyTerminalViewportCoordinator.normalized(proxy.size)
+                    // The area shown, above the toolbar, the composer and the keyboard.
+                    let terminalAreaSize = GhosttyTerminalViewportCoordinator.normalized(proxy.size)
+                    let liveTerminalViewportSize = GhosttyTerminalViewportCoordinator.normalized(
+                        CGSize(
+                            width: containerSize.width,
+                            height: containerSize.height - chrome.restingBottomChromeHeight
+                        )
+                    )
                     let terminalViewportSize = terminalViewportCoordinator.effectiveSize(
                         liveSize: liveTerminalViewportSize
                     )
@@ -267,6 +285,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         GhosttyCompositeViewportView(
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
+                            canvasSize: terminalViewportSize,
+                            onHistoryScroll: handleHistoryScroll,
                             terminalTheme: presentation.terminalTheme,
                             trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
@@ -301,8 +321,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             )
                         )
                             .frame(
-                                width: terminalViewportSize.width,
-                                height: terminalViewportSize.height,
+                                width: terminalAreaSize.width,
+                                height: terminalAreaSize.height,
                                 alignment: .topLeading
                             )
                             .background(presentation.terminalTheme.terminalSurfaceBackground)
@@ -473,7 +493,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 TerminalFindBar(query: $findQuery, wantsKeyboard: $findWantsKeyboard,
                                     presentation: model.paneFindPresentation ?? TerminalFindPresentation(),
                                     onQuery: model.updateFind, onNavigate: model.navigateFind, onClose: closeFind)
-                                    .frame(height: 46)
+                                    .frame(height: GhosttyKeyboardChromeSizing.baselineHeight)
                             } else {
                                 GhosttyKeyboardChrome(
                                     keyboardMode: renderedKeyboardMode,
@@ -508,7 +528,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             }
                         }
                         .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                        .padding(.top, 4)
+                        .padding(.top, GhosttyPhoneChromeLayout.topPadding)
                         .padding(.bottom, chrome.bottomPadding)
                         .frame(maxWidth: .infinity, alignment: .bottom)
                         .background {
@@ -708,14 +728,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
             }
             .onChange(of: inputCoordinator.keyboardMode) { _, mode in
-                // Sizes reported while the software keyboard is up are
-                // transient; flag them so reconnects carry the settled
-                // viewport (the mode flips before the layout changes,
-                // so the hint always precedes the affected report).
-                model.setViewportStabilityHint(stable: mode == .hidden)
                 if mode == .hidden, terminalCoverPhase.isRestoringKeyboard {
                     cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
                 }
+            }
+            .onChange(of: keyboardHolder) { _, holder in
+                guard holder != .none else { return }
+                // Taking the keyboard ends any scroll still in motion, as a touch ends a fling: a fling left going
+                // would carry the pane on under the keyboard, undo its return to the live rows, and lower the
+                // keyboard again with its steps into history.
+                stopScrollingShownSurfaces()
+                // The terminal's keyboard is for typing, which returns the pane to its live rows anyway: go there as
+                // it opens or the composer hands it over, so the line being typed on comes up above it. The
+                // composer's keyboard leaves the pane as it is.
+                if holder == .terminal { model.returnFocusedPaneToLiveRows() }
             }
             .onChange(of: model.paneFindPresentation == nil) { _, ended in
                 if ended, isFindPresented { closeFind() }
@@ -1060,10 +1086,34 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         showComposerKeyboard()
     }
 
+    /// The input the system keyboard is up for, none while it is down.
+    private var keyboardHolder: GhosttyKeyboardOwner {
+        inputCoordinator.keyboardMode == .system ? inputCoordinator.keyboardOwner : .none
+    }
+
+    private func stopScrollingShownSurfaces() {
+        let viewport = model.terminalScreenPresentationProjection.viewport
+        for id in viewport.panes.map(\.id) + [viewport.popup?.id].compactMap({ $0 }) {
+            model.terminalManagedSurfaceLookup.managedSurface(for: id)?.stopScrolling()
+        }
+    }
+
     private func dismissComposerKeyboard() {
-        guard isActiveComposerPresented,
-              inputCoordinator.keyboardMode == .system,
-              inputCoordinator.keyboardOwner == .composer else { return }
+        guard isActiveComposerPresented, inputCoordinator.keyboardOwner == .composer else { return }
+        dismissSystemKeyboard()
+    }
+
+    /// Scrolling a pane back into its history is reading, so the software keyboard steps aside, as it does in other
+    /// iOS apps. With a hardware keyboard connected the input stays: what shows of the system keyboard then is at most
+    /// its shortcut bar, and lowering it would stop the hardware keyboard's typing reaching the terminal.
+    private func handleHistoryScroll() {
+        guard inputCoordinator.isSoftwareKeyboardVisible, GCKeyboard.coalesced == nil else { return }
+        dismissSystemKeyboard()
+    }
+
+    /// Lowers the system keyboard for whichever input holds it, as its own key would.
+    private func dismissSystemKeyboard() {
+        guard inputCoordinator.keyboardMode == .system else { return }
 
         let projection = GhosttyKeyboardToggleProjection(
             keyboardMode: inputCoordinator.keyboardMode,
@@ -1717,6 +1767,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ),
             at: submittedAt
         )
+        stopScrolling(surfaceID: model.focusedInputSurfaceID)
         let result = model.sendInputToFocusedSurface(outbound)
         GhosttyRuntimeTrace.perf(
             "input.sendText bytes=\(outbound.lengthOfBytes(using: .utf8)) result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
@@ -1766,7 +1817,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return terminalInputController.performPaste(
             text,
             submitPendingPrefix: submitTerminalText(_:),
-            sendPaste: { model.sendPasteToFocusedSurface($0).isAccepted }
+            sendPaste: { text in
+                stopScrolling(surfaceID: model.focusedInputSurfaceID)
+                return model.sendPasteToFocusedSurface(text).isAccepted
+            }
         )
     }
 
@@ -1843,7 +1897,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {
+        stopScrolling(surfaceID: surfaceID)
         model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID)?.scrollViewportToBottom()
+    }
+
+    /// Input to the terminal is a new intent, as a touch is: it ends a scroll of its pane still in motion, which
+    /// would otherwise carry the pane back into history after the input returned it to its live rows.
+    private func stopScrolling(surfaceID: UUID?) {
+        surfaceID.flatMap { model.terminalManagedSurfaceLookup.managedSurface(for: $0) }?.stopScrolling()
     }
 
     private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> Bool {
@@ -1854,6 +1915,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             submitPendingPrefix: submitTerminalText(_:),
             sendKey: { event in
                 let start = GhosttyRuntimeTrace.nowNanos()
+                stopScrolling(surfaceID: model.focusedInputSurfaceID)
                 let result = model.sendKeyEventToFocusedSurface(event)
                 GhosttyRuntimeTrace.perf(
                     "input.sendKey result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
@@ -2729,8 +2791,24 @@ struct GhosttyPhoneChromeLayout: Equatable {
         isCompact ? 8 : 12
     }
 
+    static let topPadding: CGFloat = 4
+
     var bottomPadding: CGFloat {
         isCompact ? 2 : 4
+    }
+
+    /// The bottom chrome's height with only the toolbar (or the find bar, as tall) in it: the space the terminal
+    /// leaves for it. The composer and the keyboard cover more of the terminal instead.
+    var restingBottomChromeHeight: CGFloat {
+        GhosttyKeyboardChromeSizing.baselineHeight + Self.topPadding + bottomPadding
+    }
+}
+
+private enum GhosttyTerminalContainerSizePreferenceKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 

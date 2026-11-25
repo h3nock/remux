@@ -17,6 +17,11 @@ struct GhosttyTerminalSelectionSource {
 struct GhosttyCompositeViewportView: View {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
+    /// The terminal's size, which the area this view is given may be shorter than, as while the keyboard or the
+    /// composer covers the bottom of the screen; nil to fill the area.
+    var canvasSize: CGSize? = nil
+    /// Called when the user scrolls a pane toward older rows of its history.
+    var onHistoryScroll: (() -> Void)? = nil
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -33,6 +38,8 @@ struct GhosttyCompositeViewportView: View {
         GhosttyCompositeViewportRepresentable(
             surfaceLookup: surfaceLookup,
             projection: projection,
+            canvasSize: canvasSize,
+            onHistoryScroll: onHistoryScroll,
             terminalTheme: terminalTheme,
             trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
@@ -52,6 +59,8 @@ struct GhosttyCompositeViewportView: View {
 private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
+    let canvasSize: CGSize?
+    let onHistoryScroll: (() -> Void)?
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID, Bool) -> Void)?
@@ -64,14 +73,19 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let selectionSource: GhosttyTerminalSelectionSource?
 
-    func makeUIView(context: Context) -> GhosttyCompositeViewportContainerView {
-        let view = GhosttyCompositeViewportContainerView()
-        view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
-        return view
+    func makeUIView(context: Context) -> GhosttyCompositeViewportHostView {
+        let host = GhosttyCompositeViewportHostView()
+        host.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        host.viewport.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        host.viewport.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
+        return host
     }
 
-    func updateUIView(_ view: GhosttyCompositeViewportContainerView, context: Context) {
+    func updateUIView(_ host: GhosttyCompositeViewportHostView, context: Context) {
+        host.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        host.canvasSize = canvasSize
+        let view = host.viewport
+        view.onHistoryScroll = onHistoryScroll
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         view.updateSeparatorColor(terminalTheme.terminalCompositeSeparatorUIColor)
         view.update(
@@ -91,10 +105,170 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     }
 
     static func dismantleUIView(
-        _ view: GhosttyCompositeViewportContainerView,
+        _ host: GhosttyCompositeViewportHostView,
         coordinator: ()
     ) {
-        view.dismantle()
+        host.viewport.dismantle()
+    }
+}
+
+/// How far the terminal's canvas moves up inside an area shorter than it, as while the keyboard or the composer covers
+/// the bottom of the screen. Worked out afresh when the area, the canvas or the surface taking the input changes: just
+/// far enough that `keptLine`, the bottom of the input surface's cursor row or of what is drawn below it, is above the
+/// area's bottom edge, but never so far that the cursor's row leaves the top. As output arrives the canvas follows what
+/// is drawn lower, and holds while up to `heldRows` rows leave the bottom, such as an agent's hints or status line
+/// under its input, so rows that come and go there don't move the whole picture each time; a bigger change works it
+/// out afresh. While the input surface shows its history there is no line to keep and the canvas rests: the area hides
+/// only its bottom, which scrolling toward the live rows brings up. On whole pixels, so the picture isn't resampled.
+struct GhosttyKeyboardSlide: Equatable {
+    /// What a slide is worked out from, in the canvas's points.
+    struct Inputs: Equatable {
+        /// The surface taking the input, by its renderer's layer; nil without one.
+        var surface: ObjectIdentifier?
+        var areaHeight: CGFloat
+        var canvasHeight: CGFloat
+        /// The line kept above the area's bottom edge; nil keeps the canvas's bottom.
+        var keptLine: CGFloat?
+        /// How far the cursor's row is below the grid's top, which a move up doesn't exceed; nil without a cursor.
+        var cursorRoom: CGFloat?
+        /// A row's height, the unit of `heldRows`.
+        var rowHeight: CGFloat
+        /// Whether the input surface shows its history, above its live rows.
+        var isScrolledBack: Bool
+        var scale: CGFloat
+    }
+
+    /// How many rows may leave the bottom without bringing the canvas back down. Replayed on recordings of real agents
+    /// and of a shell, 2 gave the fewest moves among holds that never leave a row drawn below the input covered.
+    static let heldRows: CGFloat = 2
+
+    /// How far the canvas moves up.
+    let pan: CGFloat
+    /// What it was worked out from.
+    let inputs: Inputs
+
+    /// The slide for `inputs`, following on from `previous`, the slide shown.
+    static func next(after previous: Self?, inputs: Inputs) -> Self {
+        let covered = inputs.canvasHeight - inputs.areaHeight
+        guard covered > 0, !inputs.isScrolledBack else { return Self(pan: 0, inputs: inputs) }
+        let scale = max(inputs.scale, 1)
+        let limit = (min(covered, inputs.cursorRoom ?? covered) * scale).rounded(.down) / scale
+        let fresh = min(
+            (max((inputs.keptLine ?? inputs.canvasHeight) - inputs.areaHeight, 0) * scale).rounded() / scale,
+            limit
+        )
+        guard let previous,
+              previous.inputs.surface == inputs.surface,
+              previous.inputs.areaHeight == inputs.areaHeight,
+              previous.inputs.canvasHeight == inputs.canvasHeight
+        else { return Self(pan: fresh, inputs: inputs) }
+        let held = min(previous.pan, limit)
+        let isWithinHeldRows = held - fresh <= heldRows * inputs.rowHeight + 0.5 / scale
+        return Self(pan: isWithinHeldRows ? max(fresh, held) : fresh, inputs: inputs)
+    }
+}
+
+/// Shows the composite viewport in the terminal area, which clips it. The viewport keeps the canvas size, the
+/// terminal's, and moves up as `GhosttyKeyboardSlide` describes while the area is shorter, as while the keyboard or
+/// the composer covers the bottom of the screen.
+///
+/// A change of the area's size moves it in this view's layout, run as soon as the size is set, so inside the
+/// keyboard's animation that sets it: the viewport moves with the keyboard and the toolbar on it. A move for new rows,
+/// for the input surface returning to its live rows, for a pane moving, or for another surface taking the input, is
+/// immediate, as a terminal scrolls.
+private final class GhosttyCompositeViewportHostView: UIView {
+    let viewport = GhosttyCompositeViewportContainerView()
+    var canvasSize: CGSize? {
+        didSet {
+            guard canvasSize != oldValue else { return }
+            setNeedsLayout()
+        }
+    }
+    /// The slide shown.
+    private var slide: GhosttyKeyboardSlide?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        addSubview(viewport)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    // The area's size is set inside the keyboard's animation, but on a phone the layout pass it asks for runs later,
+    // outside it, where the canvas's move would be a jump. So the canvas is laid out at once, inside the animation the
+    // size change runs in, as UIKit resizes autoresizing subviews.
+    override var frame: CGRect {
+        didSet { layOutForSizeChange(from: oldValue.size, to: frame.size) }
+    }
+
+    override var bounds: CGRect {
+        didSet { layOutForSizeChange(from: oldValue.size, to: bounds.size) }
+    }
+
+    private func layOutForSizeChange(from oldSize: CGSize, to newSize: CGSize) {
+        guard oldSize != newSize else { return }
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let size = canvasSize ?? bounds.size
+        let pan = updateSlide(canvasHeight: size.height, reason: "layout")
+        viewport.frame = CGRect(origin: CGPoint(x: 0, y: -pan), size: size)
+        // The input surface only moves the canvas while the area covers part of it.
+        let isCovered = bounds.height < size.height
+        if isCovered != (viewport.onSlideInputChange != nil) {
+            viewport.onSlideInputChange = isCovered ? { [weak self] in self?.followSlideInputs() } : nil
+        }
+    }
+
+    private func followSlideInputs() {
+        let previousPan = slide?.pan
+        let wasScrolledBack = slide?.inputs.isScrolledBack ?? false
+        let pan = updateSlide(canvasHeight: viewport.bounds.height, reason: "input")
+        guard pan != previousPan else { return }
+        // Scrolling into history lowers the keyboard, which starts moving a few frames later: the canvas comes down to
+        // rest over the keyboard's own time instead of jumping ahead of it. Every other move is immediate, as a
+        // terminal scrolls.
+        if slide?.inputs.isScrolledBack == true, !wasScrolledBack {
+            UIView.animate(
+                withDuration: Self.restDuration,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut]
+            ) {
+                self.viewport.frame.origin.y = -pan
+            }
+        } else {
+            UIView.performWithoutAnimation {
+                viewport.frame.origin.y = -pan
+            }
+        }
+    }
+
+    /// The system keyboard's own show and hide time.
+    private static let restDuration: TimeInterval = 0.25
+
+    private func updateSlide(canvasHeight: CGFloat, reason: String) -> CGFloat {
+        let scale = max(window?.screen.scale ?? traitCollection.displayScale, 1)
+        let inputs = viewport.keyboardSlideInputs(areaHeight: bounds.height, canvasHeight: canvasHeight, scale: scale)
+        let previousPan = slide?.pan
+        let next = GhosttyKeyboardSlide.next(after: slide, inputs: inputs)
+        slide = next
+        if GhosttyRuntimeTrace.tmuxViewportEnabled {
+            GhosttyRuntimeTrace.tmuxViewport(
+                "viewport.slide reason=\(reason) area=\(inputs.areaHeight) canvas=\(inputs.canvasHeight) "
+                    + "surface=\(inputs.surface.map { String(UInt(bitPattern: $0.hashValue), radix: 16) } ?? "none") "
+                    + "held=\(inputs.isScrolledBack) line=\(inputs.keptLine.map { "\($0)" } ?? "nil") "
+                    + "room=\(inputs.cursorRoom.map { "\($0)" } ?? "nil") row=\(inputs.rowHeight) "
+                    + "pan=\(next.pan) previous=\(previousPan.map { "\($0)" } ?? "nil")"
+            )
+        }
+        return next.pan
     }
 }
 
@@ -121,6 +295,17 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private var submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     private var submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     private var selectionSource: GhosttyTerminalSelectionSource?
+
+    /// Called on the main thread when what the keyboard slide works from changes: the input surface's renderer
+    /// publishes different rows, the surface starts or stops showing its history, a pane moves, or another surface
+    /// takes the input. Observed while set.
+    var onSlideInputChange: (() -> Void)? {
+        didSet { observeSlideInputs(notifying: false) }
+    }
+    private var inputRowsObserver: GhosttyFrameRowsObserver?
+    private var isInputScrolledBack = false
+    /// Called when the user scrolls a pane toward older rows of its history.
+    var onHistoryScroll: (() -> Void)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
     private var didNavigateForActivePan = false
@@ -289,11 +474,14 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             restoreLocalSelectionIfPresent()
         }
         flushLayoutIfPossible()
+        // After the panes and the popup are placed, so a surface taking the input is measured where it shows.
+        observeSlideInputs(notifying: true)
     }
 
     func dismantle() {
         disableInteractions()
         resetActivePanState()
+        onSlideInputChange = nil
         for container in containersBySurfaceID.values {
             retire(container: container)
         }
@@ -355,7 +543,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
                 }
                 continue
             }
-            let container = containersBySurfaceID[pane.id] ?? GhosttyPaneScrollContainerView()
+            let container = containersBySurfaceID[pane.id] ?? makePaneContainer()
             containersBySurfaceID[pane.id] = container
             container.backgroundColor = .clear
             _ = container.update(
@@ -372,6 +560,99 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         syncPopup()
         bringSubviewToFront(startSelectionHandle)
         bringSubviewToFront(endSelectionHandle)
+    }
+
+    /// The surface that takes the terminal's input and shows its cursor: the popup's while one shows, otherwise the
+    /// focused pane's.
+    private var inputSurface: GhosttyManagedSurface? {
+        guard let id = projection.popup?.id ?? projection.focusedSurfaceID else { return nil }
+        guard let surface = surfaceLookup.managedSurface(for: id), isShown(surface) else { return nil }
+        return surface
+    }
+
+    private func observeSlideInputs(notifying: Bool) {
+        let layer = onSlideInputChange == nil
+            ? nil
+            : inputSurface.flatMap { GhosttyIOSurfaceFrame.rendererLayer(in: $0.view.layer) }
+        guard inputRowsObserver?.layer !== layer else { return }
+        inputRowsObserver = layer.map {
+            GhosttyFrameRowsObserver(layer: $0) { [weak self] in self?.onSlideInputChange?() }
+        }
+        isInputScrolledBack = inputSurface?.scrollState.isScrolledBack ?? false
+        if notifying { onSlideInputChange?() }
+    }
+
+    private func makePaneContainer() -> GhosttyPaneScrollContainerView {
+        let container = GhosttyPaneScrollContainerView()
+        container.onSurfaceScrollStateChange = { [weak self] in self?.noteInputScrollStateChange() }
+        // A pane's scroll route tells history from a program's own scrolling. A popup's swipe always goes to
+        // Herdr's wheel handling, which may scroll its history, move a full-screen program's cursor or reach a
+        // program that reads the mouse, and the app can't tell which, so a popup leaves the keyboard as it is.
+        container.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
+        return container
+    }
+
+    /// Returning to the live rows, or leaving them, can leave the published rows as they were, as for a program that
+    /// hides its cursor with output down to the last row: the slide hears of it here.
+    private func noteInputScrollStateChange() {
+        guard onSlideInputChange != nil else { return }
+        let isScrolledBack = inputSurface?.scrollState.isScrolledBack ?? false
+        guard isScrolledBack != isInputScrolledBack else { return }
+        isInputScrolledBack = isScrolledBack
+        onSlideInputChange?()
+    }
+
+    /// What the keyboard slide works from, in this view's coordinates for a canvas `canvasHeight` high, from the rows
+    /// GhosttyKit published with the input surface's frame on screen. The kept line is the bottom of the cursor's row
+    /// or of the lowest row with anything drawn on it, whichever is lower, lowered by the margin between the grid's
+    /// last row and the canvas's bottom, so a last row in use keeps the whole canvas in view. Without a frame showing
+    /// anything, there is no line to keep.
+    func keyboardSlideInputs(
+        areaHeight: CGFloat,
+        canvasHeight: CGFloat,
+        scale: CGFloat
+    ) -> GhosttyKeyboardSlide.Inputs {
+        var inputs = GhosttyKeyboardSlide.Inputs(
+            surface: nil,
+            areaHeight: areaHeight,
+            canvasHeight: canvasHeight,
+            keptLine: nil,
+            cursorRoom: nil,
+            rowHeight: 0,
+            isScrolledBack: false,
+            scale: scale
+        )
+        guard areaHeight < canvasHeight,
+              let surface = inputSurface,
+              let layer = GhosttyIOSurfaceFrame.rendererLayer(in: surface.view.layer)
+        else { return inputs }
+        inputs.surface = ObjectIdentifier(layer)
+        inputs.isScrolledBack = surface.scrollState.isScrolledBack
+        guard !inputs.isScrolledBack,
+              let grid = projection.windowGrid,
+              let cell = projection.cellMetrics,
+              let layout = GhosttyCompositeViewportLayout(
+                  bounds: CGRect(x: 0, y: 0, width: bounds.width, height: canvasHeight),
+                  grid: grid,
+                  cellMetrics: cell
+              ),
+              let rows = GhosttyIOSurfaceFrame.publishedRows(in: layer)
+        else { return inputs }
+        inputs.rowHeight = layout.cellSize.height
+        let cursor = rows.cursor.map {
+            layer.convert(CGRect(x: 0, y: $0.lowerBound, width: 1, height: $0.upperBound - $0.lowerBound), to: self.layer)
+        }
+        let contentBottom = rows.contentBottom.map {
+            layer.convert(CGRect(x: 0, y: $0 - 1, width: 1, height: 1), to: self.layer)
+        }
+        guard let lowest = [cursor, contentBottom].compactMap({ $0?.maxY }).max() else { return inputs }
+        // The grid's padding below its last row, under a row: a grid shorter than the canvas by more, as while a
+        // resize waits for the server, leaves empty canvas below it that isn't kept in view.
+        let belowGrid = max(canvasHeight - layout.origin.y - layout.canvasSize.height, 0)
+        let bottomMargin = belowGrid < layout.cellSize.height ? belowGrid : 0
+        inputs.keptLine = lowest + bottomMargin
+        inputs.cursorRoom = cursor.map { max($0.minY - layout.origin.y, 0) }
+        return inputs
     }
 
     private func retire(container: GhosttyPaneScrollContainerView) {
@@ -442,6 +723,8 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             }
             placePopup()
         }
+        // A pane's rows are measured from its own top, so a pane that moves keeps them: the slide hears of it here.
+        if changed { onSlideInputChange?() }
         if let startedAt {
             GhosttyRuntimeTrace.perf(
                 "viewport.layout bounds=\(ghosttyDiagnosticRect(bounds)) panes=\(containersBySurfaceID.count) changed=\(changed) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"

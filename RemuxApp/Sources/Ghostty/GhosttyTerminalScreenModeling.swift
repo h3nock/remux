@@ -102,11 +102,6 @@ protocol GhosttyTerminalRenderingModeling: ObservableObject {
         claimActiveViewport: Bool
     )
 
-    /// Host hint that the terminal viewport is (not) in its settled
-    /// shape — false while a transient overlay (software keyboard) is
-    /// changing the layout. Engines use it to decide which reported
-    /// viewport is safe to carry into a reconnect.
-    func setViewportStabilityHint(stable: Bool)
 }
 
 extension GhosttyTerminalRenderingModeling {
@@ -130,6 +125,9 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
 
     @discardableResult
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult
+
+    /// Brings the focused pane back from its history to its live rows, as typing into it would.
+    func returnFocusedPaneToLiveRows()
 
     @discardableResult
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult
