@@ -485,6 +485,10 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return focusedManagedSurface?.sendInput(text) ?? .noFocusedSurface
     }
 
+    func returnFocusedPaneToLiveRows() {
+        focusedManagedSurface?.scrollViewportToBottom()
+    }
+
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         if let preflight = preflightFocusedInput() { return preflight }
         return sendPaste(text, toPane: activeManagedPaneID)

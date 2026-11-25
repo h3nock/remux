@@ -412,6 +412,10 @@ extension HerdrTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         model?.sendText(text) ?? .transportUnavailable
     }
 
+    func returnFocusedPaneToLiveRows() {
+        model?.returnFocusedPaneToLiveRows()
+    }
+
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult {
         model?.sendPaste(text) ?? .transportUnavailable
     }

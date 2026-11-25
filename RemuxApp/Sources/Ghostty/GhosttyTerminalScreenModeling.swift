@@ -126,6 +126,9 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
     @discardableResult
     func sendInputToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult
 
+    /// Brings the focused pane back from its history to its live rows, as typing into it would.
+    func returnFocusedPaneToLiveRows()
+
     @discardableResult
     func sendPasteToFocusedSurface(_ text: String) -> FocusedTerminalInputSubmissionResult
 

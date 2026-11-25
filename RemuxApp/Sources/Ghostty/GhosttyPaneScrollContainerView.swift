@@ -92,8 +92,8 @@ enum GhosttyPaneScrollGeometry {
 final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     /// Called after the pane's surface changes where it is scrolled to.
     var onSurfaceScrollStateChange: (() -> Void)?
-    /// Called when the user scrolls the pane toward older rows of its history.
-    var onScrollTowardHistory: (() -> Void)?
+    /// Called with the pane's surface when the user scrolls it toward older rows of its history.
+    var onScrollTowardHistory: ((UUID) -> Void)?
     private let scrollView = UIScrollView()
     private let contentView = UIView()
     private let rendererRecoveryImageView = UIImageView()
@@ -570,7 +570,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             row: position.row,
             cellOffset: position.cellOffset
         )
-        if isTowardHistory { onScrollTowardHistory?() }
+        if isTowardHistory { onScrollTowardHistory?(surface.id) }
         return true
     }
 
@@ -678,7 +678,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         }
         if !events.isEmpty { lastForwardedScrollAt = now }
         // A positive translation scrolls up: on a server's history, as Herdr's, that is toward older rows.
-        if surface.scrollRoute == .remoteHistory, budgeted > 0, !events.isEmpty { onScrollTowardHistory?() }
+        if surface.scrollRoute == .remoteHistory, budgeted > 0, !events.isEmpty { onScrollTowardHistory?(surface.id) }
     }
 
     private func endPhysicsGesture(phase: GhosttySurfacePanGesture.Phase) {

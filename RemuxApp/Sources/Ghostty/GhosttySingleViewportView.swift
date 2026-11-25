@@ -390,7 +390,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         super.init(frame: frame)
         clipsToBounds = true
         addSubview(linesView)
-        popupView.terminal.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
+        popupView.terminal.onScrollTowardHistory = { [weak self] in self?.noteHistoryScroll(of: $0) }
         panRecognizer.delegate = self
         surfaceTapRecognizer.require(toFail: selectionLongPressRecognizer)
         surfaceTapRecognizer.require(toFail: arrowRegripRecognizer)
@@ -586,8 +586,14 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private func makePaneContainer() -> GhosttyPaneScrollContainerView {
         let container = GhosttyPaneScrollContainerView()
         container.onSurfaceScrollStateChange = { [weak self] in self?.noteInputScrollStateChange() }
-        container.onScrollTowardHistory = { [weak self] in self?.onHistoryScroll?() }
+        container.onScrollTowardHistory = { [weak self] in self?.noteHistoryScroll(of: $0) }
         return container
+    }
+
+    /// A scroll up goes to the program instead while it reads the mouse, as a popup's full-screen program can.
+    private func noteHistoryScroll(of surfaceID: UUID) {
+        guard !isMouseCaptured(surfaceID) else { return }
+        onHistoryScroll?()
     }
 
     /// Returning to the live rows, or leaving them, can leave the published rows as they were, as for a program that
