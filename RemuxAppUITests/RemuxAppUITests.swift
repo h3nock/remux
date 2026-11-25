@@ -1292,43 +1292,77 @@ final class RemuxAppUITests: XCTestCase {
     func testToolbarKeyPagesSwipeArmAndOpenShortcuts() {
         launchSeededSimulatorTerminal()
 
-        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        let keys = (0..<9).map { app.buttons["terminal.toolbar-key.\($0)"] }
         XCTAssertEqual(keys.prefix(3).map { $0.label }, ["Control", "Escape", "Tab"])
         XCTAssertTrue(isOnShownKeyPage(keys[0]))
         XCTAssertFalse(isOnShownKeyPage(keys[3]))
         attachScreenshot(named: "toolbar-key-pages-1-keyboard-hidden")
 
-        // A swipe that starts on a key changes page instead of pressing it.
+        // A swipe that starts on a key changes page instead of pressing it. The second page answers prompts.
         swipeToolbarKeys(from: keys[1], toLeft: true)
         XCTAssertTrue(waitUntilOnShownPage(keys[3]))
-        XCTAssertEqual(keys.suffix(3).map { $0.label }, ["Shift-Tab", "Shift", "Alt"])
+        XCTAssertEqual(keys[3..<6].map { $0.label }, ["Enter", "Up Arrow", "Down Arrow"])
         XCTAssertFalse(isOnShownKeyPage(keys[0]))
         attachScreenshot(named: "toolbar-key-pages-2-keyboard-hidden")
 
-        keys[4].tap()
-        XCTAssertEqual(keys[4].value as? String, "Armed")
-        attachScreenshot(named: "toolbar-key-pages-2-shift-armed")
-        swipeToolbarKeys(from: keys[3], toLeft: false)
-        XCTAssertTrue(waitUntilOnShownPage(keys[0]))
-        swipeToolbarKeys(from: keys[0], toLeft: true)
+        swipeToolbarKeys(from: keys[4], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[6]))
+        XCTAssertEqual(keys.suffix(3).map { $0.label }, ["Shift-Tab", "Alt", "Shift"])
+        XCTAssertFalse(isOnShownKeyPage(keys[3]))
+        attachScreenshot(named: "toolbar-key-pages-3-keyboard-hidden")
+
+        // An armed key stays armed on another page, ready for that page's keys.
+        keys[8].tap()
+        XCTAssertEqual(keys[8].value as? String, "Armed")
+        attachScreenshot(named: "toolbar-key-pages-3-shift-armed")
+        swipeToolbarKeys(from: keys[6], toLeft: false)
         XCTAssertTrue(waitUntilOnShownPage(keys[3]))
-        keys[4].tap()
-        XCTAssertNotEqual(keys[4].value as? String, "Armed")
+        XCTAssertEqual(keys[8].value as? String, "Armed")
+        attachScreenshot(named: "toolbar-key-pages-2-shift-armed-on-page-3")
+        swipeToolbarKeys(from: keys[4], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[6]))
+        keys[8].tap()
+        XCTAssertNotEqual(keys[8].value as? String, "Armed")
 
         // Alt brings the keyboard up, as Control does.
-        keys[5].tap()
-        XCTAssertEqual(keys[5].value as? String, "Armed")
+        keys[7].tap()
+        XCTAssertEqual(keys[7].value as? String, "Armed")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        keys[5].tap()
-        swipeToolbarKeys(from: keys[4], toLeft: false)
-        XCTAssertTrue(waitUntilOnShownPage(keys[0]))
+        keys[7].tap()
 
         // Every page's first key opens Shortcuts when held.
-        swipeToolbarKeys(from: keys[1], toLeft: true)
+        swipeToolbarKeys(from: keys[7], toLeft: false)
         XCTAssertTrue(waitUntilOnShownPage(keys[3]))
         keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
         XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
         attachScreenshot(named: "toolbar-key-pages-2-first-key-shortcuts")
+    }
+
+    /// The keys are narrower in landscape than in portrait on a wide phone, so a page is narrower too; turning the
+    /// phone keeps the page on show whole, its first key at the group's leading edge, as it was before turning.
+    func testToolbarKeyPageStaysWholeWhenThePhoneTurns() {
+        XCUIDevice.shared.orientation = .portrait
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        launchSeededSimulatorTerminal()
+        let keys = (0..<9).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        let group = app.scrollViews["terminal.toolbar-keys"]
+        XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
+        swipeToolbarKeys(from: keys[1], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+        swipeToolbarKeys(from: keys[4], toLeft: true)
+        XCTAssertTrue(waitUntilOnShownPage(keys[6]))
+
+        func assertPageThreeWhole(_ when: String) {
+            RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+            attachScreenshot(named: "toolbar-page-3-\(when)")
+            XCTAssertEqual(keys[6].frame.minX, group.frame.minX, accuracy: 0.5, "Page 3's first key isn't at the group's edge \(when)")
+            XCTAssertEqual(keys[8].frame.maxX, group.frame.maxX, accuracy: 0.5, "Page 3's last key isn't at the group's edge \(when)")
+        }
+        assertPageThreeWhole("in portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        assertPageThreeWhole("in landscape")
+        XCUIDevice.shared.orientation = .portrait
+        assertPageThreeWhole("back in portrait")
     }
 
     /// A swipe that starts on any key of the page turns the page and presses nothing: the key's press feedback starts
@@ -1426,7 +1460,10 @@ final class RemuxAppUITests: XCTestCase {
             settingsForm.swipeUp()
         }
         XCTAssertTrue(toolbarKeys.waitForExistence(timeout: 2))
-        XCTAssertEqual(toolbarKeys.value as? String, "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt")
+        XCTAssertEqual(
+            toolbarKeys.value as? String,
+            "Page 1: Control, Escape, Tab. Page 2: Enter, Up Arrow, Down Arrow. Page 3: Shift-Tab, Alt, Shift"
+        )
         attachScreenshot(named: "settings-toolbar-keys-row-default")
         toolbarKeys.tap()
 
@@ -1692,7 +1729,7 @@ final class RemuxAppUITests: XCTestCase {
         try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60)
-        let keys = (0..<6).map { app.buttons["terminal.toolbar-key.\($0)"] }
+        let keys = (0..<9).map { app.buttons["terminal.toolbar-key.\($0)"] }
         XCTAssertTrue(keys[0].waitForExistence(timeout: 5))
 
         // Each check reads what arrives within a few seconds in raw mode and prints a marker it builds at run
@@ -1716,27 +1753,30 @@ final class RemuxAppUITests: XCTestCase {
             )
         }
 
+        // The third page holds Shift-Tab, Alt and Shift; swiping to it sends nothing.
         expectBytes("SWIPE_SENDS_NOTHING", "b\"\"") {
             swipeToolbarKeys(from: keys[1], toLeft: true)
             XCTAssertTrue(waitUntilOnShownPage(keys[3]))
+            swipeToolbarKeys(from: keys[4], toLeft: true)
+            XCTAssertTrue(waitUntilOnShownPage(keys[6]))
         }
         expectBytes("SHIFT_TAB", "b\"\\x1b[Z\"") {
-            keys[3].tap()
+            keys[6].tap()
         }
         expectBytes("ALT_B", "b\"\\x1bb\"") {
-            keys[5].tap()
+            keys[7].tap()
             app.typeText("b")
         }
         expectBytes("SHIFT_A", "b\"A\"") {
-            keys[4].tap()
+            keys[8].tap()
             app.typeText("a")
         }
         expectBytes("ALT_RETURN", "b\"\\x1b\\r\"") {
-            keys[5].tap()
+            keys[7].tap()
             app.typeText("\n")
         }
         expectBytes("HOLD_SENDS_NOTHING", "b\"\"") {
-            keys[3].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+            keys[6].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
             XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
             app.otherElements["terminal.screen"]
                 .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))

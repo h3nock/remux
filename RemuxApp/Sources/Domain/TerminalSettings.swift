@@ -131,6 +131,15 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// What a toolbar key shows.
+enum TerminalToolbarKeyLabel: Equatable, Sendable {
+    case name(String)
+    /// An SF Symbol.
+    case symbol(String)
+    /// A modifier's SF Symbol set inline before a key's name, as in ⇧tab.
+    case symbolThenName(symbol: String, name: String)
+}
+
 enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
     case control
     case shift
@@ -233,6 +242,30 @@ enum TerminalToolbarKey: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// How the toolbar draws the key: keys known by name show their name, and keys known by a symbol (arrows,
+    /// Return, Delete) show that symbol in the family the toolbar's other buttons use. Text that names a key, such as
+    /// a settings summary, uses `toolbarTitle`.
+    var toolbarLabel: TerminalToolbarKeyLabel {
+        switch self {
+        case .enter:
+            .symbol("return")
+        case .backspace:
+            .symbol("delete.left")
+        case .arrowUp:
+            .symbol("arrow.up")
+        case .arrowDown:
+            .symbol("arrow.down")
+        case .arrowLeft:
+            .symbol("arrow.left")
+        case .arrowRight:
+            .symbol("arrow.right")
+        case .shiftTab:
+            .symbolThenName(symbol: "shift", name: "tab")
+        case .control, .shift, .alt, .escape, .tab, .delete, .home, .end, .pageUp, .pageDown:
+            .name(toolbarTitle)
+        }
+    }
+
     /// The modifier this key arms for the next key, or nil for a key that sends itself.
     var modifier: ShortcutModifiers? {
         switch self {
@@ -286,9 +319,14 @@ struct TerminalToolbarKeyPage: Equatable, Codable, Sendable {
 
 /// The toolbar's key pages, swiped through three keys at a time. Never empty.
 struct TerminalToolbarKeys: Equatable, Codable, Sendable {
+    /// The second page answers a program's prompt or menu with the keyboard down; it sits next to Escape because
+    /// answering is pressed more often than the third page's keys. On the third page Alt comes before Shift, in the
+    /// order keyboards list modifiers (Control, Option, Shift), and short "alt" beside ⇧tab keeps the two labels
+    /// apart on compact keys.
     static let `default` = Self(pages: [
         TerminalToolbarKeyPage(first: .control, second: .escape, third: .tab),
-        TerminalToolbarKeyPage(first: .shiftTab, second: .shift, third: .alt),
+        TerminalToolbarKeyPage(first: .enter, second: .arrowUp, third: .arrowDown),
+        TerminalToolbarKeyPage(first: .shiftTab, second: .alt, third: .shift),
     ])
 
     private(set) var pages: [TerminalToolbarKeyPage]
@@ -337,17 +375,10 @@ struct TerminalToolbarKeys: Equatable, Codable, Sendable {
         case pages
     }
 
-    /// Settings from before pages hold one page's three keys; they keep those keys as the first page
-    /// and gain the default second page. A page with a key this build doesn't know is left out, so a
-    /// newer build's settings still load.
+    /// A page with a key this build doesn't know is left out, so a newer build's settings still load.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if container.contains(.pages) {
-            let pages = try container.decode([DecodedPage].self, forKey: .pages).compactMap(\.page)
-            self.init(pages: pages)
-        } else {
-            self.init(pages: [try TerminalToolbarKeyPage(from: decoder)] + Self.default.pages.dropFirst())
-        }
+        self.init(pages: try container.decode([DecodedPage].self, forKey: .pages).compactMap(\.page))
     }
 
     func encode(to encoder: Encoder) throws {
@@ -415,7 +446,9 @@ struct TerminalSettings: Equatable, Codable, Sendable {
         case theme
         case allowInsecureRSAHostKeys
         case zoomMultipaneWindowsByDefault
-        case toolbarKeys
+        // A layout saved by an earlier build, under "toolbarKeys", isn't read: the default pages changed during the
+        // beta, so everyone starts again from them once, and a layout set from here on is saved under this name.
+        case toolbarKeys = "toolbarKeyPages"
         case vibratesForBellsAndAgents
         case vibratesForKeysAndButtons
     }

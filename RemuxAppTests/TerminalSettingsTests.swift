@@ -104,28 +104,47 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertEqual(keys.compactSummary, "esc · esc · pgdn")
     }
 
-    func testDefaultToolbarHasTwoPages() {
+    func testToolbarKeysKnownBySymbolDrawTheSymbol() {
+        XCTAssertEqual(TerminalToolbarKey.enter.toolbarLabel, .symbol("return"))
+        XCTAssertEqual(TerminalToolbarKey.backspace.toolbarLabel, .symbol("delete.left"))
+        XCTAssertEqual(
+            [TerminalToolbarKey.arrowUp, .arrowDown, .arrowLeft, .arrowRight].map(\.toolbarLabel),
+            [.symbol("arrow.up"), .symbol("arrow.down"), .symbol("arrow.left"), .symbol("arrow.right")]
+        )
+        XCTAssertEqual(TerminalToolbarKey.shiftTab.toolbarLabel, .symbolThenName(symbol: "shift", name: "tab"))
+        XCTAssertEqual(TerminalToolbarKey.escape.toolbarLabel, .name("esc"))
+        XCTAssertEqual(TerminalToolbarKey.pageUp.toolbarLabel, .name("pgup"))
+    }
+
+    func testDefaultToolbarHasThreePagesWithAnsweringSecond() {
         XCTAssertEqual(TerminalToolbarKeys.default.pages.map(\.values), [
             [.control, .escape, .tab],
-            [.shiftTab, .shift, .alt],
+            [.enter, .arrowUp, .arrowDown],
+            [.shiftTab, .alt, .shift],
         ])
         XCTAssertEqual(TerminalToolbarKeys.default.compactSummary, "ctrl · esc · tab")
         XCTAssertEqual(
             TerminalToolbarKeys.default.summary,
-            "Page 1: Control, Escape, Tab. Page 2: Shift-Tab, Shift, Alt"
+            "Page 1: Control, Escape, Tab. Page 2: Enter, Up Arrow, Down Arrow. Page 3: Shift-Tab, Alt, Shift"
         )
         XCTAssertEqual(TerminalToolbarKeys.default.modifiers, [.control, .shift, .option])
     }
 
-    func testToolbarKeysSavedBeforePagesKeepTheirKeysAndGainTheSecondPage() throws {
-        let data = Data(#"{"first":"escape","second":"control","third":"home"}"#.utf8)
+    func testKeyLayoutsSavedByEarlierBuildsGiveWayToTheDefault() throws {
+        let twoPages = Data(#"{"fontSize":16,"theme":"remuxLight","toolbarKeys":{"pages":[{"first":"control","second":"escape","third":"tab"},{"first":"shiftTab","second":"shift","third":"alt"}]}}"#.utf8)
+        let onePage = Data(#"{"fontSize":16,"theme":"remuxLight","toolbarKeys":{"first":"escape","second":"control","third":"home"}}"#.utf8)
 
-        let keys = try JSONDecoder().decode(TerminalToolbarKeys.self, from: data)
+        for data in [twoPages, onePage] {
+            let settings = try JSONDecoder().decode(TerminalSettings.self, from: data)
+            XCTAssertEqual(settings.toolbarKeys, .default)
+            XCTAssertEqual(settings.fontSize, 16)
+            XCTAssertEqual(settings.theme, .remuxLight)
+        }
 
-        XCTAssertEqual(keys.pages.map(\.values), [
-            [.escape, .control, .home],
-            [.shiftTab, .shift, .alt],
-        ])
+        var customized = TerminalSettings.default
+        customized.toolbarKeys = TerminalToolbarKeys(first: .pageUp, second: .pageDown, third: .home)
+        let saved = try JSONDecoder().decode(TerminalSettings.self, from: JSONEncoder().encode(customized))
+        XCTAssertEqual(saved.toolbarKeys, customized.toolbarKeys)
     }
 
     func testToolbarKeyPagesRoundTripAndSkipAPageWithAnUnknownKey() throws {
