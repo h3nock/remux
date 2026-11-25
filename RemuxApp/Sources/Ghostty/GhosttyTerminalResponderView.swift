@@ -201,7 +201,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var isInputEnabled = false
     private var wantsFirstResponder = false
     private var activationToken = -1
-    private var pendingFirstResponderRequest = false
+    private(set) var pendingFirstResponderRequest = false
     private var responderReconciliationScheduled = false
     private var sendTextHandler: ((String) -> Bool)?
     private var sendFinishedTextHandler: ((String) -> Bool)?
@@ -305,7 +305,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         }
 
         let activationChanged = activationToken != self.activationToken
-        let enabledChanged = !wasInputEnabled
+        let enabledChanged = isEnabled && !wasInputEnabled
         let wantsFirstResponderChanged = wantsFirstResponder != previouslyWantedFirstResponder
         let needsFirstResponderRecovery = !isFirstResponder && !pendingFirstResponderRequest
         guard activationChanged || enabledChanged || wantsFirstResponderChanged || needsFirstResponderRecovery else { return }
