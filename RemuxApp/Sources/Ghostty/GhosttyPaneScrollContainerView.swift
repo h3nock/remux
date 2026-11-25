@@ -141,6 +141,23 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var isPhysicsGestureActive = false
     private var isRecenteringPhysicsScroll = false
 
+    /// Over a program that reads the mouse, when the pane's backend reports its rows, a touch scroll follows the
+    /// hidden scroll view by measuring what the program does with each wheel batch. The follower keeps what it learned
+    /// of the program while the pane stays on that route.
+    private var scrollFollower: GhosttyScrollFollower?
+    private var isFollowingGesture = false
+    /// Whether the pane's backend is reporting its rows to the follower.
+    private var isObservingRows = false
+    /// The scroll view's travel in rows since the follower's session began, positive toward earlier rows.
+    private var followTravel: Double = 0
+    /// Where the latest touch began: its 1-based grid row, and its x in the surface view.
+    private var followTouch: (row: Int, x: CGFloat) = (1, 0)
+    /// The pane's rows as last reported; a session starts from them.
+    private var followRows: [String]?
+    private var followLink: CADisplayLink?
+    /// Names the batch whose reply the follower waits for; a reply to any other is dropped.
+    private var followBatchTag: UInt64 = 0
+
     /// Set when a touch catches a live deceleration. The tap from that touch is
     /// the catch, not a click, as in native scroll views; the composite
     /// viewport's tap handler consumes it before forwarding mouse actions.
@@ -175,6 +192,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     deinit {
         MainActor.assumeIsolated {
             displayLink?.invalidate()
+            followLink?.invalidate()
         }
     }
 
@@ -197,6 +215,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
                 "scroll.update attach old=\(ghosttyDiagnosticShortID(self.surface?.id)) new=\(ghosttyDiagnosticShortID(surface.id)) bounds=\(ghosttyDiagnosticRect(bounds)) surface={\(surface.diagnosticSummary())}"
             )
             haltPhysicsScroll()
+            scrollFollower = nil
             self.surface?.onScrollStateChange = nil
             self.surface?.onStopScrolling = nil
             self.surface?.onRendererRecoveryChange = nil
@@ -252,6 +271,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     func detachSurfaceIfNeeded(_ surface: GhosttyManagedSurface) {
         guard self.surface === surface else { return }
         haltPhysicsScroll()
+        scrollFollower = nil
         surface.onScrollStateChange = nil
         surface.onStopScrolling = nil
         surface.onRendererRecoveryChange = nil
@@ -315,6 +335,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             // touch caught the fling (a natural end has no touch).
             if physicsScrollView.isTracking {
                 lastMomentumCatchAt = CACurrentMediaTime()
+                scrollFollower?.caught(target: followTravel)
             }
             endPhysicsGesture(phase: .ended)
             return
@@ -414,6 +435,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             haltPhysicsScroll()
             resetViewportScrollInteractionState()
         }
+        // What the follower learned is about the program that read the mouse; whatever reads it next starts afresh.
+        if didChangeRoute { scrollFollower = nil }
         return didChangeRoute
     }
 
@@ -552,6 +575,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private func stopScrolling() {
         let isViewportMoving = isActiveViewportScrollInteraction
         let isPhysicsMoving = isPhysicsGestureActive || physicsScrollView.isTracking || physicsScrollView.isDecelerating
+            || scrollFollower?.isLive == true
         guard isViewportMoving || isPhysicsMoving else { return }
         GhosttyRuntimeTrace.diagnostics(
             "scroll.stop surface=\(ghosttyDiagnosticShortID(surface?.id)) viewportMoving=\(isViewportMoving) viewportDecelerating=\(scrollView.isDecelerating) physicsMoving=\(isPhysicsMoving)"
@@ -625,6 +649,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             return
         }
 
+        if surface.scrollRoute == .mouseReport, beginFollowing(surface) {
+            return
+        }
+
         // Remote wheel reports are encoded at the pointer position, and the
         // terminal surface rejects a remote scroll with no pointer. Touch input
         // never moves the pointer, so anchor it at the touch point.
@@ -674,6 +702,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         // Finger moving down drags the virtual offset down; positive
         // translation means scroll up, matching the contact pan.
         let delta = Double(reported - offsetY)
+        if isFollowingGesture {
+            followTravel += delta / Double(max(cellHeight(for: surface), 1))
+            return
+        }
         let now = CACurrentMediaTime()
 
         // While decelerating (finger up), stop once the coast falls
@@ -720,6 +752,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         guard isPhysicsGestureActive else { return }
         isPhysicsGestureActive = false
         physicsReportedOffsetY = nil
+        if isFollowingGesture {
+            // The follower goes on until it has landed what the scroll view travelled.
+            isFollowingGesture = false
+            DispatchQueue.main.async { [weak self] in
+                self?.recenterPhysicsScrollIfIdle()
+            }
+            return
+        }
 
         if let surface, let submitRouteForwardedMouseScroll {
             let events = physicsForwardingGesture.events(
@@ -759,6 +799,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         } else if wasMoving {
             recenterPhysicsScrollIfIdle()
         }
+        endFollowing()
     }
 
     /// True exactly once for the tap produced by a fling-catch touch;
@@ -781,6 +822,137 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         physicsScrollView.setContentOffset(centered, animated: false)
         isRecenteringPhysicsScroll = false
         physicsReportedOffsetY = nil
+    }
+
+    // MARK: Following a program that reads the mouse
+
+    /// False when the pane's backend doesn't report its rows; the gesture then goes as scroll events.
+    private func beginFollowing(_ surface: GhosttyManagedSurface) -> Bool {
+        let cellHeight = cellHeight(for: surface)
+        let gridRows = Int(surface.scrollState.len)
+        guard cellHeight > 0, gridRows > 0 else { return false }
+        if scrollFollower?.gridRows != gridRows {
+            endFollowing()
+            var memory = scrollFollower?.memory ?? .init()
+            if let previous = scrollFollower { memory.resize(fromRows: previous.gridRows, toRows: gridRows) }
+            scrollFollower = GhosttyScrollFollower(gridRows: gridRows, memory: memory)
+        }
+        if !isObservingRows {
+            guard surface.observeRows({ [weak self, weak surface] event in
+                guard let self, let surface, self.surface === surface else { return }
+                self.followerReceived(event)
+            }) else { return false }
+            isObservingRows = true
+        }
+        if scrollFollower?.isLive == true {
+            // A touch stops what the follower still moves, as a touch stops a coasting list: what it still owed is
+            // dropped, a batch on its way lands where it lands, and the new gesture starts from the rows shown. Travel
+            // owed past an edge, which nothing can deliver, goes with it.
+            scrollFollower?.end()
+            followBatchTag &+= 1
+        }
+        followTravel = 0
+        let location = physicsScrollView.panGestureRecognizer.location(in: surface.view)
+        followTouch = (
+            row: min(max(Int(location.y / cellHeight) + 1, 1), gridRows),
+            x: min(max(location.x, 0), max(surface.view.bounds.width - 1, 0))
+        )
+        GhosttyRuntimeTrace.diagnostics(
+            "scroll.follow begin surface=\(ghosttyDiagnosticShortID(surface.id)) row=\(followTouch.row) live=\(scrollFollower?.isLive == true)"
+        )
+        physicsReportedOffsetY = physicsScrollView.contentOffset.y
+        isPhysicsGestureActive = true
+        isFollowingGesture = true
+        if followLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(followTick))
+            link.add(to: .main, forMode: .common)
+            followLink = link
+        }
+        return true
+    }
+
+    /// The pane's rows, in the order its server sent what they show.
+    private func followerReceived(_ event: GhosttyPaneRowsEvent) {
+        guard isObservingRows, let gridRows = scrollFollower?.gridRows else { return }
+        let now = CACurrentMediaTime()
+        switch event {
+        case .frame(let text):
+            guard let text else { return }
+            let rows = GhosttyScrollLedger.rows(fromViewportText: text, gridRows: gridRows)
+            followRows = rows
+            scrollFollower?.frame(rows, now: now)
+        case .reply(let tag, let delivered, let text):
+            guard tag == followBatchTag else { return }
+            guard delivered else {
+                endFollowing()
+                return
+            }
+            let rows = text.map { GhosttyScrollLedger.rows(fromViewportText: $0, gridRows: gridRows) }
+            if let rows { followRows = rows }
+            scrollFollower?.receipt(rows: rows, now: now)
+        }
+    }
+
+    /// One display frame of the follower: what to send, from the scroll view's travel and what the pane has shown.
+    @objc
+    private func followTick() {
+        guard var follower = scrollFollower, let surface, surface.scrollRoute == .mouseReport,
+              Int(surface.scrollState.len) == follower.gridRows
+        else {
+            // The route or the grid changed under the session: what it measured no longer applies.
+            endFollowing()
+            return
+        }
+        let active = physicsScrollView.isTracking || physicsScrollView.isDragging || physicsScrollView.isDecelerating
+        // A session starts from the rows the pane's backend reports first; a gesture over before any came starts none.
+        guard followRows != nil || follower.isLive else {
+            if !active { endFollowing() }
+            return
+        }
+        let seen = follower.seen
+        let step = follower.tick(
+            target: followTravel,
+            active: active,
+            touchRow: followTouch.row,
+            now: CACurrentMediaTime(),
+            rows: followRows
+        )
+        scrollFollower = follower
+        switch step {
+        case .ended:
+            GhosttyRuntimeTrace.diagnostics(
+                "scroll.follow end target=\(String(format: "%.2f", followTravel)) seen=\(seen)"
+            )
+            endFollowing()
+        case .live(nil):
+            break
+        case .live(let send?):
+            GhosttyRuntimeTrace.diagnostics(
+                "scroll.follow send t=\(String(format: "%.3f", CACurrentMediaTime())) target=\(String(format: "%.2f", followTravel)) seen=\(follower.seen) reports=\(send.reports) up=\(send.up) row=\(send.row)"
+            )
+            followBatchTag &+= 1
+            let batch = GhosttySurfaceWheelBatch(
+                reports: send.reports,
+                up: send.up,
+                pointer: CGPoint(x: followTouch.x, y: (CGFloat(send.row) - 0.5) * cellHeight(for: surface))
+            )
+            if !surface.sendWheelReports(batch, tag: followBatchTag) { endFollowing() }
+        }
+    }
+
+    /// Ends the follower's session, sending nothing more; what it learned of the program is kept.
+    private func endFollowing() {
+        scrollFollower?.end()
+        isFollowingGesture = false
+        followTravel = 0
+        followRows = nil
+        followBatchTag &+= 1
+        followLink?.invalidate()
+        followLink = nil
+        if isObservingRows {
+            isObservingRows = false
+            surface?.stopObservingRows()
+        }
     }
 
 }
