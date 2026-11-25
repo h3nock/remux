@@ -5,6 +5,7 @@ struct GhosttyTerminalResponderFocusPolicy: Equatable {
     let keyboardMode: GhosttyKeyboardChromeMode
     let keyboardOwner: GhosttyKeyboardOwner
     let isInputAvailable: Bool
+    let isKeyboardFocusAvailable: Bool
     let isTransientInputOwnerPresented: Bool
 
     var isResponderEnabled: Bool {
@@ -13,10 +14,13 @@ struct GhosttyTerminalResponderFocusPolicy: Equatable {
     }
 
     var wantsFirstResponder: Bool {
+        // The screen owns the keyboard. A pane that is still attaching or drawing pauses input,
+        // without making the keyboard leave and return with that pane's first ready projection.
         isSelected
             && keyboardMode.enablesSystemKeyboard
             && keyboardOwner == .terminal
-            && isResponderEnabled
+            && isKeyboardFocusAvailable
+            && !isTransientInputOwnerPresented
     }
 }
 

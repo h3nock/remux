@@ -4262,6 +4262,44 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNoThrow(try screenshot.pngRepresentation.write(to: url))
     }
 
+    func testLiveWindowSwitchKeyboardTraceWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("keyboard-switch")
+        defer { cleanupGeneratedLiveLatencySessionIfPossible(sessionName) }
+        app.launchEnvironment["REMUX_TRACE_GHOSTTY_DIAGNOSTICS"] = "1"
+        app.launchEnvironment["REMUX_TRACE_COMPOSER_PERF"] = "1"
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        sendTerminalCommand("tmux new-window -d -n second; printf 'FIRST_WINDOW\\n'")
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        let windows = app.buttons["terminal.windows"]
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        let initialContinuity = try XCTUnwrap(waitForKeyboardContinuity(owner: "terminal"))
+        attachScreenshot(named: "keyboard-switch-start")
+        for index in 0..<6 {
+            let from = terminal.coordinate(withNormalizedOffset: CGVector(dx: index % 2 == 0 ? 0.8 : 0.2, dy: 0.2))
+            let to = terminal.coordinate(withNormalizedOffset: CGVector(dx: index % 2 == 0 ? 0.2 : 0.8, dy: 0.2))
+            from.press(forDuration: 0.05, thenDragTo: to)
+            let destination = index % 2 == 0 ? "2 of 2" : "1 of 2"
+            let switched = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label CONTAINS %@", destination), object: windows
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [switched], timeout: 15), .completed, "windows label \(windows.label)")
+            waitForLiveTerminalReady(timeout: 15)
+            XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 5))
+            let continuity = try XCTUnwrap(waitForKeyboardContinuity(owner: "terminal"))
+            XCTAssertEqual(continuity.willHideCount, initialContinuity.willHideCount)
+            attachScreenshot(named: "keyboard-switch-\(index)")
+        }
+        // Only the command's output joins the marker's halves, so the typed line alone can't satisfy the capture.
+        sendTerminalCommand("printf 'REMUX_KEYBOARD_SWITCH_%s\\n' INPUT_OK")
+        recordLiveTmuxWindowPaneCaptureExpectation(
+            sessionName: sessionName, windowIndex: 1, paneIndex: 1,
+            marker: "REMUX_KEYBOARD_SWITCH_INPUT_OK"
+        )
+    }
+
     func testLiveSSHKeyboardResizeTraceWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("keyboard")
         defer {

@@ -83,6 +83,14 @@ enum TerminalReadinessProjector {
         )
     }
 
+    /// Keyboard ownership survives a live pane's attachment and first-frame wait. An ended session,
+    /// an empty session, or a failed pane still releases it.
+    static func isKeyboardFocusAvailable(_ snapshot: TerminalReadinessSnapshot) -> Bool {
+        guard snapshot.phase == .running, snapshot.topLevelCount > 0 else { return false }
+        if case .failed = snapshot.selectedPanePresentation { return false }
+        return true
+    }
+
     static func isInputAvailable(
         phase: GhosttyTerminalRuntimePhase,
         hasFocusedSurface: Bool
