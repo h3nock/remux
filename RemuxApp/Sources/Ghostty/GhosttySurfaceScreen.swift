@@ -286,7 +286,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
                             canvasSize: terminalViewportSize,
-                            onHistoryScroll: handleHistoryScroll,
+                            onScrollBack: handleScrollBack,
                             terminalTheme: presentation.terminalTheme,
                             trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
@@ -736,7 +736,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 guard holder != .none else { return }
                 // Taking the keyboard ends any scroll still in motion, as a touch ends a fling: a fling left going
                 // would carry the pane on under the keyboard, undo its return to the live rows, and lower the
-                // keyboard again with its steps into history.
+                // keyboard again with its steps back.
                 stopScrollingShownSurfaces()
                 // The terminal's keyboard is for typing, which returns the pane to its live rows anyway: go there as
                 // it opens or the composer hands it over, so the line being typed on comes up above it. The
@@ -1103,10 +1103,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         dismissSystemKeyboard()
     }
 
-    /// Scrolling a pane back into its history is reading, so the software keyboard steps aside, as it does in other
-    /// iOS apps. With a hardware keyboard connected the input stays: what shows of the system keyboard then is at most
-    /// its shortcut bar, and lowering it would stop the hardware keyboard's typing reaching the terminal.
-    private func handleHistoryScroll() {
+    /// Scrolling back is reading, so the software keyboard steps aside, as it does in other iOS apps: into a pane's
+    /// history, or through a program's own scrolling, as an agent's transcript, a pager or an editor scrolls on the
+    /// alternate screen. With a hardware keyboard connected the input stays: what shows of the system keyboard then is
+    /// at most its shortcut bar, and lowering it would stop the hardware keyboard's typing reaching the terminal.
+    private func handleScrollBack() {
         guard inputCoordinator.isSoftwareKeyboardVisible, GCKeyboard.coalesced == nil else { return }
         dismissSystemKeyboard()
     }
