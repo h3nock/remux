@@ -136,6 +136,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var physicsDeltaBudget = GhosttyScrollDeltaBudget(unitsPerSecond: 0)
     private var physicsTailCutoff = GhosttyScrollTailCutoff()
     private var physicsVelocityGain = GhosttyScrollVelocityGain()
+    /// Whether the gesture's speed scales its travel; not where a step is a known line.
+    private var physicsUsesVelocityGain = true
     private var physicsPeakMultiplier: Double = 1
     private var physicsReportedOffsetY: CGFloat?
     private var isPhysicsGestureActive = false
@@ -662,6 +664,14 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         )
         _ = submitRouteForwardedMousePosition?(surface.id, location, [])
 
+        // On the alternate-screen route a step is one line, so a row of finger travel is one step and the lines move
+        // with the finger, as a list does. The terminal counts a step per cell height in pixels; finger travel is in
+        // points. The remote-history route, where Herdr scrolls three lines a step, keeps its tuned gain.
+        let linesFollowFinger = surface.scrollRoute == .altScreenCursor
+        physicsForwardingGesture = GhosttyRouteForwardingScrollGesture(
+            preciseScale: linesFollowFinger ? displayScale : GhosttyScrollTuning.routeForwardedGain
+        )
+        physicsUsesVelocityGain = !linesFollowFinger
         let cellHeightPixels = max(cellHeight(for: surface), 1) * displayScale
         let ticksPerSecond = surface.scrollRoute == .altScreenCursor
             ? Self.maxAltScreenTicksPerSecond
@@ -730,7 +740,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
         // Velocity acceleration before the budget, so the per-route
         // tick cap bounds the effective output.
-        let multiplier = physicsVelocityGain.multiplier(delta: delta, at: now)
+        let multiplier = physicsUsesVelocityGain ? physicsVelocityGain.multiplier(delta: delta, at: now) : 1
         physicsPeakMultiplier = max(physicsPeakMultiplier, multiplier)
         let accelerated = delta * multiplier
         let budgeted = physicsDeltaBudget.clamp(accelerated, at: now)
