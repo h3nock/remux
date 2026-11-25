@@ -95,6 +95,18 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
             }
         }
     }
+
+    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool {
+        binding.observeRows(observer)
+        return true
+    }
+
+    /// tmux's answer to the send-keys command that carries the reports comes to the row observer: they have reached
+    /// the pane's program, and its answer, if any, follows in the pane's output.
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool {
+        guard let control = renderer.inputControlSurface else { return false }
+        return binding.performWheelBatchWrite(tag: tag) { control.sendWheelReports(batch) }
+    }
 }
 
 /// The controller fence and input writer for one tmux pane's renderers.
@@ -103,6 +115,8 @@ private final class RendererBinding: TerminalPaneRendererFence {
     private let controller: TmuxSessionController
     private let paneID: TmuxPaneID
     private var trackedWriteCompletion: (@Sendable (Bool) -> Void)?
+    /// Set while a wheel batch is encoded: the write it makes goes as one, with this tag.
+    private var wheelBatchTag: UInt64?
 
     init(controller: TmuxSessionController, paneID: TmuxPaneID) {
         self.controller = controller
@@ -129,6 +143,10 @@ private final class RendererBinding: TerminalPaneRendererFence {
     /// tracked write armed by `performTrackedWrite` receives exactly the bytes
     /// its operation encodes.
     func write(_ data: Data) -> Bool {
+        if let tag = wheelBatchTag {
+            wheelBatchTag = nil
+            return controller.sendWheelBatch(paneID: paneID, data, tag: tag)
+        }
         guard let completion = trackedWriteCompletion else {
             return controller.sendInput(paneID: paneID, data)
         }
@@ -150,6 +168,20 @@ private final class RendererBinding: TerminalPaneRendererFence {
         guard trackedWriteCompletion != nil else { return }
         trackedWriteCompletion = nil
         completion(false)
+    }
+
+    /// True when `operation` wrote its bytes, which went as one wheel batch.
+    func performWheelBatchWrite(tag: UInt64, _ operation: () -> Bool) -> Bool {
+        precondition(wheelBatchTag == nil && trackedWriteCompletion == nil)
+        wheelBatchTag = tag
+        let accepted = operation()
+        let wrote = wheelBatchTag == nil
+        wheelBatchTag = nil
+        return accepted && wrote
+    }
+
+    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) {
+        controller.observeRows(paneID: paneID, observer)
     }
 
     /// A paste doesn't pass through the pane's terminal: tmux knows whether

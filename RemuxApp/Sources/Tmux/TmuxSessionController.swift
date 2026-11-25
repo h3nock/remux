@@ -243,6 +243,10 @@ final class TmuxSessionController: @unchecked Sendable {
     /// and when that hold times out.
     private var renderHolds: [TmuxPaneID: RenderHold] = [:]
     private var renderHoldTimer: DispatchSourceTimer?
+    /// Panes a touch scroll is measuring, each with where its rows go (`observeRows`), and those of them whose terminal
+    /// changed in the feed being handled.
+    private var rowObservers: [TmuxPaneID: @MainActor @Sendable (GhosttyPaneRowsEvent) -> Void] = [:]
+    private var changedObservedPaneIDs: Set<TmuxPaneID> = []
     private let renderHoldTimeout: DispatchTimeInterval
 
     private struct RenderHold {
@@ -402,6 +406,8 @@ final class TmuxSessionController: @unchecked Sendable {
             clientSize = nil
             endRenderHoldTracking()
             retainedPaneIDs.removeAll()
+            rowObservers.removeAll()
+            changedObservedPaneIDs.removeAll()
             assert(surfacesByPaneID.isEmpty, "terminal surfaces must unregister before client free")
             surfacesByPaneID.removeAll()
             if let client {
@@ -428,6 +434,7 @@ final class TmuxSessionController: @unchecked Sendable {
             if state == .attaching {
                 publishState(.syncing)
             }
+            reportChangedObservedRows()
             let outboundBytes = drainOutbound()
             GhosttyRuntimeTrace.perf(
                 "tmuxFeed bytes=\(data.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStart)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStart)) outbound_bytes=\(outboundBytes) result=\(result)"
@@ -543,6 +550,8 @@ final class TmuxSessionController: @unchecked Sendable {
             retainedPaneIDs.remove(paneID)
             surfacesByPaneID.removeValue(forKey: paneID)
             renderHolds.removeValue(forKey: paneID)
+            rowObservers.removeValue(forKey: paneID)
+            changedObservedPaneIDs.remove(paneID)
         }
         let didBecomeReady = state != .ready
         state = .ready
@@ -613,6 +622,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 return
             }
         }
+        if rowObservers[paneID] != nil { changedObservedPaneIDs.insert(paneID) }
 
         if activePaneID(in: topology) == paneID {
             DispatchQueue.main.async { self.callbacks.onActivePaneChanged(paneID) }
@@ -662,7 +672,78 @@ final class TmuxSessionController: @unchecked Sendable {
             }
             paneTerminalChanged(paneID)
         }
+        reportChangedObservedRows()
         scheduleRenderHoldTimer()
+    }
+
+    // MARK: Rows for a touch scroll
+
+    /// Reports a pane's rows to `observer` on the main queue, in the order tmux sent what they show: now, at the end of
+    /// each feed that changed the pane, and at the reply to each wheel batch sent with `sendWheelBatch`. A touch scroll
+    /// tells what a batch did from what came before it by the rows as of its reply. Nil stops the reports.
+    func observeRows(paneID: TmuxPaneID, _ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) {
+        queue.async { [self] in
+            rowObservers[paneID] = observer
+            changedObservedPaneIDs.remove(paneID)
+            guard let observer else { return }
+            let rows = viewportRows(of: paneID)
+            DispatchQueue.main.async { MainActor.assumeIsolated { observer(.frame(rows)) } }
+        }
+    }
+
+    /// Sends a wheel batch to a pane as one send-keys command. Its reply goes to the pane's row observer, with `tag`
+    /// and the rows as of the reply: what the program did with the reports comes after them.
+    func sendWheelBatch(paneID: TmuxPaneID, _ bytes: Data, tag: UInt64) -> Bool {
+        guard !bytes.isEmpty else { return false }
+        queue.async { [self, bytes] in
+            admitTrackedInputOnWriter(completion: { [weak self] delivered in
+                self?.reportWheelBatchReply(paneID: paneID, tag: tag, delivered: delivered)
+            }) { client, token in
+                bytes.withUnsafeBytes { buffer in
+                    ghostty_tmux_client_send_pane_input_tracked(
+                        client,
+                        paneID.rawValue,
+                        buffer.bindMemory(to: UInt8.self).baseAddress,
+                        buffer.count,
+                        token
+                    )
+                }
+            }
+        }
+        return true
+    }
+
+    private func reportWheelBatchReply(paneID: TmuxPaneID, tag: UInt64, delivered: Bool) {
+        preconditionOnWriterQueue()
+        guard let observer = rowObservers[paneID] else { return }
+        let rows = delivered ? viewportRows(of: paneID) : nil
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { observer(.reply(tag: tag, delivered: delivered, rows: rows)) }
+        }
+    }
+
+    private func reportChangedObservedRows() {
+        preconditionOnWriterQueue()
+        guard !changedObservedPaneIDs.isEmpty else { return }
+        for paneID in changedObservedPaneIDs {
+            guard let observer = rowObservers[paneID] else { continue }
+            let rows = viewportRows(of: paneID)
+            DispatchQueue.main.async { MainActor.assumeIsolated { observer(.frame(rows)) } }
+        }
+        changedObservedPaneIDs.removeAll()
+    }
+
+    /// The pane's viewport as text, as of what has been fed so far; nil while its program is inside a synchronized
+    /// update. The copy is made under the terminal's mutex, through the surface registered here, which unregisters
+    /// on this queue before it is freed.
+    private func viewportRows(of paneID: TmuxPaneID) -> String? {
+        preconditionOnWriterQueue()
+        guard let surface = surfacesByPaneID[paneID] else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_terminal_surface_read_viewport_rows(surface.value, &text) == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT
+        else { return nil }
+        defer { _ = ghostty_terminal_surface_free_text(surface.value, &text) }
+        return GhosttyKitControlSurface.decodeGhosttyText(text)
     }
 
     private func endRenderHoldTracking() {

@@ -94,6 +94,11 @@ final class HerdrPopupTerminalSurface: TerminalPaneInputSink {
         guard let event = HerdrInputTranslator.event(for: event) else { return false }
         return await deliver([event])
     }
+
+    // A popup's scroll goes as Herdr's client sends it (`HerdrScreenModel.scrollPopup`).
+    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool { false }
+
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool { false }
 }
 
 /// The popup Herdr shows over the tab on screen, while the phone shows it. Herdr's client draws a popup at

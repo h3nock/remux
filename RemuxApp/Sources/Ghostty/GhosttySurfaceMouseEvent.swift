@@ -126,6 +126,15 @@ struct GhosttySurfaceMouseScrollMods: Equatable {
     }
 }
 
+/// Wheel reports for a program that reads the mouse, sent in one write: `reports` of them, toward earlier rows (wheel
+/// up) or later ones, at `pointer`, in the surface view's points. The pointer only goes in the reports: no motion is
+/// reported for it.
+struct GhosttySurfaceWheelBatch: Equatable {
+    let reports: Int
+    let up: Bool
+    let pointer: CGPoint
+}
+
 struct GhosttySurfaceMouseScrollEvent: Equatable {
     let deltaX: Double
     let deltaY: Double

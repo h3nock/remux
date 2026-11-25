@@ -22,6 +22,11 @@ final class HerdrPaneSurface: TerminalPaneInputSink {
     func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool { false }
 
     func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent) async -> Bool { false }
+
+    // A pane's scroll goes as Herdr's client sends it (`HerdrScreenModel.scroll`).
+    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool { false }
+
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool { false }
 }
 
 /// The screen model for one Herdr session, as `TmuxScreenModel` is for tmux: one connection at a time

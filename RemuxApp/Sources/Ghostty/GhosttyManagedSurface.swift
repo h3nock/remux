@@ -91,6 +91,22 @@ struct GhosttyHistorySelection: Equatable {
 protocol TerminalPaneInputSink: AnyObject {
     func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool
     func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent) async -> Bool
+    /// Starts or, with nil, stops reporting the pane's rows to `observer`, for a touch scroll that measures what its
+    /// program does with wheel reports. False when the pane's backend doesn't report them; its touch scroll then goes
+    /// as scroll events.
+    func observeRows(_ observer: (@MainActor @Sendable (GhosttyPaneRowsEvent) -> Void)?) -> Bool
+    /// Sends wheel reports in one write, whose reply comes to the row observer with `tag`. False when nothing went.
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool
+}
+
+/// What a pane's backend reports of its rows while a touch scroll measures it, in the order its server sent what they
+/// show. Rows are the viewport as text, one line per row; nil while the program is inside a synchronized update.
+enum GhosttyPaneRowsEvent: Sendable {
+    /// The pane's rows now: when the reports start, and after output changes them.
+    case frame(String?)
+    /// The server's answer to the wheel batch sent with `tag`: whether it reached the program, and the rows as of
+    /// that moment, before anything the program did with it.
+    case reply(tag: UInt64, delivered: Bool, rows: String?)
 }
 
 /// Stable screen-facing projection of one pane renderer.
@@ -180,6 +196,21 @@ final class GhosttyManagedSurface {
             onLocalSelectionGeometryChange?()
         }
         return delivered
+    }
+
+    /// Reports the pane's rows to `observer` (`TerminalPaneInputSink.observeRows`); false when its backend doesn't.
+    func observeRows(_ observer: @escaping @MainActor @Sendable (GhosttyPaneRowsEvent) -> Void) -> Bool {
+        guard rendererIsAvailable, let inputSink else { return false }
+        return inputSink.observeRows(observer)
+    }
+
+    func stopObservingRows() {
+        _ = inputSink?.observeRows(nil)
+    }
+
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch, tag: UInt64) -> Bool {
+        guard rendererIsAvailable, let inputSink else { return false }
+        return inputSink.sendWheelReports(batch, tag: tag)
     }
 
     /// Draws an input method's unfinished text over the cursor, nil to clear it. Like typing,

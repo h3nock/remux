@@ -338,6 +338,28 @@ final class GhosttyKitControlSurface {
         ))
     }
 
+    /// Sends exactly `batch.reports` wheel reports at the batch's cell in one write, only while the program reads the
+    /// mouse: on another route the same call would scroll the local viewport or send arrow keys. A precise scroll of
+    /// whole cells is that many reports, since Remux leaves the precision multiplier at 1, and the gesture's start
+    /// drops any remainder left by an earlier scroll.
+    @discardableResult
+    func sendWheelReports(_ batch: GhosttySurfaceWheelBatch) -> Bool {
+        guard !invalidated, batch.reports > 0, interactionState().scrollRoute == .mouseReport else { return false }
+        let cellHeight = Double(currentSize().cell_height_px)
+        guard cellHeight > 0 else { return false }
+        ghostty_terminal_surface_mouse_scroll_begin(handle)
+        let result = ghostty_terminal_surface_mouse_scroll_at(
+            handle,
+            0,
+            Double(batch.reports) * cellHeight * (batch.up ? 1 : -1),
+            ghostty_input_scroll_mods_t(GhosttySurfaceMouseScrollMods(precision: true).rawValue),
+            Double(batch.pointer.x) * scaleFactor,
+            Double(batch.pointer.y) * scaleFactor,
+            GHOSTTY_MODS_NONE
+        )
+        return result == GHOSTTY_TERMINAL_SURFACE_INPUT_SENT
+    }
+
     func interactionState() -> GhosttySurfaceInteractionState {
         guard !invalidated else { return .empty }
         var state = ghostty_terminal_surface_interaction_state_s()
@@ -580,7 +602,7 @@ final class GhosttyKitControlSurface {
         return size
     }
 
-    static func decodeGhosttyText(_ text: ghostty_text_s) -> String {
+    nonisolated static func decodeGhosttyText(_ text: ghostty_text_s) -> String {
         guard let pointer = text.text, text.text_len > 0 else { return "" }
         return String(
             decoding: UnsafeRawBufferPointer(start: pointer, count: Int(text.text_len)),
