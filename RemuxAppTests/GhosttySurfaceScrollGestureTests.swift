@@ -407,6 +407,7 @@ final class GhosttySurfaceScrollGestureTests: XCTestCase {
             GhosttyPaneScrollGeometry.position(
                 forContentOffsetY: 125,
                 cellHeight: 10,
+                displayScale: 2,
                 state: state,
                 maxContentOffsetY: 800
             ),
@@ -426,11 +427,53 @@ final class GhosttySurfaceScrollGestureTests: XCTestCase {
             GhosttyPaneScrollGeometry.position(
                 forContentOffsetY: 900,
                 cellHeight: 10,
+                displayScale: 2,
                 state: state,
                 maxContentOffsetY: 800
             ),
             GhosttyPaneScrollPosition(row: 80, cellOffset: 0)
         )
+    }
+
+    /// The scroll view resting at its end, as after a fling back to the bottom, is the last row for every history
+    /// length. On a 3x phone with 53-pixel cells, dividing in points put the resting end at 1567.9999999999998 rows
+    /// for a 1568-row history, one row short.
+    func testPaneScrollGeometryRestingAtTheEndIsTheLastRow() {
+        for (scale, cellPixels) in [(CGFloat(3), CGFloat(53)), (2, 34), (3, 49)] {
+            let cellHeight = cellPixels / scale
+            for maxRow in UInt64(1)...2000 {
+                let state = GhosttySurfaceScrollState(total: maxRow + 44, offset: maxRow, len: 44, cellOffset: 0)
+                let maxOffset = CGFloat(maxRow) * cellHeight
+                // UIKit rests the scroll view on the device pixel nearest its end.
+                let resting = (maxOffset * scale).rounded() / scale
+                XCTAssertEqual(
+                    GhosttyPaneScrollGeometry.position(
+                        forContentOffsetY: resting,
+                        cellHeight: cellHeight,
+                        displayScale: scale,
+                        state: state,
+                        maxContentOffsetY: maxOffset
+                    ),
+                    GhosttyPaneScrollPosition(row: maxRow, cellOffset: 0),
+                    "\(maxRow) rows at \(scale)x with \(cellPixels)-pixel cells"
+                )
+            }
+        }
+    }
+
+    func testPaneScrollGeometryKeepsAPositionOnePixelAboveTheEnd() {
+        let cellHeight: CGFloat = 53.0 / 3
+        let state = GhosttySurfaceScrollState(total: 1612, offset: 1568, len: 44, cellOffset: 0)
+        let maxOffset = 1568 * cellHeight
+        let position = GhosttyPaneScrollGeometry.position(
+            forContentOffsetY: maxOffset - 1.0 / 3,
+            cellHeight: cellHeight,
+            displayScale: 3,
+            state: state,
+            maxContentOffsetY: maxOffset
+        )
+        XCTAssertEqual(position?.row, 1567)
+        XCTAssertEqual(position?.cellOffset ?? 0, 52.0 / 53, accuracy: 1e-12)
     }
 
     func testPaneScrollPositionOrdersTowardHistory() {

@@ -64,26 +64,34 @@ enum GhosttyPaneScrollGeometry {
         return min(max(rawOffset, 0), max(maxContentOffsetY, 0))
     }
 
+    /// The terminal position for a scroll view offset. The scroll view rests on whole device pixels and a cell is a
+    /// whole number of them, so the offset is worked out in pixels: the scroll view resting at its end is exactly the
+    /// last row. Divided in points, an offset at rest one rounding step short of the end read as the row before it plus
+    /// 0.999999999 of a row, which pinned the terminal there, short of the bottom, so it stopped following output.
     static func position(
         forContentOffsetY contentOffsetY: CGFloat,
         cellHeight: CGFloat,
+        displayScale: CGFloat,
         state: GhosttySurfaceScrollState,
         maxContentOffsetY: CGFloat
     ) -> GhosttyPaneScrollPosition? {
-        guard cellHeight.isFinite, cellHeight > 0 else { return nil }
+        guard cellHeight.isFinite, cellHeight > 0, contentOffsetY.isFinite, maxContentOffsetY.isFinite else {
+            return nil
+        }
 
-        let clampedOffset = min(max(contentOffsetY, 0), max(maxContentOffsetY, 0))
-        let rowDouble = floor(clampedOffset / cellHeight)
+        let scale = max(displayScale.isFinite ? displayScale : 1, 1)
+        let cellPixels = max((cellHeight * scale).rounded(), 1)
+        let maxPixels = (max(maxContentOffsetY, 0) * scale).rounded()
+        let offsetPixels = min(max((contentOffsetY * scale).rounded(), 0), maxPixels)
         let maxRow = state.maxRow
-        guard rowDouble < CGFloat(maxRow) else {
+        let row = (offsetPixels / cellPixels).rounded(.down)
+        guard offsetPixels < maxPixels, row < CGFloat(maxRow) else {
             return GhosttyPaneScrollPosition(row: maxRow, cellOffset: 0)
         }
 
-        let row = min(UInt64(max(rowDouble, 0)), maxRow)
-        let fractional = Double((clampedOffset / cellHeight) - rowDouble)
         return GhosttyPaneScrollPosition(
-            row: row,
-            cellOffset: min(max(fractional, 0), 0.999_999_999)
+            row: UInt64(row),
+            cellOffset: Double((offsetPixels - row * cellPixels) / cellPixels)
         )
     }
 }
@@ -582,6 +590,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         guard let position = GhosttyPaneScrollGeometry.position(
             forContentOffsetY: offset.y,
             cellHeight: cellHeight(for: surface),
+            displayScale: displayScale,
             state: surface.scrollState,
             maxContentOffsetY: maxOffsetY
         ) else {
