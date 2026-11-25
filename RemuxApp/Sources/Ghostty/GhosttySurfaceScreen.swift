@@ -244,6 +244,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 keyboardMode: inputCoordinator.keyboardMode,
                 keyboardOwner: inputCoordinator.keyboardOwner,
                 isInputAvailable: interactionProjection.isInputAvailable,
+                isKeyboardFocusAvailable: TerminalReadinessProjector.isKeyboardFocusAvailable(readiness),
                 isTransientInputOwnerPresented: isTransientInputOwnerPresented
             )
             let paneSelectionSheetTopologyProjection = model.paneSelectionSheetTopologyProjection(
@@ -563,7 +564,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
                 guard shouldHandleTerminalKeyboardNotification else { return }
 #if DEBUG
-                if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
+                if GhosttySurfaceScreenPerfProbe.isEnabled {
                     uiTestKeyboardWillHideCount += 1
                 }
 #endif

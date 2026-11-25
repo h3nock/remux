@@ -4,6 +4,50 @@ import XCTest
 
 final class GhosttyTerminalResponderViewTests: XCTestCase {
     @MainActor
+    func testKeyboardOwnershipSurvivesUnavailableInputWithoutDeliveringEdits() async {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        window.rootViewController = UIViewController()
+        window.rootViewController?.view.addSubview(view)
+        window.makeKeyAndVisible()
+        defer {
+            _ = view.resignFirstResponder()
+            view.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        var sent: [String] = []
+        func update(enabled: Bool, wantsKeyboard: Bool) {
+            view.update(
+                isEnabled: enabled, wantsFirstResponder: wantsKeyboard, activationToken: 1,
+                sendText: { sent.append($0); return true },
+                sendPaste: { sent.append($0); return true },
+                sendKeyEvent: { _ in sent.append("key"); return true }
+            )
+        }
+        update(enabled: true, wantsKeyboard: true)
+        let initiallyFocused = await waitUntil { view.isFirstResponder }
+        XCTAssertTrue(initiallyFocused)
+        view.setMarkedText("draft", selectedRange: NSRange(location: 5, length: 0))
+        update(enabled: false, wantsKeyboard: true)
+        let resignedWhileUnavailable = await waitUntil(timeout: 0.1) { !view.isFirstResponder }
+        XCTAssertFalse(resignedWhileUnavailable)
+        XCTAssertNil(view.markedTextRange)
+        view.insertText("blocked")
+        view.deleteBackward()
+        view.setMarkedText("blocked draft", selectedRange: NSRange(location: 0, length: 0))
+        view.unmarkText()
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertNil(view.markedTextRange)
+        update(enabled: true, wantsKeyboard: true)
+        view.insertText("ready")
+        XCTAssertEqual(sent, ["ready"])
+        update(enabled: false, wantsKeyboard: false)
+        let resignedWhenUnwanted = await waitUntil { !view.isFirstResponder }
+        XCTAssertTrue(resignedWhenUnwanted)
+    }
+
+    @MainActor
     func testResponderReportsTextWhenEnabled() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 
