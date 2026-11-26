@@ -18,6 +18,8 @@ The website for Remux, served at `getremux.app`. Plain HTML, CSS and JavaScript,
 - `assets/remux-app-icon-76.png`, `-152.png`, `-228.png`: the app icon as iOS draws it, rendered at each size.
 - `apple-touch-icon.png`, `og.png`: the Home Screen icon and the link preview image. They stay at the site's root
   because other sites keep their addresses.
+- `favicon.ico`: the tab icon at 16, 32 and 48 pixels, for anything that asks for `/favicon.ico` without reading
+  the page, such as a tab that shows one of the site's images on its own.
 
 ## Design
 
