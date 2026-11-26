@@ -86,7 +86,7 @@ jobs:
               printf 'Missing site asset: %s\n' "${asset}" >&2
               exit 1
             }
-          done < <(rg -o 'assets/[^"?]+' remux-site/index.html | sort -u)
+          done < <(rg -o 'assets/[^"?, ]+' remux-site/index.html | sort -u)
 
   app:
     name: App
