@@ -52,12 +52,18 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
     ) {
         let paneID = terminal.paneID
         let binding = RendererBinding(controller: controller, paneID: paneID)
+        // tmux doesn't tell a client the keyboard mode a program set before it attached, so a modified key is
+        // sent as a plain terminal sends it unless the pane is seen asking for more; and Shift+Return is a new
+        // line, which is what agents take it for.
+        var config = baseConfig
+        config.plain_legacy_keys = true
+        config.shift_enter_line_feed = true
         TerminalPaneRenderer.create(
             app: app,
             terminal: terminal,
             fence: wrapFence(binding),
             writeInput: { [binding] bytes in binding.write(bytes) },
-            baseConfig: baseConfig,
+            baseConfig: config,
             metrics: metrics,
             theme: theme,
             diagnosticName: "pane=\(paneID)",
