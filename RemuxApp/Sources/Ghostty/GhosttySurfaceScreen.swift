@@ -1269,7 +1269,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
-        refocusSystemKeyboardIfActive()
+        bringTerminalKeyboardBackIfActive()
     }
 
     private func handleTerminalCoverSelectionChange(_ selected: Bool) {
