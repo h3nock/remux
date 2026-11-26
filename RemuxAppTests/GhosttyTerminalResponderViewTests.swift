@@ -38,6 +38,50 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertTrue(settled)
     }
 
+    /// A focus request to the input that already has focus, as on every window switch, leaves the keyboard as it is:
+    /// reloading its input views would make UIKit present the same keyboard again. Bringing the keyboard back after
+    /// it went away under the focused input is asked for on its own, and reloads them once.
+    @MainActor
+    func testOnlyBringingTheKeyboardBackReloadsTheFocusedInputsInputViews() async {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        window.rootViewController = UIViewController()
+        window.rootViewController?.view.addSubview(view)
+        window.makeKeyAndVisible()
+        let handoff = GhosttyKeyboardResponderHandoff()
+        handoff.register(view, as: .terminal)
+        defer {
+            _ = view.resignFirstResponder()
+            view.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        func request(token: Int) {
+            view.update(
+                isEnabled: true, wantsFirstResponder: true, activationToken: token,
+                sendText: { _ in true }, sendPaste: { _ in true }, sendKeyEvent: { _ in true }
+            )
+        }
+        request(token: 1)
+        let focused = await waitUntil { view.isFirstResponder && !view.pendingFirstResponderRequest }
+        XCTAssertTrue(focused)
+        let reloads = InputViewReloadCounter(GhosttyTerminalResponderUIView.self)
+        defer { reloads.stop() }
+
+        request(token: 2)
+        XCTAssertTrue(view.pendingFirstResponderRequest)
+        let settled = await waitUntil { !view.pendingFirstResponderRequest }
+        XCTAssertTrue(settled)
+        XCTAssertEqual(reloads.count, 0, "a focus request to the focused input reloaded its input views")
+
+        handoff.presentTerminalKeyboardAgain()
+        XCTAssertEqual(reloads.count, 1, "bringing the keyboard back didn't reload the input views once")
+
+        _ = view.resignFirstResponder()
+        handoff.presentTerminalKeyboardAgain()
+        XCTAssertEqual(reloads.count, 1, "an input without focus reloaded its input views")
+    }
+
     @MainActor
     func testKeyboardOwnershipSurvivesUnavailableInputWithoutDeliveringEdits() async {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
@@ -1719,5 +1763,36 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         XCTAssertEqual(view.inlinePredictionType, .no)
         XCTAssertEqual(view.autocorrectionType, .no)
         XCTAssertEqual(view.keyboardType, .default)
+    }
+}
+
+/// Counts `reloadInputViews()` calls on instances of a responder class until stopped. UIKit offers no way to observe
+/// the call, so the class's method is replaced with one that counts and then runs the original.
+@MainActor
+private final class InputViewReloadCounter {
+    private(set) var count = 0
+    private let responderClass: AnyClass
+    private let original: IMP
+    private static let selector = #selector(UIResponder.reloadInputViews)
+
+    init(_ responderClass: AnyClass) {
+        self.responderClass = responderClass
+        let inherited = class_getInstanceMethod(responderClass, Self.selector)!
+        let original = method_getImplementation(inherited)
+        self.original = original
+        let selector = Self.selector
+        let counting: @convention(block) (UIResponder) -> Void = { [weak self] responder in
+            MainActor.assumeIsolated { self?.count += 1 }
+            typealias Reload = @convention(c) (UIResponder, Selector) -> Void
+            unsafeBitCast(original, to: Reload.self)(responder, selector)
+        }
+        let implementation = imp_implementationWithBlock(counting)
+        if !class_addMethod(responderClass, Self.selector, implementation, method_getTypeEncoding(inherited)) {
+            method_setImplementation(inherited, implementation)
+        }
+    }
+
+    func stop() {
+        method_setImplementation(class_getInstanceMethod(responderClass, Self.selector)!, original)
     }
 }

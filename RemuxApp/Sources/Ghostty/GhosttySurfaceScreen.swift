@@ -1177,7 +1177,19 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
 
         guard projection.shouldRefocusSystemKeyboard else { return }
+        bringTerminalKeyboardBackIfActive()
+    }
+
+    /// Asks for the terminal's keyboard again where it may have gone away under the focused terminal, as after an
+    /// unexpected hide or a return to the app. Focus alone doesn't show it then, so while the terminal holds the
+    /// keyboard and keeps its focus, including through a pane that is still getting ready, the keyboard is presented
+    /// again too.
+    private func bringTerminalKeyboardBackIfActive() {
         refocusSystemKeyboardIfActive()
+        guard inputCoordinator.keyboardMode == .system, inputCoordinator.keyboardOwner == .terminal,
+              TerminalReadinessProjector.isKeyboardFocusAvailable(model.terminalScreenPresentationProjection.readiness)
+        else { return }
+        keyboardResponderHandoff.presentTerminalKeyboardAgain()
     }
 
     private func updateTerminalCoverPresentation(
@@ -1257,7 +1269,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
-        refocusSystemKeyboardIfActive()
+        bringTerminalKeyboardBackIfActive()
     }
 
     private func handleTerminalCoverSelectionChange(_ selected: Bool) {
@@ -2228,7 +2240,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func recoverSystemKeyboardAfterUnexpectedHide() {
         let request = keyboardViewportTransitionCoordinator.prepareUnexpectedHideRecovery()
         beginKeyboardViewportTransition(request)
-        refocusSystemKeyboardIfActive()
+        bringTerminalKeyboardBackIfActive()
         GhosttyRuntimeTrace.perf(
             "kbd.transition recoverUnexpectedHide mode=\(inputCoordinator.keyboardMode.traceLabel) token=\(inputCoordinator.terminalActivationToken)"
         )
