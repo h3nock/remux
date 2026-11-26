@@ -814,7 +814,7 @@ struct RemuxAppDependencies: Sendable {
         // then GhosttyKit's `list-panes -s -F` and its four captures. The pane
         // line needs every field of that format, through pane_current_command
         // and pane_current_path, or the client rejects the attach.
-        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;0;0;43;8,16;zsh;/home/demo\n"
+        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;0;0;43;8,16;VT10x;zsh;/home/demo\n"
         let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
         let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
             + "%begin 2 2 1\n3.1\n%end 2 2 1\n"
