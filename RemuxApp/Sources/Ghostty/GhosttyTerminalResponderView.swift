@@ -42,6 +42,12 @@ final class GhosttyKeyboardResponderHandoff {
         guard let responder = terminalResponder as? GhosttyTerminalResponderUIView else { return .noDraft }
         return responder.resolveComposition(for: action)
     }
+
+    /// Brings the terminal's keyboard back on screen after it went away while the terminal kept focus
+    /// (`GhosttyTerminalResponderUIView.presentKeyboardAgain()`).
+    func presentTerminalKeyboardAgain() {
+        (terminalResponder as? GhosttyTerminalResponderUIView)?.presentKeyboardAgain()
+    }
 }
 
 /// What an app action, as a toolbar key, does to the terminal keyboard's unfinished composition.
@@ -896,9 +902,18 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     @discardableResult
+    /// The keyboard can go away while this input keeps focus, as when UIKit lowers it on its own. Asking for focus
+    /// again then does nothing, and reloading the input views is what shows the keyboard again. A focus request to the
+    /// input that already has it, as on every window switch, leaves the keyboard as it is: reloading it there makes
+    /// UIKit present the same keyboard again, with its notifications, for nothing.
+    func presentKeyboardAgain() {
+        guard isFirstResponder else { return }
+        GhosttyRuntimeTrace.perf("responder.presentKeyboardAgain token=\(activationToken)")
+        reloadInputViews()
+    }
+
     private func attemptFirstResponderRequest(route: String) -> Bool {
         if isFirstResponder {
-            reloadInputViews()
             pendingFirstResponderRequest = false
             GhosttyRuntimeTrace.perf(
                 "responder.requestFirstResponder result=true route=\(route) token=\(activationToken) firstResponder=true"
