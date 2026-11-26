@@ -57,7 +57,7 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
             terminal: terminal,
             fence: wrapFence(binding),
             writeInput: { [binding] bytes in binding.write(bytes) },
-            baseConfig: baseConfig,
+            baseConfig: paneConfig(baseConfig),
             metrics: metrics,
             theme: theme,
             diagnosticName: "pane=\(paneID)",
@@ -71,6 +71,31 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
         self.paneID = paneID
         self.renderer = renderer
         self.binding = binding
+    }
+
+    /// A replacement renderer keeps the pane's own surface settings.
+    func replaceRenderer(
+        baseConfig: ghostty_terminal_surface_config_s,
+        metrics: GhosttySurfaceDisplayMetrics,
+        theme: TerminalTheme,
+        completion: @escaping @MainActor (TerminalPaneRenderer.RendererReplacementResult) -> Void
+    ) {
+        renderer.replaceRenderer(
+            baseConfig: Self.paneConfig(baseConfig),
+            metrics: metrics,
+            theme: theme,
+            completion: completion
+        )
+    }
+
+    /// A keyboard mode a program set before this client attached never reaches the pane's terminal, and tmux reports at
+    /// most a modifyOtherKeys level, only with extended-keys on. So a modified key is sent as a plain terminal sends it
+    /// unless the pane is seen asking for more; and Shift+Return is a new line, which is what agents take it for.
+    private static func paneConfig(_ base: ghostty_terminal_surface_config_s) -> ghostty_terminal_surface_config_s {
+        var config = base
+        config.plain_legacy_keys = true
+        config.shift_enter_line_feed = true
+        return config
     }
 
     func screenSurface(id: UUID) -> GhosttyManagedSurface {

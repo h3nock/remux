@@ -291,7 +291,7 @@ final class TmuxTerminalSession: ObservableObject {
             surface.renderer.failPresentation(message: "Terminal renderer is unavailable. Reconnect to try again.")
             return
         }
-        surface.renderer.replaceRenderer(
+        surface.replaceRenderer(
             baseConfig: baseSurfaceConfig(),
             metrics: metrics,
             theme: paneViewTheme()
