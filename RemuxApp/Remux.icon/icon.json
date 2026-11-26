@@ -1,132 +1,39 @@
 {
-  "color-space-for-untagged-svg-colors": "display-p3",
-  "fill": {
-    "linear-gradient": [
-      "display-p3:0.04314,0.09020,0.07843,1.00000",
-      "display-p3:0.01176,0.03137,0.02353,1.00000"
-    ]
-  },
   "groups": [
     {
-      "name": "Foreground Details",
-      "lighting": "individual",
+      "name": "Panes",
       "layers": [
         {
-          "name": "cursor",
-          "image-name": "cursor.png",
+          "name": "panes",
+          "image-name": "panes.svg",
+          "glass": true,
           "hidden": false,
-          "blend-mode": "normal",
-          "fill": "automatic",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        },
-        {
-          "name": "live-signal",
-          "image-name": "live-dot.png",
-          "hidden": false,
-          "blend-mode": "normal",
-          "fill": "automatic",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.95294,0.92549,0.84706,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.95294,0.92549,0.84706,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "srgb:0.74902,0.74118,0.73333,1.00000"
+              }
+            }
+          ]
         }
       ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.18
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0.5
-      }
-    },
-    {
-      "name": "Active Glass Pane",
       "lighting": "individual",
-      "layers": [
-        {
-          "name": "active-pane",
-          "image-name": "active-pane.png",
-          "hidden": false,
-          "blend-mode": "normal",
-          "fill": "automatic",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "layer-color",
-        "opacity": 0.14
-      },
-      "translucency": {
-        "enabled": true,
-        "value": 0.28
-      }
-    },
-    {
-      "name": "Inactive Glass Panes",
-      "lighting": "individual",
-      "layers": [
-        {
-          "name": "inactive-panes",
-          "image-name": "inactive-panes.png",
-          "hidden": false,
-          "blend-mode": "normal",
-          "fill": "automatic",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
+      "specular": true,
       "shadow": {
         "kind": "neutral",
         "opacity": 0.2
-      },
-      "translucency": {
-        "enabled": true,
-        "value": 0.18
-      }
-    },
-    {
-      "name": "Matte Terminal Field",
-      "lighting": "individual",
-      "layers": [
-        {
-          "name": "field",
-          "image-name": "field.png",
-          "hidden": false,
-          "blend-mode": "normal",
-          "fill": "automatic",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.08
       },
       "translucency": {
         "enabled": false,
@@ -139,5 +46,24 @@
       "watchOS"
     ],
     "squares": "shared"
-  }
+  },
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "srgb:0.09020,0.25098,0.18431,1.00000",
+          "srgb:0.09020,0.25098,0.18431,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "srgb:0.09020,0.25098,0.18431,1.00000",
+          "srgb:0.09020,0.25098,0.18431,1.00000"
+        ]
+      }
+    }
+  ]
 }
