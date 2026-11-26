@@ -159,6 +159,9 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private var followLink: CADisplayLink?
     /// Names the batch whose reply the follower waits for; a reply to any other is dropped.
     private var followBatchTag: UInt64 = 0
+    /// The last wheel batch whose reply the follower got; replies come in the order the batches went, and those of
+    /// batches before a session's start are not its own.
+    private var followRepliedTag: UInt64 = 0
 
     /// Set when a touch catches a live deceleration. The tap from that touch is
     /// the catch, not a click, as in native scroll views; the composite
@@ -860,6 +863,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             // owed past an edge, which nothing can deliver, goes with it.
             scrollFollower?.end()
             followBatchTag &+= 1
+            followRepliedTag = followBatchTag
         }
         followTravel = 0
         let location = physicsScrollView.panGestureRecognizer.location(in: surface.view)
@@ -892,7 +896,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
             followRows = rows
             scrollFollower?.frame(rows, now: now)
         case .reply(let tag, let delivered, let text):
-            guard tag == followBatchTag else { return }
+            guard tag > followRepliedTag, tag <= followBatchTag else { return }
+            followRepliedTag = tag
             guard delivered else {
                 endFollowing()
                 return
@@ -957,6 +962,7 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         followTravel = 0
         followRows = nil
         followBatchTag &+= 1
+        followRepliedTag = followBatchTag
         followLink?.invalidate()
         followLink = nil
         if isObservingRows {

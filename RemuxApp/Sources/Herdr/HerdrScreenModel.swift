@@ -405,9 +405,10 @@ final class HerdrScreenModel {
     private var pointers: [String: CGPoint] = [:]
     /// The scroll travel over each pane not yet a whole wheel step.
     private var wheelRemainders: [String: Double] = [:]
-    /// Where each pane's rows go while a touch scroll measures it, and the tag of the wheel batch each has out.
+    /// Where each pane's rows go while a touch scroll measures it, and the tags of the wheel batches each has out, in
+    /// the order they went.
     private var rowObservers: [String: @MainActor @Sendable (GhosttyPaneRowsEvent) -> Void] = [:]
-    private var wheelBatchesOut: [String: UInt64] = [:]
+    private var wheelBatchesOut: [String: [UInt64]] = [:]
     /// The mouse button held down in a pane, from its press to its release.
     private var mouseGesture: MouseGesture?
     private var presentationFailures: [String: TerminalDisconnectReason] = [:]
@@ -1544,7 +1545,7 @@ final class HerdrScreenModel {
             row: cell.row,
             lines: Self.wheelLines
         )
-        wheelBatchesOut[paneID] = tag
+        wheelBatchesOut[paneID, default: []].append(tag)
         target.attempt.ask(.wheelBatch(
             paneID: paneID,
             events: Array(repeating: .mouse(wheel), count: batch.reports),
@@ -1554,9 +1555,16 @@ final class HerdrScreenModel {
     }
 
     private func wheelBatchFailed(paneID: String, tag: UInt64) {
-        guard wheelBatchesOut[paneID] == tag else { return }
-        wheelBatchesOut[paneID] = nil
+        guard takeWheelBatch(paneID: paneID, tag: tag) else { return }
         rowObservers[paneID]?(.reply(tag: tag, delivered: false, rows: nil))
+    }
+
+    /// Whether the pane still had the batch out; it no longer has.
+    private func takeWheelBatch(paneID: String, tag: UInt64) -> Bool {
+        guard let index = wheelBatchesOut[paneID]?.firstIndex(of: tag) else { return false }
+        wheelBatchesOut[paneID]?.remove(at: index)
+        if wheelBatchesOut[paneID]?.isEmpty == true { wheelBatchesOut[paneID] = nil }
+        return true
     }
 
     /// Herdr keeps a pane's history position, so the focused pane's return to its live rows is a scroll Herdr makes.
@@ -2273,7 +2281,9 @@ final class HerdrScreenModel {
         attempt.finishOperations()
         attempt.task?.cancel()
         // A wheel batch the attempt won't answer is reported as not delivered, so its touch scroll ends.
-        for (paneID, tag) in wheelBatchesOut { wheelBatchFailed(paneID: paneID, tag: tag) }
+        for (paneID, tags) in wheelBatchesOut {
+            for tag in tags { wheelBatchFailed(paneID: paneID, tag: tag) }
+        }
         if attempt === self.attempt {
             findPresentation = nil
             findMethodsAvailable = false
@@ -2398,8 +2408,7 @@ final class HerdrScreenModel {
             else { return }
         case .paneRows(let paneID, let event, let connection):
             if case .reply(let tag, _, _) = event {
-                guard wheelBatchesOut[paneID] == tag else { return }
-                wheelBatchesOut[paneID] = nil
+                guard takeWheelBatch(paneID: paneID, tag: tag) else { return }
             } else {
                 guard attempt?.id == connection else { return }
             }
