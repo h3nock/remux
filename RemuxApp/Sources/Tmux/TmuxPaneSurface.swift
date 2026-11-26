@@ -88,9 +88,9 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
         )
     }
 
-    /// tmux doesn't tell a client the keyboard mode a program set before it attached, so a modified key is sent as a
-    /// plain terminal sends it unless the pane is seen asking for more; and Shift+Return is a new line, which is
-    /// what agents take it for.
+    /// A keyboard mode a program set before this client attached never reaches the pane's terminal, and tmux reports at
+    /// most a modifyOtherKeys level, only with extended-keys on. So a modified key is sent as a plain terminal sends it
+    /// unless the pane is seen asking for more; and Shift+Return is a new line, which is what agents take it for.
     private static func paneConfig(_ base: ghostty_terminal_surface_config_s) -> ghostty_terminal_surface_config_s {
         var config = base
         config.plain_legacy_keys = true
