@@ -640,6 +640,19 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertFalse(controller.isControlArmed)
     }
 
+    func testInputControllerArmedReturnIsTheReturnKeyWithItsModifiers() throws {
+        var controller = GhosttyTerminalInputController()
+        XCTAssertNil(controller.armedReturnKeyEvent(for: "\r"))
+
+        controller.toggleModifier(.shift)
+        XCTAssertNil(controller.armedReturnKeyEvent(for: "a"))
+        XCTAssertNil(controller.armedReturnKeyEvent(for: "ls\r"))
+        let event = try XCTUnwrap(controller.armedReturnKeyEvent(for: "\r"))
+        let action = controller.receiveKeyEvent(event)
+        XCTAssertEqual(action.event, GhosttySurfaceKeyEvent(keyCode: .enter, mods: [.shift]))
+        XCTAssertTrue(controller.armedModifiers.isEmpty)
+    }
+
     func testInputControllerTextWithoutModifiersKeepsControlForTheNextKey() {
         var controller = GhosttyTerminalInputController()
         controller.toggleModifier(.control)
