@@ -532,7 +532,7 @@ struct GhosttyScrollFollower {
         let whole = moved >= Int(current.expected) && current.reports <= Self.smallBatch && silent == 0
         if whole || (moved > 0 && now - max(current.progress ?? last, last) >= quiet) {
             if extended {
-                _ = agrees(moved: moved, now: now)
+                judge(moved: moved, now: now)
                 let short = Int(current.expected) - moved
                 if short > 0 {
                     let sign = current.up ? 1 : -1
@@ -604,9 +604,11 @@ struct GhosttyScrollFollower {
             - (current.expected - Double(moved))
         let reports: Int
         if memory.pipe == true {
-            // Two sends the program reads together must still leave copies the ledger can place.
+            // Two sends the program reads together must still leave copies the ledger can place; and the table says
+            // the program is steady only for the sizes it measured.
             let limit = Double(memory.band.map { $0.count } ?? gridRows / 2) / 2
-            reports = min(Int(owed / current.rate), max(1, Int(limit / 2 / current.rate)))
+            let measured = (1 << ((memory.yields.keys.max() ?? 0) + 1)) - 1
+            reports = min(Int(owed / current.rate), max(1, Int(limit / 2 / current.rate)), measured)
         } else {
             // The trial sends as the pipe would at a flick's speed: a few reports a frame apart, which is what a
             // program that speeds up with closely spaced reports answers with more.
@@ -621,8 +623,7 @@ struct GhosttyScrollFollower {
     }
 
     /// Whether an extended batch has moved what was sent, no more. False closes it, and when the program moved more
-    /// than it was sent (and nothing unasked moved lately) it is never extended again. A trial that came in whole
-    /// proves the program.
+    /// than it was sent (and nothing unasked moved lately) it is never extended again.
     private mutating func agrees(moved: Int, now: TimeInterval) -> Bool {
         guard let current = batch, current.sends.count > 1, !current.receipts.isEmpty else { return true }
         let sent = current.rate * Double(current.sends.prefix(current.receipts.count).reduce(0, +))
@@ -631,11 +632,17 @@ struct GhosttyScrollFollower {
             if unaskedAt.map({ now - $0 >= 1 }) ?? true { memory.pipe = false }
             return false
         }
-        if memory.pipe == nil, current.sends.count - 1 >= Self.trialSends,
-           current.receipts.count == current.sends.count, moved >= Int(current.expected) {
+        return true
+    }
+
+    /// A finished extended batch. A trial proves the program only when it moved exactly what was sent, once nothing
+    /// more moved, with nothing unasked moving lately: the evidence has to be clean to send ahead on it.
+    private mutating func judge(moved: Int, now: TimeInterval) {
+        guard agrees(moved: moved, now: now), let current = batch else { return }
+        if memory.pipe == nil, current.sends.count - 1 >= Self.trialSends, moved == Int(current.expected),
+           unaskedAt.map({ now - $0 >= 1 }) ?? true {
             memory.pipe = true
         }
-        return true
     }
 
     /// The 1-based grid row reports go to: where the gesture's touch began, kept within the rows seen to scroll,
