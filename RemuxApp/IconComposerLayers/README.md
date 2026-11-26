@@ -11,7 +11,9 @@ canvas:
 - Panes span `188` to `876` across and `164` to `868` down.
 - Column gutter: `48px` (left column ends at `496`, right column starts at `544`).
 - Row gutter: `48px` (top row ends at `528`, bottom row starts at `576`).
-- Corner radius: `96` on the outer left corners, `48` elsewhere.
+- Square corners: radius `48`, and `96` on the two outer left corners.
+- The round pane's right side is one continuous curve, and the corner at the
+  foot of the diagonal has radius `80`.
 - Cursor opening: `56` by `124`, showing the tile through the pane.
 
 Colours:
