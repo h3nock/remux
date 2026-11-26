@@ -95,12 +95,18 @@ const bindPauseButton = (video, button) => {
 // The opening's recording plays only while it's on screen, never on its own when Reduce Motion is on, and can be
 // paused. While the viewer shows it full size, it is held still.
 const recording = (() => {
-  const video = document.querySelector('.loop video');
+  const device = document.querySelector('.device.loop');
+  const video = device.querySelector('video');
   const button = document.querySelector('.loop-toggle');
   let paused = reduceMotion.matches;
   let visible = false;
   let held = false;
-  const show = bindPauseButton(video, button);
+  const showButton = bindPauseButton(video, button);
+  // While the recording isn't playing (Reduce Motion, Low Power Mode, or paused), the phone shows a play button.
+  const showDevice = () => device.classList.toggle('is-paused', video.paused);
+  video.addEventListener('play', showDevice);
+  video.addEventListener('pause', showDevice);
+  const show = () => { showButton(); showDevice(); };
   const sync = () => {
     if (!paused && visible && !held) video.play().catch(show); else video.pause();
   };
@@ -110,6 +116,8 @@ const recording = (() => {
     paused = !video.paused;
     if (paused) video.pause(); else video.play().catch(show);
   });
+  // A tap on the screen plays or pauses it in place, like any video; the enlarge button opens it full size.
+  device.querySelector('.screen').addEventListener('click', () => button.click());
   // Turning Reduce Motion on stops the loop; turning it off leaves it to the visitor.
   reduceMotion.addEventListener('change', () => { if (reduceMotion.matches) { paused = true; sync(); } });
   new IntersectionObserver(([entry]) => { visible = entry.isIntersecting && entry.intersectionRatio >= 0.25; sync(); },
@@ -170,7 +178,6 @@ const recording = (() => {
     else { film.addEventListener('loadedmetadata', start, { once: true }); film.load(); }
     open('video', 'Recording, full size');
   };
-  document.querySelector('.loop .screen').addEventListener('click', openFilm);
   document.querySelector('.demo-enlarge').addEventListener('click', openFilm);
 
   viewer.addEventListener('close', () => {

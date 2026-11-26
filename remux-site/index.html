@@ -4,26 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Remux: a native iOS client for tmux and herdr</title>
-  <meta name="description" content="A native iOS client for tmux and herdr. Attach to your sessions from your iPhone and carry on where you left off.">
+  <meta name="description" content="A native iOS client for tmux and herdr. Swipe and tap through your sessions like any iPhone app, and carry on where you left off.">
+  <meta name="theme-color" content="#fafbfc" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0c0f" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="./assets/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
   <link rel="canonical" href="https://getremux.app/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Remux">
   <meta property="og:url" content="https://getremux.app/">
   <meta property="og:title" content="Remux: a native iOS client for tmux and herdr">
-  <meta property="og:description" content="Attach to your tmux and herdr sessions from your iPhone and carry on where you left off.">
+  <meta property="og:description" content="Swipe and tap through your sessions like any iPhone app, and carry on where you left off.">
   <meta property="og:image" content="https://getremux.app/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Two Remux screens on an iPhone, Home with its agents and Claude Code asking to run a command, next to the line: A native iOS client for tmux and herdr.">
+  <meta property="og:image:alt" content="Two Remux screens on an iPhone: Home with its agents and sessions, and the window picker.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="./assets/remux-app-icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
-  <link rel="preload" href="./fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="./fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=21">
-  <script src="./script.js?v=7" defer></script>
+  <link rel="preload" href="./assets/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="./styles.css?v=23">
+  <script src="./script.js?v=8" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -36,137 +37,145 @@
       </nav>
       <div class="out">
         <a href="https://github.com/h3nock/remux">github</a>
-        <a href="https://testflight.apple.com/join/fHqG1ruE">testflight</a>
+        <a class="btn pri nav-cta" href="https://testflight.apple.com/join/fHqG1ruE">testflight</a>
       </div>
     </header>
 
-    <main class="stack" id="main">
-      <section class="pane hero-pane" aria-labelledby="name">
-        <div class="body">
-          <div>
-            <h1 id="name">A native iOS client for tmux and herdr.</h1>
-            <p class="lede">Attach to your sessions from your iPhone and carry on where you left off.</p>
-            <div class="actions">
-              <a class="btn pri" href="https://testflight.apple.com/join/fHqG1ruE">Join the TestFlight beta</a>
-              <a class="btn" href="https://github.com/h3nock/remux">Source on GitHub <span aria-hidden="true">↗</span></a>
-            </div>
-            <p class="note">Direct over SSH, with no account or relay. Built on <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>.</p>
-          </div>
-          <figure class="shot full loop">
-            <div class="screen">
-              <video poster="./shots/opening-poster.webp" width="600" height="1304" muted loop playsinline preload="none"
-                aria-label="Remux in use: Home shows a Claude Code agent that needs you; in a tmux session, a swipe and the window picker move through its windows and the pane map switches panes; the Sessions sheet opens a herdr workspace and its tabs list goes to the agent; dragging on its prompt picks an answer, it starts the site, and a preview of localhost opens it; a screenshot of it is circled in markup and sent with a dictated prompt">
-                <source src="./shots/opening-av1.mp4" type='video/mp4; codecs="av01.0.09M.08"'>
-                <source src="./shots/opening.mp4" type='video/mp4; codecs="avc1.640032"'>
-              </video>
-            </div>
-            <div class="demo-controls">
-              <button class="icon-btn demo-enlarge" type="button" aria-label="Enlarge the recording"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9"/></svg></button>
-              <button class="icon-btn loop-toggle" type="button" aria-label="Pause the recording"><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx="1"/><rect x="9.4" y="3" width="2.6" height="10" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.3v9.4c0 .5.5.8.9.5l7-4.7a.6.6 0 0 0 0-1l-7-4.7c-.4-.3-.9 0-.9.5z"/></svg></button>
-            </div>
-          </figure>
-        </div>
-      </section>
-
-      <section class="pane" id="features" aria-labelledby="h-features">
-        <h2 class="pt" id="h-features">Features</h2>
-        <span class="pm">click to enlarge</span>
-        <div class="feature-grid">
-          <section class="feature-item" aria-labelledby="h-agents">
-            <div class="feature-copy">
-              <h3 id="h-agents">Sessions &amp; agents</h3>
-              <p>Keep several sessions attached. Get alerted when a <a href="https://herdr.dev">herdr</a> agent needs you.</p>
-            </div>
-            <figure class="shot crop at-top">
-              <button class="zoom" type="button" aria-label="Enlarge the Home screenshot">
-                <img src="./shots/home.webp" srcset="./shots/home.webp 600w, ./shots/home-900.webp 900w, ./shots/home-1206.webp 1206w" sizes="(max-width: 760px) 104px, 290px" width="600" height="1304" loading="lazy" alt="Home in Remux showing agents in priority order above active and recent sessions">
-              </button>
-            </figure>
-          </section>
-          <section class="feature-item" aria-labelledby="h-windows">
-            <div class="feature-copy">
-              <h3 id="h-windows">Windows &amp; panes</h3>
-              <p>Swipe between windows or tabs, and switch panes with the pane map.</p>
-            </div>
-            <figure class="shot crop at-top">
-              <button class="zoom" type="button" aria-label="Enlarge the tmux window picker screenshot">
-                <img src="./shots/windows.webp" srcset="./shots/windows.webp 600w, ./shots/windows-900.webp 900w, ./shots/windows-1206.webp 1206w" sizes="(max-width: 760px) 104px, 290px" width="600" height="1304" loading="lazy" alt="Picking one of five windows in a tmux session, each showing its latest output">
-              </button>
-            </figure>
-          </section>
-          <section class="feature-item" aria-labelledby="h-toolbar">
-            <div class="feature-copy">
-              <h3 id="h-toolbar">Shortcuts &amp; toolbar</h3>
-              <p>Long-press the first key for shortcuts, or the terminal and drag for arrows.</p>
-            </div>
-            <figure class="shot crop at-end">
-              <button class="zoom" type="button" aria-label="Enlarge the saved commands screenshot">
-                <img src="./shots/shortcuts.webp" srcset="./shots/shortcuts.webp 600w, ./shots/shortcuts-900.webp 900w, ./shots/shortcuts-1206.webp 1206w" sizes="(max-width: 760px) 104px, 290px" width="600" height="1304" loading="lazy" alt="Saved Claude Code commands open above customizable ctrl, esc, and enter toolbar keys">
-              </button>
-            </figure>
-          </section>
-          <section class="feature-item" aria-labelledby="h-composer">
-            <div class="feature-copy">
-              <h3 id="h-composer">Composer &amp; dictation</h3>
-              <p>Write longer prompts in the composer, or dictate them on-device.</p>
-            </div>
-            <figure class="shot crop at-end">
-              <button class="zoom" type="button" aria-label="Enlarge the composer screenshot">
-                <img src="./shots/composer.webp" srcset="./shots/composer.webp 600w, ./shots/composer-900.webp 900w, ./shots/composer-1206.webp 1206w" sizes="(max-width: 760px) 104px, 290px" width="600" height="1304" loading="lazy" alt="A prompt written in the Remux composer with on-device dictation">
-              </button>
-            </figure>
-          </section>
-          <section class="feature-item" aria-labelledby="h-previews">
-            <div class="feature-copy">
-              <h3 id="h-previews">Previews</h3>
-              <p>Long-press a file path or a <code>localhost</code> link to preview it.</p>
-            </div>
-            <figure class="shot crop at-top">
-              <button class="zoom" type="button" aria-label="Enlarge the localhost preview screenshot">
-                <img src="./shots/preview-localhost.webp" srcset="./shots/preview-localhost.webp 600w, ./shots/preview-localhost-900.webp 900w, ./shots/preview-localhost-1206.webp 1206w" sizes="(max-width: 760px) 104px, 290px" width="600" height="1304" loading="lazy" alt="A 3D electronics bench from a dev server on the remote Mac open at localhost:57332">
-              </button>
-            </figure>
-          </section>
-          <section class="feature-item" aria-labelledby="h-markup">
-            <div class="feature-copy">
-              <h3 id="h-markup">Files &amp; markup</h3>
-              <p>Attach a photo or file. Remux uploads it to your server and adds the path.</p>
-            </div>
-            <figure class="shot crop at-top">
-              <button class="zoom" type="button" aria-label="Enlarge the Markup screenshot">
-                <img src="./shots/markup.webp" srcset="./shots/markup.webp 600w, ./shots/markup-900.webp 900w, ./shots/markup-1206.webp 1206w" sizes="(max-width: 760px) 104px, 290px" width="600" height="1304" loading="lazy" alt="Circling a lit LED on a breadboard screenshot in Remux Markup before sending it">
-              </button>
-            </figure>
-          </section>
-        </div>
-      </section>
-
-      <section class="pane inst" id="install" aria-labelledby="h-install">
-        <h2 class="pt" id="h-install">Install</h2>
-        <div class="body">
-          <div class="copy">
-            <img class="app-icon" src="./assets/remux-app-icon.svg" alt="" width="40" height="40">
-            <h3>Get Remux.</h3>
-            <p>Remux collects no data, and it's open source under the MIT license.</p>
-          </div>
-          <div class="get">
+    <main id="main">
+      <section class="hero" aria-labelledby="name">
+        <div class="hero-copy">
+          <h1 id="name">A native iOS client for tmux and herdr.</h1>
+          <p class="lede">Swipe and tap through your sessions like any iPhone app, and carry on where you left off.</p>
+          <div class="actions">
             <a class="btn pri" href="https://testflight.apple.com/join/fHqG1ruE">Join the TestFlight beta</a>
             <a class="btn" href="https://github.com/h3nock/remux">Source on GitHub <span aria-hidden="true">↗</span></a>
           </div>
+          <p class="note">Direct over SSH, with no account or relay. Built on <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>.</p>
         </div>
-        <dl class="specs" aria-label="Technical details">
-          <div><dt>connection</dt><dd>Sign in with a password, private key, Tailscale SSH, or a Secure Enclave key that never leaves your iPhone.</dd></div>
-          <div><dt>terminal</dt><dd>Built on <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s terminal core.</dd></div>
-          <div><dt>requirements</dt><dd>iOS 18 or later, and <code>tmux 3.1+</code> or <code>herdr 0.9.3+</code> on your machine.</dd></div>
-        </dl>
+        <figure class="hero-phone">
+          <div class="device loop">
+            <div class="screen">
+              <video poster="./assets/shots/opening-poster.webp" width="600" height="1304" muted loop playsinline preload="none"
+                aria-label="Remux in use: Home shows a Claude Code agent that needs you; in a tmux session, a swipe and the window picker move through its windows and the pane map switches panes; the Sessions sheet opens a herdr workspace and its tabs list goes to the agent; dragging on its prompt picks an answer, it starts the site, and a preview of localhost opens it; a screenshot of it is circled in markup and sent with a dictated prompt">
+                <source src="./assets/shots/opening-av1.mp4" type='video/mp4; codecs="av01.0.09M.08"'>
+                <source src="./assets/shots/opening.mp4" type='video/mp4; codecs="avc1.640032"'>
+              </video>
+            </div>
+          </div>
+          <div class="demo-controls">
+            <button class="icon-btn demo-enlarge" type="button" aria-label="Enlarge the recording"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9"/></svg></button>
+            <button class="icon-btn loop-toggle" type="button" aria-label="Pause the recording"><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx="1"/><rect x="9.4" y="3" width="2.6" height="10" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.3v9.4c0 .5.5.8.9.5l7-4.7a.6.6 0 0 0 0-1l-7-4.7c-.4-.3-.9 0-.9.5z"/></svg></button>
+          </div>
+        </figure>
+      </section>
+
+      <section class="features" id="features" aria-labelledby="h-features">
+        <p class="enlarge-hint" aria-hidden="true"><span class="hint-click">click</span><span class="hint-tap">tap</span> a screen to enlarge</p>
+        <h2 class="visually-hidden" id="h-features">Features</h2>
+        <div class="bento screens">
+          <article class="feat wide flip" aria-labelledby="h-agents">
+            <div class="card-copy">
+              <h3 id="h-agents">Sessions &amp; agents</h3>
+              <p>Keep several sessions attached. Get alerted when a <a href="https://herdr.dev">herdr</a> agent needs you.</p>
+            </div>
+            <figure class="shot crop2 c2-home">
+              <button class="zoom" type="button" aria-label="Enlarge the Home screenshot">
+                <img src="./assets/shots/home.webp" srcset="./assets/shots/home.webp 600w, ./assets/shots/home-900.webp 900w, ./assets/shots/home-1206.webp 1206w" sizes="(max-width: 520px) calc(100vw - 36px), 380px" width="600" height="1304" loading="lazy" alt="Home in Remux showing agents in priority order above active and recent sessions">
+              </button>
+            </figure>
+          </article>
+          <article class="feat pair" aria-labelledby="h-windows">
+            <div class="card-copy">
+              <h3 id="h-windows">Windows &amp; panes</h3>
+              <p>Swipe between windows or tabs, and switch panes with the pane map.</p>
+            </div>
+            <figure class="shot crop2 c2-windows">
+              <button class="zoom" type="button" aria-label="Enlarge the tmux window picker screenshot">
+                <img src="./assets/shots/windows.webp" srcset="./assets/shots/windows.webp 600w, ./assets/shots/windows-900.webp 900w, ./assets/shots/windows-1206.webp 1206w" sizes="(max-width: 520px) calc(100vw - 36px), 380px" width="600" height="1304" loading="lazy" alt="Picking one of five windows in a tmux session, each showing its latest output">
+              </button>
+            </figure>
+          </article>
+          <article class="feat pair" aria-labelledby="h-toolbar">
+            <div class="card-copy">
+              <h3 id="h-toolbar">Shortcuts &amp; toolbar</h3>
+              <p>Long-press the first key for shortcuts, or the terminal and drag for arrows.</p>
+            </div>
+            <figure class="shot crop2 c2-shortcuts">
+              <button class="zoom" type="button" aria-label="Enlarge the saved commands screenshot">
+                <img src="./assets/shots/shortcuts.webp" srcset="./assets/shots/shortcuts.webp 600w, ./assets/shots/shortcuts-900.webp 900w, ./assets/shots/shortcuts-1206.webp 1206w" sizes="(max-width: 520px) calc(100vw - 36px), 380px" width="600" height="1304" loading="lazy" alt="Saved Claude Code commands open above customizable ctrl, esc, and enter toolbar keys">
+              </button>
+            </figure>
+          </article>
+          <article class="feat wide" aria-labelledby="h-composer">
+            <div class="card-copy">
+              <h3 id="h-composer">Composer &amp; dictation</h3>
+              <p>Write longer prompts in the composer, or dictate them on-device.</p>
+            </div>
+            <figure class="shot crop2 c2-composer">
+              <button class="zoom" type="button" aria-label="Enlarge the composer screenshot">
+                <img src="./assets/shots/composer.webp" srcset="./assets/shots/composer.webp 600w, ./assets/shots/composer-900.webp 900w, ./assets/shots/composer-1206.webp 1206w" sizes="(max-width: 520px) calc(100vw - 36px), 380px" width="600" height="1304" loading="lazy" alt="A prompt written in the Remux composer with on-device dictation">
+              </button>
+            </figure>
+          </article>
+          <article class="feat pair" aria-labelledby="h-previews">
+            <div class="card-copy">
+              <h3 id="h-previews">Previews</h3>
+              <p>Long-press a file path or a <code>localhost</code> link to preview it.</p>
+            </div>
+            <figure class="shot crop2 c2-preview-localhost">
+              <button class="zoom" type="button" aria-label="Enlarge the localhost preview screenshot">
+                <img src="./assets/shots/preview-localhost.webp" srcset="./assets/shots/preview-localhost.webp 600w, ./assets/shots/preview-localhost-900.webp 900w, ./assets/shots/preview-localhost-1206.webp 1206w" sizes="(max-width: 520px) calc(100vw - 36px), 380px" width="600" height="1304" loading="lazy" alt="A 3D electronics bench from a dev server on the remote Mac open at localhost:57332">
+              </button>
+            </figure>
+          </article>
+          <article class="feat pair" aria-labelledby="h-markup">
+            <div class="card-copy">
+              <h3 id="h-markup">Files &amp; markup</h3>
+              <p>Attach a photo or file. Remux uploads it to your server and adds the path.</p>
+            </div>
+            <figure class="shot crop2 c2-markup">
+              <button class="zoom" type="button" aria-label="Enlarge the Markup screenshot">
+                <img src="./assets/shots/markup.webp" srcset="./assets/shots/markup.webp 600w, ./assets/shots/markup-900.webp 900w, ./assets/shots/markup-1206.webp 1206w" sizes="(max-width: 520px) calc(100vw - 36px), 380px" width="600" height="1304" loading="lazy" alt="Circling a lit LED on a breadboard screenshot in Remux Markup before sending it">
+              </button>
+            </figure>
+          </article>
+        </div>
+      </section>
+
+      <section class="install" id="install" aria-labelledby="h-install-title">
+        <h2 class="visually-hidden" id="h-install-title">Install</h2>
+        <div class="bento">
+          <article class="card wide install-card" aria-labelledby="h-install">
+            <div class="get-block">
+              <img class="app-icon" src="./assets/remux-app-icon-152.png" srcset="./assets/remux-app-icon-76.png 76w, ./assets/remux-app-icon-152.png 152w, ./assets/remux-app-icon-228.png 228w" sizes="(min-width: 761px) 76px, 56px" alt="" width="64" height="64">
+              <h3 id="h-install">Get Remux.</h3>
+              <p class="get-line">Remux collects no data, and it's open source under the MIT license.</p>
+              <div class="scan-inline">
+                <svg class="qr" role="img" aria-label="QR code that opens the Remux beta on TestFlight" viewBox="0 0 198 198"><path transform="scale(6)" stroke="currentColor" d="M2 2.5h7m2 0h4m2 0h1m1 0h3m2 0h7m-29 1h1m5 0h1m2 0h1m2 0h1m2 0h4m3 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m5 0h1m1 0h1m1 0h3m3 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m6 0h2m3 0h3m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m3 0h2m1 0h1m1 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h2m5 0h1m2 0h3m1 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-19 1h2m2 0h1m2 0h2m-19 1h1m2 0h1m1 0h2m1 0h3m2 0h1m2 0h1m1 0h1m1 0h2m1 0h1m-24 1h1m1 0h1m1 0h1m2 0h1m1 0h2m2 0h2m1 0h1m3 0h3m2 0h1m2 0h1m-29 1h4m2 0h1m2 0h1m1 0h4m1 0h2m1 0h1m1 0h1m2 0h4m-26 1h2m3 0h2m1 0h1m2 0h1m2 0h1m2 0h5m2 0h2m-28 1h1m5 0h1m1 0h2m3 0h1m1 0h3m2 0h4m1 0h1m1 0h2m-29 1h1m1 0h2m1 0h1m3 0h1m2 0h1m1 0h1m1 0h2m1 0h3m-22 1h1m2 0h1m1 0h2m1 0h1m2 0h3m2 0h1m1 0h1m2 0h1m3 0h4m-29 1h1m3 0h1m2 0h3m2 0h2m2 0h3m1 0h2m1 0h1m1 0h1m1 0h1m-28 1h9m1 0h1m4 0h1m1 0h1m2 0h2m1 0h1m3 0h1m-25 1h3m1 0h2m3 0h2m2 0h2m2 0h4m1 0h1m2 0h1m-29 1h1m1 0h1m1 0h4m1 0h4m4 0h1m2 0h1m2 0h2m2 0h2m-26 1h1m1 0h1m1 0h1m1 0h4m1 0h5m1 0h1m1 0h1m4 0h2m-29 1h1m1 0h1m1 0h1m1 0h2m2 0h2m2 0h3m3 0h5m1 0h1m-19 1h4m1 0h1m2 0h1m3 0h1m3 0h1m1 0h3m-29 1h7m2 0h1m3 0h1m2 0h1m3 0h1m1 0h1m1 0h1m2 0h1m-28 1h1m5 0h1m1 0h2m2 0h2m2 0h1m1 0h1m1 0h1m3 0h5m-29 1h1m1 0h3m1 0h1m2 0h1m2 0h1m1 0h5m1 0h5m-25 1h1m1 0h3m1 0h1m1 0h2m12 0h6m-28 1h1m1 0h3m1 0h1m2 0h2m3 0h1m1 0h1m3 0h1m3 0h3m1 0h1m-29 1h1m5 0h1m3 0h5m2 0h4m2 0h1m3 0h1m-28 1h7m1 0h8m1 0h1m2 0h5m2 0h1"/></svg>
+                <div><p>Scan with your iPhone to join the beta.</p><a href="https://testflight.apple.com/join/fHqG1ruE">Or open the link <span aria-hidden="true">↗</span></a></div>
+              </div>
+              <div class="get">
+                <a class="btn pri" href="https://testflight.apple.com/join/fHqG1ruE">Join the TestFlight beta</a>
+                <a class="btn" href="https://github.com/h3nock/remux">Source on GitHub <span aria-hidden="true">↗</span></a>
+              </div>
+            </div>
+            <dl class="specs" aria-label="Technical details">
+              <div><dt>connection</dt><dd>Sign in with a password, private key, Tailscale SSH, or a Secure Enclave key that never leaves your iPhone.</dd></div>
+              <div><dt>terminal</dt><dd>Built on <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s terminal core.</dd></div>
+              <div><dt>requirements</dt><dd>iOS 18 or later, and <code>tmux 3.1+</code> or <code>herdr 0.9.3+</code> on your machine.</dd></div>
+            </dl>
+          </article>
+        </div>
       </section>
     </main>
-
-    <footer class="foot">
-      <span>remux · built on <a href="https://github.com/ghostty-org/ghostty">Ghostty</a></span>
-      <span class="links"><a href="https://github.com/h3nock/remux/blob/main/PRIVACY.md">privacy</a> <a href="https://github.com/h3nock/remux">github.com/h3nock/remux</a></span>
-    </footer>
   </div>
+
+  <footer class="status">
+    <div class="status-in">
+      <span class="s-left"><b>[remux]</b></span>
+      <span class="s-right"><a href="https://github.com/h3nock/remux/blob/main/PRIVACY.md">privacy</a><span aria-hidden="true">│</span><a href="https://github.com/h3nock/remux">github.com/h3nock/remux</a></span>
+    </div>
+  </footer>
 
   <div class="scan-panel" role="dialog" aria-label="Join the beta on your iPhone" tabindex="-1" hidden>
     <svg class="qr" role="img" aria-label="QR code that opens the Remux beta on TestFlight" width="198" height="198"><path transform="scale(6)" stroke="currentColor" d="M2 2.5h7m2 0h4m2 0h1m1 0h3m2 0h7m-29 1h1m5 0h1m2 0h1m2 0h1m2 0h4m3 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m5 0h1m1 0h1m1 0h3m3 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m6 0h2m3 0h3m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m3 0h2m1 0h1m1 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h2m5 0h1m2 0h3m1 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-19 1h2m2 0h1m2 0h2m-19 1h1m2 0h1m1 0h2m1 0h3m2 0h1m2 0h1m1 0h1m1 0h2m1 0h1m-24 1h1m1 0h1m1 0h1m2 0h1m1 0h2m2 0h2m1 0h1m3 0h3m2 0h1m2 0h1m-29 1h4m2 0h1m2 0h1m1 0h4m1 0h2m1 0h1m1 0h1m2 0h4m-26 1h2m3 0h2m1 0h1m2 0h1m2 0h1m2 0h5m2 0h2m-28 1h1m5 0h1m1 0h2m3 0h1m1 0h3m2 0h4m1 0h1m1 0h2m-29 1h1m1 0h2m1 0h1m3 0h1m2 0h1m1 0h1m1 0h2m1 0h3m-22 1h1m2 0h1m1 0h2m1 0h1m2 0h3m2 0h1m1 0h1m2 0h1m3 0h4m-29 1h1m3 0h1m2 0h3m2 0h2m2 0h3m1 0h2m1 0h1m1 0h1m1 0h1m-28 1h9m1 0h1m4 0h1m1 0h1m2 0h2m1 0h1m3 0h1m-25 1h3m1 0h2m3 0h2m2 0h2m2 0h4m1 0h1m2 0h1m-29 1h1m1 0h1m1 0h4m1 0h4m4 0h1m2 0h1m2 0h2m2 0h2m-26 1h1m1 0h1m1 0h1m1 0h4m1 0h5m1 0h1m1 0h1m4 0h2m-29 1h1m1 0h1m1 0h1m1 0h2m2 0h2m2 0h3m3 0h5m1 0h1m-19 1h4m1 0h1m2 0h1m3 0h1m3 0h1m1 0h3m-29 1h7m2 0h1m3 0h1m2 0h1m3 0h1m1 0h1m1 0h1m2 0h1m-28 1h1m5 0h1m1 0h2m2 0h2m2 0h1m1 0h1m1 0h1m3 0h5m-29 1h1m1 0h3m1 0h1m2 0h1m2 0h1m1 0h5m1 0h5m-25 1h1m1 0h3m1 0h1m1 0h2m12 0h6m-28 1h1m1 0h3m1 0h1m2 0h2m3 0h1m1 0h1m3 0h1m3 0h3m1 0h1m-29 1h1m5 0h1m3 0h5m2 0h4m2 0h1m3 0h1m-28 1h7m1 0h8m1 0h1m2 0h5m2 0h1"/></svg>
@@ -177,9 +186,9 @@
   <dialog class="viewer" aria-label="Screen, full size" data-kind="image">
     <button class="key close" type="button">close</button>
     <img alt="">
-    <video poster="./shots/opening-poster.webp" muted loop playsinline preload="none" aria-label="Remux in use, full size">
-      <source src="./shots/opening-av1.mp4" type='video/mp4; codecs="av01.0.09M.08"'>
-      <source src="./shots/opening.mp4" type='video/mp4; codecs="avc1.640032"'>
+    <video poster="./assets/shots/opening-poster.webp" muted loop playsinline preload="none" aria-label="Remux in use, full size">
+      <source src="./assets/shots/opening-av1.mp4" type='video/mp4; codecs="av01.0.09M.08"'>
+      <source src="./assets/shots/opening.mp4" type='video/mp4; codecs="avc1.640032"'>
     </video>
     <button class="icon-btn loop-toggle viewer-toggle" type="button" aria-label="Pause the recording"><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="3" width="2.6" height="10" rx="1"/><rect x="9.4" y="3" width="2.6" height="10" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.3v9.4c0 .5.5.8.9.5l7-4.7a.6.6 0 0 0 0-1l-7-4.7c-.4-.3-.9 0-.9.5z"/></svg></button>
   </dialog>
