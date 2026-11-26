@@ -98,8 +98,8 @@ html {
   }
 }
 @media (max-height: 480px) {
-  :root {
-    --bar: 0px;
+  html {
+    scroll-padding-top: 0;
   }
 }
 @media (max-width: 760px) {
