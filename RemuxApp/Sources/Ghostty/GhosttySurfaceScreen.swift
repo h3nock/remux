@@ -1181,12 +1181,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     /// Asks for the terminal's keyboard again where it may have gone away under the focused terminal, as after an
-    /// unexpected hide or a return to the app. Focus alone doesn't show it then, so whenever the terminal was asked
-    /// for it, the keyboard is presented again too.
+    /// unexpected hide or a return to the app. Focus alone doesn't show it then, so while the terminal holds the
+    /// keyboard and keeps its focus, including through a pane that is still getting ready, the keyboard is presented
+    /// again too.
     private func bringTerminalKeyboardBackIfActive() {
-        let token = inputCoordinator.terminalActivationToken
         refocusSystemKeyboardIfActive()
-        guard inputCoordinator.terminalActivationToken != token else { return }
+        guard inputCoordinator.keyboardMode == .system, inputCoordinator.keyboardOwner == .terminal,
+              TerminalReadinessProjector.isKeyboardFocusAvailable(model.terminalScreenPresentationProjection.readiness)
+        else { return }
         keyboardResponderHandoff.presentTerminalKeyboardAgain()
     }
 

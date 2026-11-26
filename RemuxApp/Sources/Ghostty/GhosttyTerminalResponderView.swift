@@ -901,7 +901,6 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         _ = attemptFirstResponderRequest(route: "reconcile")
     }
 
-    @discardableResult
     /// The keyboard can go away while this input keeps focus, as when UIKit lowers it on its own. Asking for focus
     /// again then does nothing, and reloading the input views is what shows the keyboard again. A focus request to the
     /// input that already has it, as on every window switch, leaves the keyboard as it is: reloading it there makes
@@ -912,6 +911,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         reloadInputViews()
     }
 
+    @discardableResult
     private func attemptFirstResponderRequest(route: String) -> Bool {
         if isFirstResponder {
             pendingFirstResponderRequest = false
