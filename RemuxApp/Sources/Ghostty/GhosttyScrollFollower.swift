@@ -213,6 +213,12 @@ struct GhosttyScrollLedger {
 /// difference. One batch is out at a time: the next goes only once the last was seen to act or seen not to, so a
 /// program that stalls, drops or multiplies reports can't make it send the same travel twice.
 ///
+/// While the finger or the coast moves on, a batch to a program that has shown it moves a fixed number of rows per
+/// report, however close together the reports come, is extended as the target moves: what is in flight is then what
+/// one round trip carries, not one batch, and the content trails the scroll view by about one round trip. A program
+/// gets a trial of two closely spaced sends first and full extensions only once the trial came in whole; it never
+/// gets any again once an extended batch moved more than it was sent.
+///
 /// Travel is positive toward earlier rows, as a finger moving down the glass drags the transcript.
 struct GhosttyScrollFollower {
     /// What the follower knows of the pane's program, kept between sessions while the pane stays on the
@@ -227,6 +233,15 @@ struct GhosttyScrollFollower {
         var band: ClosedRange<Int>?
         /// Rows per report of the last batch, and when it finished.
         var recent: (rate: Double, at: TimeInterval)?
+        /// Whether the program moves what the table says for reports a frame apart, as an extended batch sends them:
+        /// nil until a batch extended by a trial of sends came in whole, then true; false for good once an extended
+        /// batch moved more than it was sent.
+        var pipe: Bool?
+        /// Rows of travel the program has been sent and not shown, positive toward earlier rows, and until when they
+        /// are taken to be on their way: a program can take reports and draw them only later, with more input.
+        /// Movement their way is theirs first, they count as in flight, and nothing is learned while they are out.
+        var held = 0
+        var heldUntil: TimeInterval = 0
 
         /// Chrome keeps its place at the pane's edges, so on a resize the band keeps its margins.
         mutating func resize(fromRows old: Int, toRows new: Int) {
@@ -251,16 +266,27 @@ struct GhosttyScrollFollower {
     }
 
     private struct Batch {
-        let reports: Int
+        /// Reports in all its sends.
+        var reports: Int
         let up: Bool
-        let expected: Double
+        /// Rows per report expected when it was first sent.
+        let rate: Double
+        var expected: Double
         let row: Int
-        /// Rows seen when it was sent, then as of its receipt: what moved before the receipt was not its doing.
+        /// Rows seen when it was sent, then as of its first receipt: what moved before that was not its doing.
         var start: Int
         let rested: Bool
-        var receipt: TimeInterval?
+        /// Known to be answered before its own answer comes (`tick`).
+        let vouched: Bool
+        /// Reports per send, in the order they went, and the receipts that came back for them.
+        var sends: [Int]
+        var receipts: [TimeInterval] = []
         var first: TimeInterval?
         var progress: TimeInterval?
+        /// Whether it may still be extended.
+        var open = true
+
+        var receipt: TimeInterval? { receipts.first }
     }
 
     /// A batch that moved something is finished once nothing more has moved for two 60 Hz frames.
@@ -272,8 +298,15 @@ struct GhosttyScrollFollower {
     /// Without reports for this long, the program is taken to be at rest.
     static let rest: TimeInterval = 0.1
     static let maximumBatch = 64
-    /// The largest batch sent to a program that is not at rest.
+    /// The largest batch sent to a program that is not at rest, and the largest send in an extension trial.
     static let smallBatch = 3
+    /// Extension sends a program not yet proven gets: the fewest that show whether reports a frame apart move more
+    /// than the same reports at rest.
+    static let trialSends = 2
+    /// An extension goes at most once per 60 Hz frame, less a quarter for display-link jitter.
+    static let spacing: TimeInterval = 0.0125
+    /// How long reports a program was sent and hasn't shown are still taken to be on their way.
+    static let hold: TimeInterval = 1.0
 
     private(set) var memory: Memory
     let gridRows: Int
@@ -319,12 +352,19 @@ struct GhosttyScrollFollower {
             targetMoved = now
         }
         lastTarget = target
-        if batch != nil, !finishBatch(now: now) { return .live(nil) }
+        if memory.held != 0, now >= memory.heldUntil {
+            // Not drawn in all this time: lost, at an edge or to the program.
+            memory.held = 0
+        }
+        if batch != nil, !finishBatch(now: now) {
+            return .live(active ? extend(target: target, now: now) : nil)
+        }
         if let caughtAt {
-            forgiven = caughtAt - Double(seen)
+            // Held reports are still on their way: they are part of where the content stops, not owed.
+            forgiven = caughtAt - Double(memory.held) - Double(seen)
             self.caughtAt = nil
         }
-        let error = target - forgiven - Double(seen)
+        let error = target - forgiven - Double(memory.held) - Double(seen)
         let step = yield(reports: 1, now: now)
         if active {
             closing = 0
@@ -335,7 +375,7 @@ struct GhosttyScrollFollower {
             return .ended
         }
         let up = error > 0
-        if heading != 0, (heading > 0) != up, now - targetMoved < Self.rest {
+        if active, heading != 0, (heading > 0) != up, now - targetMoved < Self.rest {
             // The content is ahead and the target is on its way to it.
             return .live(nil)
         }
@@ -343,13 +383,22 @@ struct GhosttyScrollFollower {
         guard reports > 0 else { return .live(nil) }
         let row = reportRow(touched: touchRow)
         let rested = lastSend.map { now - $0 >= Self.rest } ?? true
+        let rate = yield(reports: reports, now: now)
+        // A batch is known to be answered before its own answer comes when it follows one answered at the same row,
+        // the same way, without a pause; or, for a program proven to take extensions, when it goes to a row the
+        // program has been seen to scroll.
+        let continues = answeredRow == row && tail.map { $0.up == up && now - $0.until < Self.rest } == true
+        let scrolls = memory.pipe == true && memory.band?.contains(row - 1) == true
         batch = Batch(
             reports: reports,
             up: up,
-            expected: Double(reports) * yield(reports: reports, now: now),
+            rate: rate,
+            expected: Double(reports) * rate,
             row: row,
             start: seen,
-            rested: rested
+            rested: rested,
+            vouched: silent == 0 && (continues || scrolls),
+            sends: [reports]
         )
         lastSend = now
         if !active, silent == 0 { closing += 1 }
@@ -360,26 +409,33 @@ struct GhosttyScrollFollower {
     mutating func frame(_ rows: [String], now: TimeInterval) {
         guard ledger != nil else { return }
         let before = seen
-        let moved = place(rows, now: now)
-        if moved, batch?.receipt != nil {
+        guard place(rows, now: now) else { return }
+        let moved = unheld(since: before)
+        if moved != 0, batch?.receipt != nil {
             batch?.progress = now
             if batch?.first == nil { batch?.first = now }
-        } else if moved {
-            unasked(rows: seen - before, now: now)
+        } else if moved != 0 {
+            unasked(rows: moved, now: now)
         }
     }
 
-    /// The batch that is out reached the program, with the viewport's rows as of that moment (nil when they couldn't
-    /// be read). Whatever moved before this was not its doing, and its answer is due from now.
+    /// One of the sends of the batch that is out reached the program, in the order they went, with the viewport's
+    /// rows as of that moment (nil when they couldn't be read). Whatever moved before the first was not the batch's
+    /// doing; what moved before a later one was the earlier sends' answer.
     mutating func receipt(rows: [String]?, now: TimeInterval) {
-        guard ledger != nil, batch != nil else { return }
+        guard ledger != nil, let current = batch, current.receipts.count < current.sends.count else { return }
         let before = seen
-        if let rows, place(rows, now: now) {
-            unasked(rows: seen - before, now: now)
+        var moved = 0
+        if let rows, place(rows, now: now) { moved = unheld(since: before) }
+        if current.receipts.isEmpty {
+            if moved != 0 { unasked(rows: moved, now: now) }
+            let position = seen
+            batch?.start = position
+        } else if moved != 0 {
+            batch?.progress = now
+            if batch?.first == nil { batch?.first = now }
         }
-        let position = seen
-        batch?.receipt = now
-        batch?.start = position
+        batch?.receipts.append(now)
     }
 
     /// A touch stopped a coast. The content stops too: what the follower still owed is dropped once the batch that
@@ -423,6 +479,17 @@ struct GhosttyScrollFollower {
         return current.offset != before
     }
 
+    /// Rows the content moved since `before` that aren't held reports landing; the batch's count leaves those out.
+    private mutating func unheld(since before: Int) -> Int {
+        var moved = seen - before
+        guard memory.held != 0, moved * memory.held > 0 else { return moved }
+        let paid = min(abs(moved), abs(memory.held)) * (moved > 0 ? 1 : -1)
+        memory.held -= paid
+        moved -= paid
+        batch?.start += paid
+        return moved
+    }
+
     /// The content moved with no batch to account for it: the program's own doing, as a reply streaming in at the live
     /// edge, unless it is the last batch's answer still arriving. It counts toward the target, never past it: movement
     /// the follower didn't ask for must not become travel owed the other way. Nothing is learned for a second.
@@ -431,7 +498,7 @@ struct GhosttyScrollFollower {
         unaskedAt = now
         guard let lastTarget else { return }
         let moved = Double(rows)
-        let error = lastTarget - forgiven - Double(seen - rows)
+        let error = lastTarget - forgiven - Double(memory.held) - Double(seen - rows)
         var toward = error * moved > 0 ? moved : 0
         toward = error > 0
             ? max(min(toward, error), -abs(error))
@@ -441,10 +508,12 @@ struct GhosttyScrollFollower {
 
     /// True once the batch that is out has finished, answered or not.
     private mutating func finishBatch(now: TimeInterval) -> Bool {
-        guard let current = batch, let receipt = current.receipt else { return false }
+        guard let current = batch, current.receipts.count == current.sends.count, let receipt = current.receipt,
+              let last = current.receipts.last
+        else { return false }
+        let extended = current.sends.count > 1
         let moved = (seen - current.start) * (current.up ? 1 : -1)
-        var wait = memory.answer.map { max(Self.minimumWait, 2 * $0) } ?? Self.firstWait
-        wait *= pow(2, Double(max(silent - 1, 0)))
+        let wait = answerWait() * pow(2, Double(max(silent - 1, 0)))
         if let unplaced, now - unplaced.since >= Self.settle {
             // The viewport changed past recognition and stayed that way: the batch moved further than the copies
             // overlap. Take it as having moved what was expected, and learn nothing from it.
@@ -457,10 +526,20 @@ struct GhosttyScrollFollower {
         }
         let quiet = silent > 0 ? wait : Self.settle
         // An answer can come in more than one repaint. A small batch is finished the moment it has moved what was
-        // expected; a larger one, or one that did less, once nothing more has moved for `quiet`.
+        // expected; a larger one, or one that did less, once nothing more has moved for `quiet` since its last
+        // receipt or movement. What an extended batch, sent to a program proven to move what it is sent, hasn't
+        // shown by then is held: on its way, not lost.
         let whole = moved >= Int(current.expected) && current.reports <= Self.smallBatch && silent == 0
-        if whole || (moved > 0 && now - (current.progress ?? receipt) >= quiet) {
-            if silent == 0, unaskedAt.map({ now - $0 >= 1 }) ?? true {
+        if whole || (moved > 0 && now - max(current.progress ?? last, last) >= quiet) {
+            if extended {
+                _ = agrees(moved: moved, now: now)
+                let short = Int(current.expected) - moved
+                if short > 0 {
+                    let sign = current.up ? 1 : -1
+                    memory.held = (memory.held * sign > 0 ? memory.held : 0) + short * sign
+                    memory.heldUntil = now + Self.hold
+                }
+            } else if silent == 0, memory.held == 0, unaskedAt.map({ now - $0 >= 1 }) ?? true {
                 let rate = max(1, Double(moved) / Double(current.reports))
                 let sizeClass = Self.sizeClass(current.reports)
                 // At rest a batch shows what its size does. Not at rest it can only have done as much or more, so it
@@ -480,12 +559,83 @@ struct GhosttyScrollFollower {
             batch = nil
             return true
         }
-        if moved <= 0, now - receipt >= wait {
+        if moved <= 0, now - last >= wait {
             silent += 1
             batch = nil
             return true
         }
         return false
+    }
+
+    /// How long after a receipt an answer may still be on its way.
+    private func answerWait() -> TimeInterval {
+        memory.answer.map { max(Self.minimumWait, 2 * $0) } ?? Self.firstWait
+    }
+
+    // MARK: Extending a batch
+
+    /// The rows per report every size class tried has shown, when they all agree and more than one was tried.
+    private var steadyRate: Double? {
+        let rates = Set(memory.yields.values)
+        return memory.yields.count >= 2 && rates.count == 1 ? rates.first : nil
+    }
+
+    /// Adds to the batch that is out what the target has moved on since, beyond what is already in flight, when the
+    /// program is answering it as the table says. A program not yet seen to take reports a frame apart (`pipe` nil)
+    /// gets a trial of a few sends; one that took more than it was sent never gets more (`pipe` false).
+    private mutating func extend(target: Double, now: TimeInterval) -> Send? {
+        guard let current = batch, current.open, memory.pipe != false, current.rate == steadyRate, silent == 0,
+              unplaced == nil, caughtAt == nil, let lastSend, now - lastSend >= Self.spacing,
+              current.first != nil || current.vouched
+        else { return nil }
+        let sign = current.up ? 1 : -1
+        let moved = (seen - current.start) * sign
+        guard agrees(moved: moved, now: now) else { return nil }
+        let wait = answerWait()
+        let due = current.rate * Double(zip(current.sends, current.receipts).reduce(0) { sum, sent in
+            now - sent.1 >= wait ? sum + sent.0 : sum
+        })
+        if Double(moved) < due - current.rate {
+            // Sends already in haven't shown: an edge, or the program stopped answering.
+            batch?.open = false
+            return nil
+        }
+        let owed = (target - forgiven - Double(memory.held) - Double(seen)) * Double(sign)
+            - (current.expected - Double(moved))
+        let reports: Int
+        if memory.pipe == true {
+            // Two sends the program reads together must still leave copies the ledger can place.
+            let limit = Double(memory.band.map { $0.count } ?? gridRows / 2) / 2
+            reports = min(Int(owed / current.rate), max(1, Int(limit / 2 / current.rate)))
+        } else {
+            // The trial sends as the pipe would at a flick's speed: a few reports a frame apart, which is what a
+            // program that speeds up with closely spaced reports answers with more.
+            reports = current.sends.count - 1 < Self.trialSends ? min(Int(owed / current.rate), Self.smallBatch) : 0
+        }
+        guard reports > 0 else { return nil }
+        batch?.sends.append(reports)
+        batch?.reports += reports
+        batch?.expected += Double(reports) * current.rate
+        self.lastSend = now
+        return Send(reports: reports, up: current.up, row: current.row)
+    }
+
+    /// Whether an extended batch has moved what was sent, no more. False closes it, and when the program moved more
+    /// than it was sent (and nothing unasked moved lately) it is never extended again. A trial that came in whole
+    /// proves the program.
+    private mutating func agrees(moved: Int, now: TimeInterval) -> Bool {
+        guard let current = batch, current.sends.count > 1, !current.receipts.isEmpty else { return true }
+        let sent = current.rate * Double(current.sends.prefix(current.receipts.count).reduce(0, +))
+        if Double(moved) > sent + current.rate {
+            batch?.open = false
+            if unaskedAt.map({ now - $0 >= 1 }) ?? true { memory.pipe = false }
+            return false
+        }
+        if memory.pipe == nil, current.sends.count - 1 >= Self.trialSends,
+           current.receipts.count == current.sends.count, moved >= Int(current.expected) {
+            memory.pipe = true
+        }
+        return true
     }
 
     /// The 1-based grid row reports go to: where the gesture's touch began, kept within the rows seen to scroll,

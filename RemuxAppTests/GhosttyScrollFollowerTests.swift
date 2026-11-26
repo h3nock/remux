@@ -8,16 +8,20 @@ final class GhosttyScrollFollowerTests: XCTestCase {
     /// and `ledger.py`, driven by `parity.py`, in remux-docs evidence/scroll-follower-20261125/reference) against a
     /// simulated program that moves one, three, or an accelerating number of rows per report, ignores reports over its
     /// input box, drops the first report after a change of direction, draws some answers in two pieces or two
-    /// repaints, once freezes, streams a reply at the live edge, and sends its frames on a 16 ms cadence as Herdr
-    /// does. Each trace is every call the follower got, in order, and what each tick returned; the port has to return
-    /// the same.
+    /// repaints, once freezes, streams a reply at the live edge, sends its frames on a 16 ms cadence as Herdr does,
+    /// reads its input only every 30 ms, or takes reports and draws them only later, as Codex was seen to. Some traces
+    /// are in a pane like the rig's, where a steady program is proven and its batches extended, and Claude Code's
+    /// stand-in is refused after its trial. Each trace is every call the follower got, in order, and what each tick
+    /// returned; the port has to return the same.
     func testMakesTheReferenceModelsDecisions() throws {
         let fixture = try Self.parityFixture()
-        let gridRows = try XCTUnwrap(fixture["rows"] as? Int)
         let traces = try XCTUnwrap(fixture["traces"] as? [[String: Any]])
-        XCTAssertEqual(traces.count, 13)
+        XCTAssertEqual(traces.count, 21)
         for (traceIndex, trace) in traces.enumerated() {
             let touch = try XCTUnwrap(trace["touch"] as? Int)
+            let body = try XCTUnwrap(trace["body"] as? Int)
+            let gridRows = body + 4
+            let screen = { (spec: (offset: Int, previous: Int, drawn: Int)) in Self.screen(spec, body: body) }
             var current = try Self.spec(trace["first"])
             var follower = GhosttyScrollFollower(gridRows: gridRows)
             var sends = 0
@@ -26,10 +30,10 @@ final class GhosttyScrollFollowerTests: XCTestCase {
                 let label = "trace \(traceIndex) (\(trace["kind"] ?? "") \(trace["gestures"] ?? "")) call \(callIndex)"
                 switch call[0] as? String {
                 case "receipt":
-                    follower.receipt(rows: Self.screen(try Self.spec(call[2])), now: try Self.number(call[1]))
+                    follower.receipt(rows: screen(try Self.spec(call[2])), now: try Self.number(call[1]))
                 case "frame":
                     current = try Self.spec(call[2])
-                    follower.frame(Self.screen(current), now: try Self.number(call[1]))
+                    follower.frame(screen(current), now: try Self.number(call[1]))
                 case "caught":
                     follower.caught(target: try Self.number(call[1]))
                 case "tick":
@@ -38,7 +42,7 @@ final class GhosttyScrollFollowerTests: XCTestCase {
                         active: try Self.number(call[3]) != 0,
                         touchRow: touch,
                         now: try Self.number(call[1]),
-                        rows: Self.screen(current)
+                        rows: screen(current)
                     )
                     let expected = try Self.expectedStep(call[4])
                     guard step == expected else {
@@ -61,7 +65,17 @@ final class GhosttyScrollFollowerTests: XCTestCase {
             )
             let band = try XCTUnwrap(memory["band"] as? [Int])
             XCTAssertEqual(follower.memory.band, band[0]...band[1], "trace \(traceIndex)")
+            XCTAssertEqual(follower.memory.pipe, memory["pipe"] as? Bool, "trace \(traceIndex)")
+            XCTAssertEqual(follower.memory.held, try XCTUnwrap(memory["held"] as? Int), "trace \(traceIndex)")
         }
+    }
+
+    /// The traces cover each way an extended batch ends, so the port is checked on all of them.
+    func testTracesCoverEveryWayABatchIsExtendedOrEnds() throws {
+        let traces = try XCTUnwrap(Self.parityFixture()["traces"] as? [[String: Any]])
+        let pipes = traces.compactMap { ($0["memory"] as? [String: Any])?["pipe"] as? Bool }
+        XCTAssertTrue(pipes.contains(true))
+        XCTAssertTrue(pipes.contains(false))
     }
 
     // MARK: The ledger
@@ -148,11 +162,11 @@ final class GhosttyScrollFollowerTests: XCTestCase {
         Array(rows[offset..<(offset + 8)])
     }
 
-    /// The simulated program's screen, as `parity.py` draws it: a header, 16 transcript rows of which the first
+    /// The simulated program's screen, as `parity.py` draws it: a header, `body` transcript rows of which the first
     /// `drawn` are at `offset` and the rest still at `previous`, a blank row, the input box and a status line.
-    private static func screen(_ spec: (offset: Int, previous: Int, drawn: Int)) -> [String] {
-        let body = (0..<16).map { row in line((row < spec.drawn ? spec.offset : spec.previous) + row + 1) }
-        return ["HEADER"] + body + ["", "> type here", "status 42"]
+    private static func screen(_ spec: (offset: Int, previous: Int, drawn: Int), body: Int) -> [String] {
+        let rows = (0..<body).map { row in line((row < spec.drawn ? spec.offset : spec.previous) + row + 1) }
+        return ["HEADER"] + rows + ["", "> type here", "status 42"]
     }
 
     private static func line(_ index: Int) -> String {
