@@ -25,6 +25,8 @@ struct GhosttyScrollLedger {
     private var started = false
     private var lastPieceCount = 0
     private var lastCopy: [String]?
+    /// The last placed copy at another position than the current one, and that position.
+    private var anchor: (copy: [String], offset: Int)?
 
     private static let minimumVotes = 2
 
@@ -48,10 +50,14 @@ struct GhosttyScrollLedger {
     mutating func locate(_ rows: [String]) -> Bool {
         let span = rowSpan(rows)
         if let lastCopy, lastCopy.count == rows.count, !span.isEmpty, lastCopy[span] == rows[span] {
+            grow(rows)
             return true
         }
         let placed = place(rows)
-        if placed { lastCopy = rows }
+        if placed {
+            grow(rows)
+            lastCopy = rows
+        }
         return placed
     }
 
@@ -66,6 +72,7 @@ struct GhosttyScrollLedger {
         }
         lastPieceCount = place.count
         lastCopy = rows
+        anchor = nil
     }
 
     private func rowSpan(_ rows: [String]) -> Range<Int> {
@@ -142,6 +149,7 @@ struct GhosttyScrollLedger {
             if let lower = seen.min(), let upper = seen.max() {
                 band = band.map { min(lower, $0.lowerBound)...max(upper, $0.upperBound) } ?? lower...upper
             }
+            anchor = (previous, offset)
             offset = best
         }
 
@@ -170,6 +178,30 @@ struct GhosttyScrollLedger {
         pending = proposed
         lastPieceCount = pieces.count
         return true
+    }
+
+    /// The band takes in any row, in it or not, whose text the copy before the last move showed once, shifted by just
+    /// as far as the content has moved since. A band learned from a half-drawn copy is only its redrawn rows; the
+    /// next copy that shows the rest of them shifted widens it.
+    private mutating func grow(_ rows: [String]) {
+        guard let anchor else { return }
+        let shift = offset - anchor.offset
+        let counts = Self.counts(rows)
+        let anchorCounts = Self.counts(anchor.copy)
+        let slid = rows.indices.filter { row in
+            let text = rows[row]
+            return !text.isEmpty && counts[text] == 1 && anchorCounts[text] == 1
+                && anchor.copy.indices.contains(row + shift) && anchor.copy[row + shift] == text
+        }
+        let rowsSlid = slid + slid.map { $0 + shift }
+        guard let lower = rowsSlid.min(), let upper = rowsSlid.max() else { return }
+        band = band.map { min(lower, $0.lowerBound)...max(upper, $0.upperBound) } ?? lower...upper
+    }
+
+    private static func counts(_ rows: [String]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for text in rows { counts[text, default: 0] += 1 }
+        return counts
     }
 }
 

@@ -79,6 +79,23 @@ final class GhosttyScrollFollowerTests: XCTestCase {
         XCTAssertEqual(ledger.offset, 3)
     }
 
+    func testBandLearnedFromAHalfDrawnCopyGrowsToEveryRowThatSlid() {
+        var ledger = GhosttyScrollLedger(band: nil)
+        let screen = { (offset: Int, drawn: Int, previous: Int) -> [String] in
+            ["HEADER"] + (0..<10).map { "line \(($0 < drawn ? offset : previous) + $0)" } + ["> type here"]
+        }
+        XCTAssertTrue(ledger.locate(screen(20, 10, 20)))
+        // The first copy after a move of three rows toward earlier ones has only its top five rows redrawn.
+        XCTAssertTrue(ledger.locate(screen(17, 5, 20)))
+        XCTAssertEqual(ledger.offset, -3)
+        XCTAssertEqual(ledger.band, 1...5)
+        // The rest of the redraw shows every scrolling row shifted from where the copy before the move had it.
+        XCTAssertTrue(ledger.locate(screen(17, 10, 17)))
+        XCTAssertEqual(ledger.band, 1...10)
+        XCTAssertTrue(ledger.locate(screen(14, 10, 14)))
+        XCTAssertEqual(ledger.offset, -6)
+    }
+
     func testRowsThatRecurDecideNothing() {
         var ledger = GhosttyScrollLedger(band: nil)
         // Every other line is the same, so only the numbered ones can place a copy.
