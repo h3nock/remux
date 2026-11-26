@@ -52,18 +52,12 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
     ) {
         let paneID = terminal.paneID
         let binding = RendererBinding(controller: controller, paneID: paneID)
-        // tmux doesn't tell a client the keyboard mode a program set before it attached, so a modified key is
-        // sent as a plain terminal sends it unless the pane is seen asking for more; and Shift+Return is a new
-        // line, which is what agents take it for.
-        var config = baseConfig
-        config.plain_legacy_keys = true
-        config.shift_enter_line_feed = true
         TerminalPaneRenderer.create(
             app: app,
             terminal: terminal,
             fence: wrapFence(binding),
             writeInput: { [binding] bytes in binding.write(bytes) },
-            baseConfig: config,
+            baseConfig: paneConfig(baseConfig),
             metrics: metrics,
             theme: theme,
             diagnosticName: "pane=\(paneID)",
@@ -77,6 +71,31 @@ final class TmuxPaneSurface: TerminalPaneInputSink {
         self.paneID = paneID
         self.renderer = renderer
         self.binding = binding
+    }
+
+    /// A replacement renderer keeps the pane's own surface settings.
+    func replaceRenderer(
+        baseConfig: ghostty_terminal_surface_config_s,
+        metrics: GhosttySurfaceDisplayMetrics,
+        theme: TerminalTheme,
+        completion: @escaping @MainActor (TerminalPaneRenderer.RendererReplacementResult) -> Void
+    ) {
+        renderer.replaceRenderer(
+            baseConfig: Self.paneConfig(baseConfig),
+            metrics: metrics,
+            theme: theme,
+            completion: completion
+        )
+    }
+
+    /// tmux doesn't tell a client the keyboard mode a program set before it attached, so a modified key is sent as a
+    /// plain terminal sends it unless the pane is seen asking for more; and Shift+Return is a new line, which is
+    /// what agents take it for.
+    private static func paneConfig(_ base: ghostty_terminal_surface_config_s) -> ghostty_terminal_surface_config_s {
+        var config = base
+        config.plain_legacy_keys = true
+        config.shift_enter_line_feed = true
+        return config
     }
 
     func screenSurface(id: UUID) -> GhosttyManagedSurface {

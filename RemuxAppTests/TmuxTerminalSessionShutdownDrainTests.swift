@@ -286,6 +286,36 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await fixture.session.shutdown()
     }
 
+    func testReplacedRendererKeepsThePanesKeyEncoding() async throws {
+        let fixture = try await makeNativeFixture()
+        defer { fixture.window.isHidden = true }
+        let written = CommandRecorder()
+        fixture.session.controller.setOutboundSink { written.append($0) }
+        func ctrlEscape() async throws -> String? {
+            _ = written.take()
+            let managed = try XCTUnwrap(fixture.surface.renderer.managedSurface)
+            XCTAssertTrue(managed.sendKeyEvent(GhosttySurfaceKeyEvent(keyCode: .escape, mods: [.ctrl])).isAccepted)
+            for _ in 0..<100 {
+                await drain(fixture.session.controller)
+                if let keys = written.take().first(where: { $0.hasPrefix("send-keys") }) { return keys }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            return nil
+        }
+        // A pane that asked for no keyboard mode gets a plain Escape, before and after its renderer is replaced.
+        let beforeReplacement = try await ctrlEscape()
+        XCTAssertEqual(beforeReplacement, "send-keys -H -t %0 1b")
+        var results: [TerminalPaneRenderer.RendererReplacementResult] = []
+        fixture.surface.replaceRenderer(
+            baseConfig: fixture.runtime.makeTmuxBaseSurfaceConfig(),
+            metrics: fixture.metrics, theme: .remuxDark
+        ) { results.append($0) }
+        try await waitUntil { results == [.replaced] && fixture.surface.renderer.presentation == .ready }
+        let afterReplacement = try await ctrlEscape()
+        XCTAssertEqual(afterReplacement, "send-keys -H -t %0 1b")
+        await fixture.session.shutdown()
+    }
+
     func testReplacementUsesResizeArrivingDuringNativeUnregister() async throws {
         let fixture = try await makeNativeFixture()
         defer { fixture.window.isHidden = true }
@@ -822,5 +852,22 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
             currentPath: "",
             phase: phase
         )
+    }
+}
+
+/// The command lines the controller wrote.
+private final class CommandRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var written = Data()
+
+    func append(_ data: Data) {
+        lock.withLock { written.append(data) }
+    }
+
+    func take() -> [String] {
+        lock.withLock {
+            defer { written.removeAll() }
+            return String(decoding: written, as: UTF8.self).split(separator: "\n").map(String.init)
+        }
     }
 }
