@@ -7,6 +7,12 @@ site_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../remux-site" && pwd)"
 
 node --check "${site_dir}/script.js"
 
+# A missing page would otherwise list no assets and pass.
+test -f "${site_dir}/index.html" || {
+  printf 'Missing site page: index.html\n' >&2
+  exit 1
+}
+
 while IFS= read -r asset; do
   test -f "${site_dir}/${asset}" || {
     printf 'Missing site asset: %s\n' "${asset}" >&2
