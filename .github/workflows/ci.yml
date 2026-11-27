@@ -52,7 +52,7 @@ jobs:
           ghosttykit_changed=false
           while IFS= read -r path; do
             case "${path}" in
-              remux-site/*|docs/*|README.md|LICENSE)
+              remux-site/*|scripts/check_site.sh|docs/*|README.md|LICENSE)
                 ;;
               scripts/fetch_ghosttykit.sh|scripts/verify_ghosttykit_release_mode.sh|.github/workflows/ci.yml)
                 app_changed=true
@@ -77,16 +77,7 @@ jobs:
 
       - name: Validate static site
         shell: bash
-        run: |
-          set -euo pipefail
-          node --check remux-site/script.js
-
-          while IFS= read -r asset; do
-            test -f "remux-site/${asset}" || {
-              printf 'Missing site asset: %s\n' "${asset}" >&2
-              exit 1
-            }
-          done < <(rg -o 'assets/[^"?, ]+' remux-site/index.html | sort -u)
+        run: scripts/check_site.sh
 
   app:
     name: App
