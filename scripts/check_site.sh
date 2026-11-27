@@ -7,9 +7,15 @@ site_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../remux-site" && pwd)"
 
 node --check "${site_dir}/script.js"
 
-# A missing page would otherwise list no assets and pass.
-test -f "${site_dir}/index.html" || {
+page="${site_dir}/index.html"
+test -f "${page}" || {
   printf 'Missing site page: index.html\n' >&2
+  exit 1
+}
+
+# The page names its assets, so finding none means the search itself failed.
+assets="$(grep -oE 'assets/[^"?, ]+' "${page}" | sort -u)" || {
+  printf 'Found no asset references in index.html\n' >&2
   exit 1
 }
 
@@ -18,4 +24,4 @@ while IFS= read -r asset; do
     printf 'Missing site asset: %s\n' "${asset}" >&2
     exit 1
   }
-done < <(rg -o 'assets/[^"?, ]+' "${site_dir}/index.html" | sort -u)
+done <<< "${assets}"

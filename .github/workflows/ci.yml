@@ -61,17 +61,19 @@ jobs:
               ;;
           esac
 
-          if [[ -z "${range}" ]]; then
+          # Without rename detection a file moved out of the app still lists its
+          # old path. A comparison that fails checks everything too.
+          if [[ -z "${range}" ]] || ! paths="$(git diff --name-only --no-renames "${range}")"; then
             printf 'app=true\nghosttykit=true\n' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          # Without rename detection a file moved out of the app still lists its
-          # old path.
           app_changed=false
           ghosttykit_changed=false
           while IFS= read -r path; do
             case "${path}" in
+              "")
+                ;;
               remux-site/*|scripts/check_site.sh|docs/*|README.md|LICENSE)
                 ;;
               scripts/fetch_ghosttykit.sh|scripts/verify_ghosttykit_release_mode.sh|.github/workflows/ci.yml)
@@ -82,7 +84,7 @@ jobs:
                 app_changed=true
                 ;;
             esac
-          done < <(git diff --name-only --no-renames "${range}")
+          done <<< "${paths}"
 
           if [[ "${EVENT_NAME}" != "pull_request" && "${app_changed}" == "true" ]]; then
             ghosttykit_changed=true
