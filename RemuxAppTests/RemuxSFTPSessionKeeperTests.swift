@@ -86,6 +86,26 @@ final class RemuxSFTPSessionKeeperTests: XCTestCase {
         try await waitUntil { sessions.closeCount(of: 1) == 1 }
     }
 
+    /// A wait can end at its deadline just as a new user cancels it. That wait then says nothing about the idle
+    /// time the new user starts on leaving, so the session stays open until that one runs out.
+    func testAnIdleTimeoutThatRanOutAsANewUserCameLeavesTheSessionOpen() async throws {
+        let clock = HeldClock()
+        let keeper = Keeper(idleTimeout: .seconds(60), clock: clock)
+        let sessions = FakeSFTPSessions()
+
+        try await keeper.lease(for: "server", open: sessions.opener()).close()
+        try await waitUntil { clock.waitCount == 1 }
+        try await keeper.lease(for: "server", open: sessions.opener()).close()
+        try await waitUntil { clock.waitCount == 2 }
+        clock.endWait(0)
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(sessions.closeCount(of: 1), 0)
+        XCTAssertEqual(sessions.openCount, 1)
+        clock.endWait(1)
+        try await waitUntil { sessions.closeCount(of: 1) == 1 }
+    }
+
     func testClosingALeaseTwiceGivesBackOnePlace() async throws {
         let clock = ManualClock()
         let keeper = Keeper(idleTimeout: .seconds(60), clock: clock)
@@ -246,6 +266,30 @@ final class RemuxSFTPSessionKeeperTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(2))
         }
         XCTAssertTrue(condition())
+    }
+}
+
+/// A clock whose waits end only when the test ends them, cancelled or not, the way a real wait can end at its
+/// deadline just as it is cancelled.
+private final class HeldClock: Clock {
+    private let waits = Mutex<[CheckedContinuation<Void, Never>]>([])
+
+    var now: ContinuousClock.Instant { .now }
+
+    var minimumResolution: Duration { .zero }
+
+    var waitCount: Int {
+        waits.withLock { $0.count }
+    }
+
+    func sleep(until deadline: ContinuousClock.Instant, tolerance: Duration? = nil) async throws {
+        await withCheckedContinuation { continuation in
+            waits.withLock { $0.append(continuation) }
+        }
+    }
+
+    func endWait(_ index: Int) {
+        waits.withLock { $0[index] }.resume()
     }
 }
 

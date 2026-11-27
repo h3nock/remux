@@ -117,6 +117,9 @@ actor RemuxSFTPSessionKeeper<Key: Hashable & Sendable, Client: Sendable> {
                 } catch {
                     return
                 }
+                // The wait can end at its deadline just as a new user cancels it, and that user may have left
+                // again by now.
+                guard !Task.isCancelled else { return }
                 self.closeIfIdle(key, entryID: entryID)
             }
         }
