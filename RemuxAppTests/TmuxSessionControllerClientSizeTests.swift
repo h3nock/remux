@@ -1578,6 +1578,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             + "#{mouse_all_flag};#{mouse_button_flag};#{mouse_standard_flag};#{mouse_utf8_flag};"
             + "#{mouse_sgr_flag};#{history_size};"
             + "#{scroll_region_upper};#{scroll_region_lower};#{pane_tabs};"
+            + "#{?pane_in_mode,,#{?#{==:#{extended-keys},off},,#{pane_key_mode}}};"
             + "#{pane_current_command};#{pane_current_path}'"
             + " ; capture-pane -p -e -N -q -S -2000 -E -1 -t %\(paneID)"
             + " ; capture-pane -p -e -N -a -q -t %\(paneID)"
