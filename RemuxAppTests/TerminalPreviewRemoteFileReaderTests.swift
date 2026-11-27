@@ -22,9 +22,12 @@ final class TerminalPreviewRemoteFileReaderTests: XCTestCase {
         let size = UInt64(contents.count)
         let chunkOffsets = stride(from: UInt64(0), to: size, by: length).map { $0 }
         XCTAssertEqual(Set(requests.map(\.offset)), Set(chunkOffsets + [size]))
-        // The end came back before the reads ahead of it (they answer last here), so one more read confirmed it.
-        XCTAssertEqual(requests.filter { $0.offset == size }.count, 2)
-        XCTAssertEqual(requests.count, chunkOffsets.count + 2)
+        // The end and the last chunk answer after the same delay. When the end comes back first, one more read
+        // confirms it; `testEndThatComesBackLastIsNotReadAgain` and
+        // `testFileThatGrowsAfterItsEndCameBackEarlyIsReadToItsNewEnd` cover each order on its own.
+        let endReads = requests.filter { $0.offset == size }.count
+        XCTAssertTrue((1...2).contains(endReads), "the end was read \(endReads) times")
+        XCTAssertEqual(requests.count, chunkOffsets.count + endReads)
         for request in requests where request.offset < size {
             XCTAssertEqual(UInt64(request.length), min(UInt64(length), size - request.offset))
         }
