@@ -801,6 +801,8 @@ final class HerdrModelHarness {
             if await condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
+        // A stalled machine can sleep past the deadline without having looked since the condition came true.
+        if await condition() { return }
         XCTFail(failure)
         throw HarnessTimeout()
     }
