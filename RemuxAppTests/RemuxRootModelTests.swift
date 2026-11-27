@@ -543,8 +543,14 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertTrue(harness.model.activeSessions.isEmpty)
 
-        harness.model.refreshSessions(for: pair.server.id)
-        harness.model.refreshSessions(for: pair.server.id)
+        // Herdr's discovery runs in the same refresh, and a request made before it ends joins that refresh rather
+        // than starting another; each round here either waits out that refresh or is the retry.
+        for _ in 0..<2 {
+            guard await discoverer.targets().count < 2 else { break }
+            harness.model.refreshSessions(for: pair.server.id)
+            harness.model.refreshSessions(for: pair.server.id)
+            await harness.model.refreshSessionsAndWait(for: pair.server.id)
+        }
         let didRetry = await waitUntil {
             harness.model.sessionDiscovery(for: pair.server.id).tmux.sessionNames == ["main"]
         }
@@ -600,6 +606,55 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(didRetry)
         let discoveryCount = await discoverer.targets().count
         XCTAssertEqual(discoveryCount, 2)
+    }
+
+    /// Each backend's answer shows as it arrives, so a key can be trusted while the other backend is still being
+    /// listed. That check began before the key was trusted, so a new one replaces it and the sessions load
+    /// without waiting for the slow listing.
+    func testTrustingAHostKeyWhileTheOtherBackendIsStillListedChecksAgain() async throws {
+        let pair = makePasswordBackedServer()
+        let challenge = makeHostKeyChallenge(
+            serverID: pair.server.id,
+            host: pair.server.host
+        )
+        let tmuxDiscoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+                .success(["main", "ops"]),
+            ]
+        )
+        let herdrDiscoverer = FirstSuspendingTmuxSessionDiscoverer(laterNames: ["agents"])
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await tmuxDiscoverer.discover(target)
+            },
+            herdrSessionDiscoverer: { target, _, _ in
+                await herdrDiscoverer.discover(target).map { DiscoveredSession(name: $0, isRunning: true) }
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        await herdrDiscoverer.waitForFirstCall()
+        let didRequireTrust = await waitUntil {
+            harness.model.sessionDiscovery(for: pair.server.id).tmux.hostKeyChallenge
+                == challenge
+        }
+        XCTAssertTrue(didRequireTrust)
+
+        harness.model.trustSessionDiscoveryHostKey(challenge)
+
+        let didCheckAgain = await waitUntil {
+            let discovery = harness.model.sessionDiscovery(for: pair.server.id)
+            return discovery.tmux
+                == SessionDiscoveryState.idle.finishingRefresh(with: tmuxListing(["main", "ops"]))
+                && discovery.herdr.sessionNames == ["agents"]
+        }
+        XCTAssertTrue(didCheckAgain)
+        let discoveryCount = await tmuxDiscoverer.targets().count
+        XCTAssertEqual(discoveryCount, 2)
+        await herdrDiscoverer.resumeFirst(with: [])
     }
 
     /// Opening a tmux session cancels its server's refresh, which may have listed tmux's sessions but not yet
