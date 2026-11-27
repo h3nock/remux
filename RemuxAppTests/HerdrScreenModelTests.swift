@@ -4297,7 +4297,8 @@ final class HerdrScreenModelTests: XCTestCase {
         let written = await session.bridge.writtenCount
         let later = try await harness.writes(session.bridge, from: index, count: written - index)
         XCTAssertFalse(later.contains { paneFocus($0) != nil }, "the overtaken move's focus went: \(later)")
-        XCTAssertEqual(drawnPanes(harness), ["w1:p4"])
+        // The move ends before the pane Herdr shows is on screen: its renderer's first picture comes after.
+        try await harness.waitUntil("the pane Herdr shows wasn't drawn") { self.drawnPanes(harness) == ["w1:p4"] }
     }
 
     /// The next write `match` takes, failing with `failure` unless it comes within the harness's wait.
