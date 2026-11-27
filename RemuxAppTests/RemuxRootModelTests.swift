@@ -543,8 +543,14 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertTrue(harness.model.activeSessions.isEmpty)
 
-        harness.model.refreshSessions(for: pair.server.id)
-        harness.model.refreshSessions(for: pair.server.id)
+        // Herdr's discovery runs in the same refresh, and a request made before it ends joins that refresh rather
+        // than starting another; each round here either waits out that refresh or is the retry.
+        for _ in 0..<2 {
+            guard await discoverer.targets().count < 2 else { break }
+            harness.model.refreshSessions(for: pair.server.id)
+            harness.model.refreshSessions(for: pair.server.id)
+            await harness.model.refreshSessionsAndWait(for: pair.server.id)
+        }
         let didRetry = await waitUntil {
             harness.model.sessionDiscovery(for: pair.server.id).tmux.sessionNames == ["main"]
         }
