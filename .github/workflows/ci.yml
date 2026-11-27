@@ -11,8 +11,10 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request replaces its older run. Every push to main keeps
+# its own run, so a later merge can't cancel the check of an earlier one.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -37,17 +39,35 @@ jobs:
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PULL_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+          # A push is judged by what it added to the branch. A manual run, or a
+          # push whose earlier commit isn't in the history, checks everything.
+          range=""
+          case "${EVENT_NAME}" in
+            pull_request)
+              range="${PULL_BASE_SHA}...${PULL_HEAD_SHA}"
+              ;;
+            push)
+              if git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2> /dev/null; then
+                range="${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}"
+              fi
+              ;;
+          esac
+
+          if [[ -z "${range}" ]]; then
             printf 'app=true\nghosttykit=true\n' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
+          # Without rename detection a file moved out of the app still lists its
+          # old path.
           app_changed=false
           ghosttykit_changed=false
           while IFS= read -r path; do
@@ -62,7 +82,11 @@ jobs:
                 app_changed=true
                 ;;
             esac
-          done < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
+          done < <(git diff --name-only --no-renames "${range}")
+
+          if [[ "${EVENT_NAME}" != "pull_request" && "${app_changed}" == "true" ]]; then
+            ghosttykit_changed=true
+          fi
 
           printf 'app=%s\nghosttykit=%s\n' "${app_changed}" "${ghosttykit_changed}" >> "${GITHUB_OUTPUT}"
 
