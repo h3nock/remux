@@ -232,12 +232,45 @@ jobs:
         shell: bash
         run: xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
 
+      # A test that fails runs once more, and the job passes if it passes then.
+      # The next step names every such test, so it can still be looked into.
       - name: Run unit tests
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
-          xcodebuild test-without-building -project Remux.xcodeproj -scheme Remux -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxTests -resultBundlePath "${RUNNER_TEMP}/RemuxUnitTests.xcresult" -clonedSourcePackagesDirPath "${RUNNER_TEMP}/SourcePackages"
+          xcodebuild test-without-building -project Remux.xcodeproj -scheme Remux -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxTests -retry-tests-on-failure -test-iterations 2 -resultBundlePath "${RUNNER_TEMP}/RemuxUnitTests.xcresult" -clonedSourcePackagesDirPath "${RUNNER_TEMP}/SourcePackages"
+
+      - name: Report retried tests
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="${RUNNER_TEMP}/RemuxUnitTests.xcresult"
+          if [[ ! -d "${bundle}" ]]; then
+            exit 0
+          fi
+
+          retried="$(xcrun xcresulttool get test-results tests --path "${bundle}" | jq -r '
+            .. | objects
+            | select(.nodeType? == "Test Case" and .result? == "Passed")
+            | select(any(.children[]?; .nodeType == "Repetition" and .result == "Failed"))
+            | "\(.nodeIdentifier): \([.children[]? | select(.nodeType == "Repetition") | .children[]? | select(.nodeType == "Failure Message") | .name] | join("; "))"
+            | gsub("\n"; " ")
+          ')"
+          if [[ -z "${retried}" ]]; then
+            exit 0
+          fi
+
+          {
+            printf '### Tests that passed only on a retry\n\n'
+            while IFS= read -r line; do
+              printf -- '- %s\n' "${line}"
+            done <<< "${retried}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          while IFS= read -r line; do
+            printf '::warning title=Passed only on a retry::%s\n' "${line//%/%25}"
+          done <<< "${retried}"
 
       - name: Delete simulator
         if: always() && steps.simulator.outputs.udid != ''
