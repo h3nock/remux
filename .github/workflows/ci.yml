@@ -11,10 +11,10 @@ on:
 permissions:
   contents: read
 
-# A newer push to a pull request replaces its older run. Every push to main keeps
-# its own run, so a later merge can't cancel the check of an earlier one.
+# A newer push to a pull request replaces its older run. Every other run keeps
+# to itself, so a later merge can't cancel the check of an earlier one.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 env:
