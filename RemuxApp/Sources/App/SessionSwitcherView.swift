@@ -205,29 +205,34 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
         NavigationStack(path: $path) {
             sheetContent
                 .navigationDestination(for: Route.self) { route in
-                    switch route {
-                    case .chooseServer:
-                        NewSessionServerPickerView(
-                            servers: SessionSwitcherProjection.orderedServers(
-                                servers,
-                                currentServerID: currentServerID
-                            ),
-                            currentServerID: currentServerID,
-                            onSelect: beginNewSession
-                        )
-                    case .availableSessions:
-                        AvailableSessionsBrowserView(
-                            sessions: projection.availableSessions,
-                            isRefreshing: isRefreshing,
-                            failureMessage: failedServerNames.isEmpty
-                                ? nil
-                                : discoveryFailureMessage,
-                            onRefresh: onRefresh,
-                            onSelect: resumeAvailableSession
-                        )
-                    case .newSession:
-                        newSessionContent()
+                    Group {
+                        switch route {
+                        case .chooseServer:
+                            NewSessionServerPickerView(
+                                servers: SessionSwitcherProjection.orderedServers(
+                                    servers,
+                                    currentServerID: currentServerID
+                                ),
+                                currentServerID: currentServerID,
+                                onSelect: beginNewSession
+                            )
+                        case .availableSessions:
+                            AvailableSessionsBrowserView(
+                                sessions: projection.availableSessions,
+                                isRefreshing: isRefreshing,
+                                failureMessage: failedServerNames.isEmpty
+                                    ? nil
+                                    : discoveryFailureMessage,
+                                onRefresh: onRefresh,
+                                onSelect: resumeAvailableSession
+                            )
+                        case .newSession:
+                            newSessionContent()
+                        }
                     }
+                    // A pushed page shows the sheet's own surface, as the Sessions page does; otherwise iOS lays a
+                    // page background over it that is lighter than the sheet at half height.
+                    .containerBackground(.clear, for: .navigation)
                 }
         }
         .onChange(of: path) { previousPath, path in
@@ -235,6 +240,8 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                   !path.contains(.newSession) else { return }
             onCancelCreateSession()
         }
+        // A pull closes the sheet, and with it New Session, which ends the setup as going back does. The sheet holds
+        // only while Start is creating the session, since the setup can't be cancelled until that finishes.
         .interactiveDismissDisabled(isCreatingSession)
         .terminalRenameAlert($renamePrompt, name: $renameName)
         .ghosttyCloseConfirmationDialog(workspaceCloseQuestion)
@@ -1047,7 +1054,6 @@ private struct AvailableSessionsBrowserView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .containerBackground(.clear, for: .navigation)
         .navigationTitle("Available Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)

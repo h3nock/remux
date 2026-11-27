@@ -256,6 +256,40 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(discard.exists, "The session form asked before discarding.")
     }
 
+    /// New Session in the terminal's Sessions sheet closes with the sheet when pulled down, as the Sessions page
+    /// does, typed in or not, and the setup ends with it: the form doesn't come back in a sheet of its own, and New
+    /// Session opens again without the typing.
+    func testNewSessionInSessionsSheetClosesWhenPulledDown() {
+        launchSeededSimulatorTerminal()
+        let sessionSheet = app.otherElements["terminal.sessions.sheet"]
+        let newSession = app.buttons["terminal.sessions.new"]
+        let name = app.textFields["connection.session"]
+        func openNewSession() {
+            openSessionSwitcherFromTerminal()
+            XCTAssertTrue(newSession.waitForExistence(timeout: 5))
+            newSession.tap()
+            XCTAssertTrue(name.waitForExistence(timeout: 5), "New Session didn't open.")
+        }
+
+        openNewSession()
+        pullSheetDown(titled: "New Session")
+        XCTAssertTrue(sessionSheet.waitForNonExistence(timeout: 5), "Pulling down New Session didn't close the sheet.")
+        XCTAssertFalse(name.waitForExistence(timeout: 1), "The New Session form came back in a sheet of its own.")
+
+        openNewSession()
+        name.tap()
+        name.typeText("draft")
+        pullSheetDown(titled: "New Session")
+        XCTAssertTrue(
+            sessionSheet.waitForNonExistence(timeout: 5),
+            "Pulling down the typed-in New Session didn't close the sheet."
+        )
+        XCTAssertFalse(name.waitForExistence(timeout: 1), "The New Session form came back in a sheet of its own.")
+
+        openNewSession()
+        XCTAssertNotEqual(name.value as? String, "draft", "The pulled-away typing came back.")
+    }
+
     /// Edit Session closes the same way: a pull or the X, without asking, with its name changed.
     func testEditSessionFormClosesWithoutAskingWhenChanged() {
         app.launchEnvironment.merge(
