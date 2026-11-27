@@ -1609,6 +1609,9 @@ final class RemuxRootModel: ObservableObject {
 
         do {
             try dependencies.trustedHostStore.trustHostKey(challenge)
+            // A check still running began before the key was trusted. Its
+            // answers are stale, and it would keep a new check from starting.
+            sessionRefreshes.removeValue(forKey: challenge.serverID)?.task.cancel()
             refreshSessions(for: challenge.serverID)
         } catch {
             sessionDiscoveries[challenge.serverID] = sessionDiscovery(
