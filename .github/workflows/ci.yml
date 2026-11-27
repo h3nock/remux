@@ -254,8 +254,8 @@ jobs:
           retried="$(xcrun xcresulttool get test-results tests --path "${bundle}" | jq -r '
             .. | objects
             | select(.nodeType? == "Test Case" and .result? == "Passed")
-            | select(any(.children[]?; .nodeType == "Repetition" and .result == "Failed"))
-            | "\(.nodeIdentifier): \([.children[]? | select(.nodeType == "Repetition") | .children[]? | select(.nodeType == "Failure Message") | .name] | join("; "))"
+            | select(any(.. | objects; .nodeType? == "Repetition" and .result? == "Failed"))
+            | "\(.nodeIdentifier): \([.. | objects | select(.nodeType? == "Failure Message") | .name] | join("; "))"
             | gsub("\n"; " ")
           ')"
           if [[ -z "${retried}" ]]; then
