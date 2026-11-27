@@ -1864,14 +1864,18 @@ final class HerdrScreenModelTests: XCTestCase {
         let adapter = harness.model.terminalScreenAdapter
         let other = try XCTUnwrap(adapter.terminalScreenPresentationProjection.viewport.panes.map(\.id).last)
 
+        // Each answer is held until its tap reads as in progress: until then "shown" still describes the move
+        // before it.
         XCTAssertEqual(adapter.focusPane(other), .queued)
         let stale = try await nextWrite(session.bridge, from: &index, paneFocus)
+        try await harness.waitUntil("the stale tap didn't start") { harness.model.stateTraceLabel == "showing" }
         await session.bridge.serve(HerdrConnectionTests.reply(id: stale.id, error: ("stale_target", "the pane moved")))
         try await harness.waitUntil("the stale tap didn't end") { harness.model.stateTraceLabel == "shown" }
         XCTAssertNil(adapter.commandFailureEvent, "a tap on a pane that changed was reported")
 
         XCTAssertEqual(adapter.focusPane(other), .queued)
         let refused = try await nextWrite(session.bridge, from: &index, paneFocus)
+        try await harness.waitUntil("the refused tap didn't start") { harness.model.stateTraceLabel == "showing" }
         await session.bridge.serve(HerdrConnectionTests.reply(id: refused.id, error: ("pane_not_found", "pane not found")))
         try await harness.waitUntil("the refused tap didn't end") { harness.model.stateTraceLabel == "shown" }
         XCTAssertEqual(adapter.commandFailureEvent?.message, "Herdr: select pane failed")
@@ -1879,6 +1883,7 @@ final class HerdrScreenModelTests: XCTestCase {
 
         XCTAssertEqual(adapter.focusPane(other), .queued)
         let repeated = try await nextWrite(session.bridge, from: &index, paneFocus)
+        try await harness.waitUntil("the repeated tap didn't start") { harness.model.stateTraceLabel == "showing" }
         await session.bridge.serve(HerdrConnectionTests.reply(id: repeated.id, error: ("pane_not_found", "pane not found")))
         try await harness.waitUntil("the repeated tap didn't end") { harness.model.stateTraceLabel == "shown" }
         XCTAssertEqual(adapter.commandFailureEvent?.token, shown, "the same refusal was shown again while on screen")
@@ -3472,6 +3477,10 @@ final class HerdrScreenModelTests: XCTestCase {
         let session = try await shownWorkspaces(harness, zoomingOnShow: false)
         var index = session.next
         let adapter = harness.model.terminalScreenAdapter
+        // The layout shows before the focused pane's renderer is registered, and the pane has no surface until then.
+        try await harness.waitUntil("the focused pane's renderer wasn't created") {
+            adapter.terminalScreenPresentationProjection.viewport.focusedSurfaceID != nil
+        }
         let left = try XCTUnwrap(adapter.terminalScreenPresentationProjection.viewport.focusedSurfaceID)
 
         XCTAssertTrue(harness.model.create(.tab(workspaceID: "w1"), bootID: "boot"))
