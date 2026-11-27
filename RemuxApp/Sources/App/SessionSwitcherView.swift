@@ -235,6 +235,8 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                   !path.contains(.newSession) else { return }
             onCancelCreateSession()
         }
+        // A pull closes the sheet, and with it New Session, which ends the setup as going back does. The sheet holds
+        // only while Start is creating the session, since the setup can't be cancelled until that finishes.
         .interactiveDismissDisabled(isCreatingSession)
         .terminalRenameAlert($renamePrompt, name: $renameName)
         .ghosttyCloseConfirmationDialog(workspaceCloseQuestion)

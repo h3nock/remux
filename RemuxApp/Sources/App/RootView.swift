@@ -207,7 +207,7 @@ private struct RemuxWorkspaceShell: View {
                     }
                 },
                 onDisconnectSession: model.disconnectActiveSession,
-                isCreatingSession: terminalNewSessionSetup != nil,
+                isCreatingSession: terminalNewSessionSetup != nil && model.isSetupActionInProgress,
                 onCreateSession: model.beginNewWorkspace,
                 onCancelCreateSession: model.cancelSetup,
                 newSessionContent: {
