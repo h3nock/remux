@@ -326,6 +326,8 @@ struct GhosttyScrollFollower {
     private var unaskedAt: TimeInterval?
     /// The last answered batch, whose answer can still be arriving: its direction, and until when.
     private var tail: (up: Bool, until: TimeInterval)?
+    /// Lower rates measured this session, by size class, and which way their batches went (`end`).
+    private var lows: [Int: (rate: Double, up: Bool)] = [:]
 
     init(gridRows: Int, memory: Memory = Memory()) {
         self.gridRows = gridRows
@@ -410,7 +412,7 @@ struct GhosttyScrollFollower {
         guard ledger != nil else { return }
         let before = seen
         guard place(rows, now: now) else { return }
-        let moved = unheld(since: before)
+        let moved = unheld(since: before, now: now)
         if moved != 0, batch?.receipt != nil {
             batch?.progress = now
             if batch?.first == nil { batch?.first = now }
@@ -426,7 +428,7 @@ struct GhosttyScrollFollower {
         guard ledger != nil, let current = batch, current.receipts.count < current.sends.count else { return }
         let before = seen
         var moved = 0
-        if let rows, place(rows, now: now) { moved = unheld(since: before) }
+        if let rows, place(rows, now: now) { moved = unheld(since: before, now: now) }
         if current.receipts.isEmpty {
             if moved != 0 { unasked(rows: moved, now: now) }
             let position = seen
@@ -447,6 +449,11 @@ struct GhosttyScrollFollower {
 
     /// Ends the session, sending nothing more. What was learned about the program is kept.
     mutating func end() {
+        // A lower rate measured this session is believed now that the session is over without meeting an edge the
+        // same way (`finishBatch` drops it if it did): running into an edge or a slow last stretch of a transcript
+        // makes batches come up short, and a rate learned there would size the next batches too large.
+        for (sizeClass, low) in lows { memory.yields[sizeClass] = low.rate }
+        lows = [:]
         ledger = nil
         batch = nil
         silent = 0
@@ -480,11 +487,13 @@ struct GhosttyScrollFollower {
     }
 
     /// Rows the content moved since `before` that aren't held reports landing; the batch's count leaves those out.
-    private mutating func unheld(since before: Int) -> Int {
+    /// Held reports still arriving are still on their way: the clock that takes them as lost restarts.
+    private mutating func unheld(since before: Int, now: TimeInterval) -> Int {
         var moved = seen - before
         guard memory.held != 0, moved * memory.held > 0 else { return moved }
         let paid = min(abs(moved), abs(memory.held)) * (moved > 0 ? 1 : -1)
         memory.held -= paid
+        memory.heldUntil = now + Self.hold
         moved -= paid
         batch?.start += paid
         return moved
@@ -543,10 +552,15 @@ struct GhosttyScrollFollower {
                 let rate = max(1, Double(moved) / Double(current.reports))
                 let sizeClass = Self.sizeClass(current.reports)
                 // At rest a batch shows what its size does. Not at rest it can only have done as much or more, so it
-                // may lower what the table holds, never raise it.
-                memory.yields[sizeClass] = current.rested
-                    ? rate
-                    : min(rate, yield(reports: current.reports, now: nil))
+                // may lower what the table holds, never raise it. A lower rate waits for the end of the session
+                // (`end`).
+                let measured = current.rested ? rate : min(rate, yield(reports: current.reports, now: nil))
+                if let known = memory.yields[sizeClass], measured < known {
+                    lows[sizeClass] = (measured, current.up)
+                } else {
+                    memory.yields[sizeClass] = measured
+                    lows[sizeClass] = nil
+                }
                 memory.recent = (rate, now)
                 let took = (current.first ?? receipt) - receipt
                 memory.answer = memory.answer.map { 0.75 * $0 + 0.25 * took } ?? took
@@ -560,6 +574,8 @@ struct GhosttyScrollFollower {
             return true
         }
         if moved <= 0, now - last >= wait {
+            // Nothing moved: an edge, most likely. Rates measured short on the way to it were the edge's doing.
+            lows = lows.filter { $0.value.up != current.up }
             silent += 1
             batch = nil
             return true

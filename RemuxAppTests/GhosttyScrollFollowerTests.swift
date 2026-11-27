@@ -9,14 +9,16 @@ final class GhosttyScrollFollowerTests: XCTestCase {
     /// simulated program that moves one, three, or an accelerating number of rows per report, ignores reports over its
     /// input box, drops the first report after a change of direction, draws some answers in two pieces or two
     /// repaints, once freezes, streams a reply at the live edge, sends its frames on a 16 ms cadence as Herdr does,
-    /// reads its input only every 30 ms, or takes reports and draws them only later, as Codex was seen to. Some traces
+    /// reads its input only every 30 ms, takes reports and draws them only later, as Codex was seen to, falls behind on
+    /// its input while the server hands it keys late, as opencode was seen to, or moves much less in the last stretch of
+    /// its transcript, as Claude Code was seen to. Some traces
     /// are in a pane like the rig's, where a steady program is proven and its batches extended, and Claude Code's
     /// stand-in is refused after its trial. Each trace is every call the follower got, in order, and what each tick
     /// returned; the port has to return the same.
     func testMakesTheReferenceModelsDecisions() throws {
         let fixture = try Self.parityFixture()
         let traces = try XCTUnwrap(fixture["traces"] as? [[String: Any]])
-        XCTAssertEqual(traces.count, 21)
+        XCTAssertEqual(traces.count, 23)
         for (traceIndex, trace) in traces.enumerated() {
             let touch = try XCTUnwrap(trace["touch"] as? Int)
             let body = try XCTUnwrap(trace["body"] as? Int)
