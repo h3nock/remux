@@ -39,8 +39,10 @@ struct RemuxSSHRootConfiguration: Sendable {
     /// Reads and decodes the credentials, once per connection attempt and before it starts.
     let prepareAuthentication: @Sendable () throws -> SSHPreparedAuthentication
     let hostKeyValidator: SSHHostKeyValidator
+    /// For the TCP connect, and then for SSH to get through key exchange and sign-in.
     let connectTimeout: TimeAmount
-    let authenticationTimeout: TimeAmount
+    /// For a Tailscale check once it's shown, which waits on the user in a browser. Nil when none can come.
+    let verificationTimeout: TimeAmount?
     private(set) var onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     init(
@@ -49,7 +51,7 @@ struct RemuxSSHRootConfiguration: Sendable {
         prepareAuthentication: @escaping @Sendable () throws -> SSHPreparedAuthentication,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
-        authenticationTimeout: TimeAmount? = nil,
+        verificationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
         self.host = host
@@ -57,7 +59,7 @@ struct RemuxSSHRootConfiguration: Sendable {
         self.prepareAuthentication = prepareAuthentication
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
-        self.authenticationTimeout = authenticationTimeout ?? connectTimeout
+        self.verificationTimeout = verificationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
     }
 
@@ -1826,7 +1828,8 @@ enum RemuxSSHRootBootstrap {
     ) -> EventLoopFuture<(channel: Channel, authenticated: EventLoopFuture<Void>)> {
         let handshake = RemuxSSHRootHandshakeHandler(
             eventLoop: channel.eventLoop,
-            timeout: configuration.authenticationTimeout,
+            timeout: configuration.connectTimeout,
+            verificationTimeout: configuration.verificationTimeout,
             onTailscaleSSHCheck: configuration.onTailscaleSSHCheck
         )
         var sshConfiguration = SSHClientConfiguration(
@@ -1853,6 +1856,9 @@ enum RemuxSSHRootBootstrap {
     }
 }
 
+/// Waits for sign-in. A server gets `timeout` to get through SSH, as OpenSSH's ConnectTimeout covers the banner and
+/// key exchange; a Tailscale check, once shown, gets `verificationTimeout` from then on instead, since it waits on the
+/// user in a browser. A port that accepts TCP and never answers fails in the first allowance, not the second.
 final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = Any
 
@@ -1861,6 +1867,10 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     private struct State {
         var isComplete = false
         var challenge: TailscaleSSHCheckChallenge?
+        /// The allowance running now.
+        var timeoutTask: Scheduled<Void>?
+        /// Whether a check has started its own allowance. Later or changed banners don't extend it.
+        var isVerifying = false
     }
 
     private enum Completion {
@@ -1872,6 +1882,8 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     private let promise: EventLoopPromise<Void>
     private let state: NIOLockedValueBox<State>
     private let requestID: TailscaleSSHCheckRequest.ID
+    private let eventLoop: EventLoop
+    private let verificationTimeout: TimeAmount?
     private let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     var authenticated: EventLoopFuture<Void> {
@@ -1881,28 +1893,23 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     init(
         eventLoop: EventLoop,
         timeout: TimeAmount,
+        verificationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
         let promise = eventLoop.makePromise(of: Void.self)
         let state = NIOLockedValueBox(State())
-        let requestID = UUID()
 
         self.promise = promise
         self.state = state
-        self.requestID = requestID
+        self.requestID = UUID()
+        self.eventLoop = eventLoop
+        self.verificationTimeout = verificationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
 
-        let timeoutTask = eventLoop.scheduleTask(in: timeout) {
-            Self.complete(
-                .timeout(timeout),
-                promise: promise,
-                state: state,
-                requestID: requestID,
-                onTailscaleSSHCheck: onTailscaleSSHCheck
-            )
-        }
+        let timeoutTask = scheduleTimeout(timeout)
+        state.withLockedValue { $0.timeoutTask = timeoutTask }
         promise.futureResult.whenComplete { _ in
-            timeoutTask.cancel()
+            state.withLockedValue { $0.timeoutTask }?.cancel()
         }
     }
 
@@ -1915,6 +1922,11 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             let request = state.withLockedValue { state -> TailscaleSSHCheckRequest? in
                 guard !state.isComplete, state.challenge != challenge else { return nil }
                 state.challenge = challenge
+                if let verificationTimeout, !state.isVerifying {
+                    state.isVerifying = true
+                    state.timeoutTask?.cancel()
+                    state.timeoutTask = scheduleTimeout(verificationTimeout)
+                }
                 return TailscaleSSHCheckRequest(
                     id: requestID,
                     challenge: challenge,
@@ -1951,6 +1963,19 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
 
     deinit {
         complete(.failure(Disconnected()))
+    }
+
+    private func scheduleTimeout(_ timeout: TimeAmount) -> Scheduled<Void> {
+        let (promise, state, requestID, onTailscaleSSHCheck) = (promise, state, requestID, onTailscaleSSHCheck)
+        return eventLoop.scheduleTask(in: timeout) {
+            Self.complete(
+                .timeout(timeout),
+                promise: promise,
+                state: state,
+                requestID: requestID,
+                onTailscaleSSHCheck: onTailscaleSSHCheck
+            )
+        }
     }
 
     private func complete(_ completion: Completion) {

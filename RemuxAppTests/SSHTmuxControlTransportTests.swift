@@ -157,9 +157,10 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             traceFlowID: nil
         )
 
-        XCTAssertEqual(tailscale.authenticationTimeout, .minutes(5))
+        XCTAssertEqual(tailscale.verificationTimeout, .minutes(5))
+        XCTAssertEqual(tailscale.connectTimeout, .seconds(10), "a silent server fails as fast for every sign-in")
         XCTAssertNotNil(tailscale.onTailscaleSSHCheck)
-        XCTAssertNil(password.authenticationTimeout)
+        XCTAssertNil(password.verificationTimeout)
         XCTAssertNil(password.onTailscaleSSHCheck)
     }
 
@@ -725,7 +726,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             prepareAuthentication: refused.prepareAuthentication,
             hostKeyValidator: refused.hostKeyValidator,
             connectTimeout: .seconds(2),
-            authenticationTimeout: .seconds(90),
+            verificationTimeout: .seconds(90),
             onTailscaleSSHCheck: { _ in shown.withLockedValue { $0 += 1 } }
         )
         let cancelled = NIOLockedValueBox(false)
@@ -743,7 +744,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         XCTAssertTrue(cancelled.withLockedValue { $0 }, "the check was not given up")
         XCTAssertEqual(shown.withLockedValue { $0 }, 0, "the check reached the screen")
-        XCTAssertEqual(quiet.authenticationTimeout, configuration.authenticationTimeout)
+        XCTAssertEqual(quiet.verificationTimeout, configuration.verificationTimeout)
+        XCTAssertEqual(quiet.connectTimeout, configuration.connectTimeout)
         XCTAssertEqual(quiet.host, configuration.host)
         XCTAssertEqual(quiet.port, configuration.port)
     }

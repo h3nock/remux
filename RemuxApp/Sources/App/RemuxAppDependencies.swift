@@ -5,7 +5,7 @@ import UIKit
 
 enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
-    static let tailscaleSSHAuthentication: TimeAmount = .minutes(5)
+    static let tailscaleSSHVerification: TimeAmount = .minutes(5)
     static let publicKeyInstallSSHConnect: TimeAmount = .seconds(10)
     static let tmuxControlNoResponse: TimeAmount = .seconds(15)
     static let sftpSSHConnect: TimeAmount = .seconds(15)
@@ -25,7 +25,7 @@ enum SSHAccessVerificationError: Error, Equatable, LocalizedError {
 
 struct RemuxAppDependencies: Sendable {
     private struct TailscaleSSHCheckConfiguration {
-        let authenticationTimeout: TimeAmount
+        let verificationTimeout: TimeAmount
         let onEvent: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
     }
 
@@ -370,7 +370,7 @@ struct RemuxAppDependencies: Sendable {
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
-            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            verificationTimeout: tailscaleSSHCheck?.verificationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
@@ -612,7 +612,7 @@ struct RemuxAppDependencies: Sendable {
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: connectTimeout,
-            authenticationTimeout: tailscaleSSHCheck?.authenticationTimeout,
+            verificationTimeout: tailscaleSSHCheck?.verificationTimeout,
             onTailscaleSSHCheck: tailscaleSSHCheck?.onEvent
         )
     }
@@ -633,7 +633,7 @@ struct RemuxAppDependencies: Sendable {
         }
 
         return TailscaleSSHCheckConfiguration(
-            authenticationTimeout: RemuxConnectionTimeouts.tailscaleSSHAuthentication,
+            verificationTimeout: RemuxConnectionTimeouts.tailscaleSSHVerification,
             onEvent: onEvent
         )
     }
