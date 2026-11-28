@@ -1,5 +1,4 @@
 import CryptoKit
-import Security
 import GhosttyKit
 import Combine
 import NIOConcurrencyHelpers
@@ -257,7 +256,7 @@ final class RemuxRootModelTests: XCTestCase {
         }
         XCTAssertTrue(didLoad)
 
-        await harness.credentialStore.failLoads(with: KeychainSSHCredentialStore.loadError(errSecInteractionNotAllowed))
+        await harness.credentialStore.failLoads(with: SecureEnclaveSSHError.unavailableWhileLocked)
         await harness.model.refreshSessionsAndWait(for: pair.server.id)
 
         let tmux = harness.model.sessionDiscovery(for: pair.server.id).tmux

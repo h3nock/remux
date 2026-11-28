@@ -1,3 +1,4 @@
+import Security
 import XCTest
 @testable import Remux
 
@@ -376,6 +377,28 @@ final class ConnectionProfileRepositoryTests: XCTestCase {
         let decoded = try JSONDecoder().decode(SSHCredential.self, from: encoded)
 
         XCTAssertEqual(decoded, credential)
+    }
+
+    /// The Keychain refuses a read while the device is locked; that pauses a connection as a locked device key does,
+    /// and any other failed read stays a failed read.
+    func testACredentialReadWhileLockedIsTheLockedDeviceError() async {
+        let locked = KeychainSSHCredentialStore(service: "dev.remux.tests.locked") { _, _ in errSecInteractionNotAllowed }
+        do {
+            _ = try await locked.loadCredential(identityID: UUID())
+            XCTFail("expected the locked read to fail")
+        } catch {
+            XCTAssertEqual(error as? SecureEnclaveSSHError, .unavailableWhileLocked, "\(error)")
+        }
+
+        let refused = KeychainSSHCredentialStore(service: "dev.remux.tests.refused") { _, _ in errSecAuthFailed }
+        do {
+            _ = try await refused.loadCredential(identityID: UUID())
+            XCTFail("expected the read to fail")
+        } catch {
+            guard case .loadFailed(errSecAuthFailed)? = error as? KeychainSSHCredentialStoreError else {
+                return XCTFail("expected a failed read, got \(error)")
+            }
+        }
     }
 
     func testKeychainSSHCredentialStoreUsesIdentityReference() async throws {

@@ -108,27 +108,39 @@ enum KeychainSSHCredentialStoreError: LocalizedError, Sendable {
 actor KeychainSSHCredentialStore: SSHCredentialStore {
     static let defaultService = "dev.remux.ssh-credentials"
 
+    /// The Keychain read. Tests replace it to get a status the simulator's Keychain doesn't give, such as a locked
+    /// device's.
+    typealias CopyMatching = @Sendable (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+
     private let service: String
+    private let copyMatching: CopyMatching
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(service: String = KeychainSSHCredentialStore.defaultService) {
+    init(
+        service: String = KeychainSSHCredentialStore.defaultService,
+        copyMatching: @escaping CopyMatching = { SecItemCopyMatching($0, $1) }
+    ) {
         self.service = service
+        self.copyMatching = copyMatching
     }
 
     func loadCredential(identityID: SSHIdentity.ID) async throws -> SSHCredential? {
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(
-            baseQuery(for: identityID, returnData: true) as CFDictionary,
-            &item
-        )
+        let status = copyMatching(baseQuery(for: identityID, returnData: true) as CFDictionary, &item)
 
         if status == errSecItemNotFound {
             return nil
         }
 
+        // Read while the device is locked, the item is there but can't be had until it's unlocked, which pauses a
+        // connection as a locked device key does instead of failing it.
+        if status == errSecInteractionNotAllowed {
+            throw SecureEnclaveSSHError.unavailableWhileLocked
+        }
+
         guard status == errSecSuccess else {
-            throw Self.loadError(status)
+            throw KeychainSSHCredentialStoreError.loadFailed(status)
         }
 
         guard let data = item as? Data else {
@@ -140,14 +152,6 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         } catch {
             throw KeychainSSHCredentialStoreError.invalidPayload
         }
-    }
-
-    /// What a failed read means. Read while the device is locked, the item is there but can't be had until it's
-    /// unlocked, which pauses a connection as a locked device key does instead of failing it.
-    static func loadError(_ status: OSStatus) -> any Error {
-        status == errSecInteractionNotAllowed
-            ? SecureEnclaveSSHError.unavailableWhileLocked
-            : KeychainSSHCredentialStoreError.loadFailed(status)
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: SSHIdentity.ID) async throws {

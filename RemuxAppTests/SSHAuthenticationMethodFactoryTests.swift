@@ -1,6 +1,5 @@
 @preconcurrency import Citadel
 import CryptoKit
-import Security
 import NIOCore
 import NIOEmbedded
 @preconcurrency import NIOSSH
@@ -78,19 +77,6 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
                 reason.message,
                 "This private key couldn't be read with this passphrase, or isn't in a format Remux supports."
             )
-        }
-    }
-
-    /// The Keychain refuses a read while the device is locked; that pauses a connection as a locked device key does,
-    /// and any other failed read stays a failed read.
-    func testACredentialReadWhileLockedIsTheLockedDeviceError() {
-        XCTAssertEqual(
-            KeychainSSHCredentialStore.loadError(errSecInteractionNotAllowed) as? SecureEnclaveSSHError,
-            .unavailableWhileLocked
-        )
-        guard case .loadFailed(errSecAuthFailed)? = KeychainSSHCredentialStore.loadError(errSecAuthFailed)
-            as? KeychainSSHCredentialStoreError else {
-            return XCTFail("expected a failed read")
         }
     }
 
