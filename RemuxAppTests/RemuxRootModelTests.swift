@@ -1,7 +1,9 @@
+import Citadel
 import CryptoKit
 import GhosttyKit
 import Combine
 import NIOConcurrencyHelpers
+import NIOCore
 import SwiftUI
 import UIKit
 import XCTest
@@ -5120,8 +5122,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(ready, "the replacement didn't connect")
     }
 
-    /// The replacement goes on with the recovery it took over. An attempt that fails on the edited server
-    /// is tried again, as the session's attempts were before the edit, until one connects.
+    /// The replacement goes on with the recovery it took over. An opening that can't reach the edited
+    /// server is tried again, as the session's were before the edit, until one connects.
     func testAHerdrSessionsOwnReconnectAfterAServerEditKeepsRetryingOnTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5130,11 +5132,13 @@ final class RemuxRootModelTests: XCTestCase {
         harness.model.updateDraft { $0.host = "updated.example.com" }
         await harness.model.saveAndConnect()
 
+        await opened.opener.failOpenings(with: ChannelError.connectTimeout(.seconds(10)))
         await opened.bridge.finishServing()
-        let failing = try await opened.opener.bridge(1)
-        await failing.finishServing()
+        let failed = await eventually { await opened.opener.targets.count == 2 }
+        XCTAssertTrue(failed)
+        await opened.opener.failOpenings(with: nil)
 
-        let bridge = try await opened.opener.bridge(2)
+        let bridge = try await opened.opener.bridge(1)
         let hosts = await opened.opener.targets.map(\.server.host)
         XCTAssertEqual(hosts, ["build.example.test", "updated.example.com", "updated.example.com"])
         let reconnected = try XCTUnwrap(harness.model.activeSessions.first)
@@ -5144,6 +5148,27 @@ final class RemuxRootModelTests: XCTestCase {
         await bridge.serve(try HerdrServerScript.welcome() + HerdrServerScript.snapshot(revision: 1))
         let ready = await waitUntil(timeout: 3) { replacement.isConnectionReady }
         XCTAssertTrue(ready, "the replacement didn't connect")
+    }
+
+    /// What the replacement doesn't retry is what the model wouldn't have either: a sign-in the edited
+    /// server turns down is reported, for the user to act on.
+    func testAHerdrSessionsOwnReconnectAfterAServerEditReportsASignInTheServerTurnsDown() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.password = "mistyped-password" }
+        await harness.model.saveAndConnect()
+
+        await opened.opener.failOpenings(with: SSHClientError.allAuthenticationOptionsFailed)
+        await opened.bridge.finishServing()
+
+        let reported = await waitUntil(timeout: 2) {
+            harness.model.activeSessions.first?.runtimeState.disconnectedReason?.kind == .authentication
+        }
+        XCTAssertTrue(reported)
+        try await Task.sleep(for: .milliseconds(800))
+        let credentials = await opened.opener.targets.map(\.sshAuth.credential)
+        XCTAssertEqual(credentials, [.password("demo-password"), .password("mistyped-password")])
     }
 
     /// Only the session's current model reconnects by itself. One the root has let go doesn't start
@@ -5509,7 +5534,7 @@ final class RemuxRootModelTests: XCTestCase {
             servers: [pair.server],
             workspaces: [workspace],
             identities: [pair.identity],
-            herdrBridgeOpener: { target, _, _, _ in await opener.open(target) }
+            herdrBridgeOpener: { target, _, _, _ in try await opener.openUnlessFailing(target) }
         )
         try await harness.credentialStore.saveCredential(.password("demo-password"), identityID: pair.identity.id)
         await harness.model.load()
@@ -5759,12 +5784,27 @@ private actor RecordingTmuxSessionDiscoverer {
 private actor RecordingHerdrBridgeOpener {
     private(set) var targets: [SessionTarget] = []
     private var bridges: [FakeBridgeTransport] = []
+    private var failure: Error?
 
     func open(_ target: SessionTarget) -> any HerdrBridgeTransport {
         targets.append(target)
         let bridge = FakeBridgeTransport()
         bridges.append(bridge)
         return bridge
+    }
+
+    /// Openings through `openUnlessFailing` fail with `error` from now on, until it's nil again.
+    func failOpenings(with error: Error?) {
+        failure = error
+    }
+
+    /// A failed opening counts in `targets` and opens no bridge.
+    func openUnlessFailing(_ target: SessionTarget) throws -> any HerdrBridgeTransport {
+        if let failure {
+            targets.append(target)
+            throw failure
+        }
+        return open(target)
     }
 
     /// The bridge opened `index`th, waiting up to two seconds for it.
