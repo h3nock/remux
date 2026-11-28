@@ -249,14 +249,19 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let trustedHosts = TrustedHostStore(rootURL: directory)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return RemuxSSHRootBootstrap.configureChannel(channel, using: RemuxSSHRootConfiguration(
-            host: server.host,
-            port: server.port,
-            authenticationMethod: { .passwordBased(username: "tester", password: "unused") },
-            hostKeyValidator: trustedHosts.validator(for: server),
-            connectTimeout: .seconds(10),
-            onTailscaleSSHCheck: onTailscaleSSHCheck
-        ))
+        let authentication = SSHPreparedAuthentication { .passwordBased(username: "tester", password: "unused") }
+        return RemuxSSHRootBootstrap.configureChannel(
+            channel,
+            using: RemuxSSHRootConfiguration(
+                host: server.host,
+                port: server.port,
+                prepareAuthentication: { authentication },
+                hostKeyValidator: trustedHosts.validator(for: server),
+                connectTimeout: .seconds(10),
+                onTailscaleSSHCheck: onTailscaleSSHCheck
+            ),
+            authentication: authentication
+        )
     }
 }
 

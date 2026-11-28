@@ -362,8 +362,8 @@ struct RemuxAppDependencies: Sendable {
         return SSHTmuxControlConfiguration(
             host: target.server.host,
             port: target.server.port,
-            authenticationMethod: {
-                try SSHAuthenticationMethodFactory.make(
+            prepareAuthentication: {
+                try SSHAuthenticationMethodFactory.prepare(
                     username: target.sshAuth.username,
                     credential: target.sshAuth.credential
                 )
@@ -604,8 +604,8 @@ struct RemuxAppDependencies: Sendable {
         return RemuxSSHRootConfiguration(
             host: target.server.host,
             port: target.server.port,
-            authenticationMethod: {
-                try SSHAuthenticationMethodFactory.make(
+            prepareAuthentication: {
+                try SSHAuthenticationMethodFactory.prepare(
                     username: target.sshAuth.username,
                     credential: target.sshAuth.credential
                 )

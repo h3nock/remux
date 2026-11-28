@@ -36,7 +36,8 @@ struct RemuxSSHRootKey: Hashable, Sendable {
 struct RemuxSSHRootConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
+    /// Reads and decodes the credentials, once per connection attempt and before it starts.
+    let prepareAuthentication: @Sendable () throws -> SSHPreparedAuthentication
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount
@@ -45,7 +46,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     init(
         host: String,
         port: Int,
-        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
+        prepareAuthentication: @escaping @Sendable () throws -> SSHPreparedAuthentication,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
         authenticationTimeout: TimeAmount? = nil,
@@ -53,7 +54,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     ) {
         self.host = host
         self.port = port
-        self.authenticationMethod = authenticationMethod
+        self.prepareAuthentication = prepareAuthentication
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
         self.authenticationTimeout = authenticationTimeout ?? connectTimeout
@@ -1709,6 +1710,10 @@ enum RemuxSSHRootBootstrap {
         var rootChannel: Channel?
 
         do {
+            // Before any network work: a key that can't be used is reported as itself, not as a connection that
+            // failed, which it would be if it failed inside the channel initializer.
+            let authentication = try configuration.prepareAuthentication()
+
             trace.event("bootstrap.configure.begin")
             let bootstrap = ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
                 .connectTimeout(configuration.connectTimeout)
@@ -1732,7 +1737,7 @@ enum RemuxSSHRootBootstrap {
                             RemuxSSHInboundActivityHandler(activity: inboundActivity),
                             position: .first
                         ).flatMap {
-                            configureChannel(channel, using: configuration)
+                            configureChannel(channel, using: configuration, authentication: authentication)
                         }
                     }
                 )
@@ -1765,22 +1770,16 @@ enum RemuxSSHRootBootstrap {
     /// Authentication is awaited after connect: waiting here would prevent socket registration.
     static func configureChannel(
         _ channel: Channel,
-        using configuration: RemuxSSHRootConfiguration
+        using configuration: RemuxSSHRootConfiguration,
+        authentication: SSHPreparedAuthentication
     ) -> EventLoopFuture<(channel: Channel, authenticated: EventLoopFuture<Void>)> {
         let handshake = RemuxSSHRootHandshakeHandler(
             eventLoop: channel.eventLoop,
             timeout: configuration.authenticationTimeout,
             onTailscaleSSHCheck: configuration.onTailscaleSSHCheck
         )
-        let authenticationMethod: SSHAuthenticationMethod
-        do {
-            authenticationMethod = try configuration.authenticationMethod()
-        } catch {
-            return channel.eventLoop.makeFailedFuture(error)
-        }
-
         var sshConfiguration = SSHClientConfiguration(
-            userAuthDelegate: authenticationMethod,
+            userAuthDelegate: authentication.makeMethod(),
             serverAuthDelegate: configuration.hostKeyValidator
         )
         sshConfiguration.maximumPacketSize = channelMaximumPacketSize

@@ -357,8 +357,8 @@ final class SSHPoolLiveEndpoint: @unchecked Sendable {
         rootConfiguration = RemuxSSHRootConfiguration(
             host: configuration.host,
             port: port,
-            authenticationMethod: {
-                try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential))
+            prepareAuthentication: {
+                try SSHAuthenticationMethodFactory.prepare(username: username, credential: .privateKey(credential))
             },
             hostKeyValidator: store.validator(for: server),
             connectTimeout: .seconds(20)

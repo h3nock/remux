@@ -59,85 +59,76 @@ final class SecureEnclaveSSHAuthenticationDelegate: NIOSSHClientUserAuthenticati
     }
 }
 
+/// Credentials read and decoded before a connection starts, so a key that can't be used fails as itself instead of as
+/// a failed connection. Each SSH channel gets its own method from it: Citadel's methods use up their offers as the
+/// server asks for them, so one can't serve two channels.
+struct SSHPreparedAuthentication: Sendable {
+    let makeMethod: @Sendable () -> SSHAuthenticationMethod
+}
+
 enum SSHAuthenticationMethodFactory {
-    static func make(
+    static func prepare(
         username: String,
         credential: ResolvedSSHAuth.Credential
-    ) throws -> SSHAuthenticationMethod {
+    ) throws -> SSHPreparedAuthentication {
         switch credential {
         case .password(let password):
-            return .passwordBased(username: username, password: password)
+            return SSHPreparedAuthentication { .passwordBased(username: username, password: password) }
         case .none:
-            return .custom(NoneSSHAuthenticationDelegate(username: username))
+            return SSHPreparedAuthentication { .custom(NoneSSHAuthenticationDelegate(username: username)) }
         case .privateKey(let credential):
             if let key = credential.secureEnclaveKey {
-                return .custom(SecureEnclaveSSHAuthenticationDelegate(
-                    username: username,
-                    signingKey: try key.signingKey()
-                ))
+                let signingKey = try key.signingKey()
+                return SSHPreparedAuthentication {
+                    .custom(SecureEnclaveSSHAuthenticationDelegate(username: username, signingKey: signingKey))
+                }
             }
             let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
             let decryptionKey = credential.passphrase.map { Data($0.utf8) }
             switch inspection.keyType {
             case .ed25519:
-                return try .ed25519(
-                    username: username,
-                    privateKey: Curve25519.Signing.PrivateKey(
-                        sshEd25519: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
+                let privateKey = try Curve25519.Signing.PrivateKey(
+                    sshEd25519: inspection.normalizedPEM,
+                    decryptionKey: decryptionKey
                 )
+                return SSHPreparedAuthentication { .ed25519(username: username, privateKey: privateKey) }
             case .rsa:
-                return try .rsa(
-                    username: username,
-                    privateKey: Insecure.RSA.PrivateKey(
-                        sshRsa: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
+                let privateKey = try Insecure.RSA.PrivateKey(
+                    sshRsa: inspection.normalizedPEM,
+                    decryptionKey: decryptionKey
                 )
+                return SSHPreparedAuthentication { .rsa(username: username, privateKey: privateKey) }
             case .ecdsaP256:
-                return try .p256(
-                    username: username,
-                    privateKey: P256.Signing.PrivateKey(
-                        sshEcdsaP256: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
+                let privateKey = try P256.Signing.PrivateKey(
+                    sshEcdsaP256: inspection.normalizedPEM,
+                    decryptionKey: decryptionKey
                 )
+                return SSHPreparedAuthentication { .p256(username: username, privateKey: privateKey) }
             case .ecdsaP384:
-                return try .p384(
-                    username: username,
-                    privateKey: P384.Signing.PrivateKey(
-                        sshEcdsaP384: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
+                let privateKey = try P384.Signing.PrivateKey(
+                    sshEcdsaP384: inspection.normalizedPEM,
+                    decryptionKey: decryptionKey
                 )
+                return SSHPreparedAuthentication { .p384(username: username, privateKey: privateKey) }
             case .ecdsaP521:
-                return try .p521(
-                    username: username,
-                    privateKey: P521.Signing.PrivateKey(
-                        sshEcdsaP521: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
+                let privateKey = try P521.Signing.PrivateKey(
+                    sshEcdsaP521: inspection.normalizedPEM,
+                    decryptionKey: decryptionKey
                 )
+                return SSHPreparedAuthentication { .p521(username: username, privateKey: privateKey) }
             }
         }
     }
 
-    static func make(
+    static func prepare(
         username: String,
         storedCredential: SSHCredential
-    ) throws -> SSHAuthenticationMethod {
+    ) throws -> SSHPreparedAuthentication {
         switch storedCredential {
         case .password(let password):
-            return try make(
-                username: username,
-                credential: ResolvedSSHAuth.Credential.password(password)
-            )
+            return try prepare(username: username, credential: .password(password))
         case .privateKey(let privateKey):
-            return try make(
-                username: username,
-                credential: ResolvedSSHAuth.Credential.privateKey(privateKey)
-            )
+            return try prepare(username: username, credential: .privateKey(privateKey))
         }
     }
 }

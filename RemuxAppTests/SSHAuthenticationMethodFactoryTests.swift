@@ -55,9 +55,34 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
             let credential = ResolvedSSHAuth.Credential.privateKey(
                 SSHPrivateKeyCredential(privateKeyPEM: "", secureEnclaveKey: key)
             )
-            XCTAssertThrowsError(try SSHAuthenticationMethodFactory.make(username: "test", credential: credential)) {
+            XCTAssertThrowsError(try SSHAuthenticationMethodFactory.prepare(username: "test", credential: credential)) {
                 XCTAssertEqual($0 as? SecureEnclaveSSHError, expected)
             }
+        }
+    }
+
+    /// A key that can't be used fails before any connection starts, so it reaches the user as itself. Prepared inside
+    /// the connection instead, a server saved by name would report it as a connection that failed.
+    func testAKeyThatCantBeUsedFailsAsItselfBeforeConnecting() async {
+        let server = SavedServer(displayName: "named", host: "localhost", port: 1, username: "tester")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = RemuxSSHRootConfiguration(
+            host: server.host,
+            port: server.port,
+            prepareAuthentication: { throw SecureEnclaveSSHError.keyUnusable },
+            hostKeyValidator: TrustedHostStore(rootURL: directory).validator(for: server),
+            connectTimeout: .seconds(2)
+        )
+
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: configuration,
+                trace: RemuxTransportStartupTrace(flowID: "prepare-before-connect-test")
+            )
+            XCTFail("expected the key's own error")
+        } catch {
+            XCTAssertEqual(error as? SecureEnclaveSSHError, .keyUnusable, "\(error)")
         }
     }
 }

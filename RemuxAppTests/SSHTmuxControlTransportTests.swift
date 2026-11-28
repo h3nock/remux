@@ -61,8 +61,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let defaultConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
-                .passwordBased(username: server.username, password: "pw")
+            prepareAuthentication: {
+                SSHPreparedAuthentication { .passwordBased(username: server.username, password: "pw") }
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
             sessionName: "base"
@@ -73,8 +73,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let tracedConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
-                .passwordBased(username: server.username, password: "pw")
+            prepareAuthentication: {
+                SSHPreparedAuthentication { .passwordBased(username: server.username, password: "pw") }
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(10),
@@ -722,7 +722,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let configuration = RemuxSSHRootConfiguration(
             host: refused.host,
             port: refused.port,
-            authenticationMethod: refused.authenticationMethod,
+            prepareAuthentication: refused.prepareAuthentication,
             hostKeyValidator: refused.hostKeyValidator,
             connectTimeout: .seconds(2),
             authenticationTimeout: .seconds(90),
@@ -1584,8 +1584,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let transport = SSHTmuxControlTransport(
             configuration: SSHTmuxControlConfiguration(
                 host: server.host,
-                authenticationMethod: {
-                    .passwordBased(username: server.username, password: "pw")
+                prepareAuthentication: {
+                    SSHPreparedAuthentication { .passwordBased(username: server.username, password: "pw") }
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),
                 sessionName: "base"
@@ -2010,7 +2010,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         SSHTmuxControlConfiguration(
             host: loopback.server.host,
             port: loopback.server.port,
-            authenticationMethod: { .passwordBased(username: "remux", password: "pw") },
+            prepareAuthentication: { SSHPreparedAuthentication { .passwordBased(username: "remux", password: "pw") } },
             hostKeyValidator: loopback.trustedHostStore.validator(for: loopback.server),
             connectTimeout: .seconds(5),
             controlNoResponseTimeout: .milliseconds(300),
@@ -2029,7 +2029,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         return RemuxSSHRootConfiguration(
             host: server.host,
             port: server.port,
-            authenticationMethod: { .passwordBased(username: "tester", password: "pw") },
+            prepareAuthentication: { SSHPreparedAuthentication { .passwordBased(username: "tester", password: "pw") } },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(2)
         )
