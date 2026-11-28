@@ -1903,7 +1903,10 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     private enum Completion {
         case success
         case failure(any Error)
-        case timeout
+        /// The connect allowance ran out: SSH didn't get through sign-in in time.
+        case connectAllowanceExpired
+        /// A shown check's allowance ran out.
+        case verificationExpired
     }
 
     private let promise: EventLoopPromise<Void>
@@ -1933,7 +1936,7 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
         self.verificationTimeout = verificationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
 
-        let timeoutTask = scheduleTimeout(timeout)
+        let timeoutTask = scheduleTimeout(timeout, expiring: .connectAllowanceExpired)
         state.withLockedValue { $0.timeoutTask = timeoutTask }
         promise.futureResult.whenComplete { _ in
             state.withLockedValue { $0.timeoutTask }?.cancel()
@@ -1953,7 +1956,7 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
                 state.challenge = challenge
                 if let verificationTimeout, isFirstCheck {
                     state.timeoutTask?.cancel()
-                    state.timeoutTask = scheduleTimeout(verificationTimeout)
+                    state.timeoutTask = scheduleTimeout(verificationTimeout, expiring: .verificationExpired)
                 }
                 return TailscaleSSHCheckRequest(
                     id: requestID,
@@ -1993,11 +1996,11 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
         complete(.failure(Disconnected()))
     }
 
-    private func scheduleTimeout(_ timeout: TimeAmount) -> Scheduled<Void> {
+    private func scheduleTimeout(_ timeout: TimeAmount, expiring completion: Completion) -> Scheduled<Void> {
         let (promise, state, requestID, onTailscaleSSHCheck) = (promise, state, requestID, onTailscaleSSHCheck)
         return eventLoop.scheduleTask(in: timeout) {
             Self.complete(
-                .timeout,
+                completion,
                 promise: promise,
                 state: state,
                 requestID: requestID,
@@ -2041,12 +2044,11 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             promise.succeed(())
         case .failure(let error):
             promise.fail(error)
-        case .timeout:
-            if hadChallenge {
-                promise.fail(TailscaleSSHCheckError.verificationTimedOut)
-            } else {
-                promise.fail(RemuxSSHConnectError.noSSHResponse)
-            }
+        case .connectAllowanceExpired:
+            // Even with a check recorded: without a verification allowance, none was shown or waited on.
+            promise.fail(RemuxSSHConnectError.noSSHResponse)
+        case .verificationExpired:
+            promise.fail(TailscaleSSHCheckError.verificationTimedOut)
         }
     }
 }

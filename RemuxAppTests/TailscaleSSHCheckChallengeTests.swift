@@ -118,6 +118,26 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         XCTAssertNoThrow(try channel.finish())
     }
 
+    /// A key or password sign-in has no verification allowance, so a banner that looks like a check starts none: when
+    /// the server then stalls, the connect allowance runs out as for any server, not as an expired check.
+    func testACheckBannerWithoutAVerificationAllowanceStillExpiresAsNoSSHResponse() throws {
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(eventLoop: eventLoop, timeout: .seconds(10))
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+        let failure = HandshakeResult(handler)
+
+        channel.pipeline.fireUserInboundEventTriggered(NIOUserAuthBannerEvent(
+            message: "Authenticate at https://login.tailscale.com/a/5fb81378394f",
+            languageTag: "en"
+        ))
+        eventLoop.advanceTime(by: .seconds(10))
+
+        guard case .noSSHResponse? = failure.error as? RemuxSSHConnectError else {
+            return XCTFail("expected no SSH response, got \(String(describing: failure.error))")
+        }
+        XCTAssertNoThrow(try channel.finish())
+    }
+
     /// A check shown just before the connect allowance would run out gets its full time from when it's shown, once:
     /// a later, changed banner doesn't start it again.
     func testACheckGetsItsWholeAllowanceFromWhenItsShownOnce() throws {
