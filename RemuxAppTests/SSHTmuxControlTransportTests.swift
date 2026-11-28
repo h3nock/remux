@@ -905,7 +905,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             } catch {
                 XCTAssertEqual(error as? RemuxSSHConfigurationError, .invalidPort(port), "\(error)")
                 let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
-                XCTAssertEqual(reason.kind, .profile)
+                XCTAssertEqual(reason.kind, .invalidSettings)
                 XCTAssertEqual(reason.detail, "Port must be between 1 and 65535.")
             }
         }

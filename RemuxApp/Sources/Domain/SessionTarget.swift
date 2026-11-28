@@ -325,6 +325,8 @@ struct TerminalDisconnectReason: Equatable, Sendable {
         case sessionEnded
         case hostKey
         case profile
+        /// A saved server setting can't make a connection, such as a port out of range; Edit Server fixes it.
+        case invalidSettings
         /// The session's program isn't installed on the server, or can't be run there.
         case backendUnavailable(SessionBackend)
         case remoteExit
@@ -348,6 +350,8 @@ struct TerminalDisconnectReason: Equatable, Sendable {
                 "host_key"
             case .profile:
                 "profile"
+            case .invalidSettings:
+                "invalid_settings"
             case .backendUnavailable(let backend):
                 "\(backend.rawValue)_unavailable"
             case .remoteExit:
@@ -392,6 +396,7 @@ struct TerminalDisconnectReason: Equatable, Sendable {
              .sessionEnded,
              .hostKey,
              .profile,
+             .invalidSettings,
              .backendUnavailable,
              .remoteExit,
              .runtime,

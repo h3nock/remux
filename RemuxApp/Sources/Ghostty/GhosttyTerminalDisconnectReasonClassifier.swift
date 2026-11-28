@@ -43,10 +43,10 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
         }
 
-        // The saved settings can't make a connection: the panel shows why under its own words.
+        // The saved settings can't make a connection: the panel offers Edit Server and shows why under its own words.
         if let configurationError = error as? RemuxSSHConfigurationError {
             let reason = configurationError.localizedDescription
-            return TerminalDisconnectReason(kind: .profile, message: reason, detail: reason)
+            return TerminalDisconnectReason(kind: .invalidSettings, message: reason, detail: reason)
         }
 
         if let connectError = error as? RemuxSSHConnectError {

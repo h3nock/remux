@@ -2221,8 +2221,8 @@ final class RemuxRootModel: ObservableObject {
             return reason.message
         case .hostKey:
             return "Remux could not verify the SSH host key."
-        case .verificationExpired, .sessionEnded, .transportIO, .profile, .remoteExit, .runtime, .userClosed,
-             .unknown:
+        case .verificationExpired, .sessionEnded, .transportIO, .profile, .invalidSettings, .remoteExit, .runtime,
+             .userClosed, .unknown:
             return error.localizedDescription
         }
     }

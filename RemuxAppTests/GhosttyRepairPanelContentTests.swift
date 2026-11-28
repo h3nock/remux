@@ -106,6 +106,21 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
         XCTAssertEqual(titles(content), ["Reconnect"])
     }
 
+    /// A saved setting that can't make a connection, such as a port out of range, is fixed in Edit Server, which the
+    /// panel offers first, with the setting's problem underneath; reconnecting would fail the same way.
+    func testAnInvalidSavedSettingOffersEditServer() {
+        let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+            RemuxSSHConfigurationError.invalidPort(65536)
+        ))
+
+        XCTAssertEqual(content.title, "Check Server Settings")
+        XCTAssertEqual(content.message, "A saved setting for Lab can't be used to connect.")
+        XCTAssertEqual(content.detail, "Port must be between 1 and 65535.")
+        XCTAssertEqual(content.actions.map(\.kind), [.editServer])
+        XCTAssertEqual(content.actions.first?.isPrimary, true)
+        XCTAssertEqual(content.actions.first?.accessibilityIdentifier, "terminal.status.settings.editServer")
+    }
+
     func testAnUnreachableServerSaysWhatToCheck() {
         let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
             RemuxSSHConnectError.unreachable(underlying: ChannelError.connectTimeout(.seconds(30)))

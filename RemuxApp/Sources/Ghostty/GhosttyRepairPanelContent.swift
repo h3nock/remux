@@ -114,6 +114,12 @@ struct GhosttyRepairPanelContent: Equatable {
             title = "Disconnected"
             message = "Remux couldn't verify this server's key."
             actions = [Self.reconnect]
+        case .invalidSettings:
+            title = "Check Server Settings"
+            message = "A saved setting for \(serverName) can't be used to connect."
+            var editServer = Self.editServer("settings")
+            editServer.isPrimary = true
+            actions = [editServer]
         case .userClosed:
             title = "Connection Cancelled"
             message = "Reconnect when you're ready."
