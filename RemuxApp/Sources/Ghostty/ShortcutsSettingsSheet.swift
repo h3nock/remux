@@ -494,7 +494,7 @@ struct ShortcutCollectionEditorSheet: View {
                 .padding(.top, 18)
                 .padding(.bottom, 28)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .scrollDismissesKeyboard(.immediately)
             .background(RemuxAppPalette.background.ignoresSafeArea())
             .navigationTitle(request.collection == nil ? "New Collection" : "Edit Collection")
             .navigationBarTitleDisplayMode(.inline)
@@ -793,7 +793,7 @@ struct ShortcutEditorSheet: View {
                 .padding(.top, 18)
                 .padding(.bottom, 28)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .scrollDismissesKeyboard(.immediately)
             .background(RemuxAppPalette.background.ignoresSafeArea())
             .navigationTitle(request.shortcut == nil ? "New Shortcut" : "Edit Shortcut")
             .navigationBarTitleDisplayMode(.inline)

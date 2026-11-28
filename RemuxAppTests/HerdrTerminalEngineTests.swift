@@ -80,6 +80,11 @@ final class HerdrTerminalEngineTests: XCTestCase {
         let wider = try XCTUnwrap(measurement.displayMetrics(columns: 5, rows: 1))
         XCTAssertTrue(renderer.updateDisplay(metrics: wider))
         XCTAssertEqual(renderer.presentation, .awaitingFrame, "the picture from before the new size read as ready")
+        // Herdr sizes the pane's grid; the renderer draws the new size once Herdr's frame brings it.
+        await feed.receive(try Self.snapshot(revision: 2))
+        await feed.receive(.surface(try Self.surface(
+            projection: 2, revision: 2, lines: ["one  "], panes: [Self.pane("P", x: 0, width: 5, height: 1)]
+        )))
         try await waitUntil("the picture wasn't drawn again at the new size") { renderer.presentation == .ready }
         XCTAssertEqual(publishedSize(), [Int(wider.pixelWidth), Int(wider.pixelHeight)])
         await engine.stop()

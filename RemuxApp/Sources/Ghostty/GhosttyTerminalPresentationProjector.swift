@@ -458,6 +458,8 @@ struct GhosttyCompositeViewportLayout: Equatable {
     let origin: CGPoint
     let canvasSize: CGSize
     let cellSize: CGSize
+    private let cellPixels: CGSize
+    private let scale: CGFloat
 
     init?(
         bounds: CGRect,
@@ -470,13 +472,12 @@ struct GhosttyCompositeViewportLayout: Equatable {
               cellMetrics.contentScale > 0
         else { return nil }
         let scale = CGFloat(cellMetrics.contentScale)
-        cellSize = CGSize(
-            width: CGFloat(cellMetrics.pixelWidth) / scale,
-            height: CGFloat(cellMetrics.pixelHeight) / scale
-        )
+        self.scale = scale
+        cellPixels = CGSize(width: CGFloat(cellMetrics.pixelWidth), height: CGFloat(cellMetrics.pixelHeight))
+        cellSize = CGSize(width: cellPixels.width / scale, height: cellPixels.height / scale)
         canvasSize = CGSize(
-            width: CGFloat(grid.columns) * cellSize.width,
-            height: CGFloat(grid.rows) * cellSize.height
+            width: CGFloat(grid.columns) * cellPixels.width / scale,
+            height: CGFloat(grid.rows) * cellPixels.height / scale
         )
         // The canvas is centred across but anchored to the top. A grid that doesn't fill the
         // viewport, as while a resize waits for the server, must not move when the viewport
@@ -485,12 +486,14 @@ struct GhosttyCompositeViewportLayout: Equatable {
         origin = CGPoint(x: (unsnappedOriginX * scale).rounded() / scale, y: 0)
     }
 
+    /// Worked out from whole pixels: a cell count times the cell's size in points can land a fraction of a pixel
+    /// short, and the layer's pixel size, which drops the fraction, then holds a pixel less than the grid.
     func frame(for gridRect: GhosttyTerminalGridRect) -> CGRect {
         CGRect(
-            x: origin.x + CGFloat(gridRect.x) * cellSize.width,
-            y: origin.y + CGFloat(gridRect.y) * cellSize.height,
-            width: CGFloat(gridRect.columns) * cellSize.width,
-            height: CGFloat(gridRect.rows) * cellSize.height
+            x: origin.x + CGFloat(gridRect.x) * cellPixels.width / scale,
+            y: origin.y + CGFloat(gridRect.y) * cellPixels.height / scale,
+            width: CGFloat(gridRect.columns) * cellPixels.width / scale,
+            height: CGFloat(gridRect.rows) * cellPixels.height / scale
         )
     }
 }
