@@ -641,6 +641,7 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         username: String,
         suspendAuthentication: Bool = false,
         directTCPIPConfirmationDelay: TimeAmount? = nil,
+        sessionConfirmationDelay: TimeAmount? = nil,
         execOutput: Data? = nil,
         execSteps: [SSHPublicKeyLiveExecStep] = [],
         hostKey: NIOSSHPrivateKey = NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey())
@@ -676,6 +677,10 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
                             return childChannel.eventLoop.makeFailedFuture(
                                 SSHPublicKeyLiveTestServerError.invalidChannelType
                             )
+                        }
+                        // A session confirmed only after a delay, as from a server too busy to answer opens.
+                        if let delay = sessionConfirmationDelay {
+                            return childChannel.eventLoop.scheduleTask(in: delay) {}.futureResult
                         }
                         return childChannel
                             .setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
@@ -729,6 +734,12 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         authenticationDelegate.resumeAuthentication()
     }
 
+    /// Holds each sign-in from now on, as `suspendAuthentication` does from the start; `resumeAuthentication` lets
+    /// the one waiting through and keeps holding later ones.
+    func suspendLaterAuthentication() {
+        authenticationDelegate.suspendLaterAuthentication()
+    }
+
     func failSuspendedAuthentication() {
         authenticationDelegate.failSuspendedAuthentication()
     }
@@ -766,7 +777,7 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
     ]
 
     private let username: String
-    private let suspendAuthentication: Bool
+    private var suspendAuthentication: Bool
     private let lock = NSLock()
     private var suspendedResponsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>?
 
@@ -792,12 +803,11 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
             responsePromise.succeed(.failure)
             return
         }
-        if suspendAuthentication {
-            lock.withLock {
-                suspendedResponsePromise = responsePromise
-            }
-            return
+        let suspends = lock.withLock { () -> Bool in
+            if suspendAuthentication { suspendedResponsePromise = responsePromise }
+            return suspendAuthentication
         }
+        if suspends { return }
         switch request.request {
         case .password, .publicKey:
             responsePromise.succeed(.success)
@@ -808,6 +818,10 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
 
     func resumeAuthentication() {
         takeSuspendedResponsePromise()?.succeed(.success)
+    }
+
+    func suspendLaterAuthentication() {
+        lock.withLock { suspendAuthentication = true }
     }
 
     func failSuspendedAuthentication() {

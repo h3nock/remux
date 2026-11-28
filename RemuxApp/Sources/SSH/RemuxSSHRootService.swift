@@ -40,7 +40,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount
-    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
+    private(set) var onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     init(
         host: String,
@@ -58,6 +58,18 @@ struct RemuxSSHRootConfiguration: Sendable {
         self.connectTimeout = connectTimeout
         self.authenticationTimeout = authenticationTimeout ?? connectTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
+    }
+
+    /// The same sign-in, asking no one anything: a Tailscale SSH check is given up the moment the server presents
+    /// it, instead of being shown. For a connection signed in on a guess (`RemuxSSHRootService.checkConnections`),
+    /// which must never bring up a prompt. Nothing else in a sign-in asks: keys sign without interaction and host
+    /// keys are checked against the ones already trusted.
+    var askingNoOne: RemuxSSHRootConfiguration {
+        var quiet = self
+        quiet.onTailscaleSSHCheck = { event in
+            if case .presented(let request) = event { request.cancel() }
+        }
+        return quiet
     }
 }
 
@@ -113,6 +125,8 @@ struct RemuxSSHRootServiceSnapshot: Equatable, Sendable {
         let reservationCount: Int
         let isIdleCloseScheduled: Bool
         let isRefusingSessions: Bool
+        let isSuspect: Bool
+        let isSpare: Bool
     }
 
     /// Roots evicted from the pool that still have live leases
@@ -163,6 +177,11 @@ final class RemuxSSHRoot: @unchecked Sendable {
         } catch {
             NSLog("Remux authenticated SSH root close failed: %@", String(describing: error))
         }
+    }
+
+    /// Whether anything has arrived from the server since `moment`, on any of this connection's channels.
+    func hasHeard(since moment: NIODeadline) -> Bool {
+        inboundActivity.hasRecorded(since: moment)
     }
 
     /// With `readsOnDemand`, the channel delivers data only after `read()`. It is set before the
@@ -487,6 +506,14 @@ struct RemuxSSHRootAttempt: Sendable {
         }
     }
 
+    /// The root it signed in, once it has.
+    var root: RemuxSSHRoot? {
+        outcome.withLockedValue { outcome in
+            if case .authenticated(let root) = outcome { return root }
+            return nil
+        }
+    }
+
     /// Whether the attempt can no longer serve anyone: it failed, or the root it made has closed since.
     var isSpent: Bool {
         outcome.withLockedValue { outcome in
@@ -752,7 +779,8 @@ actor RemuxSSHRootService {
     nonisolated let tailscaleSSHCheckChallengeBroker = TailscaleSSHCheckChallengeBroker()
 
     /// One pooled connection. A server usually has one per purpose; another is signed in only when the server
-    /// refuses a session on every connection it has (see `isRefusingSessions`).
+    /// refuses a session on every connection it has (see `isRefusingSessions`), or beside one a check suspects
+    /// (see `checkConnections`).
     private struct Entry {
         let key: RemuxSSHRootKey
         let generation: UUID
@@ -764,17 +792,24 @@ actor RemuxSSHRootService {
         /// The server refused a session on this connection while it held its current leases (OpenSSH limits the
         /// sessions per connection). New consumers go to another connection until one of these leases is given back.
         var isRefusingSessions = false
-    }
+        /// What the connection signed in with, so the pool can sign in another like it (`checkConnections`).
+        let configuration: RemuxSSHRootConfiguration?
+        /// When the probe of a check that then heard nothing for `suspicionDelay` began.
+        var silentSince: NIODeadline?
+        /// Signed in beside a suspect connection, asking no one anything. It takes consumers only once signed in, so
+        /// a sign-in that needed the user (a Tailscale SSH check) fails the spare alone, never a consumer's open.
+        var isSpare = false
+        /// Given back as broken by one of its users while others still use it, or closed with sessions on it. It
+        /// takes no new consumers and closes when its last lease goes. Closing it at once would let one session's
+        /// channel failure kill healthy sessions beside it; a dead one drains fast, as each session fails and leaves.
+        var isRetired = false
 
-    /// A root removed from the pool while sessions still lease it: no
-    /// new leases, and the underlying connection closes only when the
-    /// last lease releases. Closing immediately on invalidation would
-    /// let one session's channel-level failure kill healthy sibling
-    /// sessions sharing the root; a genuinely dead root drains fast
-    /// because every sibling errors out and releases.
-    private struct RetiredEntry {
-        let task: Task<RemuxSSHRoot, Error>
-        var activeLeaseCount: Int
+        /// Silent since a check's probe began: new consumers go to another connection, and the pool closes it once
+        /// another connection to the server hears from it in that time. Any byte on it ends this.
+        var isSuspect: Bool {
+            guard let silentSince else { return false }
+            return attempt.root?.hasHeard(since: silentSince) != true
+        }
     }
 
     private struct EntrySnapshot: Sendable {
@@ -804,7 +839,6 @@ actor RemuxSSHRootService {
     /// refuses sessions on the ones it has.
     private var entries: [UUID: Entry] = [:]
     private var generationsByKey: [RemuxSSHRootKey: [UUID]] = [:]
-    private var retiredEntries: [UUID: RetiredEntry] = [:]
 
     init(idleTimeout: Duration = .seconds(120)) {
         self.idleTimeout = idleTimeout
@@ -812,35 +846,123 @@ actor RemuxSSHRootService {
 
     func snapshot() -> RemuxSSHRootServiceSnapshot {
         RemuxSSHRootServiceSnapshot(
-            retiredCount: retiredEntries.count,
+            retiredCount: entries.values.filter(\.isRetired).count,
             entries: generationsByKey.mapValues { generations in
-                generations.compactMap { entries[$0] }.map { entry in
+                generations.compactMap { entries[$0] }.filter { !$0.isRetired }.map { entry in
                     RemuxSSHRootServiceSnapshot.Entry(
                         generation: entry.generation,
                         readiness: entry.readiness,
                         activeLeaseCount: entry.activeLeaseCount,
                         reservationCount: entry.reservationIDs.count,
                         isIdleCloseScheduled: entry.idleCloseTask != nil,
-                        isRefusingSessions: entry.isRefusingSessions
+                        isRefusingSessions: entry.isRefusingSessions,
+                        isSuspect: entry.isSuspect,
+                        isSpare: entry.isSpare
                     )
                 }
             }
         )
     }
 
+    /// How long a check may hear nothing from a connection before the pool stops trusting it. A live answer takes one
+    /// round trip plus the radio waking after the background: well under this on cellular, about half of it on a
+    /// weak link with a late packet.
+    static let suspicionDelay: Duration = .milliseconds(1500)
+
     /// Checks that each connection still answers (`RemuxSSHRoot.checkAlive`), all at once; run when the app comes
     /// back to the foreground and when the network path changes, the moments a connection most often dies without
     /// a word. A dead one is closed, so its sessions fail and reconnect now.
+    ///
+    /// The check's own deadline (`RemuxSSHRoot.channelOpenDeadline`) is long, because closing a connection that is
+    /// only slow costs every session on it a reconnect. So a connection that hears nothing for `suspicionDelay`
+    /// becomes suspect instead (`Entry.isSuspect`): new consumers go elsewhere, and unless another connection to the
+    /// server is already signing in, a spare signs in beside it, asking no one anything. Once another connection to
+    /// the server has heard from it since the suspect's probe began (the spare's sign-in, a consumer's, or one already
+    /// open), the suspect is dead: the server is reachable over the network as it is now, just not over this
+    /// connection. It is closed, and its sessions reconnect onto the one that heard. A connection that is alive but
+    /// silent that long (its own resends backed off, say) is closed too, and its sessions pay that reconnect. Any byte
+    /// on the suspect before then keeps it, and an unused spare closes when idle. A spare whose sign-in fails, for
+    /// instance because the server wants a Tailscale SSH check, leaves the suspect to the next sign-in, the next
+    /// check, or the deadline.
     func checkConnections(reason: String) {
-        let ready = entries.values.filter { $0.readiness == .ready }.map(\.attempt.task)
-        let tasks = ready + retiredEntries.values.map(\.task)
-        GhosttyRuntimeTrace.latency("sshRoot.pool.check reason=\(reason) roots=\(tasks.count)")
-        for task in tasks {
+        let ready = entries.values.filter { $0.readiness == .ready }
+        let retired = ready.filter(\.isRetired).count
+        GhosttyRuntimeTrace.latency("sshRoot.pool.check reason=\(reason) roots=\(ready.count) retired=\(retired)")
+        // Retired connections too: they take no new consumers, but their sessions wait on them like any others.
+        for entry in ready {
+            let (key, generation, task) = (entry.key, entry.generation, entry.attempt.task)
             Task.detached(priority: .userInitiated) {
                 guard let root = try? await task.value else { return }
-                await root.checkAlive(reason: reason)
+                await self.check(root, key: key, generation: generation, reason: reason)
             }
         }
+    }
+
+    private nonisolated func check(
+        _ root: RemuxSSHRoot,
+        key: RemuxSSHRootKey,
+        generation: UUID,
+        reason: String
+    ) async {
+        let start = NIODeadline.now()
+        Task { await root.checkAlive(reason: reason) }
+        try? await Task.sleep(for: Self.suspicionDelay)
+        if !root.hasHeard(since: start), root.rootChannel.isActive {
+            await suspect(key: key, generation: generation, silentSince: start, reason: reason)
+        }
+    }
+
+    /// Marks the connection suspect, closes it at once if another connection to the server has already heard from
+    /// it in the silence, and otherwise makes sure a sign-in to the server is under way: another one signing in (a
+    /// spare or a consumer's), or a new spare. A suspect already marked keeps its earlier start, and a later check
+    /// starts a new spare once the last one has failed.
+    private func suspect(key: RemuxSSHRootKey, generation: UUID, silentSince start: NIODeadline, reason: String) {
+        // A sign-in that already failed is still listed until its observer runs; it would count as under way.
+        removeSpentEntries(for: key)
+        guard var entry = entries[generation] else { return }
+        if !entry.isSuspect {
+            entry.silentSince = start
+            entries[generation] = entry
+            GhosttyRuntimeTrace.latency("sshRoot.pool.suspect reason=\(reason)")
+        }
+        closeSuspectsAnotherConnectionHeardOver(for: key)
+        guard entries[generation]?.isSuspect == true,
+              !orderedEntries(for: key).contains(where: { $0.readiness == .connecting }),
+              let configuration = entry.configuration else {
+            return
+        }
+        GhosttyRuntimeTrace.latency("sshRoot.pool.spare reason=\(reason)")
+        var spare = addEntry(
+            for: key,
+            configuration: configuration.askingNoOne,
+            trace: RemuxTransportStartupTrace(flowID: nil),
+            reservationID: nil
+        )
+        spare.isSpare = true
+        entries[spare.generation] = spare
+    }
+
+    /// Closes each suspect connection of `key` that another of its connections has heard from the server over since
+    /// the suspect went silent. Run at suspicion and whenever a connection to the server signs in.
+    private func closeSuspectsAnotherConnectionHeardOver(for key: RemuxSSHRootKey) {
+        let connections = orderedEntries(for: key).compactMap { entry in entry.attempt.root.map { (entry, $0) } }
+        for (entry, root) in connections {
+            guard entry.isSuspect, let silentSince = entry.silentSince else { continue }
+            let heardOverAnother = connections.contains { other, otherRoot in
+                other.generation != entry.generation && !other.isSuspect && otherRoot.rootChannel.isActive
+                    && otherRoot.hasHeard(since: silentSince)
+            }
+            guard heardOverAnother else { continue }
+            GhosttyRuntimeTrace.latency("sshRoot.pool.cutover")
+            root.rootChannel.close(promise: nil)
+            // Out of the pool now, not when the close lands: no new consumer or spare is made for it meanwhile.
+            rootChannelClosed(for: key, generation: entry.generation)
+        }
+    }
+
+    private static func takesConsumers(_ entry: Entry) -> Bool {
+        !entry.isRetired && !entry.isRefusingSessions && !entry.isSuspect
+            && (!entry.isSpare || entry.readiness == .ready)
     }
 
     func prewarmConnection(
@@ -996,7 +1118,10 @@ actor RemuxSSHRootService {
         reservationID: UUID
     ) -> LeaseEntryResult {
         guard var entry = entries[generation] else {
-            return .stale(closeConnection: retiredEntries[generation] == nil)
+            return .stale(closeConnection: true)
+        }
+        guard !entry.isRetired else {
+            return .stale(closeConnection: false)
         }
         guard entry.reservationIDs.contains(reservationID) else {
             return .busy
@@ -1017,7 +1142,10 @@ actor RemuxSSHRootService {
         disposition: RemuxSSHRootLeaseDisposition
     ) -> ReleaseEntryResult {
         guard var entry = entries[generation] else {
-            return releaseUnpooledLease(generation: generation)
+            return .close
+        }
+        if entry.isRetired {
+            return releaseRetiredLease(entry)
         }
 
         switch disposition {
@@ -1031,15 +1159,14 @@ actor RemuxSSHRootService {
 
         case .invalidated:
             entry.idleCloseTask?.cancel()
-            removeEntry(generation)
-            let remaining = max(0, entry.activeLeaseCount - 1)
-            guard remaining > 0 else {
+            entry.idleCloseTask = nil
+            entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
+            guard entry.activeLeaseCount > 0 else {
+                removeEntry(generation)
                 return .close
             }
-            retiredEntries[generation] = RetiredEntry(
-                task: entry.attempt.task,
-                activeLeaseCount: remaining
-            )
+            entry.isRetired = true
+            entries[generation] = entry
             return .retained
         }
     }
@@ -1051,8 +1178,10 @@ actor RemuxSSHRootService {
         generation: UUID
     ) -> (ReleaseEntryResult, othersRemain: Bool) {
         guard var entry = entries[generation] else {
-            let othersRemain = (retiredEntries[generation]?.activeLeaseCount ?? 0) > 1
-            return (releaseUnpooledLease(generation: generation), othersRemain)
+            return (.close, false)
+        }
+        if entry.isRetired {
+            return (releaseRetiredLease(entry), entry.activeLeaseCount > 1)
         }
 
         entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
@@ -1062,18 +1191,15 @@ actor RemuxSSHRootService {
         return (.retained, entry.activeLeaseCount > 0)
     }
 
-    /// A lease on a connection that has left the pool: a retired one closes with its last lease; one the pool
-    /// no longer knows is the caller's to close.
-    private func releaseUnpooledLease(generation: UUID) -> ReleaseEntryResult {
-        guard var retired = retiredEntries[generation] else {
+    /// A lease on a retired connection goes back: the connection closes with its last one.
+    private func releaseRetiredLease(_ entry: Entry) -> ReleaseEntryResult {
+        var entry = entry
+        entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
+        guard entry.activeLeaseCount > 0 else {
+            removeEntry(entry.generation)
             return .close
         }
-        retired.activeLeaseCount = max(0, retired.activeLeaseCount - 1)
-        if retired.activeLeaseCount == 0 {
-            retiredEntries.removeValue(forKey: generation)
-            return .close
-        }
-        retiredEntries[generation] = retired
+        entries[entry.generation] = entry
         return .retained
     }
 
@@ -1106,14 +1232,14 @@ actor RemuxSSHRootService {
         }
     }
 
-    /// The key's connection for a prewarm: the first there is, or a new one signing in.
+    /// The key's connection for a prewarm: the first that isn't suspect, or a new one signing in.
     private func entrySnapshot(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
         trace: RemuxTransportStartupTrace
     ) -> EntrySnapshot {
         removeSpentEntries(for: key)
-        if let existing = orderedEntries(for: key).first {
+        if let existing = orderedEntries(for: key).first(where: { !$0.isSuspect && !$0.isRetired }) {
             return EntrySnapshot(
                 generation: existing.generation,
                 attempt: existing.attempt,
@@ -1159,7 +1285,7 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         reservationID: UUID
     ) -> EntrySnapshot? {
-        guard var existing = orderedEntries(for: key).first(where: { !$0.isRefusingSessions }) else {
+        guard var existing = orderedEntries(for: key).first(where: { Self.takesConsumers($0) }) else {
             return nil
         }
 
@@ -1188,7 +1314,8 @@ actor RemuxSSHRootService {
             activeLeaseCount: 0,
             reservationIDs: reservationID.map { [$0] } ?? [],
             idleCloseTask: nil,
-            readiness: .connecting
+            readiness: .connecting,
+            configuration: configuration
         )
         insertEntry(entry)
         observeAuthenticationResult(entry.attempt.task, for: key, generation: entry.generation)
@@ -1255,6 +1382,7 @@ actor RemuxSSHRootService {
         entry.readiness = .ready
         entries[generation] = entry
         scheduleIdleCloseIfNeeded(for: key, generation: generation)
+        closeSuspectsAnotherConnectionHeardOver(for: key)
     }
 
     private func authenticationFailed(
@@ -1270,15 +1398,17 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard let entry = entries[generation] else { return }
+        guard var entry = entries[generation] else { return }
         entry.idleCloseTask?.cancel()
-        removeEntry(generation)
-
-        guard entry.activeLeaseCount > 0 else { return }
-        retiredEntries[generation] = RetiredEntry(
-            task: entry.attempt.task,
-            activeLeaseCount: entry.activeLeaseCount
-        )
+        guard entry.activeLeaseCount > 0 else {
+            removeEntry(generation)
+            return
+        }
+        // Its sessions still hold it until they fail and leave; closed, it is no longer anyone's suspect.
+        entry.idleCloseTask = nil
+        entry.isRetired = true
+        entry.silentSince = nil
+        entries[generation] = entry
     }
 
     private func scheduleIdleCloseIfNeeded(
@@ -1324,12 +1454,6 @@ actor RemuxSSHRootService {
             entry.idleCloseTask?.cancel()
             closeEntryTask(entry.attempt.task, reason: "testing_cleanup")
         }
-
-        let retired = Array(retiredEntries.values)
-        retiredEntries.removeAll()
-        for entry in retired {
-            closeEntryTask(entry.task, reason: "testing_cleanup")
-        }
     }
 
     @discardableResult
@@ -1341,8 +1465,10 @@ actor RemuxSSHRootService {
         reservationID: UUID? = nil,
         idleCloseScheduled: Bool = false,
         isRefusingSessions: Bool = false,
+        isSpare: Bool = false,
         alongsideExisting: Bool = false,
-        attempt: RemuxSSHRootAttempt? = nil
+        attempt: RemuxSSHRootAttempt? = nil,
+        configuration: RemuxSSHRootConfiguration? = nil
     ) -> UUID {
         if !alongsideExisting {
             for existing in orderedEntries(for: key) {
@@ -1361,9 +1487,11 @@ actor RemuxSSHRootService {
             activeLeaseCount: activeLeaseCount,
             reservationIDs: reservationID.map { [$0] } ?? [],
             idleCloseTask: idleCloseScheduled ? Self.testingIdleCloseTask() : nil,
-            readiness: readiness
+            readiness: readiness,
+            configuration: configuration
         )
         entry.isRefusingSessions = isRefusingSessions
+        entry.isSpare = isSpare
         insertEntry(entry)
         return generation
     }
@@ -1459,6 +1587,28 @@ actor RemuxSSHRootService {
         generation: UUID
     ) {
         authenticationFailed(for: key, generation: generation)
+    }
+
+    /// Makes the connection suspect, as a check that heard nothing for `suspicionDelay` does, without the spare.
+    func markSuspectForTesting(generation: UUID) {
+        guard var entry = entries[generation] else { return }
+        entry.silentSince = .now()
+        entries[generation] = entry
+    }
+
+    /// Makes the connection suspect as a check does; returns whether that started a spare.
+    func suspectForTesting(for key: RemuxSSHRootKey, generation: UUID) -> Bool {
+        let spares = orderedEntries(for: key).filter(\.isSpare).count
+        suspect(key: key, generation: generation, silentSince: .now(), reason: "test")
+        return orderedEntries(for: key).filter(\.isSpare).count > spares
+    }
+
+    /// The connection a prewarm would use: an existing one, or a new one signing in.
+    func prewarmGenerationForTesting(
+        for key: RemuxSSHRootKey,
+        configuration: RemuxSSHRootConfiguration
+    ) -> UUID {
+        entrySnapshot(for: key, configuration: configuration, trace: RemuxTransportStartupTrace(flowID: nil)).generation
     }
 
     func markRootChannelClosedForTesting(
