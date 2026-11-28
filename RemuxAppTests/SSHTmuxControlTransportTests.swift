@@ -809,6 +809,25 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
+    /// A connection that can't be opened comes out as the one error the app owns for it, with the system's reason,
+    /// whatever the transport reported underneath.
+    func testAConnectionThatCantOpenIsReportedAsUnreachable() async {
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: makeRefusedRootConfiguration(),
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            XCTFail("expected the connection to fail")
+        } catch {
+            guard case .unreachable? = error as? RemuxSSHConnectError else {
+                return XCTFail("expected an unreachable server, got \(error)")
+            }
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+            XCTAssertEqual(reason.kind, .serverUnreachable)
+            XCTAssertEqual(reason.detail, "Connection refused")
+        }
+    }
+
     func testSSHRootServiceRefusalOnALoneLeaseLeavesRootTakingConsumers() async throws {
         let pool = RemuxSSHRootService(idleTimeout: .seconds(60))
         let key = makeSSHRootKey()

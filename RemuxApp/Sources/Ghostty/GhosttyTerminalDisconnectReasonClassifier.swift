@@ -1,6 +1,5 @@
+import Citadel
 import Foundation
-import NIOCore
-import NIOPosix
 
 enum GhosttyTerminalDisconnectReasonClassifier {
     /// A tmux control session that couldn't start. `tmuxPath` is the one set in Edit Server, nil for Automatic:
@@ -34,8 +33,8 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
         }
 
-        if isServerUnreachable(error) {
-            return TerminalDisconnectReason(kind: .serverUnreachable, message: message)
+        if let connectError = error as? RemuxSSHConnectError {
+            return TerminalDisconnectReason(kind: .serverUnreachable, message: message, detail: connectError.reason)
         }
 
         if let trustedHostError = error as? TrustedHostStoreError {
@@ -70,27 +69,19 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             }
         }
 
-        let lowercasedMessage = message.lowercased()
-        if lowercasedMessage.contains("auth") ||
-            lowercasedMessage.contains("password") ||
-            lowercasedMessage.contains("permission denied") {
-            return TerminalDisconnectReason(kind: .authentication, message: message)
+        if let clientError = error as? SSHClientError {
+            switch clientError {
+            case .allAuthenticationOptionsFailed,
+                 .unsupportedPasswordAuthentication,
+                 .unsupportedPrivateKeyAuthentication,
+                 .unsupportedHostBasedAuthentication:
+                return TerminalDisconnectReason(kind: .authentication, message: message)
+            case .channelCreationFailed:
+                break
+            }
         }
 
         return TerminalDisconnectReason(kind: .unknown, message: message)
-    }
-
-    private static func isServerUnreachable(_ error: any Error) -> Bool {
-        if error is NIOConnectionError {
-            return true
-        }
-
-        if let channelError = error as? ChannelError,
-           case .connectTimeout = channelError {
-            return true
-        }
-
-        return false
     }
 
     static func foregroundMissingHost() -> TerminalDisconnectReason {

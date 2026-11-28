@@ -177,28 +177,48 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         )
     }
 
-    func testTransportStartFailureMapsAuthenticationTextFallbacks() {
-        for message in [
-            "authentication failed",
-            "bad password",
-            "Permission denied",
+    /// The server turning the credentials down is told by its type, not by words in an error's text.
+    func testRejectedCredentialsAreAnAuthenticationFailure() {
+        for error in [
+            SSHClientError.allAuthenticationOptionsFailed,
+            .unsupportedPasswordAuthentication,
+            .unsupportedPrivateKeyAuthentication,
+            .unsupportedHostBasedAuthentication,
         ] {
             XCTAssertEqual(
-                GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-                    DescribedError(message)
-                ).kind,
+                GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error).kind,
                 .authentication,
+                "\(error)"
+            )
+        }
+    }
+
+    /// Text that happens to mention signing in is no sign the credentials were turned down: a server whose version
+    /// line says "auth", or a socket the system refused with "Permission denied".
+    func testWordsInAnErrorDontMakeItAnAuthenticationFailure() {
+        for message in ["Protocol mismatch: SSH-1.5-authbox", "bad password prompt", "Permission denied"] {
+            XCTAssertEqual(
+                GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(DescribedError(message)).kind,
+                .unknown,
                 message
             )
         }
     }
 
-    func testTransportStartFailureMapsConnectTimeoutAsServerUnreachable() {
-        let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-            ChannelError.connectTimeout(.seconds(30))
-        )
-
-        XCTAssertEqual(reason.kind, .serverUnreachable)
+    /// However the connection failed, the panel says the server can't be reached, with the system's own words
+    /// underneath: a broadcast address the kernel refuses is not a password problem.
+    func testAConnectionThatFailedIsUnreachableWithTheSystemsReason() {
+        let cases: [(RemuxSSHConnectError, String)] = [
+            (.unreachable(underlying: IOError(errnoCode: EACCES, reason: "connect")), "Permission denied"),
+            (.unreachable(underlying: IOError(errnoCode: ECONNREFUSED, reason: "connect")), "Connection refused"),
+            (.unreachable(underlying: ChannelError.connectTimeout(.seconds(10))), "The connection timed out."),
+            (.noSSHResponse(timeout: .seconds(10)), "The server accepted the connection, but SSH didn't respond in time."),
+        ]
+        for (error, detail) in cases {
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+            XCTAssertEqual(reason.kind, .serverUnreachable, "\(error)")
+            XCTAssertEqual(reason.detail, detail, "\(error)")
+        }
     }
 
     /// New credentials can't fix an expired Tailscale check, so it isn't an authentication failure.

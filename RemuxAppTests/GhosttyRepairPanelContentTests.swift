@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import NIO
 import XCTest
 @testable import Remux
@@ -74,7 +75,7 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
     /// Credentials the server turned down and a key made on this device that can't be used here are both fixed by
     /// updating them, and neither is said to be the server's rejection.
     func testFailedCredentialsOfferUpdatingThemWithoutBlamingTheServer() {
-        for error: any Error in [Failure("Permission denied"), SecureEnclaveSSHError.keyUnusable] {
+        for error: any Error in [SSHClientError.allAuthenticationOptionsFailed, SecureEnclaveSSHError.keyUnusable] {
             let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error))
 
             XCTAssertEqual(content.title, "Authentication Failed", "\(error)")
@@ -98,11 +99,12 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
 
     func testAnUnreachableServerSaysWhatToCheck() {
         let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-            ChannelError.connectTimeout(.seconds(30))
+            RemuxSSHConnectError.unreachable(underlying: ChannelError.connectTimeout(.seconds(30)))
         ))
 
         XCTAssertEqual(content.title, "Server Unreachable")
         XCTAssertEqual(content.message, "Check the address, port, network, or VPN.")
+        XCTAssertEqual(content.detail, "The connection timed out.")
         XCTAssertEqual(titles(content), ["Retry", "Edit Server"])
     }
 

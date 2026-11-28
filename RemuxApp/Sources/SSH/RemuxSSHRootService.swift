@@ -354,6 +354,51 @@ enum RemuxSSHRootLeaseDisposition: Equatable, Sendable {
     case invalidated
 }
 
+/// A connection that failed before signing in. The bootstrap is the one place that knows a failure happened while
+/// connecting, so it says so here instead of leaving callers to infer it from the transport's error types.
+enum RemuxSSHConnectError: LocalizedError {
+    /// The TCP connection couldn't be opened: the name didn't resolve, no route, refused, timed out, and the like.
+    case unreachable(underlying: any Error)
+    /// The TCP connection opened, but the server didn't get through SSH before the connect allowance ran out.
+    case noSSHResponse(timeout: TimeAmount)
+
+    var errorDescription: String? {
+        switch self {
+        case .unreachable:
+            "Remux couldn't connect to the server."
+        case .noSSHResponse:
+            "The server accepted the connection, but SSH didn't respond in time."
+        }
+    }
+
+    /// What the system reported, in its own words, for the details line.
+    var reason: String? {
+        switch self {
+        case .unreachable(let underlying):
+            Self.systemReason(underlying)
+        case .noSSHResponse:
+            errorDescription
+        }
+    }
+
+    private static func systemReason(_ error: any Error) -> String? {
+        if let error = error as? IOError {
+            return String(cString: strerror(error.errnoCode))
+        }
+        if let error = error as? NIOConnectionError {
+            if let attempt = error.connectionErrors.last {
+                return systemReason(attempt.error)
+            }
+            let lookupFailed = error.dnsAError != nil || error.dnsAAAAError != nil
+            return lookupFailed ? "The server's name couldn't be found." : nil
+        }
+        if case .connectTimeout? = error as? ChannelError {
+            return "The connection timed out."
+        }
+        return nil
+    }
+}
+
 enum RemuxSSHRootServiceError: LocalizedError, Equatable, CustomStringConvertible {
     case unsupportedInboundChannel
     case closed
@@ -1722,25 +1767,31 @@ enum RemuxSSHRootBootstrap {
             trace.event("bootstrap.configure.end")
 
             let inboundActivity = RemuxLastActivity()
-            let connection = try await trace.stage(
-                "tcpConnect",
-                fields: [
-                    "host": configuration.host,
-                    "port": "\(configuration.port)",
-                ]
-            ) {
-                try await bootstrap.connect(
-                    host: configuration.host,
-                    port: configuration.port,
-                    channelInitializer: { channel in
-                        channel.pipeline.addHandler(
-                            RemuxSSHInboundActivityHandler(activity: inboundActivity),
-                            position: .first
-                        ).flatMap {
-                            configureChannel(channel, using: configuration, authentication: authentication)
+            let connection: (channel: Channel, authenticated: EventLoopFuture<Void>)
+            do {
+                connection = try await trace.stage(
+                    "tcpConnect",
+                    fields: [
+                        "host": configuration.host,
+                        "port": "\(configuration.port)",
+                    ]
+                ) {
+                    try await bootstrap.connect(
+                        host: configuration.host,
+                        port: configuration.port,
+                        channelInitializer: { channel in
+                            channel.pipeline.addHandler(
+                                RemuxSSHInboundActivityHandler(activity: inboundActivity),
+                                position: .first
+                            ).flatMap {
+                                configureChannel(channel, using: configuration, authentication: authentication)
+                            }
                         }
-                    }
-                )
+                    )
+                }
+            } catch {
+                // Credentials are prepared above, so all that runs here is network work.
+                throw RemuxSSHConnectError.unreachable(underlying: error)
             }
             let channel = connection.channel
             rootChannel = channel
@@ -1941,7 +1992,7 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             if hadChallenge {
                 promise.fail(TailscaleSSHCheckError.verificationTimedOut)
             } else {
-                promise.fail(ChannelError.connectTimeout(timeout))
+                promise.fail(RemuxSSHConnectError.noSSHResponse(timeout: timeout))
             }
         }
     }
