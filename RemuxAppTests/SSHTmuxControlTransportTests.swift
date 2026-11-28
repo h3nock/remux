@@ -626,6 +626,117 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
+    func testSuspectConnectionTakesNoNewConsumers() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let suspect = await pool.insertEntryForTesting(for: key)
+        let other = await pool.insertEntryForTesting(for: key, alongsideExisting: true)
+        await pool.markSuspectForTesting(generation: suspect)
+
+        let reserved = await pool.reserveEntryForTesting(for: key)
+
+        XCTAssertEqual(reserved?.generation, other, "a new consumer went to the suspect connection")
+        let entries = await pool.snapshot().entries(for: key)
+        XCTAssertEqual(entries.first { $0.generation == suspect }?.isSuspect, true)
+        XCTAssertEqual(entries.first { $0.generation == suspect }?.reservationCount, 0)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSuspectConnectionAloneTakesNoNewConsumers() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let suspect = await pool.insertEntryForTesting(for: key)
+        await pool.markSuspectForTesting(generation: suspect)
+
+        let reserved = await pool.reserveEntryForTesting(for: key)
+
+        XCTAssertNil(reserved, "with only a suspect connection, a new consumer must get a new one")
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testAnswerClearsSuspicion() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let generation = await pool.insertEntryForTesting(for: key)
+        await pool.markSuspectForTesting(generation: generation)
+        await pool.clearSuspicionForTesting(generation: generation)
+
+        let reserved = await pool.reserveEntryForTesting(for: key)
+
+        XCTAssertEqual(reserved?.generation, generation)
+        let entry = await pool.snapshot().entry(for: key)
+        XCTAssertEqual(entry?.isSuspect, false)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSpareTakesConsumersOnlyOnceSignedIn() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let suspect = await pool.insertEntryForTesting(for: key)
+        await pool.markSuspectForTesting(generation: suspect)
+        let spare = await pool.insertEntryForTesting(
+            for: key,
+            readiness: .connecting,
+            isSpare: true,
+            alongsideExisting: true
+        )
+
+        let whileSigningIn = await pool.reserveEntryForTesting(for: key)
+        await pool.markAuthenticationSucceededForTesting(for: key, generation: spare)
+        let onceSignedIn = await pool.reserveEntryForTesting(for: key)
+
+        XCTAssertNil(whileSigningIn, "a consumer waited on a spare's sign-in, which gives up if the server asks")
+        XCTAssertEqual(onceSignedIn?.generation, spare)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testPrewarmSkipsASuspectConnection() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let suspect = await pool.insertEntryForTesting(for: key)
+        await pool.markSuspectForTesting(generation: suspect)
+
+        let prewarmed = await pool.prewarmGenerationForTesting(
+            for: key,
+            configuration: makeRefusedRootConfiguration()
+        )
+
+        XCTAssertNotEqual(prewarmed, suspect, "a prewarm reused the suspect connection")
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testConnectionAskingNoOneGivesUpATailscaleCheck() throws {
+        let shown = NIOLockedValueBox(0)
+        let refused = makeRefusedRootConfiguration()
+        let configuration = RemuxSSHRootConfiguration(
+            host: refused.host,
+            port: refused.port,
+            authenticationMethod: refused.authenticationMethod,
+            hostKeyValidator: refused.hostKeyValidator,
+            connectTimeout: .seconds(2),
+            authenticationTimeout: .seconds(90),
+            onTailscaleSSHCheck: { _ in shown.withLockedValue { $0 += 1 } }
+        )
+        let cancelled = NIOLockedValueBox(false)
+        let challenge = try XCTUnwrap(TailscaleSSHCheckChallenge.parse(
+            from: "# To authenticate, visit: https://login.tailscale.com/a/5fb81378394f\n"
+        ))
+        let request = TailscaleSSHCheckRequest(
+            id: UUID(),
+            challenge: challenge,
+            cancel: { cancelled.withLockedValue { $0 = true } }
+        )
+
+        let quiet = configuration.askingNoOne
+        quiet.onTailscaleSSHCheck?(.presented(request))
+
+        XCTAssertTrue(cancelled.withLockedValue { $0 }, "the check was not given up")
+        XCTAssertEqual(shown.withLockedValue { $0 }, 0, "the check reached the screen")
+        XCTAssertEqual(quiet.authenticationTimeout, configuration.authenticationTimeout)
+        XCTAssertEqual(quiet.host, configuration.host)
+        XCTAssertEqual(quiet.port, configuration.port)
+    }
+
     func testSSHRootServiceSeparatesInteractiveAndTransferConnections() async throws {
         let pool = RemuxSSHRootService()
         let serverID = UUID()
@@ -1482,6 +1593,54 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
     }
 
+    /// The return check, through a relay that can silence the connections it carries while new ones get through: a
+    /// connection that stays silent while a spare signs in is closed long before the open deadline, and the next
+    /// claim lands on the spare.
+    func testConnectionCheckClosesAConnectionSilentThroughASparesSignIn() async throws {
+        let checked = try await makeCheckedLoopback()
+        let first = try await checked.claim()
+
+        checked.relay.stallExisting()
+        let start = ContinuousClock.now
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("the silent connection was left open", timeout: openDeadline) {
+            !first.sshRoot.rootChannel.isActive
+        }
+        let elapsed = ContinuousClock.now - start
+
+        XCTAssertGreaterThanOrEqual(elapsed, RemuxSSHRootService.suspicionDelay)
+        XCTAssertLessThan(elapsed, openDeadline / 2, "closed by the open deadline, not on the spare's evidence")
+        let second = try await checked.claim()
+        XCTAssertFalse(second.sshRoot === first.sshRoot)
+        let entries = await checked.pool.snapshot().entries(for: checked.key)
+        XCTAssertEqual(entries.map(\.isSpare), [true], "the claim rode the spare, not a sign-in of its own")
+        await second.release(.reusable)
+        await first.release(.invalidated)
+    }
+
+    /// A connection that answers after falling under suspicion, before any spare could sign in, is kept: it takes
+    /// consumers again, and the next claim lands on it.
+    func testConnectionCheckKeepsAConnectionThatAnswersLate() async throws {
+        let checked = try await makeCheckedLoopback()
+        let first = try await checked.claim()
+
+        checked.relay.stall()
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("the silent connection never fell under suspicion") {
+            await checked.pool.snapshot().entries(for: checked.key).first { !$0.isSpare }?.isSuspect == true
+        }
+        checked.relay.resume()
+        try await waitUntil("the answer didn't clear the suspicion", timeout: openDeadline) {
+            await checked.pool.snapshot().entries(for: checked.key).first { !$0.isSpare }?.isSuspect == false
+        }
+
+        XCTAssertTrue(first.sshRoot.rootChannel.isActive, "a connection that answered was closed")
+        let second = try await checked.claim()
+        XCTAssertTrue(second.sshRoot === first.sshRoot)
+        await second.release(.reusable)
+        await first.release(.reusable)
+    }
+
     /// The server confirms a forward only once it reaches the forward's target; a slow target leaves the
     /// connection, and the sessions and transfers on it, alone.
     func testSlowForwardLeavesTheConnectionOpen() async throws {
@@ -1722,6 +1881,41 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             authenticationMethod: { .passwordBased(username: "tester", password: "pw") },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(2)
+        )
+    }
+
+    private var openDeadline: Duration { .nanoseconds(RemuxSSHRoot.channelOpenDeadline.nanoseconds) }
+
+    private struct CheckedLoopback {
+        let pool: RemuxSSHRootService
+        let relay: SSHPoolLiveRelay
+        let key: RemuxSSHRootKey
+        let configuration: RemuxSSHRootConfiguration
+
+        func claim() async throws -> RemuxSSHClaimedRoot {
+            try await pool.claimRoot(
+                for: key,
+                configuration: configuration,
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+        }
+    }
+
+    /// A pool whose connections reach the in-process server through a relay the test can silence.
+    private func makeCheckedLoopback() async throws -> CheckedLoopback {
+        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux")
+        addTeardownBlock { server.stop() }
+        let relay = try await SSHPoolLiveRelay.start(host: "127.0.0.1", port: server.port)
+        addTeardownBlock { relay.close() }
+        let loopback = makeLoopbackSession(port: relay.port)
+        try loopback.trustedHostStore.trustHostKey(loopback.challenge(for: server))
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        return CheckedLoopback(
+            pool: pool,
+            relay: relay,
+            key: loopback.key,
+            configuration: makeLoopbackConfiguration(loopback).sshRootConfiguration
         )
     }
 

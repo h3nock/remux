@@ -206,6 +206,72 @@ final class SSHPoolLiveTests: XCTestCase {
         await open.close()
     }
 
+    /// The network moved while the app was away: the connection's flow is dead, new ones get through. The check
+    /// closes it once a spare has signed in beside it, well before the open deadline, and the next open lands on
+    /// the spare.
+    func testConnectionCheckClosesADeadConnectionOnceASpareSignsIn() async throws {
+        let configuration = try SSHPoolLiveConfiguration.load()
+        let relay = try await SSHPoolLiveRelay.start(host: configuration.host, port: configuration.port)
+        addTeardownBlock { relay.close() }
+        let endpoint = try SSHPoolLiveEndpoint(configuration, port: relay.port)
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        let first = try await endpoint.openEcho(on: pool)
+
+        relay.stallExisting()
+        let start = ContinuousClock.now
+        await pool.checkConnections(reason: "test")
+        let deadline = start + RemuxSSHRoot.channelOpenDeadline.duration
+        while first.rootChannel.isActive, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let elapsed = ContinuousClock.now - start
+
+        XCTAssertFalse(first.rootChannel.isActive, "the dead connection was left to the open deadline")
+        XCTAssertGreaterThanOrEqual(elapsed, RemuxSSHRootService.suspicionDelay)
+        XCTAssertLessThan(elapsed, RemuxSSHRoot.channelOpenDeadline.duration / 2)
+        let second = try await endpoint.openEcho(on: pool)
+        XCTAssertFalse(second.rootChannel === first.rootChannel)
+        _ = try await second.roundTrip(0x45)
+        let entries = await pool.snapshot().entries(for: endpoint.key)
+        XCTAssertEqual(entries.count, 1, "the session should ride the spare, not a third sign-in")
+        XCTAssertEqual(entries.first?.isSpare, true)
+        await second.close()
+        await first.close()
+    }
+
+    /// Two connections to a server (two sessions each, the most it allows), both dead after the network moved: the
+    /// check closes both on the one spare's evidence, neither waits out the open deadline.
+    func testConnectionCheckClosesEveryDeadConnectionOfAServer() async throws {
+        let configuration = try SSHPoolLiveConfiguration.load()
+        let relay = try await SSHPoolLiveRelay.start(host: configuration.host, port: configuration.limitedPort)
+        addTeardownBlock { relay.close() }
+        let endpoint = try SSHPoolLiveEndpoint(configuration, port: relay.port)
+        let pool = RemuxSSHRootService()
+        addTeardownBlock { await pool.closeAllConnectionsForTesting() }
+        var echoes: [SSHPoolLiveEcho] = []
+        for _ in 0..<4 {
+            echoes.append(try await endpoint.openEcho(on: pool))
+        }
+        let roots = [echoes[0].rootChannel, echoes[2].rootChannel]
+        XCTAssertFalse(roots[0] === roots[1], "the server's limit didn't make a second connection")
+
+        relay.stallExisting()
+        let start = ContinuousClock.now
+        await pool.checkConnections(reason: "test")
+        let deadline = start + RemuxSSHRoot.channelOpenDeadline.duration
+        while roots.contains(where: \.isActive), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let elapsed = ContinuousClock.now - start
+
+        XCTAssertFalse(roots.contains(where: \.isActive), "a dead connection was left to the open deadline")
+        XCTAssertLessThan(elapsed, RemuxSSHRoot.channelOpenDeadline.duration / 2)
+        let entries = await pool.snapshot().entries(for: endpoint.key)
+        XCTAssertEqual(entries.map(\.isSpare), [true], "one spare stood in for both")
+        for echo in echoes { await echo.close() }
+    }
+
     func testConnectionCheckClosesAStalledConnectionAndKeepsAHealthyOne() async throws {
         let configuration = try SSHPoolLiveConfiguration.load()
         let relay = try await SSHPoolLiveRelay.start(host: configuration.host, port: configuration.port)
@@ -477,6 +543,14 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
 
     func stall() { setStalled(true) }
     func resume() { setStalled(false) }
+
+    /// Stops the connections carried so far, while new ones still get through: a network change that took the old
+    /// flows with it.
+    func stallExisting() {
+        for channel in state.withLockedValue({ Array($0.channels.values) }) {
+            channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in }
+        }
+    }
 
     func close() {
         listener.close(promise: nil)
