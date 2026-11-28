@@ -2738,7 +2738,7 @@ struct ConnectionSetupView: View {
                 isAdvancedExpanded = true
             }
         }
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(.immediately)
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

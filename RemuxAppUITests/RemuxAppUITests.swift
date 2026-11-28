@@ -127,6 +127,33 @@ final class RemuxAppUITests: XCTestCase {
         _ = waitForTerminalHomeButton()
     }
 
+    /// Swiping the server form puts the keyboard away and leaves the form open, as iOS's own forms do.
+    func testServerFormSwipeLowersTheKeyboard() {
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+        openConnectionSetup()
+        name.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "The keyboard didn't come up.")
+        drag(app.staticTexts["Server"].firstMatch, by: -80)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 2), "Swiping the form left the keyboard up.")
+        XCTAssertTrue(name.exists, "Swiping the form closed it.")
+    }
+
+    /// A pull on the server form's bar that's let go before it closes the form leaves the keyboard and the cursor
+    /// where they were, so typing carries on.
+    func testServerFormPullLetGoKeepsTheKeyboard() {
+        launchSimulatorApp()
+        let name = app.textFields["connection.name"]
+        openConnectionSetup()
+        name.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "The keyboard didn't come up.")
+        drag(app.navigationBars["New Server"], by: 90)
+        XCTAssertTrue(name.exists, "A short pull closed the form.")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Letting go of the pull lowered the keyboard.")
+        name.typeText("Mac mini")
+        XCTAssertEqual(name.value as? String, "Mac mini", "Typing after the pull didn't reach Name.")
+    }
+
     /// The server form closes when pulled down, as an iOS sheet does, and the setup ends with it, so Add Server
     /// opens it again. Once something has been typed, the pull asks first, and keeping on editing keeps the typing.
     func testServerFormClosesOnPullAndAsksBeforeDiscardingTyping() {
@@ -326,6 +353,18 @@ final class RemuxAppUITests: XCTestCase {
             XCTAssertTrue(name.waitForNonExistence(timeout: 5), "Edit Session didn't close.")
             XCTAssertFalse(discard.exists, "Edit Session asked before discarding.")
         }
+    }
+
+    /// A slow drag from the middle of `element` that's held before letting go, as a finger moves a form rather than
+    /// flicks it.
+    private func drag(_ element: XCUIElement, by dy: CGFloat) {
+        let start = element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(
+            forDuration: 0.05,
+            thenDragTo: start.withOffset(CGVector(dx: 0, dy: dy)),
+            withVelocity: XCUIGestureVelocity(300),
+            thenHoldForDuration: 0.3
+        )
     }
 
     /// Pulls a sheet down from its navigation bar, wherever its height puts the bar.
