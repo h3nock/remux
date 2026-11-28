@@ -5091,8 +5091,8 @@ final class RemuxRootModelTests: XCTestCase {
 
     /// A Herdr session stays attached through an edit of its server, and reconnects by itself when the
     /// connection drops. That reconnect goes to the server as it's saved now: the root replaces the model,
-    /// as it does for a reconnect the user asks for, and the session stays behind Home. The replacement
-    /// connects at the viewport the model had, without waiting for its screen to report one.
+    /// and the session stays behind Home. The replacement connects at the viewport the model had, without
+    /// waiting for its screen to report one.
     func testAHerdrSessionsOwnReconnectAfterAServerEditOpensTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5122,8 +5122,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(ready, "the replacement didn't connect")
     }
 
-    /// The replacement goes on with the recovery it took over. An opening that can't reach the edited
-    /// server is tried again, as the session's were before the edit, until one connects.
+    /// The model that replaces a Herdr session's at its own reconnect after a server edit keeps retrying:
+    /// an opening that can't reach the edited server is tried again until one connects.
     func testAHerdrSessionsOwnReconnectAfterAServerEditKeepsRetryingOnTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5150,8 +5150,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(ready, "the replacement didn't connect")
     }
 
-    /// What the replacement doesn't retry is what the model wouldn't have either: a sign-in the edited
-    /// server turns down is reported, for the user to act on.
+    /// A sign-in the edited server turns down at a Herdr session's own reconnect is reported for the user
+    /// to act on, not retried.
     func testAHerdrSessionsOwnReconnectAfterAServerEditReportsASignInTheServerTurnsDown() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5171,8 +5171,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(credentials, [.password("demo-password"), .password("mistyped-password")])
     }
 
-    /// A model between its own retries is replaced by the save itself. Its recovery goes on in the
-    /// replacement the same way: an opening that can't reach the edited server is tried again.
+    /// A Herdr model between its own retries is replaced when the server edit is saved, and the
+    /// replacement keeps retrying: an opening that can't reach the edited server is tried again.
     func testAHerdrSessionEditedBetweenItsOwnRetriesKeepsRetryingOnTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5207,8 +5207,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(ready, "the replacement didn't connect")
     }
 
-    /// A model that had given up has no recovery to continue: the replacement a save makes for it says
-    /// why its opening failed, as a session opening for the first time does.
+    /// A Herdr model that had given up is replaced when the server edit is saved, and the replacement
+    /// reports why its opening failed instead of retrying.
     func testAHerdrSessionEditedAfterItGaveUpDoesNotRetryOnTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5231,8 +5231,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(hosts, ["build.example.test", "build.example.test", "updated.example.com"])
     }
 
-    /// Only the session's current model reconnects by itself. One the root has let go doesn't start
-    /// another attempt when the app comes back before its stop has run.
+    /// A Herdr model whose session the user has closed doesn't reconnect by itself, even when the app
+    /// comes back before its stop has run.
     func testAHerdrModelTheRootHasLetGoDoesNotReconnectByItself() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5247,8 +5247,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(opened.model.isDisconnected)
     }
 
-    /// The edit can land while the model is already reconnecting, with an attempt on its way to the server
-    /// as it was. That attempt is left alone, and the next one the model starts goes to the edited server.
+    /// A server edit saved while a Herdr session's reconnect is already opening leaves that opening alone;
+    /// the session's next attempt goes to the edited server.
     func testAHerdrSessionAlreadyReconnectingTakesAServerEditOnItsNextAttempt() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5269,8 +5269,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.state, .terminal(opened.session.id))
     }
 
-    /// A connection lost in the background is opened again when the app comes back, which is the model's
-    /// own reconnect too, and takes a server edit the same way.
+    /// A Herdr connection lost in the background is opened again when the app comes back, and after a
+    /// server edit that reconnect goes to the edited server.
     func testAHerdrSessionReconnectingOnReturnFromTheBackgroundAfterAServerEditOpensTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5292,8 +5292,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
     }
 
-    /// A new password alone is taken too: the model's own reconnect signs in with it, not with the one
-    /// the user has replaced.
+    /// After only the server's password is edited, a Herdr session's own reconnect signs in with the new
+    /// password.
     func testAHerdrSessionsOwnReconnectAfterItsPasswordIsEditedSignsInWithTheNewOne() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5309,8 +5309,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(credentials, [.password("demo-password"), .password("updated-demo-password")])
     }
 
-    /// The session's name is part of where a Herdr model connects, so its own reconnect takes a saved
-    /// session pointed at another name the same way.
+    /// After the session's name is edited, a Herdr session's own reconnect opens the Herdr session under
+    /// the new name.
     func testAHerdrSessionsOwnReconnectAfterItsSessionNameIsEditedOpensTheNamedSession() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5334,8 +5334,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
     }
 
-    /// An edit that leaves the server's address and sign-in alone leaves the model's own reconnect alone
-    /// too: the same model opens a new bridge, and its panes keep the last frame.
+    /// Renaming a server keeps its Herdr session's model: the model's own reconnect opens a new bridge,
+    /// and its panes keep the last frame.
     func testAHerdrSessionsOwnReconnectAfterItsServerIsRenamedKeepsTheModel() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5575,9 +5575,6 @@ final class RemuxRootModelTests: XCTestCase {
         var alerts: [HapticAlert] = []
     }
 
-    /// A Herdr session shown and connected, its snapshot with tab `t1` in front, a second tab `t2`, and
-    /// an agent in pane `w1:p3` of `agentTab`. It returns once the show is sent: Herdr rings only the
-    /// session in front, so a bell comes after it.
     /// A Herdr session on screen that has shown its first snapshot, so its model reconnects by itself
     /// when the connection drops.
     private func herdrSessionThatHasConnected() async throws -> (
@@ -5613,6 +5610,9 @@ final class RemuxRootModelTests: XCTestCase {
         return (harness, session, model, opener, bridge)
     }
 
+    /// A Herdr session shown and connected, its snapshot with tab `t1` in front, a second tab `t2`, and
+    /// an agent in pane `w1:p3` of `agentTab`. It returns once the show is sent: Herdr rings only the
+    /// session in front, so a bell comes after it.
     private func connectedHerdrSession(
         agentStatus: HerdrAgentStatus,
         agentTab: String = "t2"

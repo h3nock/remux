@@ -1866,14 +1866,10 @@ final class RemuxRootModel: ObservableObject {
             && lhs.sshAuth.authFingerprint == rhs.sshAuth.authFingerprint
     }
 
-    /// A Herdr model reconnects by itself, to the target it was made with, and stays attached while its
-    /// server or session name is edited. Once the saved target reaches another Herdr session, the model's
-    /// next reconnect is the root's instead: it replaces the model, as a reconnect the user asks for does,
-    /// and says false. The session stays where it is, on screen or behind Home, and its recovery goes
-    /// on in the replacement, which retries as the model would have.
-    ///
-    /// Only the session's current model reconnects: one the root has let go, whose stop hasn't run yet,
-    /// is told false too.
+    /// A Herdr model's target is fixed when it's made, so the model asks here before each reconnect it
+    /// starts by itself. Only the session's current model may reconnect, and only while the saved target
+    /// reaches the same Herdr session the same way. When the saved target differs, the root replaces the
+    /// model with one for the saved target, which takes over its recovery, and says false.
     private func herdrRuntimeMayReconnectByItself(
         _ model: HerdrScreenModel,
         _ key: TerminalRuntimeAttemptKey
@@ -2109,9 +2105,8 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// A runtime's target is fixed when it's made, so a disconnected one is replaced to take the
-    /// server's new profile. A connected one keeps its attachment, and the profile is taken by the
-    /// runtime that replaces it at its next reconnect. A Herdr model between its own retries is
-    /// disconnected too, and its recovery goes on in the replacement.
+    /// server's new profile; a connected one takes it at its next reconnect. A Herdr model between its
+    /// own retries counts as disconnected, and its replacement takes over the recovery.
     private func refreshDisconnectedTerminalRuntimes(serverID: SavedServer.ID) {
         for session in activeSessions where session.target.server.id == serverID {
             let key = TerminalRuntimeAttemptKey(session: session)
@@ -2593,10 +2588,9 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    /// `continuingHerdrRecovery` is for a replacement the user didn't ask for: when the previous runtime
-    /// is a Herdr model that was recovering by itself, the new one goes on retrying as it would have. A
-    /// model that had given up, and a replacement the user asks for, start as a session that says why
-    /// its first connection failed.
+    /// With `continuingHerdrRecovery`, a Herdr replacement takes over the previous model's recovery, if it
+    /// was reconnecting by itself. Otherwise it starts as a first connection, which reports a failure
+    /// instead of retrying.
     private func replaceTerminalRuntime(
         for session: ActiveTerminalSession,
         continuingHerdrRecovery: Bool = false
@@ -2648,9 +2642,8 @@ final class RemuxRootModel: ObservableObject {
                 continuing: continuingHerdrRecovery ? previousModel?.recoveryHandoff : nil,
                 zoomKeepers: dependencies.herdrZoomKeepers
             )
-            // As for tmux, the replacement starts at the previous attempt's viewport. Its screen gives
-            // it a size only when one is applied, which a screen that appears under a sheet, or was
-            // already there for the previous attempt, doesn't do at an unchanged size.
+            // The replacement starts at the previous model's viewport: its screen reports a size only
+            // when the size changes, and not while a sheet covers it.
             if let viewport = previousModel?.lastViewport {
                 model.prepareViewport(size: viewport.size, scale: viewport.scale)
             }
