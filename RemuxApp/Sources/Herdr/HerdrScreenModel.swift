@@ -322,7 +322,7 @@ final class HerdrScreenModel {
     /// Whether the session has connected: a connection reached its first snapshot, in this model or in
     /// the one whose recovery it continues. Only then does a failure reconnect by itself: a session
     /// that never opened says why.
-    private(set) var hasConnected: Bool
+    private var hasConnected: Bool
     /// A retry is waiting or under way after a drop; the session reads as reconnecting meanwhile.
     private var isReconnecting = false
     /// Failed attempts since the last stable connection, which set the next delay.
@@ -480,6 +480,12 @@ final class HerdrScreenModel {
     var isDisconnected: Bool {
         guard let attempt else { return true }
         return attempt.ended
+    }
+
+    /// True while a reconnect by itself is due for a session that had connected. A replacement the root
+    /// makes for the model then, without the user asking, continues that recovery (`continuesRecovery`).
+    var isRecoveringByItself: Bool {
+        hasConnected && recoveryDue != nil
     }
 
     // MARK: - What the root wants
