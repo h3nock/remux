@@ -292,6 +292,9 @@ final class HerdrScreenModel {
     private let recoveryTiming: RecoveryTiming
     private let onRuntimeStateChange: (TerminalRuntimeStateUpdate) -> Void
     private let onNotification: (NotificationEvent) -> Void
+    /// Asked before a reconnect the model starts by itself. The model's target is fixed, and the root
+    /// knows where the session is saved now: false when it has replaced this model instead.
+    private let mayReconnectByItself: () -> Bool
     private let engine: HerdrTerminalEngine
     /// Where the phone keeps the zooms Remux made, for the session's end to take off.
     private let zoomKeepers: HerdrZoomKeepers
@@ -422,6 +425,7 @@ final class HerdrScreenModel {
         openBridge: @escaping BridgeOpener,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
         onNotification: @escaping (NotificationEvent) -> Void,
+        mayReconnectByItself: @escaping () -> Bool = { true },
         connectionTiming: HerdrConnection.Timing = HerdrConnection.Timing(),
         recoveryTiming: RecoveryTiming = RecoveryTiming(),
         switchingCueDelay: Duration = HerdrScreenModel.switchingCueDelay,
@@ -438,6 +442,7 @@ final class HerdrScreenModel {
         self.openBridge = openBridge
         self.onRuntimeStateChange = onRuntimeStateChange
         self.onNotification = onNotification
+        self.mayReconnectByItself = mayReconnectByItself
         self.connectionTiming = connectionTiming
         self.recoveryTiming = recoveryTiming
         self.switchingCueDelay = switchingCueDelay
@@ -702,7 +707,7 @@ final class HerdrScreenModel {
 
     private func leaveBackground() {
         wokeAt = .now
-        if recoveryDue != nil { restart() }
+        if recoveryDue != nil { recover() }
     }
 
     /// Live settings: the renderers take the new appearance in place, and Herdr gets the new colours.
@@ -2175,8 +2180,15 @@ final class HerdrScreenModel {
         recoveryTimer = Task { [weak self] in
             try? await Task.sleep(until: due, clock: .continuous)
             guard !Task.isCancelled else { return }
-            self?.restart()
+            self?.recover()
         }
+    }
+
+    /// The reconnect by itself, when its delay is up or the app comes back, unless the root has replaced
+    /// the model.
+    private func recover() {
+        guard mayReconnectByItself() else { return }
+        restart()
     }
 
     private func cancelRecovery() {

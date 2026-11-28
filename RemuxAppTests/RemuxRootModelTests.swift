@@ -5087,6 +5087,145 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(hosts, ["build.example.test", "updated.example.com"])
     }
 
+    /// A Herdr session stays attached through an edit of its server, and reconnects by itself when the
+    /// connection drops. That reconnect goes to the server as it's saved now: the root replaces the model,
+    /// as it does for a reconnect the user asks for, and the session stays behind Home.
+    func testAHerdrSessionsOwnReconnectAfterAServerEditOpensTheEditedServer() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        await harness.model.showLibrary()
+
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.host = "updated.example.com" }
+        await harness.model.saveAndConnect()
+        XCTAssertEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+        XCTAssertTrue(opened.model.isConnectionOpen)
+
+        await opened.bridge.finishServing()
+
+        _ = try await opened.opener.bridge(1)
+        let hosts = await opened.opener.targets.map(\.server.host)
+        XCTAssertEqual(hosts, ["build.example.test", "updated.example.com"])
+        let reconnected = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertNotEqual(reconnected.instanceID, opened.session.instanceID)
+        guard case .herdr(let replacement) = harness.model.terminalRuntime(for: reconnected) else {
+            return XCTFail("expected a Herdr runtime")
+        }
+        XCTAssertFalse(replacement === opened.model)
+        XCTAssertEqual(harness.model.state, .library)
+    }
+
+    /// The edit can land while the model is already reconnecting, with an attempt on its way to the server
+    /// as it was. That attempt is left alone, and the next one the model starts goes to the edited server.
+    func testAHerdrSessionAlreadyReconnectingTakesAServerEditOnItsNextAttempt() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        await opened.bridge.finishServing()
+        let underWay = try await opened.opener.bridge(1)
+
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.host = "updated.example.com" }
+        await harness.model.saveAndConnect()
+        XCTAssertEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+
+        await underWay.finishServing()
+
+        _ = try await opened.opener.bridge(2)
+        let hosts = await opened.opener.targets.map(\.server.host)
+        XCTAssertEqual(hosts, ["build.example.test", "build.example.test", "updated.example.com"])
+        XCTAssertNotEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+        XCTAssertEqual(harness.model.state, .terminal(opened.session.id))
+    }
+
+    /// A connection lost in the background is opened again when the app comes back, which is the model's
+    /// own reconnect too, and takes a server edit the same way.
+    func testAHerdrSessionReconnectingOnReturnFromTheBackgroundAfterAServerEditOpensTheEditedServer() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.host = "updated.example.com" }
+        await harness.model.saveAndConnect()
+
+        harness.model.handleAppLifecyclePhase(.background)
+        await opened.bridge.finishServing()
+        let dropped = await waitUntil { !opened.model.isConnectionOpen }
+        XCTAssertTrue(dropped)
+        let openedInTheBackground = await opened.opener.targets.count
+        XCTAssertEqual(openedInTheBackground, 1)
+        harness.model.handleAppLifecyclePhase(.active)
+
+        _ = try await opened.opener.bridge(1)
+        let hosts = await opened.opener.targets.map(\.server.host)
+        XCTAssertEqual(hosts, ["build.example.test", "updated.example.com"])
+        XCTAssertNotEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+    }
+
+    /// A new password alone is taken too: the model's own reconnect signs in with it, not with the one
+    /// the user has replaced.
+    func testAHerdrSessionsOwnReconnectAfterItsPasswordIsEditedSignsInWithTheNewOne() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.password = "updated-demo-password" }
+        await harness.model.saveAndConnect()
+        XCTAssertEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+
+        await opened.bridge.finishServing()
+
+        _ = try await opened.opener.bridge(1)
+        let credentials = await opened.opener.targets.map(\.sshAuth.credential)
+        XCTAssertEqual(credentials, [.password("demo-password"), .password("updated-demo-password")])
+    }
+
+    /// The session's name is part of where a Herdr model connects, so its own reconnect takes a saved
+    /// session pointed at another name the same way.
+    func testAHerdrSessionsOwnReconnectAfterItsSessionNameIsEditedOpensTheNamedSession() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+
+        await harness.model.beginEditWorkspace(
+            serverID: opened.session.target.server.id,
+            workspaceID: opened.session.id
+        )
+        harness.model.updateDraft { $0.sessionName = "review" }
+        await harness.model.saveAndConnect()
+        XCTAssertEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+
+        await opened.bridge.finishServing()
+
+        _ = try await opened.opener.bridge(1)
+        let locators = await opened.opener.targets.map(\.locator)
+        XCTAssertEqual(locators, [
+            SessionLocator(backend: .herdr, name: "agents"),
+            SessionLocator(backend: .herdr, name: "review"),
+        ])
+        XCTAssertNotEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
+    }
+
+    /// An edit that leaves the server's address and sign-in alone leaves the model's own reconnect alone
+    /// too: the same model opens a new bridge, and its panes keep the last frame.
+    func testAHerdrSessionsOwnReconnectAfterItsServerIsRenamedKeepsTheModel() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.displayName = "Renamed Host" }
+        await harness.model.saveAndConnect()
+        XCTAssertEqual(harness.model.activeSessions.first?.target.server.displayName, "Renamed Host")
+
+        await opened.bridge.finishServing()
+
+        _ = try await opened.opener.bridge(1)
+        let reconnected = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(reconnected.instanceID, opened.session.instanceID)
+        guard case .herdr(let model) = harness.model.terminalRuntime(for: reconnected) else {
+            return XCTFail("expected a Herdr runtime")
+        }
+        XCTAssertTrue(model === opened.model)
+        let hosts = await opened.opener.targets.map(\.server.host)
+        XCTAssertEqual(hosts, ["build.example.test", "build.example.test"])
+    }
+
     /// An agent waiting in another tab of a Herdr session behind Home shows as a banner naming the
     /// session; tapping it opens the session and asks Herdr to focus the agent's pane right after the
     /// show, which takes the phone to the pane's tab.
@@ -5307,6 +5446,41 @@ final class RemuxRootModelTests: XCTestCase {
     /// A Herdr session shown and connected, its snapshot with tab `t1` in front, a second tab `t2`, and
     /// an agent in pane `w1:p3` of `agentTab`. It returns once the show is sent: Herdr rings only the
     /// session in front, so a bell comes after it.
+    /// A Herdr session on screen that has shown its first snapshot, so its model reconnects by itself
+    /// when the connection drops.
+    private func herdrSessionThatHasConnected() async throws -> (
+        harness: RemuxRootModelHarness,
+        session: ActiveTerminalSession,
+        model: HerdrScreenModel,
+        opener: RecordingHerdrBridgeOpener,
+        bridge: FakeBridgeTransport
+    ) {
+        let pair = makePasswordBackedServer()
+        let workspace = SavedWorkspace(serverID: pair.server.id, backend: .herdr, sessionName: "agents")
+        let opener = RecordingHerdrBridgeOpener()
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [workspace],
+            identities: [pair.identity],
+            herdrBridgeOpener: { target, _, _, _ in await opener.open(target) }
+        )
+        try await harness.credentialStore.saveCredential(.password("demo-password"), identityID: pair.identity.id)
+        await harness.model.load()
+        await harness.model.connect(to: workspace.id)
+        addTeardownBlock { @MainActor in harness.model.disconnectActiveSession(workspace.id) }
+        let session = try XCTUnwrap(harness.model.activeSessions.first)
+        guard case .herdr(let model) = harness.model.terminalRuntime(for: session) else {
+            XCTFail("expected a Herdr runtime")
+            throw CancellationError()
+        }
+        model.terminalScreenAdapter.prepareInitialViewport(size: CGSize(width: 390, height: 844), scale: 3)
+        let bridge = try await opener.bridge(0)
+        await bridge.serve(try HerdrServerScript.welcome() + HerdrServerScript.snapshot(revision: 1))
+        let connected = await waitUntil(timeout: 3) { model.notificationState != nil && model.isConnectionOpen }
+        XCTAssertTrue(connected, "the session didn't connect")
+        return (harness, session, model, opener, bridge)
+    }
+
     private func connectedHerdrSession(
         agentStatus: HerdrAgentStatus,
         agentTab: String = "t2"

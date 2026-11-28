@@ -1866,6 +1866,26 @@ final class RemuxRootModel: ObservableObject {
             && lhs.sshAuth.authFingerprint == rhs.sshAuth.authFingerprint
     }
 
+    /// A Herdr model reconnects by itself, to the target it was made with, and stays attached while its
+    /// server or session name is edited. Once the saved target reaches another Herdr session, the model's
+    /// next reconnect is the root's instead: it replaces the model, as a reconnect the user asks for does,
+    /// and says false. The session stays where it is, on screen or behind Home.
+    private func herdrRuntimeMayReconnectByItself(_ key: TerminalRuntimeAttemptKey) -> Bool {
+        guard case .herdr(let model)? = terminalRuntimes[key],
+              let current = RemuxActiveSessionCollection.session(key.workspaceID, in: activeSessions),
+              !Self.opensTheSameHerdrBridge(model.target, current.target),
+              let session = RemuxActiveSessionCollection.runtimeReplacementSession(
+                  workspaceID: key.workspaceID,
+                  source: .transportLoss,
+                  in: activeSessions
+              )
+        else { return true }
+        replaceTerminalRuntime(for: session)
+        RemuxActiveSessionCollection.replaceRuntime(with: session, in: &activeSessions)
+        applyCurrentAppLifecyclePhase(to: session)
+        return false
+    }
+
     func trustHostKeyAndReconnect(_ id: SavedWorkspace.ID) {
         guard let session = RemuxActiveSessionCollection.session(id, in: activeSessions),
               let challenge = session.runtimeState.disconnectedReason?.hostKeyChallenge else {
@@ -2086,7 +2106,8 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// A runtime's target is fixed when it's made, so a disconnected one is replaced to take the
-    /// server's new profile.
+    /// server's new profile. A connected one keeps its attachment, and the profile is taken by the
+    /// runtime that replaces it at its next reconnect.
     private func refreshDisconnectedTerminalRuntimes(serverID: SavedServer.ID) {
         for session in activeSessions where session.target.server.id == serverID {
             let key = TerminalRuntimeAttemptKey(session: session)
@@ -2608,6 +2629,9 @@ final class RemuxRootModel: ObservableObject {
                 onRuntimeStateChange: onRuntimeStateChange,
                 onNotification: { [weak self] event in
                     self?.handleHerdrNotification(event, from: key)
+                },
+                mayReconnectByItself: { [weak self] in
+                    self?.herdrRuntimeMayReconnectByItself(key) ?? true
                 },
                 zoomKeepers: dependencies.herdrZoomKeepers
             ))
