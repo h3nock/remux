@@ -201,6 +201,16 @@ final class TmuxTerminalSession: ObservableObject {
     // MARK: Native callbacks
 
     private func handleState(_ newState: TmuxSessionController.SessionState) {
+        if case .detached(let reason) = newState, let reason {
+            let category: String = switch reason {
+            case .serverExited: "server_exited"
+            case .channelAborted: "control_protocol_error"
+            case .outOfMemory: "session_sync_failed"
+            case .transportClosed: "transport_closed"
+            case .sessionEnded: "session_ended"
+            }
+            NSLog("Remux tmux detached: %@", category)
+        }
         if case .ready = newState {
             hasBeenReady = true
         }
