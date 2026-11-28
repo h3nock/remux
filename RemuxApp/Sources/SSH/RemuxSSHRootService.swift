@@ -362,7 +362,7 @@ enum RemuxSSHConnectError: LocalizedError {
     /// The TCP connection couldn't be opened: the name didn't resolve, no route, refused, timed out, and the like.
     case unreachable(underlying: any Error)
     /// The TCP connection opened, but the server didn't get through SSH before the connect allowance ran out.
-    case noSSHResponse(timeout: TimeAmount)
+    case noSSHResponse
 
     var errorDescription: String? {
         switch self {
@@ -1898,14 +1898,12 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
         var challenge: TailscaleSSHCheckChallenge?
         /// The allowance running now.
         var timeoutTask: Scheduled<Void>?
-        /// Whether a check has started its own allowance. Later or changed banners don't extend it.
-        var isVerifying = false
     }
 
     private enum Completion {
         case success
         case failure(any Error)
-        case timeout(TimeAmount)
+        case timeout
     }
 
     private let promise: EventLoopPromise<Void>
@@ -1950,9 +1948,10 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             let eventLoop = context.eventLoop
             let request = state.withLockedValue { state -> TailscaleSSHCheckRequest? in
                 guard !state.isComplete, state.challenge != challenge else { return nil }
+                // Only the first check starts its allowance; a later or changed banner doesn't extend it.
+                let isFirstCheck = state.challenge == nil
                 state.challenge = challenge
-                if let verificationTimeout, !state.isVerifying {
-                    state.isVerifying = true
+                if let verificationTimeout, isFirstCheck {
                     state.timeoutTask?.cancel()
                     state.timeoutTask = scheduleTimeout(verificationTimeout)
                 }
@@ -1998,7 +1997,7 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
         let (promise, state, requestID, onTailscaleSSHCheck) = (promise, state, requestID, onTailscaleSSHCheck)
         return eventLoop.scheduleTask(in: timeout) {
             Self.complete(
-                .timeout(timeout),
+                .timeout,
                 promise: promise,
                 state: state,
                 requestID: requestID,
@@ -2042,11 +2041,11 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             promise.succeed(())
         case .failure(let error):
             promise.fail(error)
-        case .timeout(let timeout):
+        case .timeout:
             if hadChallenge {
                 promise.fail(TailscaleSSHCheckError.verificationTimedOut)
             } else {
-                promise.fail(RemuxSSHConnectError.noSSHResponse(timeout: timeout))
+                promise.fail(RemuxSSHConnectError.noSSHResponse)
             }
         }
     }

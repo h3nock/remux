@@ -212,7 +212,7 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
             (.unreachable(underlying: IOError(errnoCode: EACCES, reason: "connect")), "Permission denied"),
             (.unreachable(underlying: IOError(errnoCode: ECONNREFUSED, reason: "connect")), "Connection refused"),
             (.unreachable(underlying: ChannelError.connectTimeout(.seconds(10))), "The connection timed out."),
-            (.noSSHResponse(timeout: .seconds(10)), "The server accepted the connection, but SSH didn't respond in time."),
+            (.noSSHResponse, "The server accepted the connection, but SSH didn't respond in time."),
         ]
         for (error, detail) in cases {
             let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
