@@ -54,6 +54,7 @@ targets:
     info:
       path: RemuxApp/Info.plist
       properties:
+        CADisableMinimumFrameDurationOnPhone: true
         CFBundleDisplayName: Remux
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
