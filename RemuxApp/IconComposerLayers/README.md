@@ -5,15 +5,20 @@ layer, `Assets/panes.svg`, on a flat tile; the system adds the lighting.
 `remux-app-icon-master.svg` here is the same drawing flattened onto its tile,
 for viewing and for exporting other sizes.
 
-The drawing is four panes with a cursor opening in the round one, on a 1024
-canvas:
+The drawing is one rounded shape cut into four panes by two straight dividers,
+with a cursor opening in the round pane, on a 1024 canvas:
 
 - Panes span `188` to `876` across and `164` to `868` down.
-- Column gutter: `48px` (left column ends at `496`, right column starts at `544`).
-- Row gutter: `48px` (top row ends at `528`, bottom row starts at `576`).
-- Square corners: radius `48`, and `96` on the two outer left corners.
-- The round pane's right side is one continuous curve, and the corner at the
-  foot of the diagonal has radius `80`.
+- Column divider: `48px`, straight from top to bottom (left column ends at
+  `496`, right column starts at `544`).
+- Row divider: `48px`, straight from the left edge through the centre (top row
+  ends at `528`, bottom row starts at `576`).
+- Every corner on a divider is square. Only the outline is rounded. The two
+  outer left corners and the lower right corner are continuous corners, drawn
+  as one Bézier curve each: radius `96` on the left (the curve covers `124.8px`
+  of each edge) and `48` at the lower right (`62.4px` of each edge).
+- The round pane's right side is one continuous curve. The diagonal starts at a
+  sharp corner, and the corner at its foot is a circular arc of radius `80`.
 - Cursor opening: `56` by `124`, showing the tile through the pane.
 
 Colours:
