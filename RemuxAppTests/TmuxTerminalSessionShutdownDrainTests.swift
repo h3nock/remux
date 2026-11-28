@@ -333,6 +333,8 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().width_px, resized.pixelWidth)
         XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().height_px, resized.pixelHeight)
         await tmuxResizesThePaneTo80x30(in: fixture.session)
+        // The fixture answers no recapture, so nothing else wakes the renderer once the grid fits.
+        XCTAssertTrue(try XCTUnwrap(fixture.surface.renderer.managedSurface).controlSurface.requestFrame())
         try await waitUntil { !results.isEmpty }
         XCTAssertEqual(results, [.replaced])
         XCTAssertEqual(fixture.surface.renderer.presentation, .ready)
