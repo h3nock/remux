@@ -1,9 +1,6 @@
 import Foundation
 
 struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
-
-    var schemaVersion: Int
     var installedStarterIDs: Set<String>
     var deletedStarterIDs: Set<String>
     var deletedCollectionIDs: Set<ShortcutCollectionID>
@@ -14,7 +11,6 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
     var lastSelectedTab: ShortcutPaletteTabID
 
     init(
-        schemaVersion: Int = Self.currentSchemaVersion,
         installedStarterIDs: Set<String> = [],
         deletedStarterIDs: Set<String> = [],
         deletedCollectionIDs: Set<ShortcutCollectionID> = [],
@@ -24,7 +20,6 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
         hiddenAppActionTabs: Set<AppActionTabID> = [.upload],
         lastSelectedTab: ShortcutPaletteTabID = .favorites
     ) {
-        self.schemaVersion = schemaVersion
         self.installedStarterIDs = installedStarterIDs
         self.deletedStarterIDs = deletedStarterIDs
         self.deletedCollectionIDs = deletedCollectionIDs
@@ -37,7 +32,6 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion
         case installedStarterIDs
         case deletedStarterIDs
         case deletedCollectionIDs
@@ -50,7 +44,6 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         installedStarterIDs = try container.decodeIfPresent(Set<String>.self, forKey: .installedStarterIDs) ?? []
         deletedStarterIDs = try container.decodeIfPresent(Set<String>.self, forKey: .deletedStarterIDs) ?? []
         deletedCollectionIDs = try container.decodeIfPresent(Set<ShortcutCollectionID>.self, forKey: .deletedCollectionIDs) ?? []
@@ -59,7 +52,6 @@ struct ShortcutStoreSnapshot: Codable, Equatable, Sendable {
         favoriteIDs = try container.decodeIfPresent([UUID].self, forKey: .favoriteIDs) ?? []
         hiddenAppActionTabs = try container.decodeIfPresent(Set<AppActionTabID>.self, forKey: .hiddenAppActionTabs) ?? [.upload]
         lastSelectedTab = try container.decodeIfPresent(ShortcutPaletteTabID.self, forKey: .lastSelectedTab) ?? .favorites
-        schemaVersion = Self.currentSchemaVersion
         repairCollectionReferences()
     }
 
