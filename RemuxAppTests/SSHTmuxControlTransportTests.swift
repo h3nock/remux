@@ -852,6 +852,38 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertNotNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: 65535))
     }
 
+    /// A server that turns the sign-in down comes out as Authentication Failed by the error's type, through the
+    /// real bootstrap. The test server rejects any sign-in for a user other than its own, as a wrong password is.
+    func testASignInTheServerTurnsDownIsAnAuthenticationFailure() async throws {
+        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux")
+        defer { server.stop() }
+        let loopback = makeLoopbackSession(port: server.port)
+        try loopback.trustedHostStore.trustHostKey(loopback.challenge(for: server))
+        let configuration = RemuxSSHRootConfiguration(
+            host: loopback.server.host,
+            port: loopback.server.port,
+            prepareAuthentication: {
+                try SSHAuthenticationMethodFactory.prepare(username: "someone-else", credential: .password("wrong"))
+            },
+            hostKeyValidator: loopback.trustedHostStore.validator(for: loopback.server),
+            connectTimeout: .seconds(5)
+        )
+
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: configuration,
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            XCTFail("expected the server to turn the sign-in down")
+        } catch {
+            XCTAssertEqual(
+                GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error).kind,
+                .authentication,
+                "\(error)"
+            )
+        }
+    }
+
     /// A name that doesn't resolve says what the resolver said, not only that the server couldn't be reached.
     func testANameThatDoesntResolveGivesTheResolversReason() async {
         let refused = makeRefusedRootConfiguration()
