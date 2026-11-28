@@ -301,7 +301,8 @@ enum SecureEnclaveSSHError: LocalizedError {
     case keyUnusable
     /// The Secure Enclave didn't give the key back, for a reason it doesn't say.
     case keyUnreadable
-    /// The key can't sign while the device is locked; it can once it's unlocked.
+    /// A device key can't sign, and a saved credential can't be read, while the device is locked; both can once it's
+    /// unlocked.
     case unavailableWhileLocked
 
     var errorDescription: String? {
@@ -310,7 +311,7 @@ enum SecureEnclaveSSHError: LocalizedError {
         case .passcodeNotSet: "This key couldn’t be created because no device passcode is set."
         case .keyUnusable: "This key no longer works on this device. Add a new key in Edit Server."
         case .keyUnreadable: "Remux couldn't read this key on this device."
-        case .unavailableWhileLocked: "The key can't be used while this device is locked."
+        case .unavailableWhileLocked: "Saved sign-in details can't be read while this device is locked. Unlock it to connect."
         }
     }
 }
