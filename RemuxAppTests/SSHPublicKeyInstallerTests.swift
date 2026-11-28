@@ -734,6 +734,11 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         authenticationDelegate.resumeAuthentication()
     }
 
+    /// Holds every sign-in from now on until `resumeAuthentication`, as `suspendAuthentication` does from the start.
+    func suspendLaterAuthentication() {
+        authenticationDelegate.suspendLaterAuthentication()
+    }
+
     func failSuspendedAuthentication() {
         authenticationDelegate.failSuspendedAuthentication()
     }
@@ -771,7 +776,7 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
     ]
 
     private let username: String
-    private let suspendAuthentication: Bool
+    private var suspendAuthentication: Bool
     private let lock = NSLock()
     private var suspendedResponsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>?
 
@@ -797,12 +802,11 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
             responsePromise.succeed(.failure)
             return
         }
-        if suspendAuthentication {
-            lock.withLock {
-                suspendedResponsePromise = responsePromise
-            }
-            return
+        let suspends = lock.withLock { () -> Bool in
+            if suspendAuthentication { suspendedResponsePromise = responsePromise }
+            return suspendAuthentication
         }
+        if suspends { return }
         switch request.request {
         case .password, .publicKey:
             responsePromise.succeed(.success)
@@ -813,6 +817,10 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
 
     func resumeAuthentication() {
         takeSuspendedResponsePromise()?.succeed(.success)
+    }
+
+    func suspendLaterAuthentication() {
+        lock.withLock { suspendAuthentication = true }
     }
 
     func failSuspendedAuthentication() {

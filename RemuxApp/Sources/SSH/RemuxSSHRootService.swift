@@ -919,12 +919,11 @@ actor RemuxSSHRootService {
         reason: String
     ) async {
         let start = NIODeadline.now()
-        let probe = Task { await root.checkAlive(reason: reason) }
+        Task { await root.checkAlive(reason: reason) }
         try? await Task.sleep(for: Self.suspicionDelay)
         if !root.hasHeard(since: start), root.rootChannel.isActive {
             await suspect(key: key, generation: generation, silentSince: start, reason: reason)
         }
-        await probe.value
     }
 
     /// Marks the connection suspect, closes it at once if another connection to the server has already heard from
@@ -940,9 +939,8 @@ actor RemuxSSHRootService {
             entries[generation] = entry
             GhosttyRuntimeTrace.latency("sshRoot.pool.suspect reason=\(reason)")
         }
-        let closed = closeSuspectsAnotherConnectionHeardOver(for: key)
-        // A close lands later (`rootChannelClosed`), so a connection just closed still reads as suspect here.
-        guard !closed.contains(generation), entries[generation]?.isSuspect == true,
+        closeSuspectsAnotherConnectionHeardOver(for: key)
+        guard entries[generation]?.isSuspect == true,
               !orderedEntries(for: key).contains(where: { $0.readiness == .connecting }),
               let configuration = entry.configuration else {
             return
@@ -959,25 +957,21 @@ actor RemuxSSHRootService {
     }
 
     /// Closes each suspect connection of `key` that another of its connections has heard from the server over since
-    /// the suspect went silent, and returns the ones it closed. Run at suspicion and whenever a connection to the
-    /// server signs in.
-    @discardableResult
-    private func closeSuspectsAnotherConnectionHeardOver(for key: RemuxSSHRootKey) -> Set<UUID> {
-        var closed: Set<UUID> = []
+    /// the suspect went silent. Run at suspicion and whenever a connection to the server signs in.
+    private func closeSuspectsAnotherConnectionHeardOver(for key: RemuxSSHRootKey) {
         let connections = orderedEntries(for: key).compactMap { entry in entry.attempt.root.map { (entry, $0) } }
         for (entry, root) in connections {
-            guard entry.isSuspect, let silentSince = entry.silentSince, root.rootChannel.isActive else { continue }
+            guard entry.isSuspect, let silentSince = entry.silentSince else { continue }
             let heardOverAnother = connections.contains { other, otherRoot in
                 other.generation != entry.generation && !other.isSuspect && otherRoot.rootChannel.isActive
                     && otherRoot.hasHeard(since: silentSince)
             }
             guard heardOverAnother else { continue }
             GhosttyRuntimeTrace.latency("sshRoot.pool.cutover")
-            // Leased connections retire when the close lands (`rootChannelClosed`), so their sessions move.
             root.rootChannel.close(promise: nil)
-            closed.insert(entry.generation)
+            // Out of the pool now, not when the close lands: no new consumer or spare is made for it meanwhile.
+            rootChannelClosed(for: key, generation: entry.generation)
         }
-        return closed
     }
 
     private static func takesConsumers(_ entry: Entry) -> Bool {

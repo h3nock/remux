@@ -1713,6 +1713,36 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await first.release(.reusable)
     }
 
+    /// A suspect that answers while its spare is still signing in is kept when the spare then signs in: a spare's
+    /// sign-in closes only a connection still silent.
+    func testSuspectThatAnsweredSurvivesItsSparesSignIn() async throws {
+        let checked = try await makeCheckedLoopback()
+        let first = try await claimSignedIn(checked)
+        checked.server.suspendLaterAuthentication()
+        checked.relay.stallExisting()
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("the connection never fell under suspicion") {
+            await checked.pool.snapshot().entries(for: checked.key).first { !$0.isSpare }?.isSuspect == true
+        }
+        let spareIsHeld = await checked.server.waitForSuspendedAuthentication()
+        XCTAssertTrue(spareIsHeld, "the spare's sign-in never reached the server")
+
+        checked.relay.resume()
+        try await waitUntil("the answer didn't end the suspicion") {
+            await checked.pool.snapshot().entries(for: checked.key).first { !$0.isSpare }?.isSuspect == false
+        }
+        checked.server.resumeAuthentication()
+        try await waitUntil("the spare never signed in") {
+            await checked.pool.snapshot().entries(for: checked.key).contains { $0.isSpare && $0.readiness == .ready }
+        }
+
+        XCTAssertTrue(first.sshRoot.rootChannel.isActive, "the spare's sign-in closed a connection that had answered")
+        let second = try await checked.claim()
+        XCTAssertTrue(second.sshRoot === first.sshRoot)
+        await second.release(.reusable)
+        await first.release(.reusable)
+    }
+
     /// A connection that answers after falling under suspicion, while no spare could sign in, is kept: it takes
     /// consumers again, and the next claim lands on it.
     func testConnectionCheckKeepsAConnectionThatAnswersLate() async throws {
@@ -1985,6 +2015,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
     private struct CheckedLoopback {
         let pool: RemuxSSHRootService
+        let server: SSHPublicKeyLiveTestServer
         let relay: SSHPoolLiveRelay
         let key: RemuxSSHRootKey
         let configuration: RemuxSSHRootConfiguration
@@ -2022,6 +2053,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         addTeardownBlock { await pool.closeAllConnectionsForTesting() }
         return CheckedLoopback(
             pool: pool,
+            server: server,
             relay: relay,
             key: loopback.key,
             configuration: makeLoopbackConfiguration(loopback).sshRootConfiguration
