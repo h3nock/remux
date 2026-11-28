@@ -830,6 +830,23 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
     }
 
+    /// Private and VPN-range IPv4 addresses are connected to as they are; everything else is looked up, so
+    /// IPv6-only networks still translate public addresses, and addresses iOS never translates keep the lookup.
+    func testOnlyPrivateAndSharedRangeIPv4AddressesSkipTheLookup() {
+        for host in ["10.1.2.3", "172.16.0.1", "172.31.255.254", "192.168.1.5", "100.64.0.1", "100.118.24.87", "100.127.255.254"] {
+            let address = RemuxSSHHostAddress.localIPv4(host, port: 2222)
+            XCTAssertEqual(address?.ipAddress, host, host)
+            XCTAssertEqual(address?.port, 2222, host)
+        }
+        for host in [
+            "127.0.0.1", "169.254.3.4", "172.15.0.1", "172.32.0.1", "100.63.255.255", "100.128.0.1",
+            "8.8.8.8", "140.82.114.4", "localhost", "mac.example.ts.net", "fd7a:115c:a1e0::1",
+            "10.5", "10.0.0.256", "", " 10.0.0.1",
+        ] {
+            XCTAssertNil(RemuxSSHHostAddress.localIPv4(host, port: 22), host)
+        }
+    }
+
     func testSSHRootServiceRefusalOnALoneLeaseLeavesRootTakingConsumers() async throws {
         let pool = RemuxSSHRootService(idleTimeout: .seconds(60))
         let key = makeSSHRootKey()

@@ -1744,6 +1744,26 @@ enum RemuxSSHAlgorithmRegistration {
     }
 }
 
+/// A server saved as a private IPv4 address (10/8, 172.16/12, 192.168/16) or one in the shared range VPNs and
+/// carriers use (100.64/10) is connected to as that address, so a LAN or VPN route reaches it. Looked up, iOS on an
+/// IPv6-only network returns only the address translated into the network's NAT64 prefix, and the connection goes to
+/// the network's gateway even when a VPN routes the original. This gives up NAT64 for servers in these ranges that
+/// only translation reaches. Other addresses and names keep the lookup, which IPv6-only networks need for public hosts.
+enum RemuxSSHHostAddress {
+    static func localIPv4(_ host: String, port: Int) -> SocketAddress? {
+        var address = in_addr()
+        guard inet_pton(AF_INET, host, &address) == 1 else { return nil }
+        let octets = withUnsafeBytes(of: address.s_addr) { Array($0) }
+        let (first, second) = (octets[0], octets[1])
+        let isInRange = first == 10
+            || (first == 172 && (16...31).contains(second))
+            || (first == 192 && second == 168)
+            || (first == 100 && (64...127).contains(second))
+        guard isInRange else { return nil }
+        return try? SocketAddress(ipAddress: host, port: port)
+    }
+}
+
 enum RemuxSSHRootBootstrap {
     /// OpenSSH's channel packet size. swift-nio-ssh sizes each channel's receive window at 64
     /// packets, so this gives every channel the 2 MiB window OpenSSH (and so Herdr's own client)
@@ -1769,6 +1789,7 @@ enum RemuxSSHRootBootstrap {
             trace.event("bootstrap.configure.end")
 
             let inboundActivity = RemuxLastActivity()
+            let directAddress = RemuxSSHHostAddress.localIPv4(configuration.host, port: configuration.port)
             let connection: (channel: Channel, authenticated: EventLoopFuture<Void>)
             do {
                 connection = try await trace.stage(
@@ -1776,19 +1797,26 @@ enum RemuxSSHRootBootstrap {
                     fields: [
                         "host": configuration.host,
                         "port": "\(configuration.port)",
+                        "route": directAddress == nil ? "lookup" : "address",
                     ]
                 ) {
-                    try await bootstrap.connect(
+                    let initializer: @Sendable (Channel) -> EventLoopFuture<
+                        (channel: Channel, authenticated: EventLoopFuture<Void>)
+                    > = { channel in
+                        channel.pipeline.addHandler(
+                            RemuxSSHInboundActivityHandler(activity: inboundActivity),
+                            position: .first
+                        ).flatMap {
+                            configureChannel(channel, using: configuration, authentication: authentication)
+                        }
+                    }
+                    if let directAddress {
+                        return try await bootstrap.connect(to: directAddress, channelInitializer: initializer)
+                    }
+                    return try await bootstrap.connect(
                         host: configuration.host,
                         port: configuration.port,
-                        channelInitializer: { channel in
-                            channel.pipeline.addHandler(
-                                RemuxSSHInboundActivityHandler(activity: inboundActivity),
-                                position: .first
-                            ).flatMap {
-                                configureChannel(channel, using: configuration, authentication: authentication)
-                            }
-                        }
+                        channelInitializer: initializer
                     )
                 }
             } catch {
