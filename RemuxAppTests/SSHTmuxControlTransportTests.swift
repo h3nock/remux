@@ -852,6 +852,31 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertNotNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: 65535))
     }
 
+    /// A name that doesn't resolve says what the resolver said, not only that the server couldn't be reached.
+    func testANameThatDoesntResolveGivesTheResolversReason() async {
+        let refused = makeRefusedRootConfiguration()
+        let configuration = RemuxSSHRootConfiguration(
+            host: "remux-test.invalid",
+            port: 22,
+            prepareAuthentication: refused.prepareAuthentication,
+            hostKeyValidator: refused.hostKeyValidator,
+            connectTimeout: .seconds(5)
+        )
+        let resolverReason = String(cString: gai_strerror(EAI_NONAME))
+
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: configuration,
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            XCTFail("expected the lookup to fail")
+        } catch {
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+            XCTAssertEqual(reason.kind, .serverUnreachable, "\(error)")
+            XCTAssertEqual(reason.detail, resolverReason.prefix(1).uppercased() + resolverReason.dropFirst())
+        }
+    }
+
     func testSSHRootServiceRefusalOnALoneLeaseLeavesRootTakingConsumers() async throws {
         let pool = RemuxSSHRootService(idleTimeout: .seconds(60))
         let key = makeSSHRootKey()

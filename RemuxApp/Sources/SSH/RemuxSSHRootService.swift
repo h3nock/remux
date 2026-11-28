@@ -361,7 +361,7 @@ enum RemuxSSHRootLeaseDisposition: Equatable, Sendable {
 enum RemuxSSHConnectError: LocalizedError {
     /// The TCP connection couldn't be opened: the name didn't resolve, no route, refused, timed out, and the like.
     case unreachable(underlying: any Error)
-    /// The TCP connection opened, but the server didn't get through SSH before the connect allowance ran out.
+    /// The TCP connection opened, but the server didn't finish signing in before the connect allowance ran out.
     case noSSHResponse
 
     var errorDescription: String? {
@@ -369,7 +369,7 @@ enum RemuxSSHConnectError: LocalizedError {
         case .unreachable:
             "Remux couldn't connect to the server."
         case .noSSHResponse:
-            "The server accepted the connection, but SSH didn't respond in time."
+            "The server accepted the connection but didn't finish signing in in time."
         }
     }
 
@@ -391,8 +391,12 @@ enum RemuxSSHConnectError: LocalizedError {
             if let attempt = error.connectionErrors.last {
                 return systemReason(attempt.error)
             }
-            let lookupFailed = error.dnsAError != nil || error.dnsAAAAError != nil
-            return lookupFailed ? "The server's name couldn't be found." : nil
+            guard let lookupError = error.dnsAError ?? error.dnsAAAAError else { return nil }
+            guard let resolverReason = (lookupError as? SocketAddressError.UnknownHost)?.errorDescription,
+                  let first = resolverReason.first else {
+                return "The server's address couldn't be looked up."
+            }
+            return first.uppercased() + resolverReason.dropFirst()
         }
         if case .connectTimeout? = error as? ChannelError {
             return "The connection timed out."
