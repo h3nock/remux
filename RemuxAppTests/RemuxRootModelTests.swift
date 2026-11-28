@@ -1,4 +1,5 @@
 import CryptoKit
+import Security
 import GhosttyKit
 import Combine
 import NIOConcurrencyHelpers
@@ -235,6 +236,33 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(didRetry)
         let discoveryCount = await discoverer.targets().count
         XCTAssertEqual(discoveryCount, 2)
+    }
+
+    /// A saved credential read while the device is locked waits for it to be unlocked: the list keeps the sessions
+    /// it last found instead of saying the check failed.
+    func testACredentialReadWhileLockedKeepsTheLastListing() async throws {
+        let pair = makePasswordBackedServer()
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["main"])])
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        let didLoad = await waitUntil {
+            harness.model.sessionDiscovery(for: pair.server.id).tmux.sessionNames == ["main"]
+        }
+        XCTAssertTrue(didLoad)
+
+        await harness.credentialStore.failLoads(with: KeychainSSHCredentialStore.loadError(errSecInteractionNotAllowed))
+        await harness.model.refreshSessionsAndWait(for: pair.server.id)
+
+        let tmux = harness.model.sessionDiscovery(for: pair.server.id).tmux
+        XCTAssertEqual(tmux.sessionNames, ["main"])
+        XCTAssertNotEqual(tmux.phase, .failed)
     }
 
     func testDiscoveryRefreshRetainsLastSuccessfulSnapshotOnFailure() {
@@ -6188,6 +6216,7 @@ private actor TestServerCredentialStore {
 
 private actor TestSSHCredentialStore: SSHCredentialStore {
     private var credentials: [UUID: SSHCredential] = [:]
+    private var loadFailure: (any Error)?
     private var shouldSuspendNextLoad = false
     private var suspendedLoadContinuation: CheckedContinuation<Void, Never>?
     private var suspendedLoadWaiters: [CheckedContinuation<Void, Never>] = []
@@ -6204,7 +6233,12 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
                 }
             }
         }
+        if let loadFailure { throw loadFailure }
         return credentials[identityID]
+    }
+
+    func failLoads(with error: any Error) {
+        loadFailure = error
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: UUID) async throws {

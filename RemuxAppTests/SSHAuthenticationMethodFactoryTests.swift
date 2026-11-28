@@ -1,5 +1,6 @@
 @preconcurrency import Citadel
 import CryptoKit
+import Security
 import NIOCore
 import NIOEmbedded
 @preconcurrency import NIOSSH
@@ -74,6 +75,19 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
             let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure($0)
             XCTAssertEqual(reason.kind, .authentication)
             XCTAssertEqual(reason.message, "This private key couldn't be read. Check its passphrase in Edit Server.")
+        }
+    }
+
+    /// The Keychain refuses a read while the device is locked; that pauses a connection as a locked device key does,
+    /// and any other failed read stays a failed read.
+    func testACredentialReadWhileLockedIsTheLockedDeviceError() {
+        XCTAssertEqual(
+            KeychainSSHCredentialStore.loadError(errSecInteractionNotAllowed) as? SecureEnclaveSSHError,
+            .unavailableWhileLocked
+        )
+        guard case .loadFailed(errSecAuthFailed)? = KeychainSSHCredentialStore.loadError(errSecAuthFailed)
+            as? KeychainSSHCredentialStoreError else {
+            return XCTFail("expected a failed read")
         }
     }
 

@@ -128,7 +128,7 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         }
 
         guard status == errSecSuccess else {
-            throw KeychainSSHCredentialStoreError.loadFailed(status)
+            throw Self.loadError(status)
         }
 
         guard let data = item as? Data else {
@@ -140,6 +140,14 @@ actor KeychainSSHCredentialStore: SSHCredentialStore {
         } catch {
             throw KeychainSSHCredentialStoreError.invalidPayload
         }
+    }
+
+    /// What a failed read means. Read while the device is locked, the item is there but can't be had until it's
+    /// unlocked, which pauses a connection as a locked device key does instead of failing it.
+    static func loadError(_ status: OSStatus) -> any Error {
+        status == errSecInteractionNotAllowed
+            ? SecureEnclaveSSHError.unavailableWhileLocked
+            : KeychainSSHCredentialStoreError.loadFailed(status)
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: SSHIdentity.ID) async throws {
