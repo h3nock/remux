@@ -328,11 +328,13 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         // Unregister acknowledgement is dispatched asynchronously. This update
         // arrives before installation, without relying on a timing sleep.
         XCTAssertTrue(fixture.surface.renderer.updateDisplay(metrics: resized))
+        // The replacement is installed at that size before tmux's grid follows, which then lets it draw.
+        try await waitUntil { fixture.surface.renderer.isAwaitingReplacementFrameForTesting }
+        XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().width_px, resized.pixelWidth)
+        XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().height_px, resized.pixelHeight)
         await tmuxResizesThePaneTo80x30(in: fixture.session)
         try await waitUntil { !results.isEmpty }
         XCTAssertEqual(results, [.replaced])
-        XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().width_px, resized.pixelWidth)
-        XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().height_px, resized.pixelHeight)
         XCTAssertEqual(fixture.surface.renderer.presentation, .ready)
         await fixture.session.shutdown()
     }
@@ -734,8 +736,8 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         for _ in 0..<3 { await drain(session.controller) }
     }
 
-    /// tmux resizes the 83x44 pane to 80x30, as after a client resize. The pane's terminal follows the layout
-    /// with the topology, and its renderer draws only once its view and that grid agree.
+    /// tmux resizes the 83x44 pane to 80x30, as when another client resizes the window. The pane's terminal
+    /// follows the layout with the topology, and its renderer draws only once its view and that grid agree.
     private func tmuxResizesThePaneTo80x30(in session: TmuxTerminalSession) async {
         session.controller.pump(Data("%layout-change @0 a45d,80x30,0,0,0 a45d,80x30,0,0,0 *\n".utf8))
         for _ in 0..<3 { await drain(session.controller) }
