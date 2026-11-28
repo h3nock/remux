@@ -15,6 +15,12 @@ enum GhosttyTerminalDisconnectReasonClassifier {
     static func transportStartFailure(_ error: any Error) -> TerminalDisconnectReason {
         let message = String(describing: error)
 
+        // What reaches a session as cancelled is the user's Cancel Connection on a Tailscale check: an attempt the
+        // app ends itself is dropped before it is classified. So it stays closed until the user reconnects.
+        if error is CancellationError {
+            return TerminalDisconnectReason(kind: .userClosed, message: message)
+        }
+
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return TerminalDisconnectReason(
                 kind: .verificationExpired,

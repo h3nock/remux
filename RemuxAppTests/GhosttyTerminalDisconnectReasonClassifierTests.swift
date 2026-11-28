@@ -234,6 +234,14 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         )
     }
 
+    /// Cancel Connection on a Tailscale check ends the attempt: it isn't retried by itself, as a failure would be.
+    func testACancelledConnectionStaysClosed() {
+        let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(CancellationError())
+
+        XCTAssertEqual(reason.kind, .userClosed)
+        XCTAssertFalse(reason.allowsAutomaticReconnect)
+    }
+
     func testTransportStartFailureMapsUnknownFallback() {
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
             DescribedError("connection fizzled")

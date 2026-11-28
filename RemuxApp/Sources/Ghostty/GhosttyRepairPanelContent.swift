@@ -114,7 +114,11 @@ struct GhosttyRepairPanelContent: Equatable {
             title = "Disconnected"
             message = "Remux couldn't verify this server's key."
             actions = [Self.reconnect]
-        case .profile, .runtime, .userClosed, .unknown, nil:
+        case .userClosed:
+            title = "Connection Cancelled"
+            message = "Reconnect when you're ready."
+            actions = [Self.reconnect]
+        case .profile, .runtime, .unknown, nil:
             title = "Disconnected"
             message = "Something went wrong with this session."
             actions = [Self.reconnect]

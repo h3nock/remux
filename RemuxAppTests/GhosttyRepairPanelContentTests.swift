@@ -97,6 +97,15 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
         XCTAssertEqual(content.actions.first?.accessibilityIdentifier, "terminal.status.verificationExpired.retry")
     }
 
+    /// A connection the user cancelled says so, rather than that something went wrong, and offers to reconnect.
+    func testACancelledConnectionSaysSo() {
+        let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(CancellationError()))
+
+        XCTAssertEqual(content.title, "Connection Cancelled")
+        XCTAssertEqual(content.message, "Reconnect when you're ready.")
+        XCTAssertEqual(titles(content), ["Reconnect"])
+    }
+
     func testAnUnreachableServerSaysWhatToCheck() {
         let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
             RemuxSSHConnectError.unreachable(underlying: ChannelError.connectTimeout(.seconds(30)))
