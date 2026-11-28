@@ -74,7 +74,10 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
             XCTAssertTrue($0 is SSHPrivateKeyUnreadableError, "\($0)")
             let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure($0)
             XCTAssertEqual(reason.kind, .authentication)
-            XCTAssertEqual(reason.message, "This private key couldn't be read. Check its passphrase in Edit Server.")
+            XCTAssertEqual(
+                reason.message,
+                "This private key couldn't be read with this passphrase, or isn't in a format Remux supports."
+            )
         }
     }
 

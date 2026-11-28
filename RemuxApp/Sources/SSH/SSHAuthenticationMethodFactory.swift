@@ -66,13 +66,14 @@ struct SSHPreparedAuthentication: Sendable {
     let makeMethod: @Sendable () -> SSHAuthenticationMethod
 }
 
-/// An imported private key that couldn't be decoded: a wrong passphrase, or contents that aren't the key they claim to
-/// be. Saving checks the key's format but can't check its passphrase, so this first shows when signing in.
+/// An imported private key that couldn't be decoded: a wrong passphrase, a cipher Remux can't decrypt, or contents that
+/// aren't the key they claim to be. Saving checks the key's format but not these, so this first shows when signing in,
+/// in Add Server as well as for a saved server.
 struct SSHPrivateKeyUnreadableError: LocalizedError {
     let underlying: any Error
 
     var errorDescription: String? {
-        "This private key couldn't be read. Check its passphrase in Edit Server."
+        "This private key couldn't be read with this passphrase, or isn't in a format Remux supports."
     }
 }
 
