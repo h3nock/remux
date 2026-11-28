@@ -40,7 +40,7 @@ struct RemuxSSHRootConfiguration: Sendable {
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let authenticationTimeout: TimeAmount
-    let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
+    private(set) var onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     init(
         host: String,
@@ -65,17 +65,11 @@ struct RemuxSSHRootConfiguration: Sendable {
     /// which must never bring up a prompt. Nothing else in a sign-in asks: keys sign without interaction and host
     /// keys are checked against the ones already trusted.
     var askingNoOne: RemuxSSHRootConfiguration {
-        RemuxSSHRootConfiguration(
-            host: host,
-            port: port,
-            authenticationMethod: authenticationMethod,
-            hostKeyValidator: hostKeyValidator,
-            connectTimeout: connectTimeout,
-            authenticationTimeout: authenticationTimeout,
-            onTailscaleSSHCheck: { event in
-                if case .presented(let request) = event { request.cancel() }
-            }
-        )
+        var quiet = self
+        quiet.onTailscaleSSHCheck = { event in
+            if case .presented(let request) = event { request.cancel() }
+        }
+        return quiet
     }
 }
 
@@ -931,6 +925,8 @@ actor RemuxSSHRootService {
     /// doesn't count, as the same silence may have taken it too. Nil when the connection is gone, already suspect, or
     /// the pool doesn't know what it signed in with.
     private func suspect(key: RemuxSSHRootKey, generation: UUID, reason: String) -> RemuxSSHRootAttempt? {
+        // A sign-in that already failed is still listed until its observer runs; it would stand in and fail at once.
+        removeSpentEntries(for: key)
         guard var entry = entries[generation], !entry.isSuspect else { return nil }
         entry.isSuspect = true
         entries[generation] = entry
@@ -1462,7 +1458,8 @@ actor RemuxSSHRootService {
         isRefusingSessions: Bool = false,
         isSpare: Bool = false,
         alongsideExisting: Bool = false,
-        attempt: RemuxSSHRootAttempt? = nil
+        attempt: RemuxSSHRootAttempt? = nil,
+        configuration: RemuxSSHRootConfiguration? = nil
     ) -> UUID {
         if !alongsideExisting {
             for existing in orderedEntries(for: key) {
@@ -1482,7 +1479,7 @@ actor RemuxSSHRootService {
             reservationIDs: reservationID.map { [$0] } ?? [],
             idleCloseTask: idleCloseScheduled ? Self.testingIdleCloseTask() : nil,
             readiness: readiness,
-            configuration: nil
+            configuration: configuration
         )
         entry.isRefusingSessions = isRefusingSessions
         entry.isSpare = isSpare
@@ -1588,6 +1585,12 @@ actor RemuxSSHRootService {
         guard var entry = entries[generation] else { return }
         entry.isSuspect = true
         entries[generation] = entry
+    }
+
+    /// Makes the connection suspect as a check does, and returns the connection standing in for it.
+    func standInForTesting(for key: RemuxSSHRootKey, generation: UUID) -> UUID? {
+        guard let standIn = suspect(key: key, generation: generation, reason: "test") else { return nil }
+        return orderedEntries(for: key).first { $0.attempt.task == standIn.task }?.generation
     }
 
     func clearSuspicionForTesting(generation: UUID) {

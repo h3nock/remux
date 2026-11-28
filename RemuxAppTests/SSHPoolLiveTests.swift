@@ -267,7 +267,13 @@ final class SSHPoolLiveTests: XCTestCase {
 
         XCTAssertFalse(roots.contains(where: \.isActive), "a dead connection was left to the open deadline")
         XCTAssertLessThan(elapsed, RemuxSSHRoot.channelOpenDeadline.duration / 2)
-        let entries = await pool.snapshot().entries(for: endpoint.key)
+        // The pool retires a closed connection once its close observer runs.
+        var entries = await pool.snapshot().entries(for: endpoint.key)
+        let settled = ContinuousClock.now + .seconds(2)
+        while entries.count > 1, ContinuousClock.now < settled {
+            try await Task.sleep(for: .milliseconds(20))
+            entries = await pool.snapshot().entries(for: endpoint.key)
+        }
         XCTAssertEqual(entries.map(\.isSpare), [true], "one spare stood in for both")
         for echo in echoes { await echo.close() }
     }
@@ -479,7 +485,7 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
     private let listener: Channel
     private let host: String
     private let targetPort: Int
-    private let state = NIOLockedValueBox((stalled: false, channels: [ObjectIdentifier: Channel]()))
+    private let state = NIOLockedValueBox((stalled: false, refusing: false, channels: [ObjectIdentifier: Channel]()))
     private let bytesPerSecond = NIOLockedValueBox<Int?>(nil)
 
     /// Carries at most this many bytes a second each way per connection, as a slow link does.
@@ -518,6 +524,10 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
     }
 
     private func bridge(_ inbound: Channel) {
+        guard !state.withLockedValue({ $0.refusing }) else {
+            inbound.close(promise: nil)
+            return
+        }
         ClientBootstrap(group: inbound.eventLoop)
             .channelOption(ChannelOptions.autoRead, value: false)
             .connect(host: host, port: targetPort)
@@ -543,6 +553,11 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
 
     func stall() { setStalled(true) }
     func resume() { setStalled(false) }
+
+    /// Closes each new connection as soon as it arrives, while the ones carried so far go on as they are.
+    func refuseNew() {
+        state.withLockedValue { $0.refusing = true }
+    }
 
     /// Stops the connections carried so far, while new ones still get through: a network change that took the old
     /// flows with it.

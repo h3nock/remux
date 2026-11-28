@@ -690,6 +690,41 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
+    func testSuspicionPassesOverASignInThatAlreadyFailed() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let suspect = await pool.insertEntryForTesting(for: key, configuration: makeRefusedRootConfiguration())
+        let failed = RemuxSSHRootAttempt { throw SSHTmuxControlTransportError.closed }
+        _ = try? await failed.task.value
+        let failedGeneration = await pool.insertEntryForTesting(
+            for: key,
+            readiness: .connecting,
+            alongsideExisting: true,
+            attempt: failed
+        )
+
+        let standIn = await pool.standInForTesting(for: key, generation: suspect)
+
+        XCTAssertNotNil(standIn)
+        XCTAssertNotEqual(standIn, failedGeneration, "a sign-in that already failed stood in for the suspect")
+        XCTAssertNotEqual(standIn, suspect)
+        await pool.closeAllConnectionsForTesting()
+    }
+
+    func testSuspicionSharesASignInAlreadyUnderWay() async throws {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let suspect = await pool.insertEntryForTesting(for: key, configuration: makeRefusedRootConfiguration())
+        let signedIn = await pool.insertEntryForTesting(for: key, alongsideExisting: true)
+        let signingIn = await pool.insertEntryForTesting(for: key, readiness: .connecting, alongsideExisting: true)
+
+        let standIn = await pool.standInForTesting(for: key, generation: suspect)
+
+        XCTAssertEqual(standIn, signingIn, "a connection already signed in may be as dead as the suspect")
+        XCTAssertNotEqual(standIn, signedIn)
+        await pool.closeAllConnectionsForTesting()
+    }
+
     func testPrewarmSkipsASuspectConnection() async throws {
         let pool = RemuxSSHRootService()
         let key = makeSSHRootKey()
@@ -1612,18 +1647,21 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertLessThan(elapsed, openDeadline / 2, "closed by the open deadline, not on the spare's evidence")
         let second = try await checked.claim()
         XCTAssertFalse(second.sshRoot === first.sshRoot)
-        let entries = await checked.pool.snapshot().entries(for: checked.key)
-        XCTAssertEqual(entries.map(\.isSpare), [true], "the claim rode the spare, not a sign-in of its own")
+        try await waitUntil("the claim didn't ride the spare") {
+            await checked.pool.snapshot().entries(for: checked.key).map(\.isSpare) == [true]
+        }
         await second.release(.reusable)
         await first.release(.invalidated)
     }
 
-    /// A connection that answers after falling under suspicion, before any spare could sign in, is kept: it takes
+    /// A connection that answers after falling under suspicion, while no spare could sign in, is kept: it takes
     /// consumers again, and the next claim lands on it.
     func testConnectionCheckKeepsAConnectionThatAnswersLate() async throws {
         let checked = try await makeCheckedLoopback()
         let first = try await checked.claim()
 
+        // Which comes first, the late answer or a spare's sign-in, is a race; with no spare, only the answer decides.
+        checked.relay.refuseNew()
         checked.relay.stall()
         await checked.pool.checkConnections(reason: "test")
         try await waitUntil("the silent connection never fell under suspicion") {
