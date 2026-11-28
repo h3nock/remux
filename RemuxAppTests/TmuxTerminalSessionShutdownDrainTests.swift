@@ -328,6 +328,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         // Unregister acknowledgement is dispatched asynchronously. This update
         // arrives before installation, without relying on a timing sleep.
         XCTAssertTrue(fixture.surface.renderer.updateDisplay(metrics: resized))
+        await tmuxResizesThePaneTo80x30(in: fixture.session)
         try await waitUntil { !results.isEmpty }
         XCTAssertEqual(results, [.replaced])
         XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().width_px, resized.pixelWidth)
@@ -349,6 +350,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(fixture.surface.renderer.managedSurface).rendererIsAvailable)
         let resized = try XCTUnwrap(fixture.measurement.displayMetrics(columns: 80, rows: 30))
         XCTAssertTrue(fixture.surface.renderer.updateDisplay(metrics: resized))
+        await tmuxResizesThePaneTo80x30(in: fixture.session)
         fixture.surface.renderer.suppressReplacementPublicationForTesting = false
         XCTAssertTrue(try XCTUnwrap(fixture.surface.renderer.managedSurface).controlSurface.requestFrame())
         try await waitUntil { !results.isEmpty }
@@ -473,15 +475,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
     func testDelayedInitialCreationAppliesCurrentViewportAndThemeBeforeReady() async throws {
         let fixture = try await makeDelayedNativeFixture()
-        let latest = TmuxSessionController.TopologySnapshot(
-            sessionName: "main",
-            windows: [.init(id: 0, name: "test", active: true, zoomed: false,
-                            width: 80, height: 30, activePaneID: 0)],
-            panes: [.init(id: 0, windowID: 0, x: 0, y: 0, width: 80, height: 30,
-                          currentCommand: "", currentPath: "", phase: .live)],
-            activeWindowID: 0
-        )
-        fixture.session.handleTopology(latest)
+        await tmuxResizesThePaneTo80x30(in: fixture.session)
         fixture.theme.value = .remuxLight
         fixture.deliver()
         let admitted = try XCTUnwrap(fixture.session.surfacesByPaneID[0])
@@ -737,6 +731,13 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await drain(session.controller)
         let hydration = (5...9).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
         session.controller.pump(Data(hydration.utf8))
+        for _ in 0..<3 { await drain(session.controller) }
+    }
+
+    /// tmux resizes the 83x44 pane to 80x30, as after a client resize. The pane's terminal follows the layout
+    /// with the topology, and its renderer draws only once its view and that grid agree.
+    private func tmuxResizesThePaneTo80x30(in session: TmuxTerminalSession) async {
+        session.controller.pump(Data("%layout-change @0 a45d,80x30,0,0,0 a45d,80x30,0,0,0 *\n".utf8))
         for _ in 0..<3 { await drain(session.controller) }
     }
 
