@@ -277,6 +277,13 @@ final class HerdrScreenModel {
         var wakeRetry: Duration = .seconds(2)
     }
 
+    /// A recovery a replacement model takes over: it reconnects by itself as a session that has
+    /// connected, and the shorter delays after the app came back still apply. Its delays start over, as
+    /// after a reconnect the user asks for.
+    struct RecoveryHandoff {
+        fileprivate let wokeAt: ContinuousClock.Instant?
+    }
+
     /// What follows an attempt's end.
     private enum Recovery {
         /// A dropped connection: try again with growing delays, showing the last frame meanwhile.
@@ -428,7 +435,7 @@ final class HerdrScreenModel {
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
         onNotification: @escaping (NotificationEvent) -> Void,
         mayReconnectByItself: @escaping (HerdrScreenModel) -> Bool = { _ in true },
-        continuesRecovery: Bool = false,
+        continuing recovery: RecoveryHandoff? = nil,
         connectionTiming: HerdrConnection.Timing = HerdrConnection.Timing(),
         recoveryTiming: RecoveryTiming = RecoveryTiming(),
         switchingCueDelay: Duration = HerdrScreenModel.switchingCueDelay,
@@ -446,7 +453,8 @@ final class HerdrScreenModel {
         self.onRuntimeStateChange = onRuntimeStateChange
         self.onNotification = onNotification
         self.mayReconnectByItself = mayReconnectByItself
-        hasConnected = continuesRecovery
+        hasConnected = recovery != nil
+        wokeAt = recovery?.wokeAt
         self.connectionTiming = connectionTiming
         self.recoveryTiming = recoveryTiming
         self.switchingCueDelay = switchingCueDelay
@@ -482,10 +490,10 @@ final class HerdrScreenModel {
         return attempt.ended
     }
 
-    /// True while a reconnect by itself is due for a session that had connected. A replacement the root
-    /// makes for the model then, without the user asking, continues that recovery (`continuesRecovery`).
-    var isRecoveringByItself: Bool {
-        hasConnected && recoveryDue != nil
+    /// Set while a reconnect by itself is due for a session that has connected.
+    var recoveryHandoff: RecoveryHandoff? {
+        guard hasConnected, recoveryDue != nil else { return nil }
+        return RecoveryHandoff(wokeAt: wokeAt)
     }
 
     // MARK: - What the root wants

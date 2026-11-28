@@ -2645,7 +2645,7 @@ final class RemuxRootModel: ObservableObject {
                 mayReconnectByItself: { [weak self] model in
                     self?.herdrRuntimeMayReconnectByItself(model, key) ?? false
                 },
-                continuesRecovery: continuingHerdrRecovery && previousModel?.isRecoveringByItself == true,
+                continuing: continuingHerdrRecovery ? previousModel?.recoveryHandoff : nil,
                 zoomKeepers: dependencies.herdrZoomKeepers
             )
             // As for tmux, the replacement starts at the previous attempt's viewport. Its screen gives
