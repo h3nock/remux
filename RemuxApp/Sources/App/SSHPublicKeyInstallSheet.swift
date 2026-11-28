@@ -48,6 +48,7 @@ struct SSHPublicKeyInstallSheet: View {
                 phaseContent
             }
         }
+        .scrollDismissesKeyboard(.immediately)
         .navigationTitle("Install on Server")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
