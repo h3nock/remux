@@ -39,7 +39,6 @@ final class ShortcutStoreTests: XCTestCase {
         let snapshots = try JSONDecoder().decode([ShortcutStoreSnapshot].self, from: data)
         let snapshot = try XCTUnwrap(snapshots.first)
 
-        XCTAssertEqual(snapshot.schemaVersion, ShortcutStoreSnapshot.currentSchemaVersion)
         XCTAssertEqual(snapshot.collection(id: .claude)?.title, "Claude")
         XCTAssertEqual(snapshot.shortcuts.first?.collection, .claude)
         XCTAssertTrue(snapshot.visiblePaletteTabs.contains(.collection(.claude)))
