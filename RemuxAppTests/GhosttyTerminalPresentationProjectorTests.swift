@@ -129,6 +129,29 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         )
     }
 
+    /// A pane's layer holds its frame's points times the scale, with the fraction dropped. Frames worked
+    /// out per cell in points came out a pixel short for some grids, such as 41 columns of 22 px,
+    /// 25 columns of 16 px or 41 rows of 44 px at 3x, and the renderer's first frame was then refused
+    /// for its size.
+    func testCompositeLayoutFramesHoldTheGridsWholePixels() throws {
+        let grids: [(columns: UInt32, rows: UInt32, cellWidth: UInt32, cellHeight: UInt32)] = [
+            (41, 30, 22, 48), (25, 30, 16, 48), (50, 41, 22, 44), (53, 29, 24, 53),
+        ]
+        for grid in grids {
+            let layout = try XCTUnwrap(GhosttyCompositeViewportLayout(
+                bounds: CGRect(x: 0, y: 0, width: 440, height: 900),
+                grid: .init(columns: grid.columns, rows: grid.rows),
+                cellMetrics: .init(pixelWidth: grid.cellWidth, pixelHeight: grid.cellHeight, contentScale: 3)
+            ))
+            let frame = layout.frame(for: .init(x: 0, y: 0, columns: grid.columns, rows: grid.rows))
+            let label = "\(grid.columns)x\(grid.rows) of \(grid.cellWidth)x\(grid.cellHeight) px"
+            XCTAssertEqual(Int(frame.width * 3), Int(grid.columns * grid.cellWidth), label)
+            XCTAssertEqual(Int(frame.height * 3), Int(grid.rows * grid.cellHeight), label)
+            XCTAssertEqual(Int(layout.canvasSize.width * 3), Int(grid.columns * grid.cellWidth), label)
+            XCTAssertEqual(Int(layout.canvasSize.height * 3), Int(grid.rows * grid.cellHeight), label)
+        }
+    }
+
     /// The keyboard closing grows the viewport before the server's taller grid arrives; the
     /// smaller grid must stay where it is meanwhile.
     func testCompositeLayoutKeepsAGridThatDoesNotFillTheViewportInPlaceAsTheViewportGrows() throws {

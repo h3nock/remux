@@ -788,6 +788,9 @@ final class TerminalPaneRenderer {
         config.scale_factor = metrics.contentScale
         config.width_px = metrics.pixelWidth
         config.height_px = metrics.pixelHeight
+        // The pane's grid comes from tmux or Herdr and the view is sized to follow it, so the
+        // renderer keeps its last frame while the view still holds another grid.
+        config.backend_sized_grid = true
         config.visible = visible
         config.focused = focused
         return config
