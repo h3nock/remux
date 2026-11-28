@@ -248,8 +248,8 @@ struct SSHPublicKeyInstaller: Sendable {
             let configuration = RemuxSSHRootConfiguration(
                 host: target.host,
                 port: target.port,
-                authenticationMethod: {
-                    try SSHAuthenticationMethodFactory.make(
+                prepareAuthentication: {
+                    try SSHAuthenticationMethodFactory.prepare(
                         username: target.username,
                         storedCredential: credential
                     )

@@ -350,7 +350,7 @@ final class SSHPrivateKeyInspectorTests: XCTestCase {
     -----END OPENSSH PRIVATE KEY-----
     """
 
-    private static let encryptedEd25519Key = """
+    static let encryptedEd25519Key = """
     -----BEGIN OPENSSH PRIVATE KEY-----
     b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABD87oA8AF
     9fpLEAQtTWMZZwAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIIuwDbwcjxPpUNPA

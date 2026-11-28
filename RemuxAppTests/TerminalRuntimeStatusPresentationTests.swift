@@ -36,6 +36,7 @@ final class TerminalRuntimeStatusPresentationTests: XCTestCase {
             (.serverUnreachable, "Unreachable"),
             (.hostKey, "Host Key"),
             (.profile, "Profile Error"),
+            (.invalidSettings, "Settings Error"),
             (.remoteExit, "Exited"),
             (.runtime, "Terminal Error"),
             (.userClosed, "Closed"),

@@ -61,8 +61,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let defaultConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
-                .passwordBased(username: server.username, password: "pw")
+            prepareAuthentication: {
+                SSHPreparedAuthentication { .passwordBased(username: server.username, password: "pw") }
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
             sessionName: "base"
@@ -73,8 +73,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         let tracedConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
-            authenticationMethod: {
-                .passwordBased(username: server.username, password: "pw")
+            prepareAuthentication: {
+                SSHPreparedAuthentication { .passwordBased(username: server.username, password: "pw") }
             },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(10),
@@ -157,9 +157,10 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             traceFlowID: nil
         )
 
-        XCTAssertEqual(tailscale.authenticationTimeout, .minutes(5))
+        XCTAssertEqual(tailscale.verificationTimeout, .minutes(5))
+        XCTAssertEqual(tailscale.connectTimeout, .seconds(10), "a silent server fails as fast for every sign-in")
         XCTAssertNotNil(tailscale.onTailscaleSSHCheck)
-        XCTAssertNil(password.authenticationTimeout)
+        XCTAssertNil(password.verificationTimeout)
         XCTAssertNil(password.onTailscaleSSHCheck)
     }
 
@@ -722,10 +723,10 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let configuration = RemuxSSHRootConfiguration(
             host: refused.host,
             port: refused.port,
-            authenticationMethod: refused.authenticationMethod,
+            prepareAuthentication: refused.prepareAuthentication,
             hostKeyValidator: refused.hostKeyValidator,
             connectTimeout: .seconds(2),
-            authenticationTimeout: .seconds(90),
+            verificationTimeout: .seconds(90),
             onTailscaleSSHCheck: { _ in shown.withLockedValue { $0 += 1 } }
         )
         let cancelled = NIOLockedValueBox(false)
@@ -743,7 +744,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         XCTAssertTrue(cancelled.withLockedValue { $0 }, "the check was not given up")
         XCTAssertEqual(shown.withLockedValue { $0 }, 0, "the check reached the screen")
-        XCTAssertEqual(quiet.authenticationTimeout, configuration.authenticationTimeout)
+        XCTAssertEqual(quiet.verificationTimeout, configuration.verificationTimeout)
+        XCTAssertEqual(quiet.connectTimeout, configuration.connectTimeout)
         XCTAssertEqual(quiet.host, configuration.host)
         XCTAssertEqual(quiet.port, configuration.port)
     }
@@ -807,6 +809,165 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let reserved = await pool.reserveEntryForTesting(for: key)
         XCTAssertEqual(reserved?.generation, first)
         await pool.closeAllConnectionsForTesting()
+    }
+
+    /// A connection that can't be opened comes out as the one error the app owns for it, with the system's reason,
+    /// whatever the transport reported underneath.
+    func testAConnectionThatCantOpenIsReportedAsUnreachable() async {
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: makeRefusedRootConfiguration(),
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            XCTFail("expected the connection to fail")
+        } catch {
+            guard case .unreachable? = error as? RemuxSSHConnectError else {
+                return XCTFail("expected an unreachable server, got \(error)")
+            }
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+            XCTAssertEqual(reason.kind, .serverUnreachable)
+            XCTAssertEqual(reason.detail, "Connection refused")
+        }
+    }
+
+    /// Private and VPN-range IPv4 addresses are connected to as they are; everything else is looked up, so
+    /// IPv6-only networks still translate public addresses, and addresses iOS never translates keep the lookup.
+    func testOnlyPrivateAndSharedRangeIPv4AddressesSkipTheLookup() {
+        for host in ["10.1.2.3", "172.16.0.1", "172.31.255.254", "192.168.1.5", "100.64.0.1", "100.118.24.87", "100.127.255.254"] {
+            let address = RemuxSSHHostAddress.localIPv4(host, port: 2222)
+            XCTAssertEqual(address?.ipAddress, host, host)
+            XCTAssertEqual(address?.port, 2222, host)
+        }
+        for host in [
+            "127.0.0.1", "169.254.3.4", "172.15.0.1", "172.32.0.1", "100.63.255.255", "100.128.0.1",
+            "8.8.8.8", "140.82.114.4", "localhost", "mac.example.ts.net", "fd7a:115c:a1e0::1",
+            "10.5", "10.0.0.256", "", " 10.0.0.1",
+        ] {
+            XCTAssertNil(RemuxSSHHostAddress.localIPv4(host, port: 22), host)
+        }
+        // A saved port outside 1...65535 never reaches SocketAddress, which traps on it.
+        for port in [0, 65536, -1] {
+            XCTAssertNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: port), "\(port)")
+        }
+        XCTAssertNotNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: 65535))
+    }
+
+    /// A server that turns the sign-in down comes out as Authentication Failed by the error's type, through the
+    /// real bootstrap. The test server rejects any sign-in for a user other than its own, as a wrong password is.
+    func testASignInTheServerTurnsDownIsAnAuthenticationFailure() async throws {
+        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux")
+        defer { server.stop() }
+        let loopback = makeLoopbackSession(port: server.port)
+        try loopback.trustedHostStore.trustHostKey(loopback.challenge(for: server))
+        let configuration = RemuxSSHRootConfiguration(
+            host: loopback.server.host,
+            port: loopback.server.port,
+            prepareAuthentication: {
+                try SSHAuthenticationMethodFactory.prepare(username: "someone-else", credential: .password("wrong"))
+            },
+            hostKeyValidator: loopback.trustedHostStore.validator(for: loopback.server),
+            connectTimeout: .seconds(5)
+        )
+
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: configuration,
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            XCTFail("expected the server to turn the sign-in down")
+        } catch {
+            XCTAssertEqual(
+                GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error).kind,
+                .authentication,
+                "\(error)"
+            )
+        }
+    }
+
+    /// A port saved outside 1...65535 is turned down before either route is tried, with the editor's own words, rather
+    /// than reported as a server that couldn't be reached.
+    func testAnOutOfRangePortIsAConfigurationErrorNotAnUnreachableServer() async {
+        let refused = makeRefusedRootConfiguration()
+        for (host, port) in [("10.1.2.3", 65536), ("server.example.test", 0)] {
+            let configuration = RemuxSSHRootConfiguration(
+                host: host,
+                port: port,
+                prepareAuthentication: refused.prepareAuthentication,
+                hostKeyValidator: refused.hostKeyValidator,
+                connectTimeout: .seconds(2)
+            )
+            do {
+                _ = try await RemuxSSHRootBootstrap.authenticate(
+                    using: configuration,
+                    trace: RemuxTransportStartupTrace(flowID: nil)
+                )
+                XCTFail("expected \(host):\(port) to be turned down")
+            } catch {
+                XCTAssertEqual(error as? RemuxSSHConfigurationError, .invalidPort(port), "\(error)")
+                let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+                XCTAssertEqual(reason.kind, .invalidSettings)
+                XCTAssertEqual(reason.detail, "Port must be between 1 and 65535.")
+            }
+        }
+    }
+
+    /// A name that doesn't exist reads plainly; a resolver that couldn't answer keeps its own words, so the two read
+    /// differently.
+    func testALookupFailureSaysWhichKindItWas() {
+        XCTAssertEqual(
+            RemuxSSHConnectError.lookupReason(
+                errorCode: Int(EAI_NONAME),
+                resolverText: String(cString: gai_strerror(EAI_NONAME))
+            ),
+            "The server's address couldn't be found."
+        )
+        let unanswered = String(cString: gai_strerror(EAI_AGAIN))
+        XCTAssertEqual(
+            RemuxSSHConnectError.lookupReason(errorCode: Int(EAI_AGAIN), resolverText: unanswered),
+            unanswered.prefix(1).uppercased() + unanswered.dropFirst()
+        )
+        XCTAssertEqual(
+            RemuxSSHConnectError.lookupReason(errorCode: Int(EAI_AGAIN), resolverText: ""),
+            "The server's address couldn't be looked up."
+        )
+    }
+
+    /// A lookup that fails carries the resolver's answer to the details line, through the formatter. NIO's lookup error
+    /// can't be made outside NIO, so this asks the system's resolver for a name that can't exist, and compares the
+    /// detail with the formatter's reading of whatever it answered.
+    func testALookupFailureCarriesTheResolversAnswer() async {
+        let refused = makeRefusedRootConfiguration()
+        let configuration = RemuxSSHRootConfiguration(
+            host: "remux-test.invalid",
+            port: 22,
+            prepareAuthentication: refused.prepareAuthentication,
+            hostKeyValidator: refused.hostKeyValidator,
+            connectTimeout: .seconds(5)
+        )
+
+        do {
+            _ = try await RemuxSSHRootBootstrap.authenticate(
+                using: configuration,
+                trace: RemuxTransportStartupTrace(flowID: nil)
+            )
+            XCTFail("expected the lookup to fail")
+        } catch {
+            guard case .unreachable(let underlying)? = error as? RemuxSSHConnectError,
+                  let connectionError = underlying as? NIOConnectionError,
+                  let unknownHost = (connectionError.dnsAError ?? connectionError.dnsAAAAError)
+                      as? SocketAddressError.UnknownHost else {
+                return XCTFail("expected a failed lookup, got \(error)")
+            }
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+            XCTAssertEqual(reason.kind, .serverUnreachable)
+            XCTAssertEqual(
+                reason.detail,
+                RemuxSSHConnectError.lookupReason(
+                    errorCode: unknownHost.errorCode,
+                    resolverText: unknownHost.errorDescription
+                )
+            )
+        }
     }
 
     func testSSHRootServiceRefusalOnALoneLeaseLeavesRootTakingConsumers() async throws {
@@ -1584,8 +1745,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let transport = SSHTmuxControlTransport(
             configuration: SSHTmuxControlConfiguration(
                 host: server.host,
-                authenticationMethod: {
-                    .passwordBased(username: server.username, password: "pw")
+                prepareAuthentication: {
+                    SSHPreparedAuthentication { .passwordBased(username: server.username, password: "pw") }
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),
                 sessionName: "base"
@@ -2010,7 +2171,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         SSHTmuxControlConfiguration(
             host: loopback.server.host,
             port: loopback.server.port,
-            authenticationMethod: { .passwordBased(username: "remux", password: "pw") },
+            prepareAuthentication: { SSHPreparedAuthentication { .passwordBased(username: "remux", password: "pw") } },
             hostKeyValidator: loopback.trustedHostStore.validator(for: loopback.server),
             connectTimeout: .seconds(5),
             controlNoResponseTimeout: .milliseconds(300),
@@ -2029,7 +2190,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         return RemuxSSHRootConfiguration(
             host: server.host,
             port: server.port,
-            authenticationMethod: { .passwordBased(username: "tester", password: "pw") },
+            prepareAuthentication: { SSHPreparedAuthentication { .passwordBased(username: "tester", password: "pw") } },
             hostKeyValidator: trustedHostStore.validator(for: server),
             connectTimeout: .seconds(2)
         )

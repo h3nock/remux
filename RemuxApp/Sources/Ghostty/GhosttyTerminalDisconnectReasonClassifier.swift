@@ -1,6 +1,5 @@
+import Citadel
 import Foundation
-import NIOCore
-import NIOPosix
 
 enum GhosttyTerminalDisconnectReasonClassifier {
     /// A tmux control session that couldn't start. `tmuxPath` is the one set in Edit Server, nil for Automatic:
@@ -16,6 +15,12 @@ enum GhosttyTerminalDisconnectReasonClassifier {
     static func transportStartFailure(_ error: any Error) -> TerminalDisconnectReason {
         let message = String(describing: error)
 
+        // What reaches a session as cancelled is the user's Cancel Connection on a Tailscale check: an attempt the
+        // app ends itself is dropped before it is classified. So it stays closed until the user reconnects.
+        if error is CancellationError {
+            return TerminalDisconnectReason(kind: .userClosed, message: message)
+        }
+
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return TerminalDisconnectReason(
                 kind: .verificationExpired,
@@ -23,19 +28,31 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             )
         }
 
-        // A key made on this device that can't be used here is replaced like credentials the server turned down; a
-        // locked device only pauses it, so the session reconnects by itself once it's unlocked.
+        // A saved key that can't be read, or a key made on this device that can't be used here, is replaced like
+        // credentials the server turned down; a locked device only pauses a device key, so the session reconnects by
+        // itself once it's unlocked. The panel uses its own words, so what's wrong with the key goes in the detail.
+        if let error = error as? SSHPrivateKeyUnreadableError {
+            let explanation = error.localizedDescription
+            return TerminalDisconnectReason(kind: .authentication, message: explanation, detail: explanation)
+        }
         if let error = error as? SecureEnclaveSSHError {
             let kind: TerminalDisconnectReason.Kind = switch error {
             case .keyUnusable: .authentication
             case .unavailableWhileLocked: .transportIO
             case .unavailable, .passcodeNotSet, .keyUnreadable: .unknown
             }
-            return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
+            let explanation = error.localizedDescription
+            return TerminalDisconnectReason(kind: kind, message: explanation, detail: explanation)
         }
 
-        if isServerUnreachable(error) {
-            return TerminalDisconnectReason(kind: .serverUnreachable, message: message)
+        // The saved settings can't make a connection: the panel offers Edit Server and shows why under its own words.
+        if let configurationError = error as? RemuxSSHConfigurationError {
+            let reason = configurationError.localizedDescription
+            return TerminalDisconnectReason(kind: .invalidSettings, message: reason, detail: reason)
+        }
+
+        if let connectError = error as? RemuxSSHConnectError {
+            return TerminalDisconnectReason(kind: .serverUnreachable, message: message, detail: connectError.reason)
         }
 
         if let trustedHostError = error as? TrustedHostStoreError {
@@ -70,27 +87,19 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             }
         }
 
-        let lowercasedMessage = message.lowercased()
-        if lowercasedMessage.contains("auth") ||
-            lowercasedMessage.contains("password") ||
-            lowercasedMessage.contains("permission denied") {
-            return TerminalDisconnectReason(kind: .authentication, message: message)
+        if let clientError = error as? SSHClientError {
+            switch clientError {
+            case .allAuthenticationOptionsFailed,
+                 .unsupportedPasswordAuthentication,
+                 .unsupportedPrivateKeyAuthentication,
+                 .unsupportedHostBasedAuthentication:
+                return TerminalDisconnectReason(kind: .authentication, message: message)
+            case .channelCreationFailed:
+                break
+            }
         }
 
         return TerminalDisconnectReason(kind: .unknown, message: message)
-    }
-
-    private static func isServerUnreachable(_ error: any Error) -> Bool {
-        if error is NIOConnectionError {
-            return true
-        }
-
-        if let channelError = error as? ChannelError,
-           case .connectTimeout = channelError {
-            return true
-        }
-
-        return false
     }
 
     static func foregroundMissingHost() -> TerminalDisconnectReason {

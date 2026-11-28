@@ -64,6 +64,8 @@ struct TerminalRuntimeStatusPresentation: Equatable, Sendable {
             "Host Key"
         case .profile:
             "Profile Error"
+        case .invalidSettings:
+            "Settings Error"
         case .backendUnavailable(let backend):
             "\(backend.displayName) Error"
         case .remoteExit:

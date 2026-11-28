@@ -68,7 +68,8 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         let eventLoop = EmbeddedEventLoop()
         let handler = RemuxSSHRootHandshakeHandler(
             eventLoop: eventLoop,
-            timeout: .seconds(1),
+            timeout: .seconds(10),
+            verificationTimeout: .seconds(1),
             onTailscaleSSHCheck: { event in
                 eventRecorder.record(event)
             }
@@ -92,6 +93,87 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
             return XCTFail("expected a presented event")
         }
         XCTAssertEqual(events[1], .finished(request.id))
+        XCTAssertNoThrow(try channel.finish())
+    }
+
+    /// A port that accepts TCP and never says anything fails in the connect allowance, as a key or password server
+    /// does, rather than waiting out the time a Tailscale check gets.
+    func testASilentServerFailsInTheConnectAllowance() throws {
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(
+            eventLoop: eventLoop,
+            timeout: .seconds(10),
+            verificationTimeout: .minutes(5)
+        )
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+        let failure = HandshakeResult(handler)
+
+        eventLoop.advanceTime(by: .seconds(9))
+        XCTAssertNil(failure.error, "failed before the connect allowance ran out")
+        eventLoop.advanceTime(by: .seconds(1))
+
+        guard case .noSSHResponse? = failure.error as? RemuxSSHConnectError else {
+            return XCTFail("expected no SSH response, got \(String(describing: failure.error))")
+        }
+        XCTAssertNoThrow(try channel.finish())
+    }
+
+    /// A key or password sign-in has no verification allowance, so a banner that looks like a check starts none: when
+    /// the server then stalls, the connect allowance runs out as for any server, not as an expired check.
+    func testACheckBannerWithoutAVerificationAllowanceStillExpiresAsNoSSHResponse() throws {
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(eventLoop: eventLoop, timeout: .seconds(10))
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+        let failure = HandshakeResult(handler)
+
+        channel.pipeline.fireUserInboundEventTriggered(NIOUserAuthBannerEvent(
+            message: "Authenticate at https://login.tailscale.com/a/5fb81378394f",
+            languageTag: "en"
+        ))
+        eventLoop.advanceTime(by: .seconds(10))
+
+        guard case .noSSHResponse? = failure.error as? RemuxSSHConnectError else {
+            return XCTFail("expected no SSH response, got \(String(describing: failure.error))")
+        }
+        XCTAssertNoThrow(try channel.finish())
+    }
+
+    /// A check shown just before the connect allowance would run out gets its full time from when it's shown, once:
+    /// a later, changed banner doesn't start it again.
+    func testACheckGetsItsWholeAllowanceFromWhenItsShownOnce() throws {
+        let eventRecorder = TailscaleSSHCheckEventRecorder()
+        let eventLoop = EmbeddedEventLoop()
+        let handler = RemuxSSHRootHandshakeHandler(
+            eventLoop: eventLoop,
+            timeout: .seconds(10),
+            verificationTimeout: .minutes(5),
+            onTailscaleSSHCheck: { eventRecorder.record($0) }
+        )
+        let channel = EmbeddedChannel(handler: handler, loop: eventLoop)
+        let failure = HandshakeResult(handler)
+
+        eventLoop.advanceTime(by: .seconds(9))
+        channel.pipeline.fireUserInboundEventTriggered(NIOUserAuthBannerEvent(
+            message: "Authenticate at https://login.tailscale.com/a/5fb81378394f",
+            languageTag: "en"
+        ))
+        eventLoop.advanceTime(by: .seconds(91))
+        channel.pipeline.fireUserInboundEventTriggered(NIOUserAuthBannerEvent(
+            message: "Authenticate at https://login.tailscale.com/a/0a1b2c3d4e5f",
+            languageTag: "en"
+        ))
+        eventLoop.advanceTime(by: .seconds(208))
+        XCTAssertNil(failure.error, "the check ran out before its own allowance")
+        eventLoop.advanceTime(by: .seconds(1))
+
+        XCTAssertEqual(failure.error as? TailscaleSSHCheckError, .verificationTimedOut)
+        XCTAssertEqual(failure.completions, 1)
+        let events = eventRecorder.events
+        XCTAssertEqual(events.count, 3, "\(events)")
+        guard case .presented(let request) = events[0] else {
+            return XCTFail("expected a presented event")
+        }
+        XCTAssertEqual(events.last, .finished(request.id))
         XCTAssertNoThrow(try channel.finish())
     }
 
@@ -249,14 +331,38 @@ final class TailscaleSSHCheckChallengeTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let trustedHosts = TrustedHostStore(rootURL: directory)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return RemuxSSHRootBootstrap.configureChannel(channel, using: RemuxSSHRootConfiguration(
-            host: server.host,
-            port: server.port,
-            authenticationMethod: { .passwordBased(username: "tester", password: "unused") },
-            hostKeyValidator: trustedHosts.validator(for: server),
-            connectTimeout: .seconds(10),
-            onTailscaleSSHCheck: onTailscaleSSHCheck
-        ))
+        let authentication = SSHPreparedAuthentication { .passwordBased(username: "tester", password: "unused") }
+        return RemuxSSHRootBootstrap.configureChannel(
+            channel,
+            using: RemuxSSHRootConfiguration(
+                host: server.host,
+                port: server.port,
+                prepareAuthentication: { authentication },
+                hostKeyValidator: trustedHosts.validator(for: server),
+                connectTimeout: .seconds(10),
+                onTailscaleSSHCheck: onTailscaleSSHCheck
+            ),
+            authentication: authentication
+        )
+    }
+}
+
+/// How a handshake ended, read without waiting, so a test can check it's still pending.
+private final class HandshakeResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedError: (any Error)?
+    private var recordedCompletions = 0
+
+    var error: (any Error)? { lock.withLock { recordedError } }
+    var completions: Int { lock.withLock { recordedCompletions } }
+
+    init(_ handler: RemuxSSHRootHandshakeHandler) {
+        handler.authenticated.whenComplete { [self] result in
+            lock.withLock {
+                recordedCompletions += 1
+                if case .failure(let error) = result { recordedError = error }
+            }
+        }
     }
 }
 

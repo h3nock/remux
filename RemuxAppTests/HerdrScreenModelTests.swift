@@ -1207,6 +1207,25 @@ final class HerdrScreenModelTests: XCTestCase {
         XCTAssertLessThan(starts[3] - droppedAt, .milliseconds(1000), "the delays didn't start over")
     }
 
+    /// Cancel Connection on a Tailscale check while a session reconnects ends the attempt: the session says it was
+    /// cancelled and waits for the user, instead of opening again after the retry delay.
+    func testACancelledReconnectStaysClosedUntilTheUserReconnects() async throws {
+        var recovery = HerdrScreenModel.RecoveryTiming()
+        recovery.firstRetry = .milliseconds(50)
+        let harness = await makeHarness(recovery: recovery)
+        let first = try await connectedSession(harness, lines: ["one"])
+
+        await harness.bridges.failNextOpen(with: CancellationError())
+        await first.finishServing()
+        try await harness.waitUntil("the cancelled attempt wasn't shown") {
+            harness.states.last?.disconnectedReason?.kind == .userClosed
+        }
+        try await Task.sleep(for: .milliseconds(300))
+
+        let openings = await harness.bridges.openingsStartedAt
+        XCTAssertEqual(openings.count, 2, "a cancelled attempt was retried by itself")
+    }
+
     /// Herdr's bridge exits by itself after a minute with nothing to carry, as it does while the app is
     /// in the background, with status 1 and nothing after the ready marker. Once the connection is open
     /// that is a drop: the session reconnects by itself, as Herdr's client does.

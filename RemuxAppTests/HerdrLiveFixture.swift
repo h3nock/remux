@@ -60,8 +60,8 @@ struct HerdrLiveConfiguration: Decodable {
             RemuxSSHRootConfiguration(
                 host: host,
                 port: port,
-                authenticationMethod: {
-                    try SSHAuthenticationMethodFactory.make(username: username, credential: .privateKey(credential))
+                prepareAuthentication: {
+                    try SSHAuthenticationMethodFactory.prepare(username: username, credential: .privateKey(credential))
                 },
                 hostKeyValidator: trustedHostStore.validator(for: savedServer),
                 connectTimeout: .seconds(10)

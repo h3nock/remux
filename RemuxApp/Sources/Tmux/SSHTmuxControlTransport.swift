@@ -7,10 +7,10 @@ import NIOConcurrencyHelpers
 struct SSHTmuxControlConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
+    let prepareAuthentication: @Sendable () throws -> SSHPreparedAuthentication
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
-    let authenticationTimeout: TimeAmount?
+    let verificationTimeout: TimeAmount?
     let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
     let controlNoResponseTimeout: TimeAmount
     let tmuxExecutable: String
@@ -23,10 +23,10 @@ struct SSHTmuxControlConfiguration: Sendable {
     init(
         host: String,
         port: Int = 22,
-        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
+        prepareAuthentication: @escaping @Sendable () throws -> SSHPreparedAuthentication,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount = .seconds(30),
-        authenticationTimeout: TimeAmount? = nil,
+        verificationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil,
         controlNoResponseTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",
@@ -38,10 +38,10 @@ struct SSHTmuxControlConfiguration: Sendable {
     ) {
         self.host = host
         self.port = port
-        self.authenticationMethod = authenticationMethod
+        self.prepareAuthentication = prepareAuthentication
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
-        self.authenticationTimeout = authenticationTimeout
+        self.verificationTimeout = verificationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
         self.controlNoResponseTimeout = controlNoResponseTimeout
         self.tmuxExecutable = tmuxExecutable
@@ -56,10 +56,10 @@ struct SSHTmuxControlConfiguration: Sendable {
         RemuxSSHRootConfiguration(
             host: host,
             port: port,
-            authenticationMethod: authenticationMethod,
+            prepareAuthentication: prepareAuthentication,
             hostKeyValidator: hostKeyValidator,
             connectTimeout: connectTimeout,
-            authenticationTimeout: authenticationTimeout,
+            verificationTimeout: verificationTimeout,
             onTailscaleSSHCheck: onTailscaleSSHCheck
         )
     }

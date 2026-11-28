@@ -36,27 +36,30 @@ struct RemuxSSHRootKey: Hashable, Sendable {
 struct RemuxSSHRootConfiguration: Sendable {
     let host: String
     let port: Int
-    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
+    /// Reads and decodes the credentials, once per connection attempt and before it starts.
+    let prepareAuthentication: @Sendable () throws -> SSHPreparedAuthentication
     let hostKeyValidator: SSHHostKeyValidator
+    /// For the TCP connect, and then for SSH to get through key exchange and sign-in.
     let connectTimeout: TimeAmount
-    let authenticationTimeout: TimeAmount
+    /// For a Tailscale check once it's shown, which waits on the user in a browser. Nil when none can come.
+    let verificationTimeout: TimeAmount?
     private(set) var onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     init(
         host: String,
         port: Int,
-        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
+        prepareAuthentication: @escaping @Sendable () throws -> SSHPreparedAuthentication,
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount,
-        authenticationTimeout: TimeAmount? = nil,
+        verificationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
         self.host = host
         self.port = port
-        self.authenticationMethod = authenticationMethod
+        self.prepareAuthentication = prepareAuthentication
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
-        self.authenticationTimeout = authenticationTimeout ?? connectTimeout
+        self.verificationTimeout = verificationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
     }
 
@@ -351,6 +354,79 @@ private final class RemuxSSHChildChannelOpener: @unchecked Sendable {
 enum RemuxSSHRootLeaseDisposition: Equatable, Sendable {
     case reusable
     case invalidated
+}
+
+/// A saved server whose settings can't make a connection, found before any network work. The editor checks them, but
+/// a server saved another way (an older build, a restored backup) can still hold one.
+enum RemuxSSHConfigurationError: LocalizedError, Equatable {
+    case invalidPort(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidPort:
+            TmuxConnectionDraftValidator.portRangeMessage
+        }
+    }
+}
+
+/// A connection that failed before signing in. The bootstrap is the one place that knows a failure happened while
+/// connecting, so it says so here instead of leaving callers to infer it from the transport's error types.
+enum RemuxSSHConnectError: LocalizedError {
+    /// The TCP connection couldn't be opened: the name didn't resolve, no route, refused, timed out, and the like.
+    case unreachable(underlying: any Error)
+    /// The TCP connection opened, but the server didn't finish signing in before the connect allowance ran out.
+    case noSSHResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .unreachable:
+            "Remux couldn't connect to the server."
+        case .noSSHResponse:
+            "The server accepted the connection but didn't finish signing in in time."
+        }
+    }
+
+    /// What the system reported, in its own words, for the details line.
+    var reason: String? {
+        switch self {
+        case .unreachable(let underlying):
+            Self.systemReason(underlying)
+        case .noSSHResponse:
+            errorDescription
+        }
+    }
+
+    private static func systemReason(_ error: any Error) -> String? {
+        if let error = error as? IOError {
+            return String(cString: strerror(error.errnoCode))
+        }
+        if let error = error as? NIOConnectionError {
+            if let attempt = error.connectionErrors.last {
+                return systemReason(attempt.error)
+            }
+            guard let lookupError = error.dnsAError ?? error.dnsAAAAError else { return nil }
+            guard let unknownHost = lookupError as? SocketAddressError.UnknownHost else {
+                return lookupFailedReason
+            }
+            return lookupReason(errorCode: unknownHost.errorCode, resolverText: unknownHost.errorDescription)
+        }
+        if case .connectTimeout? = error as? ChannelError {
+            return "The connection timed out."
+        }
+        return nil
+    }
+
+    private static let lookupFailedReason = "The server's address couldn't be looked up."
+
+    /// The details line for a failed lookup, from the resolver's code and words. A name that doesn't exist reads
+    /// plainly; any other failure, such as a resolver that couldn't answer, keeps the resolver's words, which say which.
+    static func lookupReason(errorCode: Int, resolverText: String) -> String {
+        if errorCode == Int(EAI_NONAME) {
+            return "The server's address couldn't be found."
+        }
+        guard let first = resolverText.first else { return lookupFailedReason }
+        return first.uppercased() + resolverText.dropFirst()
+    }
 }
 
 enum RemuxSSHRootServiceError: LocalizedError, Equatable, CustomStringConvertible {
@@ -1696,6 +1772,27 @@ enum RemuxSSHAlgorithmRegistration {
     }
 }
 
+/// A server saved as a private IPv4 address (10/8, 172.16/12, 192.168/16) or one in the shared range VPNs and
+/// carriers use (100.64/10) is connected to as that address, so a LAN or VPN route reaches it. Looked up, iOS on an
+/// IPv6-only network returns only the address translated into the network's NAT64 prefix, and the connection goes to
+/// the network's gateway even when a VPN routes the original. This gives up NAT64 for servers in these ranges that
+/// only translation reaches. Other addresses and names keep the lookup, which IPv6-only networks need for public hosts.
+enum RemuxSSHHostAddress {
+    static func localIPv4(_ host: String, port: Int) -> SocketAddress? {
+        var address = in_addr()
+        guard inet_pton(AF_INET, host, &address) == 1 else { return nil }
+        let octets = withUnsafeBytes(of: address.s_addr) { Array($0) }
+        let (first, second) = (octets[0], octets[1])
+        let isInRange = first == 10
+            || (first == 172 && (16...31).contains(second))
+            || (first == 192 && second == 168)
+            || (first == 100 && (64...127).contains(second))
+        // The bootstrap turns an out-of-range port down first; SocketAddress would trap on one.
+        guard isInRange, TmuxConnectionDraftValidator.validPorts.contains(port) else { return nil }
+        return try? SocketAddress(ipAddress: host, port: port)
+    }
+}
+
 enum RemuxSSHRootBootstrap {
     /// OpenSSH's channel packet size. swift-nio-ssh sizes each channel's receive window at 64
     /// packets, so this gives every channel the 2 MiB window OpenSSH (and so Herdr's own client)
@@ -1709,6 +1806,13 @@ enum RemuxSSHRootBootstrap {
         var rootChannel: Channel?
 
         do {
+            guard TmuxConnectionDraftValidator.validPorts.contains(configuration.port) else {
+                throw RemuxSSHConfigurationError.invalidPort(configuration.port)
+            }
+            // Before any network work: a key that can't be used is reported as itself, not as a connection that
+            // failed, which it would be if it failed inside the channel initializer.
+            let authentication = try configuration.prepareAuthentication()
+
             trace.event("bootstrap.configure.begin")
             let bootstrap = ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
                 .connectTimeout(configuration.connectTimeout)
@@ -1717,25 +1821,39 @@ enum RemuxSSHRootBootstrap {
             trace.event("bootstrap.configure.end")
 
             let inboundActivity = RemuxLastActivity()
-            let connection = try await trace.stage(
-                "tcpConnect",
-                fields: [
-                    "host": configuration.host,
-                    "port": "\(configuration.port)",
-                ]
-            ) {
-                try await bootstrap.connect(
-                    host: configuration.host,
-                    port: configuration.port,
-                    channelInitializer: { channel in
+            let directAddress = RemuxSSHHostAddress.localIPv4(configuration.host, port: configuration.port)
+            let connection: (channel: Channel, authenticated: EventLoopFuture<Void>)
+            do {
+                connection = try await trace.stage(
+                    "tcpConnect",
+                    fields: [
+                        "host": configuration.host,
+                        "port": "\(configuration.port)",
+                        "route": directAddress == nil ? "lookup" : "address",
+                    ]
+                ) {
+                    let initializer: @Sendable (Channel) -> EventLoopFuture<
+                        (channel: Channel, authenticated: EventLoopFuture<Void>)
+                    > = { channel in
                         channel.pipeline.addHandler(
                             RemuxSSHInboundActivityHandler(activity: inboundActivity),
                             position: .first
                         ).flatMap {
-                            configureChannel(channel, using: configuration)
+                            configureChannel(channel, using: configuration, authentication: authentication)
                         }
                     }
-                )
+                    if let directAddress {
+                        return try await bootstrap.connect(to: directAddress, channelInitializer: initializer)
+                    }
+                    return try await bootstrap.connect(
+                        host: configuration.host,
+                        port: configuration.port,
+                        channelInitializer: initializer
+                    )
+                }
+            } catch {
+                // Credentials are prepared above, so all that runs here is network work.
+                throw RemuxSSHConnectError.unreachable(underlying: error)
             }
             let channel = connection.channel
             rootChannel = channel
@@ -1765,22 +1883,17 @@ enum RemuxSSHRootBootstrap {
     /// Authentication is awaited after connect: waiting here would prevent socket registration.
     static func configureChannel(
         _ channel: Channel,
-        using configuration: RemuxSSHRootConfiguration
+        using configuration: RemuxSSHRootConfiguration,
+        authentication: SSHPreparedAuthentication
     ) -> EventLoopFuture<(channel: Channel, authenticated: EventLoopFuture<Void>)> {
         let handshake = RemuxSSHRootHandshakeHandler(
             eventLoop: channel.eventLoop,
-            timeout: configuration.authenticationTimeout,
+            timeout: configuration.connectTimeout,
+            verificationTimeout: configuration.verificationTimeout,
             onTailscaleSSHCheck: configuration.onTailscaleSSHCheck
         )
-        let authenticationMethod: SSHAuthenticationMethod
-        do {
-            authenticationMethod = try configuration.authenticationMethod()
-        } catch {
-            return channel.eventLoop.makeFailedFuture(error)
-        }
-
         var sshConfiguration = SSHClientConfiguration(
-            userAuthDelegate: authenticationMethod,
+            userAuthDelegate: authentication.makeMethod(),
             serverAuthDelegate: configuration.hostKeyValidator
         )
         sshConfiguration.maximumPacketSize = channelMaximumPacketSize
@@ -1803,6 +1916,9 @@ enum RemuxSSHRootBootstrap {
     }
 }
 
+/// Waits for sign-in. A server gets `timeout` to get through SSH, as OpenSSH's ConnectTimeout covers the banner and
+/// key exchange; a Tailscale check, once shown, gets `verificationTimeout` from then on instead, since it waits on the
+/// user in a browser. A port that accepts TCP and never answers fails in the first allowance, not the second.
 final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = Any
 
@@ -1811,17 +1927,24 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     private struct State {
         var isComplete = false
         var challenge: TailscaleSSHCheckChallenge?
+        /// The allowance running now.
+        var timeoutTask: Scheduled<Void>?
     }
 
     private enum Completion {
         case success
         case failure(any Error)
-        case timeout(TimeAmount)
+        /// The connect allowance ran out: SSH didn't get through sign-in in time.
+        case connectAllowanceExpired
+        /// A shown check's allowance ran out.
+        case verificationExpired
     }
 
     private let promise: EventLoopPromise<Void>
     private let state: NIOLockedValueBox<State>
     private let requestID: TailscaleSSHCheckRequest.ID
+    private let eventLoop: EventLoop
+    private let verificationTimeout: TimeAmount?
     private let onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)?
 
     var authenticated: EventLoopFuture<Void> {
@@ -1831,28 +1954,23 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     init(
         eventLoop: EventLoop,
         timeout: TimeAmount,
+        verificationTimeout: TimeAmount? = nil,
         onTailscaleSSHCheck: (@Sendable (TailscaleSSHCheckEvent) -> Void)? = nil
     ) {
         let promise = eventLoop.makePromise(of: Void.self)
         let state = NIOLockedValueBox(State())
-        let requestID = UUID()
 
         self.promise = promise
         self.state = state
-        self.requestID = requestID
+        self.requestID = UUID()
+        self.eventLoop = eventLoop
+        self.verificationTimeout = verificationTimeout
         self.onTailscaleSSHCheck = onTailscaleSSHCheck
 
-        let timeoutTask = eventLoop.scheduleTask(in: timeout) {
-            Self.complete(
-                .timeout(timeout),
-                promise: promise,
-                state: state,
-                requestID: requestID,
-                onTailscaleSSHCheck: onTailscaleSSHCheck
-            )
-        }
+        let timeoutTask = scheduleTimeout(timeout, expiring: .connectAllowanceExpired)
+        state.withLockedValue { $0.timeoutTask = timeoutTask }
         promise.futureResult.whenComplete { _ in
-            timeoutTask.cancel()
+            state.withLockedValue { $0.timeoutTask }?.cancel()
         }
     }
 
@@ -1864,7 +1982,13 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             let eventLoop = context.eventLoop
             let request = state.withLockedValue { state -> TailscaleSSHCheckRequest? in
                 guard !state.isComplete, state.challenge != challenge else { return nil }
+                // Only the first check starts its allowance; a later or changed banner doesn't extend it.
+                let isFirstCheck = state.challenge == nil
                 state.challenge = challenge
+                if let verificationTimeout, isFirstCheck {
+                    state.timeoutTask?.cancel()
+                    state.timeoutTask = scheduleTimeout(verificationTimeout, expiring: .verificationExpired)
+                }
                 return TailscaleSSHCheckRequest(
                     id: requestID,
                     challenge: challenge,
@@ -1903,6 +2027,19 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
         complete(.failure(Disconnected()))
     }
 
+    private func scheduleTimeout(_ timeout: TimeAmount, expiring completion: Completion) -> Scheduled<Void> {
+        let (promise, state, requestID, onTailscaleSSHCheck) = (promise, state, requestID, onTailscaleSSHCheck)
+        return eventLoop.scheduleTask(in: timeout) {
+            Self.complete(
+                completion,
+                promise: promise,
+                state: state,
+                requestID: requestID,
+                onTailscaleSSHCheck: onTailscaleSSHCheck
+            )
+        }
+    }
+
     private func complete(_ completion: Completion) {
         Self.complete(
             completion,
@@ -1938,12 +2075,11 @@ final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
             promise.succeed(())
         case .failure(let error):
             promise.fail(error)
-        case .timeout(let timeout):
-            if hadChallenge {
-                promise.fail(TailscaleSSHCheckError.verificationTimedOut)
-            } else {
-                promise.fail(ChannelError.connectTimeout(timeout))
-            }
+        case .connectAllowanceExpired:
+            // Even with a check recorded: without a verification allowance, none was shown or waited on.
+            promise.fail(RemuxSSHConnectError.noSSHResponse)
+        case .verificationExpired:
+            promise.fail(TailscaleSSHCheckError.verificationTimedOut)
         }
     }
 }

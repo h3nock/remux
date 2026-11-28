@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import NIO
 import XCTest
 @testable import Remux
@@ -74,13 +75,30 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
     /// Credentials the server turned down and a key made on this device that can't be used here are both fixed by
     /// updating them, and neither is said to be the server's rejection.
     func testFailedCredentialsOfferUpdatingThemWithoutBlamingTheServer() {
-        for error: any Error in [Failure("Permission denied"), SecureEnclaveSSHError.keyUnusable] {
+        for error: any Error in [SSHClientError.allAuthenticationOptionsFailed, SecureEnclaveSSHError.keyUnusable] {
             let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error))
 
             XCTAssertEqual(content.title, "Authentication Failed", "\(error)")
             XCTAssertEqual(content.message, "Check the saved credentials for Lab.", "\(error)")
             XCTAssertEqual(content.actions.map(\.kind), [.updateCredentials], "\(error)")
             XCTAssertEqual(titles(content), ["Update Credentials"], "\(error)")
+        }
+    }
+
+    /// The panel says what's wrong with a key that fails on this device under its own words: one that can't be read
+    /// with its passphrase, a device key that no longer works here, or one paused while the device is locked.
+    func testAKeyThatFailsHereSaysWhyOnThePanel() {
+        let cases: [(any Error, String, [GhosttyRepairPanelContent.Action.Kind])] = [
+            (SSHPrivateKeyUnreadableError(underlying: CocoaError(.coderReadCorrupt)), "Authentication Failed", [.updateCredentials]),
+            (SecureEnclaveSSHError.keyUnusable, "Authentication Failed", [.updateCredentials]),
+            (SecureEnclaveSSHError.unavailableWhileLocked, "Disconnected", [.reconnect]),
+        ]
+        for (error, title, actions) in cases {
+            let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error))
+
+            XCTAssertEqual(content.title, title, "\(error)")
+            XCTAssertEqual(content.detail, error.localizedDescription, "\(error)")
+            XCTAssertEqual(content.actions.map(\.kind), actions, "\(error)")
         }
     }
 
@@ -96,13 +114,38 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
         XCTAssertEqual(content.actions.first?.accessibilityIdentifier, "terminal.status.verificationExpired.retry")
     }
 
+    /// A connection the user cancelled says so, rather than that something went wrong, and offers to reconnect.
+    func testACancelledConnectionSaysSo() {
+        let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(CancellationError()))
+
+        XCTAssertEqual(content.title, "Connection Cancelled")
+        XCTAssertEqual(content.message, "Reconnect when you're ready.")
+        XCTAssertEqual(titles(content), ["Reconnect"])
+    }
+
+    /// A saved setting that can't make a connection, such as a port out of range, is fixed in Edit Server, which the
+    /// panel offers first, with the setting's problem underneath; reconnecting would fail the same way.
+    func testAnInvalidSavedSettingOffersEditServer() {
+        let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+            RemuxSSHConfigurationError.invalidPort(65536)
+        ))
+
+        XCTAssertEqual(content.title, "Check Server Settings")
+        XCTAssertEqual(content.message, "A saved setting for Lab can't be used to connect.")
+        XCTAssertEqual(content.detail, "Port must be between 1 and 65535.")
+        XCTAssertEqual(content.actions.map(\.kind), [.editServer])
+        XCTAssertEqual(content.actions.first?.isPrimary, true)
+        XCTAssertEqual(content.actions.first?.accessibilityIdentifier, "terminal.status.settings.editServer")
+    }
+
     func testAnUnreachableServerSaysWhatToCheck() {
         let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-            ChannelError.connectTimeout(.seconds(30))
+            RemuxSSHConnectError.unreachable(underlying: ChannelError.connectTimeout(.seconds(30)))
         ))
 
         XCTAssertEqual(content.title, "Server Unreachable")
         XCTAssertEqual(content.message, "Check the address, port, network, or VPN.")
+        XCTAssertEqual(content.detail, "The connection timed out.")
         XCTAssertEqual(titles(content), ["Retry", "Edit Server"])
     }
 

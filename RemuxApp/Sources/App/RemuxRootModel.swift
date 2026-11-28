@@ -2207,6 +2207,9 @@ final class RemuxRootModel: ObservableObject {
         if let deviceKeyError = error as? SecureEnclaveSSHError {
             return deviceKeyError.localizedDescription
         }
+        if let keyError = error as? SSHPrivateKeyUnreadableError {
+            return keyError.localizedDescription
+        }
 
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
         switch reason.kind {
@@ -2218,8 +2221,8 @@ final class RemuxRootModel: ObservableObject {
             return reason.message
         case .hostKey:
             return "Remux could not verify the SSH host key."
-        case .verificationExpired, .sessionEnded, .transportIO, .profile, .remoteExit, .runtime, .userClosed,
-             .unknown:
+        case .verificationExpired, .sessionEnded, .transportIO, .profile, .invalidSettings, .remoteExit, .runtime,
+             .userClosed, .unknown:
             return error.localizedDescription
         }
     }
