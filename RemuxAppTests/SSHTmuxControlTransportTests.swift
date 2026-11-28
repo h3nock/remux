@@ -654,21 +654,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnectionsForTesting()
     }
 
-    func testAnswerClearsSuspicion() async throws {
-        let pool = RemuxSSHRootService()
-        let key = makeSSHRootKey()
-        let generation = await pool.insertEntryForTesting(for: key)
-        await pool.markSuspectForTesting(generation: generation)
-        await pool.clearSuspicionForTesting(generation: generation)
-
-        let reserved = await pool.reserveEntryForTesting(for: key)
-
-        XCTAssertEqual(reserved?.generation, generation)
-        let entry = await pool.snapshot().entry(for: key)
-        XCTAssertEqual(entry?.isSuspect, false)
-        await pool.closeAllConnectionsForTesting()
-    }
-
     func testSpareTakesConsumersOnlyOnceSignedIn() async throws {
         let pool = RemuxSSHRootService()
         let key = makeSSHRootKey()
@@ -696,18 +681,11 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let suspect = await pool.insertEntryForTesting(for: key, configuration: makeRefusedRootConfiguration())
         let failed = RemuxSSHRootAttempt { throw SSHTmuxControlTransportError.closed }
         _ = try? await failed.task.value
-        let failedGeneration = await pool.insertEntryForTesting(
-            for: key,
-            readiness: .connecting,
-            alongsideExisting: true,
-            attempt: failed
-        )
+        await pool.insertEntryForTesting(for: key, readiness: .connecting, alongsideExisting: true, attempt: failed)
 
-        let standIn = await pool.standInForTesting(for: key, generation: suspect)
+        let startedSpare = await pool.suspectForTesting(for: key, generation: suspect)
 
-        XCTAssertNotNil(standIn)
-        XCTAssertNotEqual(standIn, failedGeneration, "a sign-in that already failed stood in for the suspect")
-        XCTAssertNotEqual(standIn, suspect)
+        XCTAssertTrue(startedSpare, "a sign-in that already failed counted as one under way")
         await pool.closeAllConnectionsForTesting()
     }
 
@@ -715,13 +693,11 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let pool = RemuxSSHRootService()
         let key = makeSSHRootKey()
         let suspect = await pool.insertEntryForTesting(for: key, configuration: makeRefusedRootConfiguration())
-        let signedIn = await pool.insertEntryForTesting(for: key, alongsideExisting: true)
-        let signingIn = await pool.insertEntryForTesting(for: key, readiness: .connecting, alongsideExisting: true)
+        await pool.insertEntryForTesting(for: key, readiness: .connecting, alongsideExisting: true)
 
-        let standIn = await pool.standInForTesting(for: key, generation: suspect)
+        let startedSpare = await pool.suspectForTesting(for: key, generation: suspect)
 
-        XCTAssertEqual(standIn, signingIn, "a connection already signed in may be as dead as the suspect")
-        XCTAssertNotEqual(standIn, signedIn)
+        XCTAssertFalse(startedSpare, "a second sign-in started beside one already under way")
         await pool.closeAllConnectionsForTesting()
     }
 
@@ -1651,6 +1627,55 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             await checked.pool.snapshot().entries(for: checked.key).map(\.isSpare) == [true]
         }
         await second.release(.reusable)
+        await first.release(.invalidated)
+    }
+
+    /// The spare can't get through, but a session's own sign-in does: that sign-in closes the silent connection,
+    /// rather than the open deadline.
+    func testConsumersSignInClosesASuspectWhoseSpareFailed() async throws {
+        let checked = try await makeCheckedLoopback()
+        let first = try await checked.claim()
+        checked.relay.refuseNew()
+        checked.relay.stallExisting()
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("no spare was tried and given up") {
+            let entries = await checked.pool.snapshot().entries(for: checked.key)
+            return entries.first?.isSuspect == true && entries.count == 1
+        }
+        checked.relay.refuseNew(false)
+
+        let start = ContinuousClock.now
+        let second = try await checked.claim()
+        try await waitUntil("the session's sign-in left the silent connection open") {
+            !first.sshRoot.rootChannel.isActive
+        }
+
+        XCTAssertFalse(second.sshRoot === first.sshRoot)
+        XCTAssertLessThan(ContinuousClock.now - start, openDeadline / 2)
+        await second.release(.reusable)
+        await first.release(.invalidated)
+    }
+
+    /// A later check (the network changing again) starts a new spare for a suspect whose first spare failed.
+    func testLaterCheckStartsANewSpareForASuspect() async throws {
+        let checked = try await makeCheckedLoopback()
+        let first = try await checked.claim()
+        checked.relay.refuseNew()
+        checked.relay.stallExisting()
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("no spare was tried and given up") {
+            let entries = await checked.pool.snapshot().entries(for: checked.key)
+            return entries.first?.isSuspect == true && entries.count == 1
+        }
+        checked.relay.refuseNew(false)
+
+        let start = ContinuousClock.now
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("the second check left the silent connection open", timeout: openDeadline) {
+            !first.sshRoot.rootChannel.isActive
+        }
+
+        XCTAssertLessThan(ContinuousClock.now - start, openDeadline / 2)
         await first.release(.invalidated)
     }
 

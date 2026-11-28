@@ -554,9 +554,10 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
     func stall() { setStalled(true) }
     func resume() { setStalled(false) }
 
-    /// Closes each new connection as soon as it arrives, while the ones carried so far go on as they are.
-    func refuseNew() {
-        state.withLockedValue { $0.refusing = true }
+    /// Closes each new connection as soon as it arrives (or, with false, lets them through again), while the ones
+    /// carried so far go on as they are.
+    func refuseNew(_ refusing: Bool = true) {
+        state.withLockedValue { $0.refusing = refusing }
     }
 
     /// Stops the connections carried so far, while new ones still get through: a network change that took the old
