@@ -1759,7 +1759,8 @@ enum RemuxSSHHostAddress {
             || (first == 172 && (16...31).contains(second))
             || (first == 192 && second == 168)
             || (first == 100 && (64...127).contains(second))
-        guard isInRange else { return nil }
+        // A port saved out of range takes the lookup, as it did before: SocketAddress traps on one.
+        guard isInRange, (1...Int(UInt16.max)).contains(port) else { return nil }
         return try? SocketAddress(ipAddress: host, port: port)
     }
 }

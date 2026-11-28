@@ -845,6 +845,11 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         ] {
             XCTAssertNil(RemuxSSHHostAddress.localIPv4(host, port: 22), host)
         }
+        // A saved port outside 1...65535 takes the lookup instead of reaching SocketAddress, which traps on it.
+        for port in [0, 65536, -1] {
+            XCTAssertNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: port), "\(port)")
+        }
+        XCTAssertNotNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: 65535))
     }
 
     func testSSHRootServiceRefusalOnALoneLeaseLeavesRootTakingConsumers() async throws {
