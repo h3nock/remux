@@ -671,7 +671,9 @@ final class HerdrModelHarness {
         rendererFenceGate: RendererFenceGate? = nil,
         switchingCueDelay: Duration = HerdrScreenModel.switchingCueDelay,
         zoomKeepers: HerdrZoomKeepers = HerdrZoomKeepers(store: InMemoryHerdrOwnedZoomStore()),
-        server: SavedServer = SavedServer(displayName: "Herdr Host", host: "herdr.example.test", username: "builder")
+        server: SavedServer = SavedServer(displayName: "Herdr Host", host: "herdr.example.test", username: "builder"),
+        mayReconnectByItself: @escaping (HerdrScreenModel) -> Bool = { _ in true },
+        continuing handoff: HerdrScreenModel.RecoveryHandoff? = nil
     ) async {
         let bridges = Bridges(openingTakes: bridgeOpeningTakes)
         let stateLog = StateLog()
@@ -698,6 +700,8 @@ final class HerdrModelHarness {
             openBridge: { kind in try await bridges.open(kind) },
             onRuntimeStateChange: { stateLog.updates.append($0) },
             onNotification: { stateLog.notifications.append($0) },
+            mayReconnectByItself: mayReconnectByItself,
+            continuing: handoff,
             connectionTiming: timing,
             recoveryTiming: recovery,
             switchingCueDelay: switchingCueDelay,

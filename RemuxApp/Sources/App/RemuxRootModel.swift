@@ -1866,6 +1866,25 @@ final class RemuxRootModel: ObservableObject {
             && lhs.sshAuth.authFingerprint == rhs.sshAuth.authFingerprint
     }
 
+    /// A Herdr model's target is fixed when it's made, so the model asks here before each reconnect it
+    /// starts by itself. Only the session's current model may reconnect, and only while the saved target
+    /// reaches the same Herdr session the same way. When the saved target differs, the root replaces the
+    /// model with one for the saved target, which takes over its recovery, and says false.
+    private func herdrRuntimeMayReconnectByItself(
+        _ model: HerdrScreenModel,
+        _ key: TerminalRuntimeAttemptKey
+    ) -> Bool {
+        guard case .herdr(let current)? = terminalRuntimes[key], current === model,
+              var session = RemuxActiveSessionCollection.session(key.workspaceID, in: activeSessions)
+        else { return false }
+        guard !Self.opensTheSameHerdrBridge(model.target, session.target) else { return true }
+        session.replaceRuntime(source: .transportLoss)
+        replaceTerminalRuntime(for: session, continuingHerdrRecovery: true)
+        RemuxActiveSessionCollection.replaceRuntime(with: session, in: &activeSessions)
+        applyCurrentAppLifecyclePhase(to: session)
+        return false
+    }
+
     func trustHostKeyAndReconnect(_ id: SavedWorkspace.ID) {
         guard let session = RemuxActiveSessionCollection.session(id, in: activeSessions),
               let challenge = session.runtimeState.disconnectedReason?.hostKeyChallenge else {
@@ -2086,12 +2105,14 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// A runtime's target is fixed when it's made, so a disconnected one is replaced to take the
-    /// server's new profile.
+    /// server's new profile; a connected one keeps its attachment, and its next reconnect opens the
+    /// server as saved. A Herdr model between its own retries counts as disconnected, and its
+    /// replacement takes over the recovery.
     private func refreshDisconnectedTerminalRuntimes(serverID: SavedServer.ID) {
         for session in activeSessions where session.target.server.id == serverID {
             let key = TerminalRuntimeAttemptKey(session: session)
             guard terminalRuntimes[key]?.isDisconnected == true else { continue }
-            replaceTerminalRuntime(for: session)
+            replaceTerminalRuntime(for: session, continuingHerdrRecovery: true)
             applyCurrentAppLifecyclePhase(to: session)
         }
     }
@@ -2571,7 +2592,13 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    private func replaceTerminalRuntime(for session: ActiveTerminalSession) {
+    /// With `continuingHerdrRecovery`, a Herdr replacement takes over the previous model's recovery, if it
+    /// was reconnecting by itself. Otherwise it starts as a first connection, which reports a failure
+    /// instead of retrying.
+    private func replaceTerminalRuntime(
+        for session: ActiveTerminalSession,
+        continuingHerdrRecovery: Bool = false
+    ) {
         let previous = terminalRuntimes.first(where: {
             $0.key.workspaceID == session.id
         })?.value
@@ -2602,7 +2629,8 @@ final class RemuxRootModel: ObservableObject {
             ))
         case .herdr:
             let target = session.target
-            runtime = .herdr(HerdrScreenModel(
+            let previousModel: HerdrScreenModel? = if case .herdr(let herdr)? = previous { herdr } else { nil }
+            let model = HerdrScreenModel(
                 target: target,
                 sessionInstanceID: session.instanceID,
                 openBridge: { [dependencies] kind in
@@ -2612,8 +2640,18 @@ final class RemuxRootModel: ObservableObject {
                 onNotification: { [weak self] event in
                     self?.handleHerdrNotification(event, from: key)
                 },
+                mayReconnectByItself: { [weak self] model in
+                    self?.herdrRuntimeMayReconnectByItself(model, key) ?? false
+                },
+                continuing: continuingHerdrRecovery ? previousModel?.recoveryHandoff : nil,
                 zoomKeepers: dependencies.herdrZoomKeepers
-            ))
+            )
+            // The replacement starts at the previous model's viewport: its screen reports a size only
+            // when the size changes, and not while a sheet covers it.
+            if let viewport = previousModel?.lastViewport {
+                model.prepareViewport(size: viewport.size, scale: viewport.scale)
+            }
+            runtime = .herdr(model)
         }
         terminalRuntimes[key] = runtime
         runtime.setSelected(state == .terminal(session.id))

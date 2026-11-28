@@ -35,7 +35,9 @@ final class HerdrScreenModelTests: XCTestCase {
         rendererFenceGate: RendererFenceGate? = nil,
         switchingCueDelay: Duration = HerdrScreenModel.switchingCueDelay,
         zoomKeepers: HerdrZoomKeepers = HerdrZoomKeepers(store: InMemoryHerdrOwnedZoomStore()),
-        server: SavedServer = SavedServer(displayName: "Herdr Host", host: "herdr.example.test", username: "builder")
+        server: SavedServer = SavedServer(displayName: "Herdr Host", host: "herdr.example.test", username: "builder"),
+        mayReconnectByItself: @escaping (HerdrScreenModel) -> Bool = { _ in true },
+        continuing handoff: HerdrScreenModel.RecoveryHandoff? = nil
     ) async -> HerdrModelHarness {
         let harness = await HerdrModelHarness(
             settings: settings,
@@ -47,7 +49,9 @@ final class HerdrScreenModelTests: XCTestCase {
             rendererFenceGate: rendererFenceGate,
             switchingCueDelay: switchingCueDelay,
             zoomKeepers: zoomKeepers,
-            server: server
+            server: server,
+            mayReconnectByItself: mayReconnectByItself,
+            continuing: handoff
         )
         harnesses.append(harness)
         return harness
@@ -1680,6 +1684,37 @@ final class HerdrScreenModelTests: XCTestCase {
         _ = try await harness.bridge(5)
         let starts = await harness.bridges.openingsStartedAt
         XCTAssertLessThan(starts[5] - failedAt, .milliseconds(500), "the delays didn't start over")
+    }
+
+    /// A model that takes over a recovery after the app came back keeps the shorter delays that follow
+    /// the return: with every opening failing at once, its fourth retry waits `wakeRetry`, not the
+    /// doubled delay.
+    func testATakenOverRecoveryKeepsTheShorterDelaysAfterTheAppComesBack() async throws {
+        var recovery = HerdrScreenModel.RecoveryTiming()
+        recovery.firstRetry = .milliseconds(200)
+        recovery.wakeRetry = .milliseconds(200)
+        var handoff: HerdrScreenModel.RecoveryHandoff?
+        let replaced = await makeHarness(recovery: recovery, mayReconnectByItself: { model in
+            handoff = model.recoveryHandoff
+            return false
+        })
+        let first = try await connectedSession(replaced, lines: ["one"])
+        await first.finishServing()
+        try await replaced.waitUntil("the drop didn't start a reconnect") {
+            replaced.states.last == .reconnecting(.transportLoss)
+        }
+        replaced.model.handleAppLifecyclePhase(.background)
+        replaced.model.handleAppLifecyclePhase(.active)
+
+        let takenOver = try XCTUnwrap(handoff, "the return didn't ask before reconnecting")
+        let replacement = await makeHarness(recovery: recovery, continuing: takenOver)
+        replacement.setScreenSize()
+        for index in 0...3 {
+            try await replacement.bridge(index).finishServing()
+        }
+        _ = try await replacement.bridge(4)
+        let starts = await replacement.bridges.openingsStartedAt
+        XCTAssertLessThan(starts[4] - starts[3], .milliseconds(900), "the doubled delay replaced the wake delay")
     }
 
     /// A reconnect the user asks for runs at once instead of waiting out the delay.

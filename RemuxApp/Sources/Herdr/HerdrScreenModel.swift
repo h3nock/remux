@@ -277,6 +277,13 @@ final class HerdrScreenModel {
         var wakeRetry: Duration = .seconds(2)
     }
 
+    /// A recovery a replacement model takes over: it reconnects by itself as a session that has
+    /// connected, and the shorter delays after the app came back still apply. Its delays start over, as
+    /// after a reconnect the user asks for.
+    struct RecoveryHandoff {
+        fileprivate let wokeAt: ContinuousClock.Instant?
+    }
+
     /// What follows an attempt's end.
     private enum Recovery {
         /// A dropped connection: try again with growing delays, showing the last frame meanwhile.
@@ -292,6 +299,9 @@ final class HerdrScreenModel {
     private let recoveryTiming: RecoveryTiming
     private let onRuntimeStateChange: (TerminalRuntimeStateUpdate) -> Void
     private let onNotification: (NotificationEvent) -> Void
+    /// Asked before each reconnect the model starts by itself. False means the model doesn't reconnect:
+    /// the root has replaced it or let it go.
+    private let mayReconnectByItself: (HerdrScreenModel) -> Bool
     private let engine: HerdrTerminalEngine
     /// Where the phone keeps the zooms Remux made, for the session's end to take off.
     private let zoomKeepers: HerdrZoomKeepers
@@ -315,9 +325,10 @@ final class HerdrScreenModel {
     private var attemptCount: UInt64 = 0
     private var sizeWaiter: CheckedContinuation<Void, Never>?
 
-    /// Whether any connection reached its first snapshot. Only then does a failure reconnect by itself:
-    /// a session that never opened says why.
-    private var hasConnected = false
+    /// Whether the session has connected: a connection reached its first snapshot, in this model or in
+    /// the one whose recovery it continues. Only then does a failure reconnect by itself: a session
+    /// that never opened says why.
+    private var hasConnected: Bool
     /// A retry is waiting or under way after a drop; the session reads as reconnecting meanwhile.
     private var isReconnecting = false
     /// Failed attempts since the last stable connection, which set the next delay.
@@ -332,7 +343,7 @@ final class HerdrScreenModel {
 
     private(set) var isSelected = false
     private var appPhase = GhosttyAppLifecyclePhase.active
-    private var lastViewport: (size: CGSize, scale: CGFloat)?
+    private(set) var lastViewport: (size: CGSize, scale: CGFloat)?
     private(set) var measurement: GhosttyTerminalViewportMeasurement?
     /// The shell size requested from Herdr. A directly attached popup follows the physical viewport
     /// independently while selected; a hidden session adopts the latest size for its next show.
@@ -422,6 +433,8 @@ final class HerdrScreenModel {
         openBridge: @escaping BridgeOpener,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
         onNotification: @escaping (NotificationEvent) -> Void,
+        mayReconnectByItself: @escaping (HerdrScreenModel) -> Bool = { _ in true },
+        continuing recovery: RecoveryHandoff? = nil,
         connectionTiming: HerdrConnection.Timing = HerdrConnection.Timing(),
         recoveryTiming: RecoveryTiming = RecoveryTiming(),
         switchingCueDelay: Duration = HerdrScreenModel.switchingCueDelay,
@@ -438,6 +451,9 @@ final class HerdrScreenModel {
         self.openBridge = openBridge
         self.onRuntimeStateChange = onRuntimeStateChange
         self.onNotification = onNotification
+        self.mayReconnectByItself = mayReconnectByItself
+        hasConnected = recovery != nil
+        wokeAt = recovery?.wokeAt
         self.connectionTiming = connectionTiming
         self.recoveryTiming = recoveryTiming
         self.switchingCueDelay = switchingCueDelay
@@ -471,6 +487,12 @@ final class HerdrScreenModel {
     var isDisconnected: Bool {
         guard let attempt else { return true }
         return attempt.ended
+    }
+
+    /// Set while a reconnect by itself is due for a session that has connected.
+    var recoveryHandoff: RecoveryHandoff? {
+        guard hasConnected, recoveryDue != nil else { return nil }
+        return RecoveryHandoff(wokeAt: wokeAt)
     }
 
     // MARK: - What the root wants
@@ -702,7 +724,7 @@ final class HerdrScreenModel {
 
     private func leaveBackground() {
         wokeAt = .now
-        if recoveryDue != nil { restart() }
+        if recoveryDue != nil { recover() }
     }
 
     /// Live settings: the renderers take the new appearance in place, and Herdr gets the new colours.
@@ -2175,8 +2197,15 @@ final class HerdrScreenModel {
         recoveryTimer = Task { [weak self] in
             try? await Task.sleep(until: due, clock: .continuous)
             guard !Task.isCancelled else { return }
-            self?.restart()
+            self?.recover()
         }
+    }
+
+    /// The reconnect by itself, when its delay is up or the app comes back, unless the root turns it down
+    /// (`mayReconnectByItself`).
+    private func recover() {
+        guard mayReconnectByItself(self) else { return }
+        restart()
     }
 
     private func cancelRecovery() {
