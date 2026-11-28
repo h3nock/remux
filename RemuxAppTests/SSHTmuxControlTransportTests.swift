@@ -1609,7 +1609,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     /// claim lands on the spare.
     func testConnectionCheckClosesAConnectionSilentThroughASparesSignIn() async throws {
         let checked = try await makeCheckedLoopback()
-        let first = try await checked.claim()
+        let first = try await claimSignedIn(checked)
 
         checked.relay.stallExisting()
         let start = ContinuousClock.now
@@ -1634,7 +1634,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     /// rather than the open deadline.
     func testConsumersSignInClosesASuspectWhoseSpareFailed() async throws {
         let checked = try await makeCheckedLoopback()
-        let first = try await checked.claim()
+        let first = try await claimSignedIn(checked)
         checked.relay.refuseNew()
         checked.relay.stallExisting()
         await checked.pool.checkConnections(reason: "test")
@@ -1659,7 +1659,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     /// A later check (the network changing again) starts a new spare for a suspect whose first spare failed.
     func testLaterCheckStartsANewSpareForASuspect() async throws {
         let checked = try await makeCheckedLoopback()
-        let first = try await checked.claim()
+        let first = try await claimSignedIn(checked)
         checked.relay.refuseNew()
         checked.relay.stallExisting()
         await checked.pool.checkConnections(reason: "test")
@@ -1676,8 +1676,9 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
 
         XCTAssertLessThan(ContinuousClock.now - start, openDeadline / 2)
-        try await waitUntil("the second check's spare isn't what's left") {
-            await checked.pool.snapshot().entries(for: checked.key).map(\.isSpare) == [true]
+        try await waitUntil("the second check's spare, signed in, isn't what's left") {
+            let entries = await checked.pool.snapshot().entries(for: checked.key)
+            return entries.count == 1 && entries[0].isSpare && entries[0].readiness == .ready
         }
         await first.release(.invalidated)
     }
@@ -1686,7 +1687,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     /// allowed, a refused forward is the only thing heard, and the next claim reuses the connection.
     func testAnyByteEndsSuspicionWhileTheProbeWaits() async throws {
         let checked = try await makeCheckedLoopback(sessionConfirmationDelay: .seconds(30))
-        let first = try await checked.claim()
+        let first = try await claimSignedIn(checked)
         checked.relay.refuseNew()
         await checked.pool.checkConnections(reason: "test")
         try await waitUntil("the connection never fell under suspicion, or no spare was tried") {
@@ -1716,7 +1717,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     /// consumers again, and the next claim lands on it.
     func testConnectionCheckKeepsAConnectionThatAnswersLate() async throws {
         let checked = try await makeCheckedLoopback()
-        let first = try await checked.claim()
+        let first = try await claimSignedIn(checked)
 
         // Which comes first, the late answer or a spare's sign-in, is a race; with no spare, only the answer decides.
         checked.relay.refuseNew()
@@ -1995,6 +1996,15 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                 trace: RemuxTransportStartupTrace(flowID: nil)
             )
         }
+    }
+
+    /// The first claim, once the pool has marked its connection ready: a check probes only ready connections.
+    private func claimSignedIn(_ checked: CheckedLoopback) async throws -> RemuxSSHClaimedRoot {
+        let claim = try await checked.claim()
+        try await waitUntil("the pool never marked the connection ready") {
+            await checked.pool.snapshot().entry(for: checked.key)?.readiness == .ready
+        }
+        return claim
     }
 
     /// A pool whose connections reach the in-process server through a relay the test can silence.
