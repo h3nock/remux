@@ -405,16 +405,27 @@ enum RemuxSSHConnectError: LocalizedError {
                 return systemReason(attempt.error)
             }
             guard let lookupError = error.dnsAError ?? error.dnsAAAAError else { return nil }
-            guard let resolverReason = (lookupError as? SocketAddressError.UnknownHost)?.errorDescription,
-                  let first = resolverReason.first else {
-                return "The server's address couldn't be looked up."
+            guard let unknownHost = lookupError as? SocketAddressError.UnknownHost else {
+                return lookupFailedReason
             }
-            return first.uppercased() + resolverReason.dropFirst()
+            return lookupReason(errorCode: unknownHost.errorCode, resolverText: unknownHost.errorDescription)
         }
         if case .connectTimeout? = error as? ChannelError {
             return "The connection timed out."
         }
         return nil
+    }
+
+    private static let lookupFailedReason = "The server's address couldn't be looked up."
+
+    /// The details line for a failed lookup, from the resolver's code and words. A name that doesn't exist reads
+    /// plainly; any other failure, such as a resolver that couldn't answer, keeps the resolver's words, which say which.
+    static func lookupReason(errorCode: Int, resolverText: String) -> String {
+        if errorCode == Int(EAI_NONAME) {
+            return "The server's address couldn't be found."
+        }
+        guard let first = resolverText.first else { return lookupFailedReason }
+        return first.uppercased() + resolverText.dropFirst()
     }
 }
 

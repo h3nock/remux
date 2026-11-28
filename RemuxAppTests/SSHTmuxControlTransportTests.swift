@@ -911,8 +911,31 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
     }
 
-    /// A name that doesn't resolve says what the resolver said, not only that the server couldn't be reached.
-    func testANameThatDoesntResolveGivesTheResolversReason() async {
+    /// A name that doesn't exist reads plainly; a resolver that couldn't answer keeps its own words, so the two read
+    /// differently.
+    func testALookupFailureSaysWhichKindItWas() {
+        XCTAssertEqual(
+            RemuxSSHConnectError.lookupReason(
+                errorCode: Int(EAI_NONAME),
+                resolverText: String(cString: gai_strerror(EAI_NONAME))
+            ),
+            "The server's address couldn't be found."
+        )
+        let unanswered = String(cString: gai_strerror(EAI_AGAIN))
+        XCTAssertEqual(
+            RemuxSSHConnectError.lookupReason(errorCode: Int(EAI_AGAIN), resolverText: unanswered),
+            unanswered.prefix(1).uppercased() + unanswered.dropFirst()
+        )
+        XCTAssertEqual(
+            RemuxSSHConnectError.lookupReason(errorCode: Int(EAI_AGAIN), resolverText: ""),
+            "The server's address couldn't be looked up."
+        )
+    }
+
+    /// A lookup that fails carries the resolver's answer to the details line. NIO's lookup error can't be made outside
+    /// NIO, so this asks the system's resolver for a name that can't exist; which answer it gives is the formatter's
+    /// concern, tested above.
+    func testALookupFailureCarriesTheResolversAnswer() async {
         let refused = makeRefusedRootConfiguration()
         let configuration = RemuxSSHRootConfiguration(
             host: "remux-test.invalid",
@@ -921,7 +944,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             hostKeyValidator: refused.hostKeyValidator,
             connectTimeout: .seconds(5)
         )
-        let resolverReason = String(cString: gai_strerror(EAI_NONAME))
 
         do {
             _ = try await RemuxSSHRootBootstrap.authenticate(
@@ -932,7 +954,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         } catch {
             let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
             XCTAssertEqual(reason.kind, .serverUnreachable, "\(error)")
-            XCTAssertEqual(reason.detail, resolverReason.prefix(1).uppercased() + resolverReason.dropFirst())
+            XCTAssertNotNil(reason.detail)
+            XCTAssertNotEqual(reason.detail, "The server's address couldn't be looked up.", "the resolver's answer was lost")
         }
     }
 
