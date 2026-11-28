@@ -30,9 +30,10 @@ enum GhosttyTerminalDisconnectReasonClassifier {
 
         // A saved key that can't be read, or a key made on this device that can't be used here, is replaced like
         // credentials the server turned down; a locked device only pauses a device key, so the session reconnects by
-        // itself once it's unlocked.
+        // itself once it's unlocked. The panel uses its own words, so what's wrong with the key goes in the detail.
         if let error = error as? SSHPrivateKeyUnreadableError {
-            return TerminalDisconnectReason(kind: .authentication, message: error.localizedDescription)
+            let explanation = error.localizedDescription
+            return TerminalDisconnectReason(kind: .authentication, message: explanation, detail: explanation)
         }
         if let error = error as? SecureEnclaveSSHError {
             let kind: TerminalDisconnectReason.Kind = switch error {
@@ -40,7 +41,8 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             case .unavailableWhileLocked: .transportIO
             case .unavailable, .passcodeNotSet, .keyUnreadable: .unknown
             }
-            return TerminalDisconnectReason(kind: kind, message: error.localizedDescription)
+            let explanation = error.localizedDescription
+            return TerminalDisconnectReason(kind: kind, message: explanation, detail: explanation)
         }
 
         // The saved settings can't make a connection: the panel offers Edit Server and shows why under its own words.

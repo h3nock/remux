@@ -85,6 +85,23 @@ final class GhosttyRepairPanelContentTests: XCTestCase {
         }
     }
 
+    /// The panel says what's wrong with a key that fails on this device under its own words: one that can't be read
+    /// with its passphrase, a device key that no longer works here, or one paused while the device is locked.
+    func testAKeyThatFailsHereSaysWhyOnThePanel() {
+        let cases: [(any Error, String, [GhosttyRepairPanelContent.Action.Kind])] = [
+            (SSHPrivateKeyUnreadableError(underlying: CocoaError(.coderReadCorrupt)), "Authentication Failed", [.updateCredentials]),
+            (SecureEnclaveSSHError.keyUnusable, "Authentication Failed", [.updateCredentials]),
+            (SecureEnclaveSSHError.unavailableWhileLocked, "Disconnected", [.reconnect]),
+        ]
+        for (error, title, actions) in cases {
+            let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error))
+
+            XCTAssertEqual(content.title, title, "\(error)")
+            XCTAssertEqual(content.detail, error.localizedDescription, "\(error)")
+            XCTAssertEqual(content.actions.map(\.kind), actions, "\(error)")
+        }
+    }
+
     /// Tailscale's check ran out of time: retrying gets a new one, and the credentials aren't the problem.
     func testAnExpiredTailscaleVerificationOffersARetry() {
         let content = panel(GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
