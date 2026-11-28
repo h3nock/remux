@@ -2201,8 +2201,8 @@ final class HerdrScreenModel {
         }
     }
 
-    /// The reconnect by itself, when its delay is up or the app comes back, unless the root has replaced
-    /// the model.
+    /// The reconnect by itself, when its delay is up or the app comes back, unless the root turns it down
+    /// (`mayReconnectByItself`).
     private func recover() {
         guard mayReconnectByItself(self) else { return }
         restart()
