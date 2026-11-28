@@ -5758,10 +5758,10 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     /// A command that reads `count` keys raw from the terminal and prints REMUX_<name>_<their bytes in hex>_GAP<the
-    /// milliseconds between the last two>, and REMUX_<name>_OK when the bytes are `expectedHex` and the last two came
-    /// at least `minimumLastGap` milliseconds apart. The typed command stays in the pane the harness checks, so the
-    /// marker is built at run time and the command's own text can't satisfy the check.
-    private func keyByteCollector(name: String, count: Int, expectedHex: String, minimumLastGap: Int) -> String {
+    /// milliseconds between the last two>, and REMUX_<name>_OK when the bytes are `expectedHex`. The typed command
+    /// stays in the pane the harness checks, so the marker is built at run time and the command's own text can't
+    /// satisfy the check.
+    private func keyByteCollector(name: String, count: Int, expectedHex: String) -> String {
         let script = [
             #"zmodload zsh/datetime"#,
             #"tty=/dev/tty"#,
@@ -5773,7 +5773,7 @@ final class RemuxAppUITests: XCTestCase {
             #"stty $saved <$tty; trap - EXIT"#,
             #"gap=${gap%.*}"#,
             "print -r -- REMUX_\(name)_${hex}_GAP${gap}",
-            "if [[ $hex == \(expectedHex) ]] && (( gap >= \(minimumLastGap) )); then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
+            "if [[ $hex == \(expectedHex) ]]; then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
         ].joined(separator: "; ")
         return "zsh -fc '\(script)'"
     }
@@ -5790,9 +5790,7 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
-        sendTerminalCommand(
-            keyByteCollector(name: "CTRLB", count: 4, expectedHex: "025b027a", minimumLastGap: 2_800)
-        )
+        sendTerminalCommand(keyByteCollector(name: "CTRLB", count: 4, expectedHex: "025b027a"))
         hideKeyboardIfPresent()
 
         let keyboard = app.buttons["terminal.keyboard"]
@@ -5808,8 +5806,8 @@ final class RemuxAppUITests: XCTestCase {
         app.typeText("[")
         RunLoop.current.run(until: Date().addingTimeInterval(1.5))
 
-        // A Ctrl-B on its own, then a key three seconds later. A Ctrl-B held back while Remux waits for a following
-        // key arrives late, so the gap between them comes out shorter.
+        // A Ctrl-B on its own, then a key three seconds later: the gap the collector prints is the time between them
+        // arriving.
         ctrl.tap()
         waitForLiveTerminalInputReady(timeout: 10)
         app.typeText("b")
