@@ -292,9 +292,10 @@ final class HerdrScreenModel {
     private let recoveryTiming: RecoveryTiming
     private let onRuntimeStateChange: (TerminalRuntimeStateUpdate) -> Void
     private let onNotification: (NotificationEvent) -> Void
-    /// Asked before a reconnect the model starts by itself. The model's target is fixed, and the root
-    /// knows where the session is saved now: false when it has replaced this model instead.
-    private let mayReconnectByItself: () -> Bool
+    /// Asked, with the model, before a reconnect it starts by itself. The model's target is fixed, and
+    /// the root knows where the session is saved now and which model is the session's: false when it
+    /// has replaced this one.
+    private let mayReconnectByItself: (HerdrScreenModel) -> Bool
     private let engine: HerdrTerminalEngine
     /// Where the phone keeps the zooms Remux made, for the session's end to take off.
     private let zoomKeepers: HerdrZoomKeepers
@@ -318,9 +319,10 @@ final class HerdrScreenModel {
     private var attemptCount: UInt64 = 0
     private var sizeWaiter: CheckedContinuation<Void, Never>?
 
-    /// Whether any connection reached its first snapshot. Only then does a failure reconnect by itself:
-    /// a session that never opened says why.
-    private var hasConnected = false
+    /// Whether the session has connected: a connection reached its first snapshot, in this model or in
+    /// the one whose recovery it continues. Only then does a failure reconnect by itself: a session
+    /// that never opened says why.
+    private(set) var hasConnected: Bool
     /// A retry is waiting or under way after a drop; the session reads as reconnecting meanwhile.
     private var isReconnecting = false
     /// Failed attempts since the last stable connection, which set the next delay.
@@ -335,7 +337,7 @@ final class HerdrScreenModel {
 
     private(set) var isSelected = false
     private var appPhase = GhosttyAppLifecyclePhase.active
-    private var lastViewport: (size: CGSize, scale: CGFloat)?
+    private(set) var lastViewport: (size: CGSize, scale: CGFloat)?
     private(set) var measurement: GhosttyTerminalViewportMeasurement?
     /// The shell size requested from Herdr. A directly attached popup follows the physical viewport
     /// independently while selected; a hidden session adopts the latest size for its next show.
@@ -425,7 +427,8 @@ final class HerdrScreenModel {
         openBridge: @escaping BridgeOpener,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
         onNotification: @escaping (NotificationEvent) -> Void,
-        mayReconnectByItself: @escaping () -> Bool = { true },
+        mayReconnectByItself: @escaping (HerdrScreenModel) -> Bool = { _ in true },
+        continuesRecovery: Bool = false,
         connectionTiming: HerdrConnection.Timing = HerdrConnection.Timing(),
         recoveryTiming: RecoveryTiming = RecoveryTiming(),
         switchingCueDelay: Duration = HerdrScreenModel.switchingCueDelay,
@@ -443,6 +446,7 @@ final class HerdrScreenModel {
         self.onRuntimeStateChange = onRuntimeStateChange
         self.onNotification = onNotification
         self.mayReconnectByItself = mayReconnectByItself
+        hasConnected = continuesRecovery
         self.connectionTiming = connectionTiming
         self.recoveryTiming = recoveryTiming
         self.switchingCueDelay = switchingCueDelay
@@ -2187,7 +2191,7 @@ final class HerdrScreenModel {
     /// The reconnect by itself, when its delay is up or the app comes back, unless the root has replaced
     /// the model.
     private func recover() {
-        guard mayReconnectByItself() else { return }
+        guard mayReconnectByItself(self) else { return }
         restart()
     }
 

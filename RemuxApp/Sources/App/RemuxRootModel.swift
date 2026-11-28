@@ -1869,18 +1869,21 @@ final class RemuxRootModel: ObservableObject {
     /// A Herdr model reconnects by itself, to the target it was made with, and stays attached while its
     /// server or session name is edited. Once the saved target reaches another Herdr session, the model's
     /// next reconnect is the root's instead: it replaces the model, as a reconnect the user asks for does,
-    /// and says false. The session stays where it is, on screen or behind Home.
-    private func herdrRuntimeMayReconnectByItself(_ key: TerminalRuntimeAttemptKey) -> Bool {
-        guard case .herdr(let model)? = terminalRuntimes[key],
-              let current = RemuxActiveSessionCollection.session(key.workspaceID, in: activeSessions),
-              !Self.opensTheSameHerdrBridge(model.target, current.target),
-              let session = RemuxActiveSessionCollection.runtimeReplacementSession(
-                  workspaceID: key.workspaceID,
-                  source: .transportLoss,
-                  in: activeSessions
-              )
-        else { return true }
-        replaceTerminalRuntime(for: session)
+    /// and says false. The session stays where it is, on screen or behind Home, and its recovery goes
+    /// on in the replacement, which retries as the model would have.
+    ///
+    /// Only the session's current model reconnects: one the root has let go, whose stop hasn't run yet,
+    /// is told false too.
+    private func herdrRuntimeMayReconnectByItself(
+        _ model: HerdrScreenModel,
+        _ key: TerminalRuntimeAttemptKey
+    ) -> Bool {
+        guard case .herdr(let current)? = terminalRuntimes[key], current === model,
+              var session = RemuxActiveSessionCollection.session(key.workspaceID, in: activeSessions)
+        else { return false }
+        guard !Self.opensTheSameHerdrBridge(model.target, session.target) else { return true }
+        session.replaceRuntime(source: .transportLoss)
+        replaceTerminalRuntime(for: session, continuingHerdrRecovery: model.hasConnected)
         RemuxActiveSessionCollection.replaceRuntime(with: session, in: &activeSessions)
         applyCurrentAppLifecyclePhase(to: session)
         return false
@@ -2589,7 +2592,10 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    private func replaceTerminalRuntime(for session: ActiveTerminalSession) {
+    private func replaceTerminalRuntime(
+        for session: ActiveTerminalSession,
+        continuingHerdrRecovery: Bool = false
+    ) {
         let previous = terminalRuntimes.first(where: {
             $0.key.workspaceID == session.id
         })?.value
@@ -2620,7 +2626,7 @@ final class RemuxRootModel: ObservableObject {
             ))
         case .herdr:
             let target = session.target
-            runtime = .herdr(HerdrScreenModel(
+            let model = HerdrScreenModel(
                 target: target,
                 sessionInstanceID: session.instanceID,
                 openBridge: { [dependencies] kind in
@@ -2630,11 +2636,19 @@ final class RemuxRootModel: ObservableObject {
                 onNotification: { [weak self] event in
                     self?.handleHerdrNotification(event, from: key)
                 },
-                mayReconnectByItself: { [weak self] in
-                    self?.herdrRuntimeMayReconnectByItself(key) ?? true
+                mayReconnectByItself: { [weak self] model in
+                    self?.herdrRuntimeMayReconnectByItself(model, key) ?? false
                 },
+                continuesRecovery: continuingHerdrRecovery,
                 zoomKeepers: dependencies.herdrZoomKeepers
-            ))
+            )
+            // As for tmux, the replacement starts at the previous attempt's viewport. Its screen gives
+            // it a size only when one is applied, which a screen that appears under a sheet, or was
+            // already there for the previous attempt, doesn't do at an unchanged size.
+            if case .herdr(let previousModel)? = previous, let viewport = previousModel.lastViewport {
+                model.prepareViewport(size: viewport.size, scale: viewport.scale)
+            }
+            runtime = .herdr(model)
         }
         terminalRuntimes[key] = runtime
         runtime.setSelected(state == .terminal(session.id))

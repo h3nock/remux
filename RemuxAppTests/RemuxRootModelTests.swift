@@ -5089,7 +5089,8 @@ final class RemuxRootModelTests: XCTestCase {
 
     /// A Herdr session stays attached through an edit of its server, and reconnects by itself when the
     /// connection drops. That reconnect goes to the server as it's saved now: the root replaces the model,
-    /// as it does for a reconnect the user asks for, and the session stays behind Home.
+    /// as it does for a reconnect the user asks for, and the session stays behind Home. The replacement
+    /// connects at the viewport the model had, without waiting for its screen to report one.
     func testAHerdrSessionsOwnReconnectAfterAServerEditOpensTheEditedServer() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
@@ -5103,7 +5104,7 @@ final class RemuxRootModelTests: XCTestCase {
 
         await opened.bridge.finishServing()
 
-        _ = try await opened.opener.bridge(1)
+        let bridge = try await opened.opener.bridge(1)
         let hosts = await opened.opener.targets.map(\.server.host)
         XCTAssertEqual(hosts, ["build.example.test", "updated.example.com"])
         let reconnected = try XCTUnwrap(harness.model.activeSessions.first)
@@ -5113,6 +5114,52 @@ final class RemuxRootModelTests: XCTestCase {
         }
         XCTAssertFalse(replacement === opened.model)
         XCTAssertEqual(harness.model.state, .library)
+
+        await bridge.serve(try HerdrServerScript.welcome() + HerdrServerScript.snapshot(revision: 1))
+        let ready = await waitUntil(timeout: 3) { replacement.isConnectionReady }
+        XCTAssertTrue(ready, "the replacement didn't connect")
+    }
+
+    /// The replacement goes on with the recovery it took over. An attempt that fails on the edited server
+    /// is tried again, as the session's attempts were before the edit, until one connects.
+    func testAHerdrSessionsOwnReconnectAfterAServerEditKeepsRetryingOnTheEditedServer() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        await harness.model.showLibrary()
+        await harness.model.beginEditServer(serverID: opened.session.target.server.id)
+        harness.model.updateDraft { $0.host = "updated.example.com" }
+        await harness.model.saveAndConnect()
+
+        await opened.bridge.finishServing()
+        let failing = try await opened.opener.bridge(1)
+        await failing.finishServing()
+
+        let bridge = try await opened.opener.bridge(2)
+        let hosts = await opened.opener.targets.map(\.server.host)
+        XCTAssertEqual(hosts, ["build.example.test", "updated.example.com", "updated.example.com"])
+        let reconnected = try XCTUnwrap(harness.model.activeSessions.first)
+        guard case .herdr(let replacement) = harness.model.terminalRuntime(for: reconnected) else {
+            return XCTFail("expected a Herdr runtime")
+        }
+        await bridge.serve(try HerdrServerScript.welcome() + HerdrServerScript.snapshot(revision: 1))
+        let ready = await waitUntil(timeout: 3) { replacement.isConnectionReady }
+        XCTAssertTrue(ready, "the replacement didn't connect")
+    }
+
+    /// Only the session's current model reconnects by itself. One the root has let go doesn't start
+    /// another attempt when the app comes back before its stop has run.
+    func testAHerdrModelTheRootHasLetGoDoesNotReconnectByItself() async throws {
+        let opened = try await herdrSessionThatHasConnected()
+        let harness = opened.harness
+        harness.model.handleAppLifecyclePhase(.background)
+        await opened.bridge.finishServing()
+        let dropped = await waitUntil { opened.model.isDisconnected }
+        XCTAssertTrue(dropped)
+
+        harness.model.disconnectActiveSession(opened.session.id)
+        opened.model.handleAppLifecyclePhase(.active)
+
+        XCTAssertTrue(opened.model.isDisconnected)
     }
 
     /// The edit can land while the model is already reconnecting, with an attempt on its way to the server
