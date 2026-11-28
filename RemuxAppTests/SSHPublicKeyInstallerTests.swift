@@ -734,7 +734,8 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         authenticationDelegate.resumeAuthentication()
     }
 
-    /// Holds every sign-in from now on until `resumeAuthentication`, as `suspendAuthentication` does from the start.
+    /// Holds each sign-in from now on, as `suspendAuthentication` does from the start; `resumeAuthentication` lets
+    /// the one waiting through and keeps holding later ones.
     func suspendLaterAuthentication() {
         authenticationDelegate.suspendLaterAuthentication()
     }
