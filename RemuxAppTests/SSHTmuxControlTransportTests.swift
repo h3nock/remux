@@ -932,9 +932,9 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         )
     }
 
-    /// A lookup that fails carries the resolver's answer to the details line. NIO's lookup error can't be made outside
-    /// NIO, so this asks the system's resolver for a name that can't exist; which answer it gives is the formatter's
-    /// concern, tested above.
+    /// A lookup that fails carries the resolver's answer to the details line, through the formatter. NIO's lookup error
+    /// can't be made outside NIO, so this asks the system's resolver for a name that can't exist, and compares the
+    /// detail with the formatter's reading of whatever it answered.
     func testALookupFailureCarriesTheResolversAnswer() async {
         let refused = makeRefusedRootConfiguration()
         let configuration = RemuxSSHRootConfiguration(
@@ -952,10 +952,21 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             )
             XCTFail("expected the lookup to fail")
         } catch {
+            guard case .unreachable(let underlying)? = error as? RemuxSSHConnectError,
+                  let connectionError = underlying as? NIOConnectionError,
+                  let unknownHost = (connectionError.dnsAError ?? connectionError.dnsAAAAError)
+                      as? SocketAddressError.UnknownHost else {
+                return XCTFail("expected a failed lookup, got \(error)")
+            }
             let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
-            XCTAssertEqual(reason.kind, .serverUnreachable, "\(error)")
-            XCTAssertNotNil(reason.detail)
-            XCTAssertNotEqual(reason.detail, "The server's address couldn't be looked up.", "the resolver's answer was lost")
+            XCTAssertEqual(reason.kind, .serverUnreachable)
+            XCTAssertEqual(
+                reason.detail,
+                RemuxSSHConnectError.lookupReason(
+                    errorCode: unknownHost.errorCode,
+                    resolverText: unknownHost.errorDescription
+                )
+            )
         }
     }
 
