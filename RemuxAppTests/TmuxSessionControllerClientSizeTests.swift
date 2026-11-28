@@ -1175,10 +1175,10 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             })
         )
 
-        controller.requestCopyMode(paneID: 1)
+        controller.requestNewWindow()
 
         try await waitUntil("detached request failure was not reported") {
-            await recorder.requests().contains(.copyMode)
+            await recorder.requests().contains(.newWindow)
         }
         await shutDown(controller)
     }

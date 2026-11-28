@@ -122,7 +122,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
     private let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private static var maxAttachmentPhotoSelectionCount: Int { 10 }
-    private static var tmuxPrefixFlushDelay: Duration { .milliseconds(750) }
 
     init(
         model: Model,
@@ -1745,24 +1744,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         if appliesModifiers, let returnKey = terminalInputController.armedReturnKeyEvent(for: text) {
             return sendTerminalKeyEvent(returnKey)
         }
-        return terminalInputController.performTextInput(
-            text,
-            holdsTmuxPrefix: model.holdsTmuxPrefixKey,
-            appliesModifiers: appliesModifiers,
-            submit: submitTerminalText(_:),
-            schedulePrefixFlush: scheduleTmuxPrefixInputFlush(token:),
-            enterCopyMode: {
-                let outcome = model.enterFocusedTmuxCopyMode()
-                if outcome.isQueued {
-                    GhosttyRuntimeTrace.flowEventIfActive(
-                        "terminal.input",
-                        event: "ui.tmuxPrefix.copyMode.queued"
-                    )
-                    return true
-                }
-                return false
-            }
-        )
+        return submitTerminalText(terminalInputController.receiveText(text, appliesModifiers: appliesModifiers))
     }
 
     private func submitTerminalText(_ outbound: String) -> Bool {
@@ -1807,38 +1789,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return result.isAccepted
     }
 
-    private func scheduleTmuxPrefixInputFlush(token: UInt64) {
-        Task { @MainActor in
-            do {
-                try await Task.sleep(for: Self.tmuxPrefixFlushDelay)
-            } catch {
-                return
-            }
-
-            flushPendingTmuxPrefixInputIfNeeded(matching: token)
-        }
-    }
-
-    private func flushPendingTmuxPrefixInputIfNeeded() {
-        guard let input = terminalInputController.flushPendingTmuxPrefixInput() else { return }
-        _ = submitTerminalText(input)
-    }
-
-    private func flushPendingTmuxPrefixInputIfNeeded(matching token: UInt64) {
-        guard let input = terminalInputController.flushPendingTmuxPrefixInput(matching: token) else { return }
-        _ = submitTerminalText(input)
-    }
-
     private func sendTerminalPaste(_ text: String) -> Bool {
         guard !isFindPresented, !isReadingAfterFind else { return false }
-        return terminalInputController.performPaste(
-            text,
-            submitPendingPrefix: submitTerminalText(_:),
-            sendPaste: { text in
-                stopScrolling(surfaceID: model.focusedInputSurfaceID)
-                return model.sendPasteToFocusedSurface(text).isAccepted
-            }
-        )
+        terminalInputController.receivePaste()
+        stopScrolling(surfaceID: model.focusedInputSurfaceID)
+        return model.sendPasteToFocusedSurface(text).isAccepted
     }
 
     /// The message goes where it was written, captured now: the popup over the tab when one is shown, which
@@ -1879,14 +1834,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func sendTerminalPaste(_ text: String, to surfaceID: UUID) async -> Bool {
-        let action = terminalInputController.receivePaste(text)
-        if let pendingPrefixInput = action.pendingPrefixInput {
-            _ = submitTerminalText(pendingPrefixInput)
-        }
-        return await model.sendPasteAwaitingCommandCompletion(
-            action.text,
-            to: surfaceID
-        )
+        terminalInputController.receivePaste()
+        return await model.sendPasteAwaitingCommandCompletion(text, to: surfaceID)
     }
 
     private func sendComposerEnter(to surfaceID: UUID) async -> Bool {
@@ -1926,20 +1875,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> Bool {
         guard !isFindPresented, !isReadingAfterFind else { return false }
-        return terminalInputController.performKeyEvent(
-            event,
-            appliesModifiers: appliesModifiers,
-            submitPendingPrefix: submitTerminalText(_:),
-            sendKey: { event in
-                let start = GhosttyRuntimeTrace.nowNanos()
-                stopScrolling(surfaceID: model.focusedInputSurfaceID)
-                let result = model.sendKeyEventToFocusedSurface(event)
-                GhosttyRuntimeTrace.perf(
-                    "input.sendKey result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
-                )
-                return result.isAccepted
-            }
+        let outbound = terminalInputController.receiveKeyEvent(event, appliesModifiers: appliesModifiers)
+        let start = GhosttyRuntimeTrace.nowNanos()
+        stopScrolling(surfaceID: model.focusedInputSurfaceID)
+        let result = model.sendKeyEventToFocusedSurface(outbound)
+        GhosttyRuntimeTrace.perf(
+            "input.sendKey result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
         )
+        return result.isAccepted
     }
 
     private func updateKeyboardVisibility(with notification: Notification) {
@@ -2368,7 +2311,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isFindPresented = true; findSurfaceID = surfaceID
         findQuery = ""; findWantsKeyboard = false
         terminalInputController.clearModifiers()
-        _ = terminalInputController.flushPendingTmuxPrefixInput()
         inputCoordinator.dismissKeyboard()
         if let effect = topologyActionInputRefocusCoordinator.cancelForCommandFailure() {
             _ = applyTopologyInputRefocusEffect(effect)
