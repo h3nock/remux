@@ -695,6 +695,9 @@ enum TmuxWorkspaceDraftValidationResult: Equatable, Sendable {
 }
 
 enum TmuxConnectionDraftValidator {
+    static let validPorts = 1...65_535
+    static let portRangeMessage = "Port must be between 1 and 65535."
+
     static func validate(
         _ draft: TmuxConnectionDraft,
         existingServerID: SavedServer.ID?,
@@ -771,8 +774,8 @@ enum TmuxConnectionDraftValidator {
             validation.host = "IP or hostname is required."
         }
 
-        guard let port = Int(draft.port), (1...65_535).contains(port) else {
-            validation.port = "Port must be between 1 and 65535."
+        guard let port = Int(draft.port), validPorts.contains(port) else {
+            validation.port = portRangeMessage
             return .invalid(validation)
         }
 

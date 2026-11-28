@@ -356,6 +356,19 @@ enum RemuxSSHRootLeaseDisposition: Equatable, Sendable {
     case invalidated
 }
 
+/// A saved server whose settings can't make a connection, found before any network work. The editor checks them, but
+/// a server saved another way (an older build, a restored backup) can still hold one.
+enum RemuxSSHConfigurationError: LocalizedError, Equatable {
+    case invalidPort(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidPort:
+            TmuxConnectionDraftValidator.portRangeMessage
+        }
+    }
+}
+
 /// A connection that failed before signing in. The bootstrap is the one place that knows a failure happened while
 /// connecting, so it says so here instead of leaving callers to infer it from the transport's error types.
 enum RemuxSSHConnectError: LocalizedError {
@@ -1763,8 +1776,8 @@ enum RemuxSSHHostAddress {
             || (first == 172 && (16...31).contains(second))
             || (first == 192 && second == 168)
             || (first == 100 && (64...127).contains(second))
-        // A port saved out of range takes the lookup, as it did before: SocketAddress traps on one.
-        guard isInRange, (1...Int(UInt16.max)).contains(port) else { return nil }
+        // The bootstrap turns an out-of-range port down first; SocketAddress would trap on one.
+        guard isInRange, TmuxConnectionDraftValidator.validPorts.contains(port) else { return nil }
         return try? SocketAddress(ipAddress: host, port: port)
     }
 }
@@ -1782,6 +1795,9 @@ enum RemuxSSHRootBootstrap {
         var rootChannel: Channel?
 
         do {
+            guard TmuxConnectionDraftValidator.validPorts.contains(configuration.port) else {
+                throw RemuxSSHConfigurationError.invalidPort(configuration.port)
+            }
             // Before any network work: a key that can't be used is reported as itself, not as a connection that
             // failed, which it would be if it failed inside the channel initializer.
             let authentication = try configuration.prepareAuthentication()

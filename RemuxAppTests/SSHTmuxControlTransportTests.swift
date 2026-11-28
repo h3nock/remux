@@ -845,7 +845,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         ] {
             XCTAssertNil(RemuxSSHHostAddress.localIPv4(host, port: 22), host)
         }
-        // A saved port outside 1...65535 takes the lookup instead of reaching SocketAddress, which traps on it.
+        // A saved port outside 1...65535 never reaches SocketAddress, which traps on it.
         for port in [0, 65536, -1] {
             XCTAssertNil(RemuxSSHHostAddress.localIPv4("10.1.2.3", port: port), "\(port)")
         }
@@ -881,6 +881,33 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                 .authentication,
                 "\(error)"
             )
+        }
+    }
+
+    /// A port saved outside 1...65535 is turned down before either route is tried, with the editor's own words, rather
+    /// than reported as a server that couldn't be reached.
+    func testAnOutOfRangePortIsAConfigurationErrorNotAnUnreachableServer() async {
+        let refused = makeRefusedRootConfiguration()
+        for (host, port) in [("10.1.2.3", 65536), ("server.example.test", 0)] {
+            let configuration = RemuxSSHRootConfiguration(
+                host: host,
+                port: port,
+                prepareAuthentication: refused.prepareAuthentication,
+                hostKeyValidator: refused.hostKeyValidator,
+                connectTimeout: .seconds(2)
+            )
+            do {
+                _ = try await RemuxSSHRootBootstrap.authenticate(
+                    using: configuration,
+                    trace: RemuxTransportStartupTrace(flowID: nil)
+                )
+                XCTFail("expected \(host):\(port) to be turned down")
+            } catch {
+                XCTAssertEqual(error as? RemuxSSHConfigurationError, .invalidPort(port), "\(error)")
+                let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+                XCTAssertEqual(reason.kind, .profile)
+                XCTAssertEqual(reason.detail, "Port must be between 1 and 65535.")
+            }
         }
     }
 
