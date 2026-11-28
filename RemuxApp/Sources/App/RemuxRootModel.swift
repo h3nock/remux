@@ -2207,6 +2207,9 @@ final class RemuxRootModel: ObservableObject {
         if let deviceKeyError = error as? SecureEnclaveSSHError {
             return deviceKeyError.localizedDescription
         }
+        if let keyError = error as? SSHPrivateKeyUnreadableError {
+            return keyError.localizedDescription
+        }
 
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
         switch reason.kind {

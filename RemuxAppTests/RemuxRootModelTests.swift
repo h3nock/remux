@@ -1956,6 +1956,31 @@ final class RemuxRootModelTests: XCTestCase {
         )
     }
 
+    /// An imported key that can't be read fails before the server sees it, so Add Server says so, not that the
+    /// server rejected it.
+    func testNewServerWithAKeyThatCantBeReadSaysWhyNotThatTheServerRejectedIt() async throws {
+        let unreadable = SSHPrivateKeyUnreadableError(underlying: CocoaError(.coderReadCorrupt))
+        let harness = makeHarness(sshAccessVerifier: { _, _, _ in throw unreadable })
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.authenticationKind = .privateKey
+            draft.privateKeyPEM = makePublicKeyInstallDraft().privateKeyPEM
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertNil(savedServerID)
+        XCTAssertEqual(
+            harness.model.connectionSetup?.submissionIssue,
+            .verificationFailed(unreadable.localizedDescription)
+        )
+    }
+
     func testNewServerHostKeyTrustRetriesVerificationBeforePersistence() async throws {
         let verifier = RecordingSSHAccessVerifier(results: [])
         let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base"])])

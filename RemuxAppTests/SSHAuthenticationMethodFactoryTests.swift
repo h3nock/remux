@@ -61,6 +61,22 @@ final class SSHAuthenticationMethodFactoryTests: XCTestCase {
         }
     }
 
+    /// An imported key whose passphrase is wrong can't be read, which saving doesn't check. It's replaced like
+    /// credentials the server turned down, since reconnecting would fail the same way.
+    func testAKeyThatCantBeReadOffersUpdatingTheCredentials() {
+        let credential = ResolvedSSHAuth.Credential.privateKey(SSHPrivateKeyCredential(
+            privateKeyPEM: SSHPrivateKeyInspectorTests.encryptedEd25519Key,
+            passphrase: "not the passphrase"
+        ))
+
+        XCTAssertThrowsError(try SSHAuthenticationMethodFactory.prepare(username: "test", credential: credential)) {
+            XCTAssertTrue($0 is SSHPrivateKeyUnreadableError, "\($0)")
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure($0)
+            XCTAssertEqual(reason.kind, .authentication)
+            XCTAssertEqual(reason.message, "This private key couldn't be read. Check its passphrase in Edit Server.")
+        }
+    }
+
     /// A key that can't be used fails before any connection starts, so it reaches the user as itself. Prepared inside
     /// the connection instead, a server saved by name would report it as a connection that failed.
     func testAKeyThatCantBeUsedFailsAsItselfBeforeConnecting() async {

@@ -28,8 +28,12 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             )
         }
 
-        // A key made on this device that can't be used here is replaced like credentials the server turned down; a
-        // locked device only pauses it, so the session reconnects by itself once it's unlocked.
+        // A saved key that can't be read, or a key made on this device that can't be used here, is replaced like
+        // credentials the server turned down; a locked device only pauses a device key, so the session reconnects by
+        // itself once it's unlocked.
+        if let error = error as? SSHPrivateKeyUnreadableError {
+            return TerminalDisconnectReason(kind: .authentication, message: error.localizedDescription)
+        }
         if let error = error as? SecureEnclaveSSHError {
             let kind: TerminalDisconnectReason.Kind = switch error {
             case .keyUnusable: .authentication

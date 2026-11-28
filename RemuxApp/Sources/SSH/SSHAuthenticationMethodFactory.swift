@@ -66,6 +66,16 @@ struct SSHPreparedAuthentication: Sendable {
     let makeMethod: @Sendable () -> SSHAuthenticationMethod
 }
 
+/// An imported private key that couldn't be decoded: a wrong passphrase, or contents that aren't the key they claim to
+/// be. Saving checks the key's format but can't check its passphrase, so this first shows when signing in.
+struct SSHPrivateKeyUnreadableError: LocalizedError {
+    let underlying: any Error
+
+    var errorDescription: String? {
+        "This private key couldn't be read. Check its passphrase in Edit Server."
+    }
+}
+
 enum SSHAuthenticationMethodFactory {
     static func prepare(
         username: String,
@@ -85,38 +95,50 @@ enum SSHAuthenticationMethodFactory {
             }
             let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
             let decryptionKey = credential.passphrase.map { Data($0.utf8) }
-            switch inspection.keyType {
-            case .ed25519:
-                let privateKey = try Curve25519.Signing.PrivateKey(
-                    sshEd25519: inspection.normalizedPEM,
-                    decryptionKey: decryptionKey
-                )
-                return SSHPreparedAuthentication { .ed25519(username: username, privateKey: privateKey) }
-            case .rsa:
-                let privateKey = try Insecure.RSA.PrivateKey(
-                    sshRsa: inspection.normalizedPEM,
-                    decryptionKey: decryptionKey
-                )
-                return SSHPreparedAuthentication { .rsa(username: username, privateKey: privateKey) }
-            case .ecdsaP256:
-                let privateKey = try P256.Signing.PrivateKey(
-                    sshEcdsaP256: inspection.normalizedPEM,
-                    decryptionKey: decryptionKey
-                )
-                return SSHPreparedAuthentication { .p256(username: username, privateKey: privateKey) }
-            case .ecdsaP384:
-                let privateKey = try P384.Signing.PrivateKey(
-                    sshEcdsaP384: inspection.normalizedPEM,
-                    decryptionKey: decryptionKey
-                )
-                return SSHPreparedAuthentication { .p384(username: username, privateKey: privateKey) }
-            case .ecdsaP521:
-                let privateKey = try P521.Signing.PrivateKey(
-                    sshEcdsaP521: inspection.normalizedPEM,
-                    decryptionKey: decryptionKey
-                )
-                return SSHPreparedAuthentication { .p521(username: username, privateKey: privateKey) }
+            do {
+                return try decode(inspection, decryptionKey: decryptionKey, username: username)
+            } catch {
+                throw SSHPrivateKeyUnreadableError(underlying: error)
             }
+        }
+    }
+
+    private static func decode(
+        _ inspection: SSHPrivateKeyInspection,
+        decryptionKey: Data?,
+        username: String
+    ) throws -> SSHPreparedAuthentication {
+        switch inspection.keyType {
+        case .ed25519:
+            let privateKey = try Curve25519.Signing.PrivateKey(
+                sshEd25519: inspection.normalizedPEM,
+                decryptionKey: decryptionKey
+            )
+            return SSHPreparedAuthentication { .ed25519(username: username, privateKey: privateKey) }
+        case .rsa:
+            let privateKey = try Insecure.RSA.PrivateKey(
+                sshRsa: inspection.normalizedPEM,
+                decryptionKey: decryptionKey
+            )
+            return SSHPreparedAuthentication { .rsa(username: username, privateKey: privateKey) }
+        case .ecdsaP256:
+            let privateKey = try P256.Signing.PrivateKey(
+                sshEcdsaP256: inspection.normalizedPEM,
+                decryptionKey: decryptionKey
+            )
+            return SSHPreparedAuthentication { .p256(username: username, privateKey: privateKey) }
+        case .ecdsaP384:
+            let privateKey = try P384.Signing.PrivateKey(
+                sshEcdsaP384: inspection.normalizedPEM,
+                decryptionKey: decryptionKey
+            )
+            return SSHPreparedAuthentication { .p384(username: username, privateKey: privateKey) }
+        case .ecdsaP521:
+            let privateKey = try P521.Signing.PrivateKey(
+                sshEcdsaP521: inspection.normalizedPEM,
+                decryptionKey: decryptionKey
+            )
+            return SSHPreparedAuthentication { .p521(username: username, privateKey: privateKey) }
         }
     }
 
