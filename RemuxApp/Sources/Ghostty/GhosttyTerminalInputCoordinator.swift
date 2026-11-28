@@ -121,24 +121,7 @@ struct GhosttyTerminalInputCoordinator: Equatable {
 }
 
 struct GhosttyTerminalInputController: Equatable {
-    enum TextAction: Equatable {
-        case submit(String)
-        case schedulePrefixFlush(token: UInt64)
-        case enterCopyMode(fallbackInput: String)
-    }
-
-    struct PasteAction: Equatable {
-        var pendingPrefixInput: String?
-        var text: String
-    }
-
-    struct KeyEventAction: Equatable {
-        var pendingPrefixInput: String?
-        var event: GhosttySurfaceKeyEvent
-    }
-
     private var modifierState = GhosttyModifierState()
-    private var tmuxPrefixInputBuffer = GhosttyTmuxPrefixInputBuffer()
 
     var armedModifiers: ShortcutModifiers {
         modifierState.armed
@@ -169,98 +152,25 @@ struct GhosttyTerminalInputController: Equatable {
         return GhosttySurfaceKeyEvent(keyCode: .enter)
     }
 
-    /// `holdsTmuxPrefix` is the session's `holdsTmuxPrefixKey`. An armed modifier applies to the
-    /// text unless `appliesModifiers` is false, as for a draft an app action finishes, which leaves
-    /// it armed for that action's own key.
-    mutating func receiveText(
-        _ text: String,
-        holdsTmuxPrefix: Bool = true,
-        appliesModifiers: Bool = true
-    ) -> TextAction {
-        let outbound = appliesModifiers ? modifierState.apply(to: text) : text
-        guard holdsTmuxPrefix else { return .submit(outbound) }
-        switch tmuxPrefixInputBuffer.handleText(outbound) {
-        case .submit(let input):
-            return .submit(input)
-        case .armPrefix(let token):
-            return .schedulePrefixFlush(token: token)
-        case .enterCopyMode(let fallbackInput):
-            return .enterCopyMode(fallbackInput: fallbackInput)
-        }
-    }
-
-    mutating func performTextInput(
-        _ text: String,
-        holdsTmuxPrefix: Bool = true,
-        appliesModifiers: Bool = true,
-        submit: (String) -> Bool,
-        schedulePrefixFlush: (UInt64) -> Void,
-        enterCopyMode: () -> Bool
-    ) -> Bool {
-        switch receiveText(text, holdsTmuxPrefix: holdsTmuxPrefix, appliesModifiers: appliesModifiers) {
-        case .submit(let input):
-            return submit(input)
-        case .schedulePrefixFlush(let token):
-            schedulePrefixFlush(token)
-            return true
-        case .enterCopyMode(let fallbackInput):
-            guard enterCopyMode() else {
-                return submit(fallbackInput)
-            }
-            return true
-        }
+    /// The text to send for typed text. An armed modifier applies to it unless `appliesModifiers` is false, as for
+    /// a draft an app action finishes, which leaves it armed for that action's own key.
+    mutating func receiveText(_ text: String, appliesModifiers: Bool = true) -> String {
+        appliesModifiers ? modifierState.apply(to: text) : text
     }
 
     /// A paste isn't the key armed modifiers wait for, so it turns them off rather than leaving them armed for
     /// whatever comes after it.
-    mutating func receivePaste(_ text: String) -> PasteAction {
+    mutating func receivePaste() {
         modifierState.clear()
-        return PasteAction(
-            pendingPrefixInput: tmuxPrefixInputBuffer.flushPendingInput(),
-            text: text
-        )
     }
 
-    mutating func performPaste(
-        _ text: String,
-        submitPendingPrefix: (String) -> Bool,
-        sendPaste: (String) -> Bool
-    ) -> Bool {
-        let action = receivePaste(text)
-        if let pendingPrefixInput = action.pendingPrefixInput {
-            _ = submitPendingPrefix(pendingPrefixInput)
-        }
-        return sendPaste(action.text)
-    }
-
-    /// `appliesModifiers` is false for a key that isn't the one armed modifiers wait for, such as an arrow of the
-    /// space bar's cursor drag; they stay armed for the next key.
-    mutating func receiveKeyEvent(_ event: GhosttySurfaceKeyEvent, appliesModifiers: Bool = true) -> KeyEventAction {
-        KeyEventAction(
-            pendingPrefixInput: tmuxPrefixInputBuffer.flushPendingInput(),
-            event: appliesModifiers ? modifierState.apply(to: event) : event
-        )
-    }
-
-    mutating func performKeyEvent(
+    /// The event to send for a key. `appliesModifiers` is false for a key that isn't the one armed modifiers wait
+    /// for, such as an arrow of the space bar's cursor drag; they stay armed for the next key.
+    mutating func receiveKeyEvent(
         _ event: GhosttySurfaceKeyEvent,
-        appliesModifiers: Bool = true,
-        submitPendingPrefix: (String) -> Bool,
-        sendKey: (GhosttySurfaceKeyEvent) -> Bool
-    ) -> Bool {
-        let action = receiveKeyEvent(event, appliesModifiers: appliesModifiers)
-        if let pendingPrefixInput = action.pendingPrefixInput {
-            _ = submitPendingPrefix(pendingPrefixInput)
-        }
-        return sendKey(action.event)
-    }
-
-    mutating func flushPendingTmuxPrefixInput() -> String? {
-        tmuxPrefixInputBuffer.flushPendingInput()
-    }
-
-    mutating func flushPendingTmuxPrefixInput(matching token: UInt64) -> String? {
-        tmuxPrefixInputBuffer.flushPendingInput(matching: token)
+        appliesModifiers: Bool = true
+    ) -> GhosttySurfaceKeyEvent {
+        appliesModifiers ? modifierState.apply(to: event) : event
     }
 }
 

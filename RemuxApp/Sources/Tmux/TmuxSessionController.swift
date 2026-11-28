@@ -79,7 +79,6 @@ final class TmuxSessionController: @unchecked Sendable {
         case selectWindow
         case selectPane
         case zoomPane
-        case copyMode
         case setClientSize
         case sendInput
     }
@@ -1082,16 +1081,6 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
-    func requestCopyMode(paneID: TmuxPaneID) {
-        queue.async { [self] in
-            _ = admitActiveViewportClaimIfNeeded()
-            enqueueOnWriter(
-                command: "copy-mode -t %\(paneID.rawValue)",
-                request: .copyMode
-            )
-        }
-    }
-
     func claimActiveViewportIfNeeded() {
         queue.async { [self] in
             guard admitActiveViewportClaimIfNeeded() else { return }
@@ -1449,7 +1438,7 @@ final class TmuxSessionController: @unchecked Sendable {
         case .newWindow, .splitPane, .closePane, .closeWindow,
              .selectWindow, .selectPane, .zoomPane:
             true
-        case .copyMode, .setClientSize, .sendInput:
+        case .setClientSize, .sendInput:
             false
         }
     }

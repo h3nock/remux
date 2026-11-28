@@ -5757,8 +5757,31 @@ final class RemuxAppUITests: XCTestCase {
         return "zsh -fc '\(script)'"
     }
 
-    func testLiveTmuxPrefixEntersCopyModeWhenConfigured() throws {
-        let sessionName = try generatedLiveLatencySessionName("copy-mode")
+    /// A command that reads `count` keys raw from the terminal and prints REMUX_<name>_<their bytes in hex>_GAP<the
+    /// milliseconds between the last two>, and REMUX_<name>_OK when the bytes are `expectedHex`. The typed command
+    /// stays in the pane the harness checks, so the marker is built at run time and the command's own text can't
+    /// satisfy the check.
+    private func keyByteCollector(name: String, count: Int, expectedHex: String) -> String {
+        let script = [
+            #"zmodload zsh/datetime"#,
+            #"tty=/dev/tty"#,
+            #"saved=$(stty -g <$tty) || exit"#,
+            #"trap "stty $saved <$tty" EXIT"#,
+            #"stty raw -echo <$tty"#,
+            #"hex= n=0 prev= gap=0 wait=30"#,
+            "while (( n < \(count) )); do c=; IFS= read -r -k 1 -t $wait c <$tty || break; t=$EPOCHREALTIME; [[ -n $prev ]] && gap=$(( (t - prev) * 1000 )); prev=$t; hex+=$(printf %02x $(( #c ))); (( n++ )); printf . >$tty; wait=10; done",
+            #"stty $saved <$tty; trap - EXIT"#,
+            #"gap=${gap%.*}"#,
+            "print -r -- REMUX_\(name)_${hex}_GAP${gap}",
+            "if [[ $hex == \(expectedHex) ]]; then ok=O; ok+=K; print -r -- REMUX_\(name)_$ok; fi",
+        ].joined(separator: "; ")
+        return "zsh -fc '\(script)'"
+    }
+
+    /// Ctrl-B is an ordinary key in a tmux session: it reaches the program at once, and Ctrl-B then `[` reaches it as
+    /// those two keys rather than putting the pane in tmux's copy mode, which tmux doesn't draw for Remux.
+    func testLiveTmuxCtrlBReachesProgramWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("ctrl-b")
         defer {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
         }
@@ -5767,7 +5790,7 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
-        sendTerminalCommand("clear; printf 'REMUX_COPY_MODE_READY\\n'")
+        sendTerminalCommand(keyByteCollector(name: "CTRLB", count: 4, expectedHex: "025b027a"))
         hideKeyboardIfPresent()
 
         let keyboard = app.buttons["terminal.keyboard"]
@@ -5783,7 +5806,18 @@ final class RemuxAppUITests: XCTestCase {
         app.typeText("[")
         RunLoop.current.run(until: Date().addingTimeInterval(1.5))
 
-        recordLiveTmuxPaneModeExpectation(sessionName: sessionName, paneIndex: 1, expectedInMode: true)
+        // A Ctrl-B on its own, then a key three seconds later: the gap the collector prints is the time between them
+        // arriving.
+        ctrl.tap()
+        waitForLiveTerminalInputReady(timeout: 10)
+        app.typeText("b")
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        app.typeText("z")
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        attachScreenshot(named: "ctrl-b")
+
+        recordLiveTmuxPaneCaptureExpectation(sessionName: sessionName, paneIndex: 1, marker: "REMUX_CTRLB_OK")
+        recordLiveTmuxPaneModeExpectation(sessionName: sessionName, paneIndex: 1, expectedInMode: false)
     }
 
     func testLiveWarmSSHRootReuseWhenConfigured() throws {

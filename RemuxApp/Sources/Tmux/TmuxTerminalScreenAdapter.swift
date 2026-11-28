@@ -383,7 +383,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         case .selectWindow: "select window"
         case .selectPane: "select pane"
         case .zoomPane: "zoom pane"
-        case .copyMode: "copy mode"
         case .setClientSize: "resize"
         case .sendInput: "input"
         }
@@ -472,8 +471,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard session?.presentation(for: effectiveFocusedPaneID) == .ready else { return .surfaceRejected }
         return nil
     }
-
-    var holdsTmuxPrefixKey: Bool { true }
 
     var focusedInputSurfaceID: UUID? {
         guard preflightFocusedInput() == nil else { return nil }
@@ -775,14 +772,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     func renameTopLevel(_ id: UUID, to name: String) -> Bool { false }
 
     func renamePane(_ id: UUID, to name: String) -> Bool { false }
-
-    func enterFocusedTmuxCopyMode() -> GhosttyTerminalActionOutcome {
-        guard let controller, let activeManagedPaneID else {
-            return .missingTarget(.focusedPane)
-        }
-        controller.requestCopyMode(paneID: activeManagedPaneID)
-        return .queued
-    }
 
     // MARK: Selection sheet projections
 
