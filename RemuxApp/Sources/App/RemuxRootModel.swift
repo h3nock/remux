@@ -2105,8 +2105,9 @@ final class RemuxRootModel: ObservableObject {
     }
 
     /// A runtime's target is fixed when it's made, so a disconnected one is replaced to take the
-    /// server's new profile; a connected one takes it at its next reconnect. A Herdr model between its
-    /// own retries counts as disconnected, and its replacement takes over the recovery.
+    /// server's new profile; a connected one keeps its attachment, and its next reconnect opens the
+    /// server as saved. A Herdr model between its own retries counts as disconnected, and its
+    /// replacement takes over the recovery.
     private func refreshDisconnectedTerminalRuntimes(serverID: SavedServer.ID) {
         for session in activeSessions where session.target.server.id == serverID {
             let key = TerminalRuntimeAttemptKey(session: session)

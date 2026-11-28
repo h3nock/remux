@@ -299,8 +299,8 @@ final class HerdrScreenModel {
     private let recoveryTiming: RecoveryTiming
     private let onRuntimeStateChange: (TerminalRuntimeStateUpdate) -> Void
     private let onNotification: (NotificationEvent) -> Void
-    /// Asked before each reconnect the model starts by itself; false when the root replaces the model
-    /// instead.
+    /// Asked before each reconnect the model starts by itself. False means the model doesn't reconnect:
+    /// the root has replaced it or let it go.
     private let mayReconnectByItself: (HerdrScreenModel) -> Bool
     private let engine: HerdrTerminalEngine
     /// Where the phone keeps the zooms Remux made, for the session's end to take off.

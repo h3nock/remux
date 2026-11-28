@@ -5334,8 +5334,8 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotEqual(harness.model.activeSessions.first?.instanceID, opened.session.instanceID)
     }
 
-    /// Renaming a server keeps its Herdr session's model: the model's own reconnect opens a new bridge,
-    /// and its panes keep the last frame.
+    /// Renaming a server while its Herdr session is connected keeps the session's model: after a drop,
+    /// the same model opens the next bridge.
     func testAHerdrSessionsOwnReconnectAfterItsServerIsRenamedKeepsTheModel() async throws {
         let opened = try await herdrSessionThatHasConnected()
         let harness = opened.harness
