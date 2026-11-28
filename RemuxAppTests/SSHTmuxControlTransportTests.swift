@@ -1713,6 +1713,30 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await first.release(.reusable)
     }
 
+    /// A connection retired while a session still uses it (another user gave it back as broken) is judged on return
+    /// like any other: silent, it is cut over on its spare's sign-in instead of waiting out the open deadline.
+    func testRetiredConnectionSilentOnReturnIsCutOver() async throws {
+        let checked = try await makeCheckedLoopback()
+        let session = try await claimSignedIn(checked)
+        let other = try await checked.claim()
+        XCTAssertTrue(other.sshRoot === session.sshRoot)
+        await other.release(.invalidated)
+        let retired = await checked.pool.snapshot().retiredCount
+        XCTAssertEqual(retired, 1, "giving one lease back as broken didn't retire the connection")
+
+        checked.relay.stallExisting()
+        let start = ContinuousClock.now
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("the retired connection was left to the open deadline", timeout: openDeadline) {
+            !session.sshRoot.rootChannel.isActive
+        }
+
+        XCTAssertLessThan(ContinuousClock.now - start, openDeadline / 2)
+        await session.release(.invalidated)
+        let left = await checked.pool.snapshot().retiredCount
+        XCTAssertEqual(left, 0, "the retired connection outlived its last lease")
+    }
+
     /// A suspect that answers while its spare is still signing in is kept when the spare then signs in: a spare's
     /// sign-in closes only a connection still silent.
     func testSuspectThatAnsweredSurvivesItsSparesSignIn() async throws {

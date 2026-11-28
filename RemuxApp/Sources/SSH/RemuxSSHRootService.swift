@@ -799,6 +799,10 @@ actor RemuxSSHRootService {
         /// Signed in beside a suspect connection, asking no one anything. It takes consumers only once signed in, so
         /// a sign-in that needed the user (a Tailscale SSH check) fails the spare alone, never a consumer's open.
         var isSpare = false
+        /// Given back as broken by one of its users while others still use it, or closed with sessions on it. It
+        /// takes no new consumers and closes when its last lease goes. Closing it at once would let one session's
+        /// channel failure kill healthy sessions beside it; a dead one drains fast, as each session fails and leaves.
+        var isRetired = false
 
         /// Silent since a check's probe began: new consumers go to another connection, and the pool closes it once
         /// another connection to the server hears from it in that time. Any byte on it ends this.
@@ -806,17 +810,6 @@ actor RemuxSSHRootService {
             guard let silentSince else { return false }
             return attempt.root?.hasHeard(since: silentSince) != true
         }
-    }
-
-    /// A root removed from the pool while sessions still lease it: no
-    /// new leases, and the underlying connection closes only when the
-    /// last lease releases. Closing immediately on invalidation would
-    /// let one session's channel-level failure kill healthy sibling
-    /// sessions sharing the root; a genuinely dead root drains fast
-    /// because every sibling errors out and releases.
-    private struct RetiredEntry {
-        let task: Task<RemuxSSHRoot, Error>
-        var activeLeaseCount: Int
     }
 
     private struct EntrySnapshot: Sendable {
@@ -846,7 +839,6 @@ actor RemuxSSHRootService {
     /// refuses sessions on the ones it has.
     private var entries: [UUID: Entry] = [:]
     private var generationsByKey: [RemuxSSHRootKey: [UUID]] = [:]
-    private var retiredEntries: [UUID: RetiredEntry] = [:]
 
     init(idleTimeout: Duration = .seconds(120)) {
         self.idleTimeout = idleTimeout
@@ -854,9 +846,9 @@ actor RemuxSSHRootService {
 
     func snapshot() -> RemuxSSHRootServiceSnapshot {
         RemuxSSHRootServiceSnapshot(
-            retiredCount: retiredEntries.count,
+            retiredCount: entries.values.filter(\.isRetired).count,
             entries: generationsByKey.mapValues { generations in
-                generations.compactMap { entries[$0] }.map { entry in
+                generations.compactMap { entries[$0] }.filter { !$0.isRetired }.map { entry in
                     RemuxSSHRootServiceSnapshot.Entry(
                         generation: entry.generation,
                         readiness: entry.readiness,
@@ -894,20 +886,14 @@ actor RemuxSSHRootService {
     /// check, or the deadline.
     func checkConnections(reason: String) {
         let ready = entries.values.filter { $0.readiness == .ready }
-        let retired = retiredEntries.values.map(\.task)
-        GhosttyRuntimeTrace.latency("sshRoot.pool.check reason=\(reason) roots=\(ready.count + retired.count)")
+        let retired = ready.filter(\.isRetired).count
+        GhosttyRuntimeTrace.latency("sshRoot.pool.check reason=\(reason) roots=\(ready.count) retired=\(retired)")
+        // Retired connections too: they take no new consumers, but their sessions wait on them like any others.
         for entry in ready {
             let (key, generation, task) = (entry.key, entry.generation, entry.attempt.task)
             Task.detached(priority: .userInitiated) {
                 guard let root = try? await task.value else { return }
                 await self.check(root, key: key, generation: generation, reason: reason)
-            }
-        }
-        // A retired connection takes no new consumers, so suspecting it would change nothing.
-        for task in retired {
-            Task.detached(priority: .userInitiated) {
-                guard let root = try? await task.value else { return }
-                await root.checkAlive(reason: reason)
             }
         }
     }
@@ -975,7 +961,8 @@ actor RemuxSSHRootService {
     }
 
     private static func takesConsumers(_ entry: Entry) -> Bool {
-        !entry.isRefusingSessions && !entry.isSuspect && (!entry.isSpare || entry.readiness == .ready)
+        !entry.isRetired && !entry.isRefusingSessions && !entry.isSuspect
+            && (!entry.isSpare || entry.readiness == .ready)
     }
 
     func prewarmConnection(
@@ -1131,7 +1118,10 @@ actor RemuxSSHRootService {
         reservationID: UUID
     ) -> LeaseEntryResult {
         guard var entry = entries[generation] else {
-            return .stale(closeConnection: retiredEntries[generation] == nil)
+            return .stale(closeConnection: true)
+        }
+        guard !entry.isRetired else {
+            return .stale(closeConnection: false)
         }
         guard entry.reservationIDs.contains(reservationID) else {
             return .busy
@@ -1152,7 +1142,10 @@ actor RemuxSSHRootService {
         disposition: RemuxSSHRootLeaseDisposition
     ) -> ReleaseEntryResult {
         guard var entry = entries[generation] else {
-            return releaseUnpooledLease(generation: generation)
+            return .close
+        }
+        if entry.isRetired {
+            return releaseRetiredLease(entry)
         }
 
         switch disposition {
@@ -1166,15 +1159,14 @@ actor RemuxSSHRootService {
 
         case .invalidated:
             entry.idleCloseTask?.cancel()
-            removeEntry(generation)
-            let remaining = max(0, entry.activeLeaseCount - 1)
-            guard remaining > 0 else {
+            entry.idleCloseTask = nil
+            entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
+            guard entry.activeLeaseCount > 0 else {
+                removeEntry(generation)
                 return .close
             }
-            retiredEntries[generation] = RetiredEntry(
-                task: entry.attempt.task,
-                activeLeaseCount: remaining
-            )
+            entry.isRetired = true
+            entries[generation] = entry
             return .retained
         }
     }
@@ -1186,8 +1178,10 @@ actor RemuxSSHRootService {
         generation: UUID
     ) -> (ReleaseEntryResult, othersRemain: Bool) {
         guard var entry = entries[generation] else {
-            let othersRemain = (retiredEntries[generation]?.activeLeaseCount ?? 0) > 1
-            return (releaseUnpooledLease(generation: generation), othersRemain)
+            return (.close, false)
+        }
+        if entry.isRetired {
+            return (releaseRetiredLease(entry), entry.activeLeaseCount > 1)
         }
 
         entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
@@ -1197,18 +1191,15 @@ actor RemuxSSHRootService {
         return (.retained, entry.activeLeaseCount > 0)
     }
 
-    /// A lease on a connection that has left the pool: a retired one closes with its last lease; one the pool
-    /// no longer knows is the caller's to close.
-    private func releaseUnpooledLease(generation: UUID) -> ReleaseEntryResult {
-        guard var retired = retiredEntries[generation] else {
+    /// A lease on a retired connection goes back: the connection closes with its last one.
+    private func releaseRetiredLease(_ entry: Entry) -> ReleaseEntryResult {
+        var entry = entry
+        entry.activeLeaseCount = max(0, entry.activeLeaseCount - 1)
+        guard entry.activeLeaseCount > 0 else {
+            removeEntry(entry.generation)
             return .close
         }
-        retired.activeLeaseCount = max(0, retired.activeLeaseCount - 1)
-        if retired.activeLeaseCount == 0 {
-            retiredEntries.removeValue(forKey: generation)
-            return .close
-        }
-        retiredEntries[generation] = retired
+        entries[entry.generation] = entry
         return .retained
     }
 
@@ -1248,7 +1239,7 @@ actor RemuxSSHRootService {
         trace: RemuxTransportStartupTrace
     ) -> EntrySnapshot {
         removeSpentEntries(for: key)
-        if let existing = orderedEntries(for: key).first(where: { !$0.isSuspect }) {
+        if let existing = orderedEntries(for: key).first(where: { !$0.isSuspect && !$0.isRetired }) {
             return EntrySnapshot(
                 generation: existing.generation,
                 attempt: existing.attempt,
@@ -1407,15 +1398,17 @@ actor RemuxSSHRootService {
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
-        guard let entry = entries[generation] else { return }
+        guard var entry = entries[generation] else { return }
         entry.idleCloseTask?.cancel()
-        removeEntry(generation)
-
-        guard entry.activeLeaseCount > 0 else { return }
-        retiredEntries[generation] = RetiredEntry(
-            task: entry.attempt.task,
-            activeLeaseCount: entry.activeLeaseCount
-        )
+        guard entry.activeLeaseCount > 0 else {
+            removeEntry(generation)
+            return
+        }
+        // Its sessions still hold it until they fail and leave; closed, it is no longer anyone's suspect.
+        entry.idleCloseTask = nil
+        entry.isRetired = true
+        entry.silentSince = nil
+        entries[generation] = entry
     }
 
     private func scheduleIdleCloseIfNeeded(
@@ -1460,12 +1453,6 @@ actor RemuxSSHRootService {
         for entry in closing {
             entry.idleCloseTask?.cancel()
             closeEntryTask(entry.attempt.task, reason: "testing_cleanup")
-        }
-
-        let retired = Array(retiredEntries.values)
-        retiredEntries.removeAll()
-        for entry in retired {
-            closeEntryTask(entry.task, reason: "testing_cleanup")
         }
     }
 
