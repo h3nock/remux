@@ -3875,27 +3875,18 @@ private struct SheetDismissAttemptObserver: UIViewControllerRepresentable {
     let action: () -> Void
 
     func makeUIViewController(context: Context) -> Observer {
-        Observer(action: action)
+        let observer = Observer()
+        observer.proxy.onAttempt = action
+        return observer
     }
 
     func updateUIViewController(_ observer: Observer, context: Context) {
-        observer.action = action
+        observer.proxy.onAttempt = action
     }
 
     final class Observer: UIViewController {
-        var action: () -> Void
-        /// The presentation controller holds its delegate weakly.
-        private var proxy: DismissAttemptProxy?
-
-        init(action: @escaping () -> Void) {
-            self.action = action
-            super.init(nibName: nil, bundle: nil)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) has not been implemented")
-        }
+        /// Kept here: the presentation controller holds its delegate weakly.
+        let proxy = DismissAttemptProxy()
 
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
@@ -3907,22 +3898,15 @@ private struct SheetDismissAttemptObserver: UIViewControllerRepresentable {
             guard let presentation = root.presentationController,
                   !(presentation.delegate is DismissAttemptProxy)
             else { return }
-            let proxy = DismissAttemptProxy(forwardingTo: presentation.delegate) { [weak self] in
-                self?.action()
-            }
+            // Set first, so the proxy already answers for SwiftUI's delegate when UIKit first asks it.
+            proxy.forwardee = presentation.delegate
             presentation.delegate = proxy
-            self.proxy = proxy
         }
     }
 
     final class DismissAttemptProxy: NSObject, UIAdaptivePresentationControllerDelegate {
-        private weak var forwardee: (any UIAdaptivePresentationControllerDelegate)?
-        private let onAttempt: () -> Void
-
-        init(forwardingTo forwardee: (any UIAdaptivePresentationControllerDelegate)?, onAttempt: @escaping () -> Void) {
-            self.forwardee = forwardee
-            self.onAttempt = onAttempt
-        }
+        weak var forwardee: (any UIAdaptivePresentationControllerDelegate)?
+        var onAttempt: () -> Void = {}
 
         func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
             onAttempt()
