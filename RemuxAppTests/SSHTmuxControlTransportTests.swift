@@ -1640,7 +1640,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await checked.pool.checkConnections(reason: "test")
         try await waitUntil("no spare was tried and given up") {
             let entries = await checked.pool.snapshot().entries(for: checked.key)
-            return entries.first?.isSuspect == true && entries.count == 1
+            return checked.relay.refusedCount == 1 && entries.count == 1 && entries.first?.isSuspect == true
         }
         checked.relay.refuseNew(false)
 
@@ -1665,7 +1665,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await checked.pool.checkConnections(reason: "test")
         try await waitUntil("no spare was tried and given up") {
             let entries = await checked.pool.snapshot().entries(for: checked.key)
-            return entries.first?.isSuspect == true && entries.count == 1
+            return checked.relay.refusedCount == 1 && entries.count == 1 && entries.first?.isSuspect == true
         }
         checked.relay.refuseNew(false)
 
@@ -1676,7 +1676,40 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
 
         XCTAssertLessThan(ContinuousClock.now - start, openDeadline / 2)
+        try await waitUntil("the second check's spare isn't what's left") {
+            await checked.pool.snapshot().entries(for: checked.key).map(\.isSpare) == [true]
+        }
         await first.release(.invalidated)
+    }
+
+    /// Any byte ends suspicion, not only the probe's answer: with the probe's open held at the server and no spare
+    /// allowed, a refused forward is the only thing heard, and the next claim reuses the connection.
+    func testAnyByteEndsSuspicionWhileTheProbeWaits() async throws {
+        let checked = try await makeCheckedLoopback(sessionConfirmationDelay: .seconds(30))
+        let first = try await checked.claim()
+        checked.relay.refuseNew()
+        await checked.pool.checkConnections(reason: "test")
+        try await waitUntil("the connection never fell under suspicion, or no spare was tried") {
+            let suspect = await checked.pool.snapshot().entries(for: checked.key).first?.isSuspect == true
+            return suspect && checked.relay.refusedCount == 1
+        }
+
+        // The server refuses forwards at once (it answers only sessions, and holds those).
+        let trace = RemuxTransportStartupTrace(flowID: nil)
+        _ = try? await first.sshRoot.openDirectTCPIPChannel(
+            to: RemuxSSHDirectTCPIPTarget(host: "127.0.0.1", port: 8080),
+            originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0),
+            trace: trace,
+            channelInitializer: { $0.eventLoop.makeSucceededFuture(()) }
+        )
+        let entry = await checked.pool.snapshot().entries(for: checked.key).first
+        let second = try await checked.claim()
+
+        XCTAssertEqual(entry?.isSuspect, false, "a byte heard didn't end the suspicion")
+        XCTAssertTrue(second.sshRoot === first.sshRoot)
+        XCTAssertEqual(checked.relay.refusedCount, 1, "the claim tried a sign-in of its own")
+        await second.release(.reusable)
+        await first.release(.reusable)
     }
 
     /// A connection that answers after falling under suspicion, while no spare could sign in, is kept: it takes
@@ -1965,8 +1998,11 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     /// A pool whose connections reach the in-process server through a relay the test can silence.
-    private func makeCheckedLoopback() async throws -> CheckedLoopback {
-        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux")
+    private func makeCheckedLoopback(sessionConfirmationDelay: TimeAmount? = nil) async throws -> CheckedLoopback {
+        let server = try await SSHPublicKeyLiveTestServer.start(
+            username: "remux",
+            sessionConfirmationDelay: sessionConfirmationDelay
+        )
         addTeardownBlock { server.stop() }
         let relay = try await SSHPoolLiveRelay.start(host: "127.0.0.1", port: server.port)
         addTeardownBlock { relay.close() }

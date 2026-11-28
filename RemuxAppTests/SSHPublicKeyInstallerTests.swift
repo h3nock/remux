@@ -641,6 +641,7 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         username: String,
         suspendAuthentication: Bool = false,
         directTCPIPConfirmationDelay: TimeAmount? = nil,
+        sessionConfirmationDelay: TimeAmount? = nil,
         execOutput: Data? = nil,
         execSteps: [SSHPublicKeyLiveExecStep] = [],
         hostKey: NIOSSHPrivateKey = NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey())
@@ -676,6 +677,10 @@ final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
                             return childChannel.eventLoop.makeFailedFuture(
                                 SSHPublicKeyLiveTestServerError.invalidChannelType
                             )
+                        }
+                        // A session confirmed only after a delay, as from a server too busy to answer opens.
+                        if let delay = sessionConfirmationDelay {
+                            return childChannel.eventLoop.scheduleTask(in: delay) {}.futureResult
                         }
                         return childChannel
                             .setOption(ChannelOptions.allowRemoteHalfClosure, value: true)

@@ -485,7 +485,12 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
     private let listener: Channel
     private let host: String
     private let targetPort: Int
-    private let state = NIOLockedValueBox((stalled: false, refusing: false, channels: [ObjectIdentifier: Channel]()))
+    private let state = NIOLockedValueBox(
+        (stalled: false, refusing: false, refused: 0, channels: [ObjectIdentifier: Channel]())
+    )
+
+    /// How many connections `refuseNew` has closed.
+    var refusedCount: Int { state.withLockedValue { $0.refused } }
     private let bytesPerSecond = NIOLockedValueBox<Int?>(nil)
 
     /// Carries at most this many bytes a second each way per connection, as a slow link does.
@@ -524,7 +529,11 @@ final class SSHPoolLiveRelay: @unchecked Sendable {
     }
 
     private func bridge(_ inbound: Channel) {
-        guard !state.withLockedValue({ $0.refusing }) else {
+        let refused = state.withLockedValue { state -> Bool in
+            if state.refusing { state.refused += 1 }
+            return state.refusing
+        }
+        guard !refused else {
             inbound.close(promise: nil)
             return
         }
